@@ -14,6 +14,10 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	stageDigestInput = "digest-input"
+)
+
 type transformPipeline struct {
 	processor *processor
 	ctx       context.Context
@@ -87,7 +91,7 @@ func (p *transformPipeline) run(dst io.Writer, transforms []Transform) (*Report,
 	writer := streamio.Writer{Context: p.ctx, Target: target, Limit: int64(p.processor.opt.MaxOutputBytes), LimitError: ErrLimit}
 
 	if _, err := io.Copy(&writer, p.reader); err != nil {
-		index, algorithm := -1, "digest-input"
+		index, algorithm := -1, stageDigestInput
 		if len(transforms) > 0 {
 			index = len(transforms) - 1
 			algorithm = transforms[index].Algorithm
@@ -360,11 +364,17 @@ func (w *yieldWriter) Write(p []byte) (int, error) {
 }
 
 type producedReader struct {
-	ctx     context.Context
-	next    func() ([]byte, error, bool)
-	stop    func()
+	// ctx supplies cancellation for pulls from the transform producer.
+	ctx context.Context
+	// next resumes the producer and borrows its next output chunk.
+	next func() ([]byte, error, bool)
+	// stop terminates the suspended producer and runs its deferred cleanup.
+	stop func()
+	// pending borrows the unread suffix of the last yielded chunk until the next
+	// pull.
 	pending []byte
-	closed  bool
+	// closed prevents further pulls and makes producer cleanup idempotent.
+	closed bool
 }
 
 func (r *producedReader) Read(p []byte) (int, error) {
@@ -409,6 +419,8 @@ func (r *producedReader) Close() error {
 		r.stop = nil
 		r.next = nil
 
+		// Resume the suspended iterator's cleanup even when the consumer stops
+		// before EOF; its deferred resource releases must still run.
 		stop()
 	}
 

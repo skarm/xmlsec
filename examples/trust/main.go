@@ -25,6 +25,16 @@ import (
 	"github.com/skarm/xmlsec/xmlenc"
 )
 
+const exampleRSABits = 2048
+
+const (
+	certificateBackdate = time.Hour
+	rootLifetime        = 24 * time.Hour
+	signerLifetime      = time.Hour
+	crlBackdate         = time.Minute
+	crlLifetime         = time.Hour
+)
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -45,7 +55,7 @@ func run() error {
 		return err
 	}
 
-	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Example CA"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Example CA"}, NotBefore: now.Add(-certificateBackdate), NotAfter: now.Add(rootLifetime), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 
 	rootDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, issuer.Public(), issuer)
 	if err != nil {
@@ -57,14 +67,14 @@ func run() error {
 		return err
 	}
 
-	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "Example signer"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}, BasicConstraintsValid: true}
+	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "Example signer"}, NotBefore: now.Add(-certificateBackdate), NotAfter: now.Add(signerLifetime), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}, BasicConstraintsValid: true}
 
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, root, signingKey.Public(), issuer)
 	if err != nil {
 		return err
 	}
 
-	crlDER, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)}, root, issuer)
+	crlDER, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-crlBackdate), NextUpdate: now.Add(crlLifetime)}, root, issuer)
 	if err != nil {
 		return err
 	}
@@ -89,7 +99,7 @@ func run() error {
 		return err
 	}
 
-	recipient, err := rsa.GenerateKey(rand.Reader, 2048)
+	recipient, err := rsa.GenerateKey(rand.Reader, exampleRSABits)
 	if err != nil {
 		return err
 	}

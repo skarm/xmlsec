@@ -37,7 +37,7 @@ func XMLLangMatches(n Node, langArg string) (matched, found bool) {
 		}
 
 		for _, attr := range elem.Attributes() {
-			if attr.LocalName() == "lang" && attr.URI() == lexicon.NamespaceXML {
+			if attr.LocalName() == lexicon.AttrLang && attr.URI() == lexicon.NamespaceXML {
 				val := strings.ToLower(attr.Value())
 				if val == langArg || strings.HasPrefix(val, langArg+"-") {
 					return true, true
@@ -69,7 +69,11 @@ func InScopeNamespaces(e *Element, dropXML bool) map[string]*Namespace {
 	// Outermost to innermost so the innermost binding wins.
 	for _, anc := range slices.Backward(chain) {
 		for _, ns := range anc.Namespaces() {
-			byPrefix[ns.Prefix()] = ns
+			if ns.URI() == "" {
+				delete(byPrefix, ns.Prefix())
+			} else {
+				byPrefix[ns.Prefix()] = ns
+			}
 		}
 
 		if ns := anc.Namespace(); ns != nil {
@@ -81,6 +85,8 @@ func InScopeNamespaces(e *Element, dropXML bool) map[string]*Namespace {
 
 	if dropXML {
 		delete(byPrefix, lexicon.PrefixXML)
+	} else {
+		byPrefix[lexicon.PrefixXML] = NewNamespace(lexicon.PrefixXML, lexicon.NamespaceXML)
 	}
 
 	return byPrefix

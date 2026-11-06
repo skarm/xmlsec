@@ -25,6 +25,20 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	legacyDSAPBits    = 1024
+	legacyDSAQBits    = 160
+	maxDSAKeyChildren = 7
+	maxRSAExponent    = 1<<31 - 1
+	minRSAExponent    = 3
+)
+
+const (
+	nameJ           = "J"
+	namePgenCounter = "PgenCounter"
+	nameSeed        = "Seed"
+)
+
 // Parse reads one explicitly selected ds:KeyInfo in the supplied snapshot.
 // Unsupported choices are errors, not silently ignored extensions. KeyName is
 // preserved verbatim. KeyInfoReference/typed RetrievalMethod follow bounded
@@ -91,7 +105,7 @@ func Parse(ctx context.Context, doc *document.Document, selected document.Elemen
 
 // DefaultIDRules returns a fresh copy of the supported default ID attribute rules.
 func DefaultIDRules() []reference.IDAttributeRule {
-	return []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{
+	return []reference.IDAttributeRule{{Attribute: document.Name{Local: lexicon.SecurityAttrID}, Elements: []document.Name{
 		{Space: Namespace, Local: lexicon.DSigElementKeyInfo},
 		{Space: Namespace11, Local: nameECKeyValue},
 		{Space: Namespace11, Local: nameDEREncodedKeyValue},
@@ -182,7 +196,7 @@ func (p *parser) keyInfo(s *scope, n *tree.Node, depth int) error {
 	}
 	defer leave()
 
-	children, err := structure(n, Namespace, lexicon.DSigElementKeyInfo, "Id")
+	children, err := structure(n, Namespace, lexicon.DSigElementKeyInfo, lexicon.SecurityAttrID)
 	if err != nil {
 		return err
 	}
@@ -197,7 +211,7 @@ func (p *parser) keyInfo(s *scope, n *tree.Node, depth int) error {
 			return err
 		}
 
-		if is(child, Namespace, "RetrievalMethod") {
+		if is(child, Namespace, lexicon.DSigElementRetrievalMethod) {
 			if _, err := p.prepareRetrieval(s, child); err != nil {
 				return err
 			}
@@ -279,7 +293,7 @@ func (p *parser) item(s *scope, n *tree.Node, depth int) error {
 		}
 
 		return p.keyInfo(scope, target, depth+1)
-	case document.Name{Space: Namespace, Local: "RetrievalMethod"}:
+	case document.Name{Space: Namespace, Local: lexicon.DSigElementRetrievalMethod}:
 		return p.retrieve(s, n, depth)
 	default:
 		return fmt.Errorf("%w: {%s}%s", ErrUnsupported, n.Name.Space, n.Name.Local)
@@ -418,7 +432,7 @@ func (p *parser) rsaKeyValue(n *tree.Node) (*rsa.PublicKey, error) {
 		return nil, err
 	}
 
-	if len(children) != 2 || !is(children[0], Namespace, "Modulus") || !is(children[1], Namespace, "Exponent") {
+	if len(children) != 2 || !is(children[0], Namespace, nameModulus) || !is(children[1], Namespace, nameExponent) {
 		return nil, ErrInput
 	}
 
@@ -438,7 +452,7 @@ func (p *parser) rsaKeyValue(n *tree.Node) (*rsa.PublicKey, error) {
 	}
 
 	e := new(big.Int).SetBytes(exponent)
-	if !e.IsInt64() || e.Int64() > 2147483647 {
+	if !e.IsInt64() || e.Int64() > maxRSAExponent {
 		return nil, ErrKey
 	}
 
@@ -451,7 +465,7 @@ func (p *parser) dsaKeyValue(n *tree.Node) (*dsa.PublicKey, error) {
 		return nil, err
 	}
 
-	if len(children) < 1 || len(children) > 7 {
+	if len(children) < 1 || len(children) > maxDSAKeyChildren {
 		return nil, ErrInput
 	}
 
@@ -460,7 +474,7 @@ func (p *parser) dsaKeyValue(n *tree.Node) (*dsa.PublicKey, error) {
 		return nil, err
 	}
 
-	if len(remaining) > 0 && is(remaining[0], Namespace, "J") {
+	if len(remaining) > 0 && is(remaining[0], Namespace, nameJ) {
 		j, err := p.dsaInteger(remaining[0])
 		if err != nil {
 			return nil, err
@@ -474,7 +488,7 @@ func (p *parser) dsaKeyValue(n *tree.Node) (*dsa.PublicKey, error) {
 	}
 
 	if len(remaining) > 0 {
-		if len(remaining) != 2 || !is(remaining[0], Namespace, "Seed") || !is(remaining[1], Namespace, "PgenCounter") {
+		if len(remaining) != 2 || !is(remaining[0], Namespace, nameSeed) || !is(remaining[1], Namespace, namePgenCounter) {
 			return nil, ErrInput
 		}
 
@@ -494,7 +508,7 @@ func (p *parser) configureDSAParameters() error {
 		return nil
 	}
 
-	if parameters.P == nil || parameters.Q == nil || parameters.G == nil || parameters.P.BitLen() != 1024 || parameters.Q.BitLen() != 160 || parameters.G.BitLen() > 1024 {
+	if parameters.P == nil || parameters.Q == nil || parameters.G == nil || parameters.P.BitLen() != legacyDSAPBits || parameters.Q.BitLen() != legacyDSAQBits || parameters.G.BitLen() > legacyDSAPBits {
 		return fmt.Errorf("%w: invalid DSA parameter context", ErrPolicy)
 	}
 
@@ -512,8 +526,8 @@ func (p *parser) dsaPublicFields(children []*tree.Node) (*dsa.PublicKey, []*tree
 	key := &dsa.PublicKey{}
 
 	remaining := children
-	if is(remaining[0], Namespace, "P") {
-		if len(remaining) < 2 || !is(remaining[1], Namespace, "Q") {
+	if is(remaining[0], Namespace, nameP) {
+		if len(remaining) < 2 || !is(remaining[1], Namespace, nameQ) {
 			return nil, nil, ErrInput
 		}
 
@@ -532,7 +546,7 @@ func (p *parser) dsaPublicFields(children []*tree.Node) (*dsa.PublicKey, []*tree
 		remaining = remaining[2:]
 	}
 
-	if len(remaining) > 0 && is(remaining[0], Namespace, "G") {
+	if len(remaining) > 0 && is(remaining[0], Namespace, nameG) {
 		var err error
 
 		key.G, err = p.dsaInteger(remaining[0])
@@ -543,7 +557,7 @@ func (p *parser) dsaPublicFields(children []*tree.Node) (*dsa.PublicKey, []*tree
 		remaining = remaining[1:]
 	}
 
-	if len(remaining) == 0 || !is(remaining[0], Namespace, "Y") {
+	if len(remaining) == 0 || !is(remaining[0], Namespace, nameY) {
 		return nil, nil, ErrInput
 	}
 
@@ -573,6 +587,10 @@ func (p *parser) dsaPublicFields(children []*tree.Node) (*dsa.PublicKey, []*tree
 }
 
 func (p *parser) dsaInteger(n *tree.Node) (*big.Int, error) {
+	// Bounds each decoded CryptoBinary field in the supported legacy DSA
+	// representation, including generation hints; this is unrelated to curve URIs.
+	const maximumDSACryptoBinaryBytes = 128
+
 	value, err := p.binary(n)
 	if err != nil {
 		return nil, err
@@ -582,7 +600,7 @@ func (p *parser) dsaInteger(n *tree.Node) (*big.Int, error) {
 		return nil, fmt.Errorf("%w: nonminimal DSA CryptoBinary", ErrInput)
 	}
 
-	if len(value) > 128 {
+	if len(value) > maximumDSACryptoBinaryBytes {
 		return nil, ErrKey
 	}
 
@@ -590,7 +608,7 @@ func (p *parser) dsaInteger(n *tree.Node) (*big.Int, error) {
 }
 
 func (p *parser) ecKeyValue(n *tree.Node) (*ecdsa.PublicKey, error) {
-	children, err := structure(n, Namespace11, nameECKeyValue, "Id")
+	children, err := structure(n, Namespace11, nameECKeyValue, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
@@ -599,20 +617,20 @@ func (p *parser) ecKeyValue(n *tree.Node) (*ecdsa.PublicKey, error) {
 		return nil, ErrInput
 	}
 
-	if !is(children[0], Namespace11, "NamedCurve") {
+	if !is(children[0], Namespace11, lexicon.DSigElementNamedCurve) {
 		return nil, fmt.Errorf("%w: explicit EC parameters", ErrUnsupported)
 	}
 
-	curveChildren, err := structure(children[0], Namespace11, "NamedCurve", "URI")
+	curveChildren, err := structure(children[0], Namespace11, lexicon.DSigElementNamedCurve, lexicon.SecurityAttrURI)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(curveChildren) != 0 || !is(children[1], Namespace11, "PublicKey") {
+	if len(curveChildren) != 0 || !is(children[1], Namespace11, lexicon.DSigElementPublicKey) {
 		return nil, ErrInput
 	}
 
-	uri, ok := attr(children[0], "URI")
+	uri, ok := attr(children[0], lexicon.SecurityAttrURI)
 	if !ok {
 		return nil, ErrInput
 	}
@@ -636,7 +654,7 @@ func (p *parser) ecKeyValue(n *tree.Node) (*ecdsa.PublicKey, error) {
 }
 
 func (p *parser) derEncodedKeyValue(n *tree.Node) (crypto.PublicKey, error) {
-	encoded, err := p.binary(n, "Id")
+	encoded, err := p.binary(n, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
@@ -690,7 +708,7 @@ func validateKey(key crypto.PublicKey, maxRSA int) error {
 			return fmt.Errorf("%w: invalid legacy DSA public key", ErrKey)
 		}
 	case *rsa.PublicKey:
-		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.N.Bit(0) == 0 || k.N.BitLen() > maxRSA || k.E < 3 || k.E%2 == 0 || int64(k.E) > 2147483647 || k.N.Cmp(big.NewInt(int64(k.E))) <= 0 {
+		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.N.Bit(0) == 0 || k.N.BitLen() > maxRSA || k.E < minRSAExponent || k.E%2 == 0 || int64(k.E) > maxRSAExponent || k.N.Cmp(big.NewInt(int64(k.E))) <= 0 {
 			return ErrKey
 		}
 	case *ecdsa.PublicKey:
@@ -741,7 +759,7 @@ func attrs(n *tree.Node, allowed ...string) error {
 			return fmt.Errorf("%w: unexpected attribute {%s}%s", ErrInput, a.Name.Space, a.Name.Local)
 		}
 
-		if a.Name.Local == "Id" && !tree.NCName(a.Value) {
+		if a.Name.Local == lexicon.SecurityAttrID && !tree.NCName(a.Value) {
 			return ErrInput
 		}
 	}

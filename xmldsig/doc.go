@@ -68,8 +68,8 @@
 // can produce the same MAC. [LegacyVerificationPolicy] explicitly enables SHA-1
 // reference digests and RSA-SHA1/DSA-SHA1 verification, with complete 1024/160
 // DSA public parameters and fixed-width r || s signature values. SHA-1 reference
-// generation is available under that policy, but RSA-SHA1/DSA-SHA1 signature
-// generation is always rejected before calling a private signer.
+// generation is available under that policy. RSA-SHA1 signature generation also
+// requires Policy.AllowLegacySigning; DSA-SHA1 generation remains unsupported.
 // [LegacyHMACPolicy] separately opts into HMAC-SHA1 with the existing key/tag
 // bounds. Both legacy policies are disabled in FIPS mode; defaults remain SHA-2.
 // Approved XPath/Filter2/XSLT transforms use

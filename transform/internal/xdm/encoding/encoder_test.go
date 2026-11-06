@@ -115,7 +115,11 @@ func TestRepertoireProbeResetsStateAfterUnsupportedCharacters(t *testing.T) {
 		name    string
 		yes, no rune
 	}{
-		{"iso-8859-1", 'é', '中'}, {"windows-1252", '€', '😀'}, {"iso-2022-jp", 'あ', '😀'},
+		{"iso-8859-1", 'é', '中'},
+		{"windows-1252", '€', '😀'},
+		{"iso-2022-jp", 'あ', '😀'},
+		{"ibm1141", '€', '中'},
+		{"windows-1252", '\u0081', '\u0080'},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -124,6 +128,28 @@ func TestRepertoireProbeResetsStateAfterUnsupportedCharacters(t *testing.T) {
 			for range 3 {
 				if !probe(test.yes) || probe(test.no) || !probe('A') || !probe(test.yes) {
 					t.Fatal("probe reused failed/shifted encoder state")
+				}
+			}
+		})
+	}
+}
+
+func TestSingleByteEncodersPreserveRepresentableCharacters(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"windows-1250", "windows-1251", "windows-1252", "windows-1253", "windows-1254", "windows-1255", "windows-1256", "windows-1257", "windows-1258", "windows-874", "iso-8859-1", "iso-8859-2", "ibm1141"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			codec := encoding.Load(name)
+			for r := rune(0); r <= 0xff; r++ {
+				encoded, err := codec.NewEncoder().String(string(r))
+				if err != nil {
+					continue
+				}
+				decoded, err := codec.NewDecoder().String(encoded)
+				if err != nil || decoded != string(r) {
+					t.Fatalf("encoding U+%04X succeeded but decoded to %q, %v", r, decoded, err)
 				}
 			}
 		})

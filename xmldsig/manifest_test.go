@@ -112,6 +112,8 @@ func testTransformedManifestSnapshot(t *testing.T, local bool) {
 	// Child content mutation does not alter the incoming Manifest digest.
 	resources[uriUrnAttachment] = []byte("modified nested payload")
 
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, xmldsig.Signatures(signed)[0], key.Public(), options); result != nil || !errors.Is(err, xmldsig.ErrDigest) || report.References[0].Status != xmldsig.Valid || report.ManifestValidation == xmldsig.Valid {
 		t.Fatal("nested mutation", report, err)
 	}
@@ -222,6 +224,8 @@ func TestTransformedManifestAuthenticationAndLimits(t *testing.T) {
 
 	resources[uriExternalManifest] = []byte(base64.StdEncoding.EncodeToString([]byte(`<not-a-manifest/>`)))
 
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), options); result != nil || !errors.Is(err, xmldsig.ErrDigest) || len(calls) != 1 || len(report.Manifests) != 0 {
 		t.Fatal("discovery before parent digest", report, err, calls)
 	}
@@ -281,6 +285,8 @@ func TestTransformedManifestResultIdentity(t *testing.T) {
 
 	resources["urn:second-result"] = []byte("modified second result")
 
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), options); result != nil || !errors.Is(err, xmldsig.ErrDigest) || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Valid || report.Manifests[1].References[0].Status != xmldsig.Invalid {
 		t.Fatal("second transform result was not traversed", report, err)
 	}
@@ -353,6 +359,8 @@ func TestExternalManifestURIContext(t *testing.T) {
 	clear(calls)
 
 	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), signed, xmldsig.Signatures(signed)[0], key.Public(), opt)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || len(calls) != 1 || calls[outer] != 1 || len(report.Manifests) != 0 {
 		t.Fatal("nested discovery preceded parent authentication", result, report, err, calls)
 	}
@@ -457,6 +465,8 @@ func TestExternalManifestResolvedCycle(t *testing.T) {
 	opt.Manifests = xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: true}
 
 	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), opt)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrReference) || result != nil || report.References[0].Status != xmldsig.Valid || calls[resolved] != 1 || len(calls) != 1 {
 		t.Fatal("resolved cycle was reread or misclassified", result, report, err, calls)
 	}
@@ -646,6 +656,8 @@ func TestExternalManifestIndependentVector(t *testing.T) {
 	resources[uriUrnAttachment] = []byte("changed independent vector")
 
 	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), doc, doc.Root(), key, options)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid {
 		t.Fatal(result, report, err)
 	}
@@ -696,142 +708,6 @@ func TestExternalManifestGraph(t *testing.T) {
 	}
 }
 
-func testExternalManifestGraph(t *testing.T, canonical bool) {
-	t.Helper()
-	resources := externalManifestResources(t)
-	options, calls, closed := externalManifestOptions(resources)
-	key := graphKey(t)
-	signed := signExternalManifest(t, key, options, canonical)
-
-	clear(calls)
-
-	*closed = 0
-
-	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), options)
-	if err != nil || result == nil {
-		t.Fatal(result, report, err)
-	}
-
-	if len(result.Manifests()) != 2 || report.ManifestValidation != xmldsig.Valid {
-		t.Fatal("incomplete graph", report)
-	}
-
-	for _, uri := range []string{uriExternalManifest, uriLeafManifest, uriUrnAttachment} {
-		if calls[uri] != 1 {
-			t.Fatalf("%s fetched %d times", uri, calls[uri])
-		}
-	}
-
-	if *closed != 3 {
-		t.Fatal("resource readers not closed", *closed)
-	}
-
-	root := result.Manifests()[0]
-	if root.ResourceURI() != uriExternalManifest || report.Manifests[0].ResourceURI != uriExternalManifest || len(root.References()) != 3 {
-		t.Fatal(root, report)
-	}
-
-	local := root.References()[1]
-	if local.Target().Name().Local != "Reference" || !local.CoversElement(local.Target()) || result.CoversElement(local.Target()) {
-		t.Fatal("external/local scope or coverage was confused")
-	}
-
-	if result.Manifests()[1].ResourceURI() != uriLeafManifest || len(result.Manifests()[1].References()) != 1 {
-		t.Fatal("leaf result missing")
-	}
-
-	var replay bytes.Buffer
-	if _, err := local.WriteDigestInput(t.Context(), &replay); err != nil || replay.Len() == 0 {
-		t.Fatal("remote-scope replay", err)
-	}
-
-	for range 2 {
-		if _, err := result.References()[0].WriteDigestInput(t.Context(), io.Discard); err != nil {
-			t.Fatal("external replay", err)
-		}
-	}
-}
-
-func externalManifestResources(t *testing.T) map[string][]byte {
-	t.Helper()
-
-	payload := []byte("external payload")
-	leaf := []byte(`<ds:Manifest xmlns:ds="` + xmldsig.Namespace + `" Id="leaf">` + externalManifestReference(uriUrnAttachment, "", payload) + `</ds:Manifest>`)
-	first := strings.Replace(externalManifestReference(uriLeafManifest, xmldsig.ManifestType, leaf), `<ds:Reference `, `<ds:Reference Id="scoped" `, 1)
-	doc := graphDoc(t, `<ds:Manifest xmlns:ds="`+xmldsig.Namespace+`" Id="remote">`+first+`</ds:Manifest>`)
-
-	var canonical bytes.Buffer
-	if err := c14n.WriteElement(t.Context(), &canonical, doc.Root().Children()[0], c14n.Options{Algorithm: c14n.Exclusive}); err != nil {
-		t.Fatal(err)
-	}
-
-	second := externalManifestReference("#scoped", "", canonical.Bytes(), c14n.Exclusive)
-	third := externalManifestReference(uriLeafManifest, xmldsig.ManifestType, leaf)
-	root := []byte(`<ds:Manifest xmlns:ds="` + xmldsig.Namespace + `" Id="remote">` + first + second + third + `</ds:Manifest>`)
-
-	return map[string][]byte{uriExternalManifest: root, uriLeafManifest: leaf, uriUrnAttachment: payload}
-}
-
-func externalManifestReference(uri, typ string, input []byte, transforms ...string) string {
-	digest := sha256.Sum256(input)
-
-	ref := coreRef(uri, transforms...)
-	if typ != "" {
-		ref = strings.Replace(ref, `<ds:Reference `, `<ds:Reference Type="`+typ+`" `, 1)
-	}
-
-	return strings.Replace(ref, `<ds:DigestValue/>`, `<ds:DigestValue>`+base64.StdEncoding.EncodeToString(digest[:])+`</ds:DigestValue>`, 1)
-}
-
-func externalManifestOptions(resources map[string][]byte) (xmldsig.SignatureOptions, map[string]int, *int) {
-	calls := make(map[string]int)
-	closed := new(int)
-	opt := xmldsig.SignatureOptions{Manifests: xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: true}, ExpectedURIs: []string{uriExternalManifest}}
-	opt.External = &xmldsig.ExternalReferences{AllowedURIs: []string{uriExternalManifest, uriLeafManifest, uriUrnAttachment}, Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
-		calls[uri]++
-
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		value, ok := resources[uri]
-		if !ok {
-			return nil, xmldsig.ErrReference
-		}
-
-		return &countClose{Reader: bytes.NewReader(value), n: closed}, nil
-	})}
-
-	return opt, calls, closed
-}
-
-func signExternalManifest(t *testing.T, key crypto.Signer, options xmldsig.SignatureOptions, canonical bool) *document.Document {
-	t.Helper()
-
-	var transforms []reference.Transform
-	if canonical {
-		transforms = graphC14N()
-	}
-
-	shadow := "signature document scope"
-
-	doc, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{
-		SignatureMethod: xmldsig.ECDSASHA256,
-		References:      []xmldsig.ReferenceTemplate{{URI: uriExternalManifest, Type: xmldsig.ManifestType, Transforms: transforms}},
-		Objects:         []xmldsig.ObjectTemplate{{ID: "scoped", Text: &shadow}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	signed, err := xmldsig.SignTemplate(t.Context(), doc, selected, key, xmldsig.TemplateSignOptions{Validation: options})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return signed
-}
-
 func TestExternalManifestAuthenticationOrder(t *testing.T) {
 	resources := externalManifestResources(t)
 	opt, calls, _ := externalManifestOptions(resources)
@@ -860,6 +736,8 @@ func TestExternalManifestAuthenticationOrder(t *testing.T) {
 	clear(calls)
 
 	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), opt)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || calls[uriExternalManifest] != 1 || len(calls) != 1 || len(report.Manifests) != 0 {
 		t.Fatal(result, report, err, calls)
 	}
@@ -933,6 +811,8 @@ func TestExternalManifestPolicyAndFailures(t *testing.T) {
 	options.Manifests = opt.Manifests
 
 	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), options)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid {
 		t.Fatal(result, report, err)
 	}
@@ -962,6 +842,8 @@ func TestExternalManifestMalformedAndCyclic(t *testing.T) {
 			*closed = 0
 
 			result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), opt)
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if !errors.Is(err, test.want) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid {
 				t.Fatal(result, report, err)
 			}
@@ -1184,7 +1066,7 @@ func TestBuilderAppendAndDuplicateIDs(t *testing.T) {
 	ctx := t.Context()
 	d := graphDoc(t, `<r ID="r"><data ID="data">v</data></r>`)
 	raw, _ := d.XML(ctx)
-	spec := xmldsig.SignatureTemplate{ID: "s", SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: nameData, Transforms: graphC14N()}}}
+	spec := xmldsig.SignatureTemplate{ID: "s", SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: dataReferenceURI, Transforms: graphC14N()}}}
 
 	draft, s, e := xmldsig.BuildTemplate(ctx, d, d.Root(), spec)
 	if e != nil {
@@ -1279,6 +1161,142 @@ func FuzzVerifyManifest(f *testing.F) {
 			_, _, _ = xmldsig.VerifySignatureDetailed(t.Context(), d, s[0], public, opt)
 		}
 	})
+}
+
+func testExternalManifestGraph(t *testing.T, canonical bool) {
+	t.Helper()
+	resources := externalManifestResources(t)
+	options, calls, closed := externalManifestOptions(resources)
+	key := graphKey(t)
+	signed := signExternalManifest(t, key, options, canonical)
+
+	clear(calls)
+
+	*closed = 0
+
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), options)
+	if err != nil || result == nil {
+		t.Fatal(result, report, err)
+	}
+
+	if len(result.Manifests()) != 2 || report.ManifestValidation != xmldsig.Valid {
+		t.Fatal("incomplete graph", report)
+	}
+
+	for _, uri := range []string{uriExternalManifest, uriLeafManifest, uriUrnAttachment} {
+		if calls[uri] != 1 {
+			t.Fatalf("%s fetched %d times", uri, calls[uri])
+		}
+	}
+
+	if *closed != 3 {
+		t.Fatal("resource readers not closed", *closed)
+	}
+
+	root := result.Manifests()[0]
+	if root.ResourceURI() != uriExternalManifest || report.Manifests[0].ResourceURI != uriExternalManifest || len(root.References()) != 3 {
+		t.Fatal(root, report)
+	}
+
+	local := root.References()[1]
+	if local.Target().Name().Local != "Reference" || !local.CoversElement(local.Target()) || result.CoversElement(local.Target()) {
+		t.Fatal("external/local scope or coverage was confused")
+	}
+
+	if result.Manifests()[1].ResourceURI() != uriLeafManifest || len(result.Manifests()[1].References()) != 1 {
+		t.Fatal("leaf result missing")
+	}
+
+	var replay bytes.Buffer
+	if _, err := local.WriteDigestInput(t.Context(), &replay); err != nil || replay.Len() == 0 {
+		t.Fatal("remote-scope replay", err)
+	}
+
+	for range 2 {
+		if _, err := result.References()[0].WriteDigestInput(t.Context(), io.Discard); err != nil {
+			t.Fatal("external replay", err)
+		}
+	}
+}
+
+func externalManifestResources(t *testing.T) map[string][]byte {
+	t.Helper()
+
+	payload := []byte("external payload")
+	leaf := []byte(`<ds:Manifest xmlns:ds="` + xmldsig.Namespace + `" Id="leaf">` + externalManifestReference(uriUrnAttachment, "", payload) + `</ds:Manifest>`)
+	first := strings.Replace(externalManifestReference(uriLeafManifest, xmldsig.ManifestType, leaf), `<ds:Reference `, `<ds:Reference Id="scoped" `, 1)
+	doc := graphDoc(t, `<ds:Manifest xmlns:ds="`+xmldsig.Namespace+`" Id="remote">`+first+`</ds:Manifest>`)
+
+	var canonical bytes.Buffer
+	if err := c14n.WriteElement(t.Context(), &canonical, doc.Root().Children()[0], c14n.Options{Algorithm: c14n.Exclusive}); err != nil {
+		t.Fatal(err)
+	}
+
+	second := externalManifestReference("#scoped", "", canonical.Bytes(), c14n.Exclusive)
+	third := externalManifestReference(uriLeafManifest, xmldsig.ManifestType, leaf)
+	root := []byte(`<ds:Manifest xmlns:ds="` + xmldsig.Namespace + `" Id="remote">` + first + second + third + `</ds:Manifest>`)
+
+	return map[string][]byte{uriExternalManifest: root, uriLeafManifest: leaf, uriUrnAttachment: payload}
+}
+
+func externalManifestReference(uri, typ string, input []byte, transforms ...string) string {
+	digest := sha256.Sum256(input)
+
+	ref := coreRef(uri, transforms...)
+	if typ != "" {
+		ref = strings.Replace(ref, `<ds:Reference `, `<ds:Reference Type="`+typ+`" `, 1)
+	}
+
+	return strings.Replace(ref, `<ds:DigestValue/>`, `<ds:DigestValue>`+base64.StdEncoding.EncodeToString(digest[:])+`</ds:DigestValue>`, 1)
+}
+
+func externalManifestOptions(resources map[string][]byte) (xmldsig.SignatureOptions, map[string]int, *int) {
+	calls := make(map[string]int)
+	closed := new(int)
+	opt := xmldsig.SignatureOptions{Manifests: xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: true}, ExpectedURIs: []string{uriExternalManifest}}
+	opt.External = &xmldsig.ExternalReferences{AllowedURIs: []string{uriExternalManifest, uriLeafManifest, uriUrnAttachment}, Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		calls[uri]++
+
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		value, ok := resources[uri]
+		if !ok {
+			return nil, xmldsig.ErrReference
+		}
+
+		return &countClose{Reader: bytes.NewReader(value), n: closed}, nil
+	})}
+
+	return opt, calls, closed
+}
+
+func signExternalManifest(t *testing.T, key crypto.Signer, options xmldsig.SignatureOptions, canonical bool) *document.Document {
+	t.Helper()
+
+	var transforms []reference.Transform
+	if canonical {
+		transforms = graphC14N()
+	}
+
+	shadow := "signature document scope"
+
+	doc, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{
+		SignatureMethod: xmldsig.ECDSASHA256,
+		References:      []xmldsig.ReferenceTemplate{{URI: uriExternalManifest, Type: xmldsig.ManifestType, Transforms: transforms}},
+		Objects:         []xmldsig.ObjectTemplate{{ID: "scoped", Text: &shadow}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := xmldsig.SignTemplate(t.Context(), doc, selected, key, xmldsig.TemplateSignOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return signed
 }
 
 func graphKey(t *testing.T) *ecdsa.PrivateKey {

@@ -18,7 +18,7 @@ import (
 
 func templateAllowedAttrs(key string) bool {
 	switch key {
-	case lexicon.AttrMatch, xslAttrName, "priority", lexicon.AttrMode, "as", xslAttrVisibility, xslAttrUseWhen:
+	case lexicon.AttrMatch, xslAttrName, namePriority, lexicon.AttrMode, nameAs, xslAttrVisibility, xslAttrUseWhen:
 		return true
 	}
 
@@ -48,7 +48,7 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	savedXPathDefaultNS := c.xpathDefaultNS
 
 	savedHasXPathDefaultNS := c.hasXPathDefaultNS
-	if xdn, ok := elem.GetAttribute(nameXpathDefaultNamespace); ok {
+	if xdn, ok := elem.GetAttribute(nameXPathDefaultNamespace); ok {
 		c.xpathDefaultNS = xdn
 		c.hasXPathDefaultNS = true
 	}
@@ -75,7 +75,7 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	// Only check the template element itself (not ancestors), since c.baseURI
 	// already accounts for xml:base on the stylesheet root and includes.
 	templateBaseURI := c.baseURI
-	if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok && xmlBase != "" {
+	if xmlBase, ok := elem.GetAttributeNS(lexicon.AttrBase, lexicon.NamespaceXML); ok && xmlBase != "" {
 		templateBaseURI = xdm.BuildURI(xmlBase, c.baseURI)
 	}
 
@@ -136,7 +136,7 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 		tmpl.contextItemType = ctxDecl.itemType
 	}
 
-	tmplAs := getAttr(elem, "as")
+	tmplAs := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, tmplAs, "xsl:template"); err != nil {
 		return err
 	}
@@ -152,7 +152,7 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	// Only set Version when the template has its own version attribute.
 	// Stylesheet-level version is NOT propagated to templates because
 	// shadow attributes (_version) may override the stylesheet version.
-	tmpl.Version = getAttr(elem, lexicon.SerializationVersion)
+	tmpl.Version = getAttr(elem, xslAttrVersion)
 	if c.stylesheet.isPackage {
 		tmpl.OwnerPackage = c.stylesheet
 	}
@@ -173,7 +173,7 @@ func (c *compiler) compileTemplateModeAndPriority(ctx context.Context, elem *xdm
 		c.recordModeUsage(ctx, tmpl.Mode)
 	}
 
-	if prio := getAttr(elem, "priority"); prio != "" {
+	if prio := getAttr(elem, namePriority); prio != "" {
 		f, err := parseTemplatePriority(prio)
 		if err != nil {
 			return err
@@ -257,7 +257,7 @@ func (c *compiler) checkTemplateName(ctx context.Context, elem *xdm.Element, mat
 
 	// XTSE0080: template name must not be in the XSLT namespace
 	// Exception: xsl:initial-template is explicitly allowed (XSLT 3.0 §3.11).
-	if name != "" && strings.HasPrefix(name, "{"+lexicon.NamespaceXSLT+"}") && name != xdm.ClarkName(lexicon.NamespaceXSLT, "initial-template") {
+	if name != "" && strings.HasPrefix(name, "{"+lexicon.NamespaceXSLT+"}") && name != xdm.ClarkName(lexicon.NamespaceXSLT, initialTemplateLocalName) {
 		return "", staticError(errCodeXTSE0080, "xsl:template name %q is in the XSLT namespace", getAttr(elem, xslAttrName))
 	}
 
@@ -271,7 +271,7 @@ func (c *compiler) checkTemplateName(ctx context.Context, elem *xdm.Element, mat
 			return "", staticError(errCodeXTSE0500, "xsl:template without @match must not have @mode")
 		}
 
-		if _, hasPrio := elem.GetAttribute("priority"); hasPrio {
+		if _, hasPrio := elem.GetAttribute(namePriority); hasPrio {
 			return "", staticError(errCodeXTSE0500, "xsl:template without @match must not have @priority")
 		}
 	}
@@ -370,7 +370,7 @@ func (c *compiler) compileTemplateBodyEx(ctx context.Context, elem *xdm.Element,
 		return nil, nil, nil, err
 	}
 
-	return body.context, body.body, body.params, nil
+	return body.context, body.sequence.body, body.params, nil
 }
 
 // validateContextItem checks compile-time constraints on xsl:context-item.
@@ -380,8 +380,8 @@ func (c *compiler) validateContextItem(ctx context.Context, elem *xdm.Element) e
 		return err
 	}
 
-	asAttr := getAttr(elem, "as")
-	if _, present := elem.GetAttribute("as"); present {
+	asAttr := getAttr(elem, nameAs)
+	if _, present := elem.GetAttribute(nameAs); present {
 		st, err := xpath.ParseSequenceType(asAttr)
 		if err != nil || st.Void || st.Occurrence != xdm.OccurrenceExactlyOne {
 			return staticError(errCodeXTSE0020, "xsl:context-item/@as must be an ItemType: %q", asAttr)
@@ -399,7 +399,7 @@ func (c *compiler) validateContextItem(ctx context.Context, elem *xdm.Element) e
 			"xsl:context-item/@use must be 'required', 'optional', or 'absent': %q", useAttr)
 	}
 
-	if _, hasAs := elem.GetAttribute("as"); useAttr == ctxItemAbsent && hasAs {
+	if _, hasAs := elem.GetAttribute(nameAs); useAttr == ctxItemAbsent && hasAs {
 		return staticError(errCodeXTSE3088,
 			"xsl:context-item with use=\"absent\" must not have @as")
 	}
@@ -454,8 +454,8 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 	}
 
 	// Validate boolean attribute values (including empty string)
-	if reqAttr, hasReq := elem.GetAttribute(ctxItemRequired); hasReq {
-		if err := validateBooleanAttr("xsl:param", ctxItemRequired, reqAttr); err != nil {
+	if reqAttr, hasReq := elem.GetAttribute(xslAttrRequired); hasReq {
+		if err := validateBooleanAttr("xsl:param", xslAttrRequired, reqAttr); err != nil {
 			return nil, err
 		}
 	}
@@ -466,7 +466,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 		}
 	}
 
-	required := xsdBoolTrue(getAttr(elem, ctxItemRequired))
+	required := xsdBoolTrue(getAttr(elem, xslAttrRequired))
 
 	if required {
 		if err := validateRequiredParamDefault(elem); err != nil {
@@ -496,7 +496,7 @@ func (c *compiler) compileParamDef(ctx context.Context, elem *xdm.Element) (*par
 			"xsl:param %q with static='yes' must not have content (use select attribute instead)", name)
 	}
 
-	asAttr := getAttr(elem, "as")
+	asAttr := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:param "+name); err != nil {
 		return nil, err
 	}
@@ -612,7 +612,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		}
 	}
 
-	asAttr := getAttr(elem, "as")
+	asAttr := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:variable "+name); err != nil {
 		return err
 	}
@@ -660,7 +660,7 @@ func (c *compiler) compileGlobalVariable(ctx context.Context, elem *xdm.Element)
 		}
 		// XPST0008: a global variable is out of scope within its own
 		// declaration. Detect self-references in the select expression.
-		if c.stylesheet.processorLanguage() < 20 && xpathExprReferencesVar(expr.AST(), name, c.nsBindings) {
+		if c.stylesheet.processorLanguage() < processorXSLT20 && xpathExprReferencesVar(expr.AST(), name, c.nsBindings) {
 			return staticError(lexicon.ErrXPST0008,
 				"global variable %q references itself in its select expression", name)
 		}
@@ -797,7 +797,7 @@ func parseTemplatePriority(prio string) (float64, error) {
 	}
 	// xs:decimal ignores leading and trailing whitespace; isXSDecimal already
 	// trims it, so ParseFloat must see the trimmed form too.
-	f, err := strconv.ParseFloat(strings.TrimSpace(prio), 64)
+	f, err := strconv.ParseFloat(strings.TrimSpace(prio), float64ParseBits)
 	if err != nil {
 		return 0, staticError(errCodeXTSE0530, "invalid priority %q: %v", prio, err)
 	}
@@ -887,7 +887,7 @@ func defaultModeForElement(ctx context.Context, elem *xdm.Element) (string, erro
 			continue
 		}
 
-		name := strings.Trim(raw, " \t\r\n")
+		name := strings.Trim(raw, lexicon.XMLWhitespace)
 		if name == modeUnnamed {
 			return "", nil
 		}
@@ -1200,7 +1200,7 @@ type templateBodyCompiler struct {
 	compiler   *compiler
 	context    *contextItemDecl
 	params     []*param
-	body       []instruction
+	sequence   sequenceConstructorState
 	isFunction bool
 	inParams   bool
 	sawContent bool
@@ -1252,7 +1252,7 @@ func (b *templateBodyCompiler) compileElement(ctx context.Context, elem *xdm.Ele
 	}
 
 	if inst != nil {
-		b.body = append(b.body, inst)
+		return b.sequence.add(inst)
 	}
 
 	return nil
@@ -1279,7 +1279,7 @@ func (b *templateBodyCompiler) compileContextItem(ctx context.Context, elem *xdm
 		return err
 	}
 
-	as := defaultContextItemType(getAttr(elem, "as"))
+	as := defaultContextItemType(getAttr(elem, nameAs))
 
 	st, err := xpath.ParseSequenceType(as)
 	if err != nil {
@@ -1295,7 +1295,7 @@ func (b *templateBodyCompiler) compileContextItem(ctx context.Context, elem *xdm
 
 	// An omitted use stays empty; runtime selects the named/match default.
 	b.context = &contextItemDecl{
-		as: getAttr(elem, "as"), use: strings.TrimSpace(getAttr(elem, lexicon.AttrUse)),
+		as: getAttr(elem, nameAs), use: strings.TrimSpace(getAttr(elem, lexicon.AttrUse)),
 		typeKey: b.compiler.declarationTypeKey(elem, as), itemType: &bound,
 	}
 
@@ -1336,15 +1336,13 @@ func (b *templateBodyCompiler) appendText(text string) error {
 		inst.TVT = avt
 	}
 
-	b.body = append(b.body, inst)
-
-	return nil
+	return b.sequence.add(inst)
 }
 
 // contextItemAllowedAttrs lists the valid attributes for xsl:context-item.
 func contextItemAllowedAttrs(key string) bool {
 	switch key {
-	case "as", lexicon.AttrUse:
+	case nameAs, lexicon.AttrUse:
 		return true
 	}
 

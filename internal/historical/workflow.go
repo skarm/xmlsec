@@ -14,9 +14,43 @@ import (
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
+)
+
+const (
+	// Zero-valued workflow limits select these defaults. Byte counts cover exact
+	// object encodings; edges count containment and protected hash references.
+	defaultMaxBytes      = 16 << 20
+	defaultMaxEdges      = 4096
+	defaultMaxObjects    = 512
+	defaultMaxTimestamps = 16
+	// Non-default limits cannot exceed these hard caps. Durations separately bound
+	// assumed missing TSA accuracy and the allowed recovery/delay interval.
+	maximumBytes              = 64 << 20
+	maximumCryptoConstraints  = 128
+	maximumEdges              = 8192
+	maximumInputHashes        = 128
+	maximumMissingAccuracy    = 24 * time.Hour
+	maximumObjects            = 2048
+	maximumRecoveryInterval   = 365 * 24 * time.Hour
+	maximumSourceObservations = 1024
+	maximumTimestamps         = 64
+	maximumTrustAnchorSunsets = 64
+	// Clause/action pairs identify decisions in the immutable workflow report.
+	clause5623                 = "5.6.2.3"
+	clause563410               = "5.6.3.4(10)"
+	stageExtractExactObjectPoe = "extract-exact-object-poe"
+	stageReturnPassed          = "return-passed"
+)
+
+// Timestamp and signature rejection classes are report vocabulary shared by
+// preparation, policy enforcement and the returned per-stamp diagnostics.
+const (
+	codeHashFailure                 = "HASH_FAILURE"
+	codeTimestampConstraintsFailure = "TIMESTAMP_CONSTRAINTS_FAILURE"
 )
 
 const (
@@ -34,22 +68,22 @@ func Normalize(c Config) (Config, error) {
 	}
 
 	if c.MaxObjects == 0 {
-		c.MaxObjects = 512
+		c.MaxObjects = defaultMaxObjects
 	}
 
 	if c.MaxEdges == 0 {
-		c.MaxEdges = 4096
+		c.MaxEdges = defaultMaxEdges
 	}
 
 	if c.MaxBytes == 0 {
-		c.MaxBytes = 16 << 20
+		c.MaxBytes = defaultMaxBytes
 	}
 
 	if c.MaxTimestamps == 0 {
-		c.MaxTimestamps = 16
+		c.MaxTimestamps = defaultMaxTimestamps
 	}
 
-	if c.MaxObjects < 1 || c.MaxObjects > 2048 || c.MaxEdges < c.MaxObjects || c.MaxEdges > 8192 || c.MaxBytes < 1 || c.MaxBytes > 64<<20 || c.MaxTimestamps < 1 || c.MaxTimestamps > 64 {
+	if c.MaxObjects < 1 || c.MaxObjects > maximumObjects || c.MaxEdges < c.MaxObjects || c.MaxEdges > maximumEdges || c.MaxBytes < 1 || c.MaxBytes > maximumBytes || c.MaxTimestamps < 1 || c.MaxTimestamps > maximumTimestamps {
 		return c, ErrLimit
 	}
 
@@ -59,19 +93,19 @@ func Normalize(c Config) (Config, error) {
 		}
 
 		value := **pointer
-		if value < 0 || value > 365*24*time.Hour {
+		if value < 0 || value > maximumRecoveryInterval {
 			return c, ErrInput
 		}
 
 		*pointer = &value
 	}
 
-	if c.MissingAccuracy != nil && *c.MissingAccuracy > 24*time.Hour {
+	if c.MissingAccuracy != nil && *c.MissingAccuracy > maximumMissingAccuracy {
 		return c, ErrInput
 	}
 
 	for _, options := range []pki.HistoricalOptions{c.SignerHistory, c.TSAHistory} {
-		if len(options.CryptoConstraints) > 128 || len(options.TrustAnchorSunsets) > 64 {
+		if len(options.CryptoConstraints) > maximumCryptoConstraints || len(options.TrustAnchorSunsets) > maximumTrustAnchorSunsets {
 			return c, ErrLimit
 		}
 	}
@@ -115,6 +149,10 @@ type validationWorkflow struct {
 	tsaSession     *pki.HistoricalSession
 	graph          *graph
 	material       signedMaterial
+	// Object positions are append-only; Bytes stay unchanged during the workflow.
+	// The memo holds FIRST positions within the scanned admittedPrefix objects.
+	admitted       map[[sha256.Size]byte]int
+	admittedPrefix int
 }
 
 func (w *validationWorkflow) initialize() error {
@@ -139,7 +177,7 @@ func (w *validationWorkflow) initialize() error {
 	}
 
 	w.certificate = certificate
-	if len(w.input.Hashes) > 128 {
+	if len(w.input.Hashes) > maximumInputHashes {
 		return ErrLimit
 	}
 
@@ -153,27 +191,52 @@ func (w *validationWorkflow) initialize() error {
 		return ErrLimit
 	}
 
-	return nil
+	if err := w.config.Signer.CheckEvidenceLimits(w.ctx, w.signerEvidence); err != nil {
+		return err
+	}
+
+	return w.config.TSA.CheckEvidenceLimits(w.ctx, w.tsaEvidence)
 }
 
 // admit records an exact object at the explicit present time. Neither source
 // provenance times nor SigningTime establish its earlier existence.
 func (w *validationWorkflow) admit(raw []byte, kind historicalproof.Kind) {
 	digest := sha256.Sum256(raw)
-	for index, object := range w.input.Objects {
-		if sha256.Sum256(object.Bytes) == digest {
-			if object.Kind == objectData {
-				w.input.Objects[index].Kind = kind
-			}
 
-			return
+	if w.admitted == nil {
+		w.admitted = make(map[[sha256.Size]byte]int)
+	}
+
+	index, found := w.admitted[digest]
+	// An early hit must not hash the unvisited tail of the initial objects.
+	for !found && w.admittedPrefix < len(w.input.Objects) {
+		position := w.admittedPrefix
+		key := sha256.Sum256(w.input.Objects[position].Bytes)
+		w.admittedPrefix++
+
+		if _, exists := w.admitted[key]; !exists {
+			w.admitted[key] = position
+		}
+
+		if key == digest {
+			index, found = position, true
 		}
 	}
 
+	if found {
+		if w.input.Objects[index].Kind == objectData {
+			w.input.Objects[index].Kind = kind
+		}
+
+		return
+	}
+
+	w.admitted[digest] = len(w.input.Objects)
 	w.input.Objects = append(w.input.Objects, Object{Bytes: raw, Kind: kind})
+	w.admittedPrefix++
 }
 
-func (w *validationWorkflow) containCertificates(parent [32]byte, certificates [][]byte) {
+func (w *validationWorkflow) containCertificates(parent [sha256.Size]byte, certificates [][]byte) {
 	for _, raw := range certificates {
 		w.admit(raw, historicalproof.Certificate)
 	}
@@ -277,7 +340,7 @@ func (w *validationWorkflow) prepareTimestamp(candidate Candidate) (*preparedSta
 	accuracy, exists := assertion.Info().Accuracy()
 	if !exists {
 		if w.config.MissingAccuracy == nil {
-			outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Archive: candidate.Archive, SubIndication: "TIMESTAMP_CONSTRAINTS_FAILURE"}
+			outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Archive: candidate.Archive, SubIndication: codeTimestampConstraintsFailure}
 
 			return nil, w.rejectTimestampConstraint(outcome)
 		}
@@ -287,7 +350,7 @@ func (w *validationWorkflow) prepareTimestamp(candidate Candidate) (*preparedSta
 
 	upper := assertion.Info().GenTime().Add(accuracy)
 	if upper.After(w.now) {
-		outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Upper: upper, Archive: candidate.Archive, SubIndication: "TIMESTAMP_CONSTRAINTS_FAILURE"}
+		outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Upper: upper, Archive: candidate.Archive, SubIndication: codeTimestampConstraintsFailure}
 
 		return nil, w.rejectTimestampConstraint(outcome)
 	}
@@ -298,11 +361,11 @@ func (w *validationWorkflow) prepareTimestamp(candidate Candidate) (*preparedSta
 func (w *validationWorkflow) rejectTimestampAuthentication(candidate Candidate, err error) error {
 	indication, sub := Indeterminate, signatureConstraintsFailure
 	if errors.Is(err, cms.ErrSignature) {
-		indication, sub = Failed, "SIG_CRYPTO_FAILURE"
+		indication, sub = Failed, lexicon.HistoricalCodeSigCryptoFailure
 	}
 
 	if errors.Is(err, timestamp.ErrBinding) {
-		indication, sub = Failed, "HASH_FAILURE"
+		indication, sub = Failed, codeHashFailure
 	}
 
 	w.report.Stamps = append(w.report.Stamps, Stamp{Token: sha256.Sum256(candidate.Token.DER()), Archive: candidate.Archive, Indication: indication, SubIndication: sub})
@@ -469,7 +532,7 @@ func (w *validationWorkflow) processTimestamp(stamp preparedStamp, accepted []pr
 		return false, err
 	}
 
-	w.report.Steps = append(w.report.Steps, Step{Clause: "5.6.2.3", Action: "extract-exact-object-poe", Source: stamp.assertion.TokenSHA256(), Before: w.now, After: stamp.upper})
+	w.report.Steps = append(w.report.Steps, Step{Clause: clause5623, Action: stageExtractExactObjectPoe, Source: stamp.assertion.TokenSHA256(), Before: w.now, After: stamp.upper})
 
 	return true, nil
 }
@@ -481,7 +544,7 @@ func (w *validationWorkflow) rejectTimestampChronology() {
 
 func (w *validationWorkflow) verifySigner() error {
 	if w.report.Best.Before(w.certificate.NotBefore) {
-		w.report.Indication, w.report.SubIndication = Failed, "NOT_YET_VALID"
+		w.report.Indication, w.report.SubIndication = Failed, codeNotYetValid
 
 		return ErrValidation
 	}
@@ -578,7 +641,7 @@ func (w *validationWorkflow) finish() error {
 	}
 
 	w.report.Indication = Passed
-	w.report.Steps = append(w.report.Steps, Step{Clause: "5.6.3.4(10)", Action: "return-passed", Object: w.input.Signature, Before: w.now, After: w.report.Validation})
+	w.report.Steps = append(w.report.Steps, Step{Clause: clause563410, Action: stageReturnPassed, Object: w.input.Signature, Before: w.now, After: w.report.Validation})
 
 	return nil
 }
@@ -643,7 +706,7 @@ func validateStamp(ctx context.Context, c Config, stamp preparedStamp, now time.
 
 	material := signedMaterial{digest: out.Token, certificate: assertion.CertificateDER(), algorithm: cmsAlgorithm(assertion.SignatureAlgorithmOID(), assertion.SignatureHash()), hashes: []crypto.Hash{assertion.SignatureHash(), info.Imprint().Hash}}
 	if material.algorithm == x509.UnknownSignatureAlgorithm {
-		out.SubIndication = "SIG_CRYPTO_FAILURE"
+		out.SubIndication = lexicon.HistoricalCodeSigCryptoFailure
 		return out, ErrValidation
 	}
 
@@ -704,10 +767,12 @@ func currentSubIndication(err error, report pki.Report, certificate *x509.Certif
 			return tryLater
 		}
 
-		target := sha256.Sum256(certificate.Raw)
-		for _, assertion := range report.Evidence() {
-			if assertion.AssertedStatus() == "revoked" && decodeDigest(assertion.TargetCertificateSHA256()) != target {
-				return revokedCA
+		if certificate != nil {
+			target := sha256.Sum256(certificate.Raw)
+			for _, assertion := range report.Evidence() {
+				if assertion.AssertedStatus() == assertedRevoked && decodeDigest(assertion.TargetCertificateSHA256()) != target {
+					return revokedCA
+				}
 			}
 		}
 
@@ -722,11 +787,17 @@ func currentSubIndication(err error, report pki.Report, certificate *x509.Certif
 		return noChain
 	}
 
-	return "CHAIN_CONSTRAINTS_FAILURE"
+	return lexicon.HistoricalCodeChainConstraintsFailure
 }
 
 func removeTimestampSources(input Input, groups ...pki.Evidence) (pki.Evidence, pki.Evidence, error) {
-	allowed := make(map[[32]byte]struct{}, len(input.Timestamps))
+	for _, group := range groups {
+		if len(group.Sources) > maximumSourceObservations {
+			return pki.Evidence{}, pki.Evidence{}, ErrLimit
+		}
+	}
+
+	allowed := make(map[[sha256.Size]byte]struct{}, len(input.Timestamps))
 	for _, candidate := range input.Timestamps {
 		if candidate.Token != nil {
 			allowed[sha256.Sum256(candidate.Token.DER())] = struct{}{}

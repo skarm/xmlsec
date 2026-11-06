@@ -27,7 +27,9 @@ func TestTypedValues(t *testing.T) {
 				publishedProofVector(t, strconv.Itoa(want))
 				e := engine(t, transform.Config{})
 				result, err := query(t, e, source, version).Evaluate(t.Context(), nil, transform.XPathContext{})
-				if err != nil || result.Len() != want {
+				if err != nil {
+					t.Fatal(err)
+				} else if result.Len() != want {
 					t.Fatal(result.Len(), err, want)
 				}
 				// Text is a singleton convenience conversion; evaluation exposes the XDM
@@ -823,7 +825,9 @@ func TestXSLT20TextFunctionContracts(t *testing.T) {
 					if !errors.As(err, &detail) || detail.Code != want {
 						t.Fatalf("got %v, want %s", err, want)
 					}
-				} else if err != nil || string(result.Primary) != want {
+				} else if err != nil {
+					t.Fatal(err)
+				} else if string(result.Primary) != want {
 					t.Fatalf("got %q (%v), want %q", result.Primary, err, want)
 				}
 			})
@@ -882,6 +886,10 @@ func xmlToJSONSchemaCases() []struct {
 		{"invalid key boolean", `<map xmlns="http://www.w3.org/2005/xpath-functions"><null key="a" escaped-key="garbage"/></map>`, ".", "FOJS0006"},
 		{"normalized duplicate", `<map xmlns="http://www.w3.org/2005/xpath-functions"><null key="A"/><null key="\u0041" escaped-key="true"/></map>`, ".", "FOJS0006"},
 		{"foreign attributes ignored", `<map xmlns="http://www.w3.org/2005/xpath-functions" xmlns:f="urn:foreign" f:escaped="garbage"><string key="x" f:escaped="garbage">\q</string></map>`, ".", `{"x":"\\q"}`},
+		{"foreign boolean attributes", `<boolean xmlns="http://www.w3.org/2005/xpath-functions" xmlns:f="urn:foreign" f:escaped="garbage">true</boolean>`, ".", "true"},
+		{"foreign number attributes", `<number xmlns="http://www.w3.org/2005/xpath-functions" xmlns:f="urn:foreign" f:escaped="garbage">1</number>`, ".", "1"},
+		{"unqualified extra attribute", `<boolean xmlns="http://www.w3.org/2005/xpath-functions" extra="x">true</boolean>`, ".", "FOJS0006"},
+		{"function namespace attribute", `<boolean xmlns="http://www.w3.org/2005/xpath-functions" xmlns:j="http://www.w3.org/2005/xpath-functions" j:escaped="false">true</boolean>`, ".", "FOJS0006"},
 		{"array whitespace", `<array xmlns="http://www.w3.org/2005/xpath-functions"> <string>a</string> <null/> </array>`, ".", `["a",null]`},
 		{"escaped string", `<string xmlns="http://www.w3.org/2005/xpath-functions" escaped="true">\u0041</string>`, ".", `"\u0041"`},
 		{"invalid escape", `<string xmlns="http://www.w3.org/2005/xpath-functions" escaped="true">\q</string>`, ".", "FOJS0007"},
@@ -1376,5 +1384,49 @@ func TestReturnedIntrospectionStaticContexts(t *testing.T) {
 			}
 			group.Wait()
 		}
+	}
+}
+
+func TestNamespaceNodeDocumentOrderIsTotalAndUnionStable(t *testing.T) {
+	e := engine(t, transform.Config{})
+	doc, err := e.Parse(t.Context(), []byte(`<r xmlns:p="urn:p" xmlns:q="urn:q"/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = `for $p in /*/namespace::p, $q in /*/namespace::q return `
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, expression := range []string{
+			`not($p is $q) and (($p << $q) != ($q << $p))`,
+			`(($p | $q)[1]) is (($q | $p)[1])`,
+			`($p | $q)[1] << ($p | $q)[2]`,
+			`every $n in /*/namespace::* satisfies $n is /*/namespace::*[name()=name($n)]`,
+		} {
+			value, err := query(t, e, prefix+expression, version).Evaluate(t.Context(), doc, transform.XPathContext{})
+			if err != nil || text(t, value) != nameTrue {
+				t.Fatal("namespace ordering invariant failed", version, expression, value, err)
+			}
+		}
+	}
+}
+
+func TestDateTimeStampMapKeysUseDateTimeValueEquality(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, expression := range []string{
+		`map:contains(map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1},xs:dateTime('2000-01-01T01:00:00+01:00'))`,
+		`map:contains(map{xs:dateTime('2000-01-01T00:00:00Z'):1},xs:dateTimeStamp('2000-01-01T00:00:00Z'))`,
+		`map:size(map:merge((map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1},map{xs:dateTime('2000-01-01T00:00:00Z'):2}))) = 1`,
+		`map:size(map:put(map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1},xs:dateTime('2000-01-01T00:00:00Z'),2)) = 1`,
+		`not(map:contains(map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1},xs:date('2000-01-01Z')))`,
+		`not(map:contains(map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1},xs:gYear('2000Z')))`,
+		`not(map:contains(map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1},xs:dateTime('2000-01-01T00:00:00')))`,
+	} {
+		if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != nameTrue {
+			t.Fatal("dateTime map key domain equality changed", expression, got)
+		}
+	}
+	_, err := query(t, e, `map{xs:dateTimeStamp('2000-01-01T00:00:00Z'):1,xs:dateTime('2000-01-01T00:00:00Z'):2}`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+	var detail *transform.Error
+	if !errors.As(err, &detail) || detail.Code != "XQDY0137" {
+		t.Fatal("equal dateTime keys did not reject duplicate constructor", err)
 	}
 }

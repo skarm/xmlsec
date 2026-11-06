@@ -19,22 +19,25 @@ import (
 )
 
 const (
-	normalizationFormNFC  = "NFC"
+	// normalizationFormNone is the case-folded serialization selector that
+	// leaves character data unchanged rather than applying a Unicode form.
 	normalizationFormNone = "NONE"
-	encodingASCII         = "us-ascii"
+	// encodingASCII is the lowercased encoding label used by the serializer
+	// after case-insensitive matching; it does not select normalization.
+	encodingASCII = "us-ascii"
 )
 
 // resolveNormForm returns the norm.Form for the given normalization form name.
 // Returns (form, true) on success or (0, false) for unknown/NONE forms.
 func resolveNormForm(form string) (norm.Form, bool) {
 	switch form {
-	case normalizationFormNFC, lexicon.NormFullyNormalized:
+	case lexicon.NormalizationFormNFC, lexicon.NormFullyNormalized:
 		return norm.NFC, true
-	case "NFD":
+	case lexicon.NormalizationFormNFD:
 		return norm.NFD, true
-	case "NFKC":
+	case lexicon.NormalizationFormNFKC:
 		return norm.NFKC, true
-	case "NFKD":
+	case lexicon.NormalizationFormNFKD:
 		return norm.NFKD, true
 	default:
 		return 0, false
@@ -168,6 +171,10 @@ func transcodeToUTF16(w io.Writer, utf8Data []byte) error {
 // transcodeToEncoding converts UTF-8 bytes to the target encoding,
 // replacing characters that cannot be represented with XML character references.
 func transcodeToEncoding(w io.Writer, utf8Data []byte, encName string) error {
+	const (
+		hexCharacterReferenceFormat = "&#x%X;"
+	)
+
 	codec, err := htmlindex.Get(encName)
 	if err != nil {
 		// Unknown encoding — fall back to writing UTF-8
@@ -188,7 +195,7 @@ func transcodeToEncoding(w io.Writer, utf8Data []byte, encName string) error {
 		encoded, err := encoder.Bytes(utf8Data[:size])
 		if err != nil {
 			// Character cannot be encoded — use character reference
-			ref := fmt.Sprintf("&#x%X;", r)
+			ref := fmt.Sprintf(hexCharacterReferenceFormat, r)
 			if werr := writeFullString(w, ref); werr != nil {
 				return werr
 			}
@@ -224,7 +231,7 @@ func hasDOEMarkers(doc xdm.Node) bool {
 	// The result tree is freshly built via guarded AddChild, so it is acyclic
 	// and Walk cannot return ErrWalkCycle here; the error is safely ignored.
 	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if n.Type() == xdm.ProcessingInstructionNode && n.Name() == nameDisableOutputEscaping {
+		if n.Type() == xdm.ProcessingInstructionNode && n.Name() == lexicon.DisableOutputEscapingPITarget {
 			found = true
 		}
 

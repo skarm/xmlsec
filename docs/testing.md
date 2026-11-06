@@ -1,7 +1,8 @@
 # Testing
 
 Run from the module root using the Go version in [go.mod](../go.mod).
-Make requires a POSIX shell; [CI](../.github/workflows/ci.yml) pins tool versions.
+Make requires a POSIX shell; the interoperability targets also require Bash.
+[CI](../.github/workflows/ci.yml) pins tool versions.
 
 ```sh
 make check                 # modules, docs, vet, tests, CGO-free build
@@ -50,9 +51,18 @@ The complete Linux interoperability run uses Docker:
 make interop-docker
 ```
 
-The [image](../build/interop.Dockerfile) supplies native tools, runs race tests and
-interoperability checks, and disables networking during execution. System
-package versions follow Debian repositories.
+The [image](../build/interop.Dockerfile) supplies native tools, Saxon, released
+Shibboleth/Jetty, OpenAM/Tomcat, Google GSA and DSS runtimes, and published schemas/vectors. The build step
+downloads the [pinned inputs](../build/interop-inputs.txt) with retries and verifies
+SHA-256 on the host and again inside Docker. Override `INTEROP_INPUT_CACHE` to
+reuse a prepared cache. System package versions follow Debian repositories.
+
+Runtime networking is disabled except for the container's loopback. The full
+recipe runs race tests, generates local historical fixtures, starts official DSS
+6.5.1 and performs both external suites. `XMLSEC_REQUIRE_INTEROP=1` makes every
+skipped test, failure, empty run or incomplete JSON test stream fail the gate.
+Transform comparisons run in four isolated Go processes in the image
+(`XMLSEC_INTEROP_SHARDS`, 1–8). Tests within each process remain sequential.
 
 For a prepared host:
 
@@ -64,6 +74,57 @@ make interop INTEROP_ARGS='-suite=all -xmlsec1=/absolute/path/to/xmlsec1'
 The portable suite needs OpenSSL 3+, JDK 21+, a C compiler, pkg-config and libxml2
 headers. Optional checks skip when unconfigured; tests never install dependencies.
 Known disagreements are recorded in [compatibility](compatibility.md#known-oracle-differences).
+
+### SAML interoperability
+
+The `opensaml` suite uses OpenSAML 5.2.3 from the pinned Shibboleth distribution.
+Set `OPENSAML_CLASSPATH` to its JARs and dependencies. A selected run fails for
+missing dependencies or another engine version:
+
+```sh
+go test -tags=interop -count=1 -timeout=5m ./tests/interop \
+  -run '^TestOpenSAML' -args -suite=opensaml
+go test -tags=interop -count=1 -timeout=5m ./tests/interop \
+  -run '^TestECPProofJava$' -args -suite=portable
+```
+
+OpenSAML checks HoK certificates, channel comparison, independently generated ECP
+return messages, authority queries, assertion-ID requests and NameID Mapping.
+The JDK's JSR 105 implementation exchanges whole-SOAP RSA/ECDSA proofs across all
+six C14N forms. These checks cover components and messages, not a deployed HoK IdP.
+
+Deployed-server tests use the production Go authority client and test-owned
+accounts, keys and loopback listeners. All are included by `-suite=all`:
+
+- `-suite=shibboleth`: set `SHIBBOLETH_DIST` and `JETTY_HOME` for Shibboleth IdP
+  5.2.3 and Jetty 12.1.14. `TestShibbolethAuthorityHTTP` checks signed,
+  AES-128-GCM/OAEP-SHA256 AttributeQuery results. Early security errors can be
+  unsigned; the test checks their TLS-authenticated status separately, while the
+  Go signature verifier rejects them.
+- `-suite=authority-http`: set `OPENAM_DIST`, `TOMCAT_HOME` and `GSA_DIST` for
+  OpenAM 16.1.4, Tomcat 11.0.27 and Google GSA adaptor 4.1.4. Select with:
+
+```sh
+go test -race -tags=interop ./tests/interop \
+  -run '^Test(OpenAM|GoogleGSA)AuthorityHTTP$' -args -suite=authority-http
+```
+
+OpenAM covers AuthnQuery, AssertionIDRequest and NameID Mapping. Its test WAR
+requires a [serializer-order patch](../build/openam-nameid-order.patch), built by
+[patch-openam.sh](../build/patch-openam.sh); this does not establish stock OpenAM
+Mapping compatibility. The test rejects OpenAM's nonconforming top-level
+InvalidNameIDPolicy status. Mapping uses explicitly permitted AES-128-CBC/RSA-v1.5
+after signature verification and encrypts to the requester, without proving the
+target-only encryption profile. OpenAM's loopback HTTP connector uses explicit
+HTTP permission.
+
+GSA covers AuthzDecisionQuery over HTTPS and returns unsigned XML. The Go verifier
+rejects those responses; wire checks do not grant verified authorization. Requests
+omit the optional Destination because GSA cannot determine its receiver URI when
+that field is present. Selected deployments fail on missing runtimes or server
+startup errors. See [authority integration](saml-authority.md) for API contracts.
+
+### Transform comparison inputs
 
 Transform comparisons additionally use prepared inputs outside the repository:
 

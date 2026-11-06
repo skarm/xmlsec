@@ -7,10 +7,19 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/xmlenc"
+)
+
+// Plaintext, OAEP labels and direct AES key material have independent byte bounds.
+const (
+	cliDefaultPlaintextBytes = 8 << 20
+	cliMaxPlaintextBytes     = 32 << 20
+	cliMaxOAEPLabelBytes     = 1024
+	cliMaxAESKeyBytes        = 32
 )
 
 func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -27,11 +36,11 @@ func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	allowLegacy := fs.Bool("allow-legacy-data", false, "explicitly permit unauthenticated CBC and legacy TripleDES key wrap; denied in FIPS mode")
 	wrap := fs.String("wrap-algorithm", xmlenc.AES256KeyWrap, "symmetric key wrap algorithm URI")
 	name := fs.String("key-name", "", "exact untrusted KeyName hint for direct-key mode")
-	oaepHash := fs.String("oaep-hash", "sha256", "RSA-OAEP digest and MGF1 hash")
+	oaepHash := fs.String("oaep-hash", cliDefaultHashName, "RSA-OAEP digest and MGF1 hash")
 	labelFile := fs.String("oaep-label-file", "", "optional exact OAEP label bytes")
-	maximum := fs.Int("max-plaintext-bytes", 8<<20, "maximum plaintext bytes (up to 32 MiB)")
+	maximum := fs.Int("max-plaintext-bytes", cliDefaultPlaintextBytes, "maximum plaintext bytes (up to 32 MiB)")
 	id := fs.String("id", "", "exact selected element ID (element/content encryption or EncryptedData selection)")
-	idAttr := fs.String("id-attr", "ID", "selection ID attribute local name")
+	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "selection ID attribute local name")
 	idNS := fs.String("id-ns", "", "selection ID namespace")
 	index := fs.Int("index", -1, "explicit zero-based EncryptedData index for decrypt/externalize")
 	resources := fs.String("resources", "", "trusted URI/path-only manifest containing one external ciphertext")
@@ -182,7 +191,7 @@ func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) 
 		return opt, usageError("-scope must be bytes, document, element or content")
 	}
 
-	if c.maximum < 1 || c.maximum > 32<<20 {
+	if c.maximum < 1 || c.maximum > cliMaxPlaintextBytes {
 		return opt, usageError("-max-plaintext-bytes must be 1..33554432")
 	}
 
@@ -199,7 +208,7 @@ func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) 
 	}
 
 	if c.transport != nameRSA {
-		if c.labelFile != "" || c.oaepHash != "sha256" {
+		if c.labelFile != "" || c.oaepHash != cliDefaultHashName {
 			return opt, usageError("OAEP options require -transport rsa")
 		}
 	} else {
@@ -210,7 +219,7 @@ func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) 
 
 		opt.OAEP = &xmlenc.OAEPParameters{Hash: h}
 		if c.labelFile != "" {
-			opt.OAEP.Label, err = readInputContext(ctx, c.labelFile, nil, 1024)
+			opt.OAEP.Label, err = readInputContext(ctx, c.labelFile, nil, cliMaxOAEPLabelBytes)
 			if err != nil {
 				return opt, err
 			}
@@ -299,7 +308,7 @@ func (c encryptionCommand) operations(ctx context.Context, opt xmlenc.Options) (
 		return encryptionOperations{}, closeKey, usageError("private key format/password flags do not apply to raw AES keys")
 	}
 
-	secret, err := readInputContext(ctx, c.key, nil, 32)
+	secret, err := readInputContext(ctx, c.key, nil, cliMaxAESKeyBytes)
 	if err != nil {
 		return encryptionOperations{}, closeKey, err
 	}
@@ -351,6 +360,12 @@ func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, std
 
 	if err := writeOutputContext(ctx, c.cipherOut, stdout, cipher); err != nil {
 		return err
+	}
+
+	// A new ciphertext file exposes case aliases that had no file identity
+	// during the initial check. Never replace it with the XML output.
+	if c.output != "-" && samePath(c.cipherOut, c.output) {
+		return usageError("ciphertext and XML outputs must be distinct")
 	}
 
 	return writeOutputContext(ctx, c.output, stdout, raw)
@@ -456,6 +471,39 @@ func samePath(a, b string) bool {
 	}
 
 	y, e := filepath.Abs(b)
+	if e != nil {
+		return false
+	}
 
-	return e == nil && x == y
+	if x == y {
+		return true
+	}
+
+	xInfo, xErr := os.Stat(a)
+	yInfo, yErr := os.Stat(b)
+
+	if xErr == nil && yErr == nil {
+		return os.SameFile(xInfo, yInfo)
+	}
+
+	// Missing targets can still name the same entry through directory aliases.
+	xParent, xName := filepath.Split(a)
+	yParent, yName := filepath.Split(b)
+
+	if xName != yName {
+		return false
+	}
+
+	if xParent == "" {
+		xParent = "."
+	}
+
+	if yParent == "" {
+		yParent = "."
+	}
+
+	xInfo, xErr = os.Stat(xParent)
+	yInfo, yErr = os.Stat(yParent)
+
+	return xErr == nil && yErr == nil && os.SameFile(xInfo, yInfo)
 }

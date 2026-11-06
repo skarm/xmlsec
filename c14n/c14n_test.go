@@ -15,7 +15,7 @@ import (
 
 const (
 	canonicalEmptyChildXML = "<c></c>"
-	xmlRXmlnsUrnRCXmlnsR   = "<r xmlns=\"urn:r\"><c xmlns=\"\"/></r>"
+	namespaceResetXML      = "<r xmlns=\"urn:r\"><c xmlns=\"\"/></r>"
 	emptyRootXML           = "<r/>"
 	explicitEmptyRootXML   = "<r></r>"
 )
@@ -33,7 +33,7 @@ func TestExclusive(t *testing.T) {
 		{name: "nested and sibling attribute order", input: `<r z="0"><a d="4" b="2" c="3" a="1"><b y="2" x="1"/></a><empty/><c b="2" a="1"/></r>`, want: `<r z="0"><a a="1" b="2" c="3" d="4"><b x="1" y="2"></b></a><empty></empty><c a="1" b="2"></c></r>`},
 		{name: "unused namespace", input: `<r xmlns:p="urn:p"><c/></r>`, want: `<r><c></c></r>`},
 		{name: "visible prefix", input: `<r xmlns:p="urn:p"><p:c/></r>`, want: `<r><p:c xmlns:p="urn:p"></p:c></r>`},
-		{name: "default reset", input: xmlRXmlnsUrnRCXmlnsR, want: `<r xmlns="urn:r"><c xmlns=""></c></r>`},
+		{name: "default reset", input: namespaceResetXML, want: `<r xmlns="urn:r"><c xmlns=""></c></r>`},
 		{name: "rebind", input: `<p:r xmlns:p="urn:one"><p:c xmlns:p="urn:two"/><p:d/></p:r>`, want: `<p:r xmlns:p="urn:one"><p:c xmlns:p="urn:two"></p:c><p:d></p:d></p:r>`},
 		{name: "attribute namespace order", input: `<r xmlns:b="urn:b" xmlns:a="urn:a" b:x="b" z="0" a:z="a"/>`, want: `<r xmlns:a="urn:a" xmlns:b="urn:b" z="0" a:z="a" b:x="b"></r>`},
 		{name: "inclusive list", input: `<r xmlns:p="urn:p"/>`, opt: c14n.Options{InclusivePrefixes: []string{"p"}}, want: `<r xmlns:p="urn:p"></r>`},
@@ -46,7 +46,7 @@ func TestExclusive(t *testing.T) {
 		{name: "escaping", input: `<r a="&lt;&amp;&quot;&#x9;&#xA;&#xD;">&lt;&amp;&gt;&#xD;</r>`, want: `<r a="&lt;&amp;&quot;&#x9;&#xA;&#xD;">&lt;&amp;&gt;&#xD;</r>`},
 		{name: "CDATA", input: `<r><![CDATA[<data>]]></r>`, want: `<r>&lt;data&gt;</r>`},
 		{name: "subtree ancestor", input: `<r xmlns:p="urn:p" xml:lang="ru"><p:c/></r>`, child: true, want: `<p:c xmlns:p="urn:p"></p:c>`},
-		{name: "subtree no empty default", input: xmlRXmlnsUrnRCXmlnsR, child: true, want: canonicalEmptyChildXML},
+		{name: "subtree no empty default", input: namespaceResetXML, child: true, want: canonicalEmptyChildXML},
 		{name: "line endings", input: "<r a='a\r\nb\tc'>x\r\ny\rz</r>", want: "<r a=\"a b c\">x\ny\nz</r>"},
 		// Independently transcribed from W3C Exclusive C14N §2.2 (no layout whitespace).
 		{name: "W3C re-enveloping", input: `<n2:pdu xmlns:n1="http://example.com" xmlns:n2="http://foo.example" xml:lang="fr" xml:space="retain"><n1:elem2 xmlns:n1="http://example.net" xml:lang="en"><n3:stuff xmlns:n3="ftp://example.org"/></n1:elem2></n2:pdu>`, child: true, want: `<n1:elem2 xmlns:n1="http://example.net" xml:lang="en"><n3:stuff xmlns:n3="ftp://example.org"></n3:stuff></n1:elem2>`},
@@ -221,7 +221,7 @@ func TestNamespaceFramesStayLocalToSubtrees(t *testing.T) {
 }
 
 func FuzzIdempotent(f *testing.F) {
-	for _, s := range []string{emptyRootXML, xmlRXmlnsUrnRCXmlnsR, `<r xmlns:p="urn:p"><p:a/><p:b/></r>`, `<?pi?><r a="&#x9;">t</r>`, `<r z="0"><a b="2" a="1"><b x="1"/></a><empty/><c d="4" a="1"/></r>`} {
+	for _, s := range []string{emptyRootXML, namespaceResetXML, `<r xmlns:p="urn:p"><p:a/><p:b/></r>`, `<?pi?><r a="&#x9;">t</r>`, `<r z="0"><a b="2" a="1"><b x="1"/></a><empty/><c d="4" a="1"/></r>`} {
 		f.Add([]byte(s))
 	}
 

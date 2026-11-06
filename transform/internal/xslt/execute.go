@@ -18,9 +18,22 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Initial binding map capacity within a variable scope; it does not limit the number of variables.
+const (
+	variableScopeInitialCapacity = 4
+)
+
 // baseEvalSlots is the number of base evaluators baseXPathEvaluator keeps per
 // mode (outside pattern matching, and during it).
 const baseEvalSlots = 2
+
+// Fixed evaluator-cache row identities separate ordinary expressions from
+// pattern matching. The row count is independent of the eviction slots per row.
+const (
+	baseEvalModeNormal  = 0
+	baseEvalModePattern = 1
+	baseEvalModeCount   = 2
+)
 
 // scopedEvalSlots is the number of scoped evaluators scopedXPathEvaluator
 // keeps.
@@ -229,8 +242,8 @@ type execContext struct {
 	// evicts neither. Each row is refilled round-robin from baseEvalNext.
 	// baseEvalGen is the generation number handed to the last evaluator
 	// built; scopedXPathEvaluator keys its own cache on it.
-	baseEvals    [2][baseEvalSlots]baseEvalEntry
-	baseEvalNext [2]int
+	baseEvals    [baseEvalModeCount][baseEvalSlots]baseEvalEntry
+	baseEvalNext [baseEvalModeCount]int
 	baseEvalGen  uint64
 
 	// scopedEvals caches the base evaluator plus the per-scope overlays
@@ -274,12 +287,16 @@ func (ec *execContext) ResolveFunction(_ context.Context, uri, name string, arit
 // ResolveCompatibilityFunction implements the special XSLT backwards binding
 // for every unavailable function outside the standard fn namespace (§3.9.1).
 func (ec *execContext) ResolveCompatibilityFunction(_ context.Context, uri, name string, arity int) (xpath.Function, bool, error) {
+	const (
+		errCodeXTDE1425 = "XTDE1425"
+	)
+
 	if uri == xpath.NSFn {
 		return nil, false, nil
 	}
 
 	return &xsltFunc{min: arity, max: arity, fn: func(context.Context, []xdm.Sequence) (xdm.Sequence, error) {
-		return nil, dynamicError("XTDE1425", "extension function Q{%s}%s#%d is unavailable", uri, name, arity)
+		return nil, dynamicError(errCodeXTDE1425, "extension function Q{%s}%s#%d is unavailable", uri, name, arity)
 	}}, true, nil
 }
 
@@ -288,11 +305,13 @@ func (ec *execContext) ResolveCompatibilityFunction(_ context.Context, uri, name
 // XPath expressions to reference globals that aren't in the snapshot built
 // by collectAllVars (e.g. during circular-but-unused variable scenarios).
 func (ec *execContext) ResolveVariable(ctx context.Context, name string) (xdm.Sequence, bool, error) {
+	const originalVariableLexicalName = "xsl:original"
+
 	// Handle $xsl:original — resolve to the original overridden variable's value.
 	// The name may come as either the expanded form "{uri}original" or the
 	// prefixed form "xsl:original" depending on whether namespace resolution
 	// happened in the XPath evaluator.
-	isXSLOriginal := name == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) || name == "xsl:original"
+	isXSLOriginal := name == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) || name == originalVariableLexicalName
 	if isXSLOriginal && ec.originalGlobal != (globalBinding{}) {
 		return ec.resolveOriginalVariable(ctx)
 	}
@@ -822,7 +841,7 @@ func (ec *execContext) setVar(name string, value xdm.Sequence) {
 	}
 
 	if ec.localVars.vars == nil {
-		ec.localVars.vars = make(map[string]xdm.Sequence, 4)
+		ec.localVars.vars = make(map[string]xdm.Sequence, variableScopeInitialCapacity)
 	}
 
 	ec.localVars.vars[name] = value
@@ -833,17 +852,21 @@ func (ec *execContext) setVar(name string, value xdm.Sequence) {
 // is set to an empty sequence; the error is raised only when the variable
 // is actually referenced via ResolveVariable.
 func (ec *execContext) setVarDeferred(name string, err error) {
+	const (
+		deferredErrorInitialCapacity = 2
+	)
+
 	if ec.localVars == nil {
 		ec.localVars = ec.acquireVarScope()
 	}
 
 	if ec.localVars.vars == nil {
-		ec.localVars.vars = make(map[string]xdm.Sequence, 4)
+		ec.localVars.vars = make(map[string]xdm.Sequence, variableScopeInitialCapacity)
 	}
 
 	ec.localVars.vars[name] = xdm.EmptySequence()
 	if ec.localVars.deferredErrors == nil {
-		ec.localVars.deferredErrors = make(map[string]error, 2)
+		ec.localVars.deferredErrors = make(map[string]error, deferredErrorInitialCapacity)
 	}
 
 	ec.localVars.deferredErrors[name] = err
@@ -1073,6 +1096,11 @@ func (ec *execContext) executeSequenceConstructor(ctx context.Context, body []in
 		return nil
 	}
 
+	// A local binding is visible to following siblings and their descendants,
+	// never to instructions following the containing sequence constructor.
+	ec.pushVarScope()
+	defer ec.popVarScope()
+
 	out := ec.currentOutput()
 	out.seqConstructorGen++
 	scopeIdx := len(out.conditionalScopes)
@@ -1246,6 +1274,8 @@ func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, se
 		case xdm.AtomicValue:
 			nodes, err = ec.appendConditionalAtomic(nodes, value, prevAtomic)
 			prevAtomic = true
+		default:
+			return dynamicError(errCodeXTDE0450, "cannot add a %T to the result tree", item)
 		}
 
 		if err != nil {
@@ -1387,12 +1417,12 @@ func (ec *execContext) baseXPathEvaluator() (xpath.Evaluator, uint64) {
 		pkg:               ec.currentPackage,
 		inPattern:         ec.inPatternMatch,
 	}
-	mode := 0
+	mode := baseEvalModeNormal
 
 	var patternNS map[string]string
 
 	if ec.inPatternMatch {
-		mode = 1
+		mode = baseEvalModePattern
 		patternNS = ec.patternNamespaces
 		key.patternNS = mapIdentity(patternNS)
 	}
@@ -1424,7 +1454,7 @@ func (ec *execContext) buildBaseXPathEvaluator(baseURI string) xpath.Evaluator {
 		ImplicitTimezone(ec.dynamicProperties.Timezone).
 		AllowXML11Chars().
 		TraceWriter(ec.traceWriter)
-	if ec.stylesheet.processorLanguage() >= 30 {
+	if ec.stylesheet.processorLanguage() >= processorXSLT30 {
 		eval = eval.ResourceReads(ec)
 	}
 
@@ -1650,8 +1680,12 @@ func (ec *execContext) effectiveAccumulators() map[string]*accumulatorDef {
 // storage. When executing in a used package, the key includes the package
 // pointer to isolate same-named accumulators from different packages.
 func (ec *execContext) accumulatorStateKey(name string) string {
+	const (
+		accumulatorIdentityFormat = "%s@%p"
+	)
+
 	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
-		return fmt.Sprintf("%s@%p", name, ec.currentPackage)
+		return fmt.Sprintf(accumulatorIdentityFormat, name, ec.currentPackage)
 	}
 
 	return name
@@ -2232,8 +2266,12 @@ func (ec *execContext) effectivePreserveSpace() []nameTest {
 // executing in a used package with different strip-space rules, the key
 // includes the package pointer so each package gets its own stripped copy.
 func (ec *execContext) docCacheKey(uri string) string {
+	const (
+		documentIdentityFormat = "%s@%p"
+	)
+
 	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
-		return fmt.Sprintf("%s@%p", uri, ec.currentPackage)
+		return fmt.Sprintf(documentIdentityFormat, uri, ec.currentPackage)
 	}
 
 	return uri
@@ -2241,7 +2279,7 @@ func (ec *execContext) docCacheKey(uri string) string {
 
 func preserveAttributeIDType(attr *xdm.Attribute, annotation string) {
 	switch annotation {
-	case "xs:ID":
+	case xdm.TypeID:
 		attr.SetIDType(xdm.IDAttribute)
 
 		if parent, ok := attr.Parent().(*xdm.Element); ok {
@@ -2249,19 +2287,19 @@ func preserveAttributeIDType(attr *xdm.Attribute, annotation string) {
 				doc.RegisterID(strings.TrimSpace(attr.Value()), parent)
 			}
 		}
-	case "xs:IDREF":
+	case xdm.TypeIDREF:
 		attr.SetIDType(xdm.IDRefAttribute)
-	case "xs:IDREFS":
+	case xdm.TypeIDREFS:
 		attr.SetIDType(xdm.IDRefsAttribute)
 	}
 }
 
 func isIDRefType(ann string) bool {
-	return ann == "xs:IDREF"
+	return ann == xdm.TypeIDREF
 }
 
 func isIDRefsType(ann string) bool {
-	return ann == "xs:IDREFS"
+	return ann == xdm.TypeIDREFS
 }
 
 func conditionalActionForItem(actions map[xdm.Node]conditionalAction, item xdm.Item) (conditionalAction, bool) {
@@ -2327,7 +2365,7 @@ func collectPackageNamespaces(ss *Stylesheet, ns map[string]string) {
 }
 
 func isIDType(ann string) bool {
-	return ann == "xs:ID"
+	return ann == xdm.TypeID
 }
 
 // isAdaptiveStandaloneMarkupNode reports whether node can remain in a
@@ -2456,6 +2494,10 @@ func (r executionCollectionResolver) ResolveURICollection(ctx context.Context, u
 }
 
 func (r executionCollectionResolver) prepareNode(ctx context.Context, node xdm.Node) (xdm.Node, error) {
+	const (
+		errCodeFODC0003 = "FODC0003"
+	)
+
 	if err := xpath.Charge(ctx, 1); err != nil {
 		return nil, err
 	}
@@ -2470,7 +2512,7 @@ func (r executionCollectionResolver) prepareNode(ctx context.Context, node xdm.N
 	if doc, ok := xdm.DocumentRoot(node).(*xdm.Document); ok && !doc.HasProperty(xdm.DocInternal) && doc.URL() != "" {
 		cacheKey := r.ec.docCacheKey(doc.URL())
 		if previous, found := r.ec.docCache[cacheKey]; found && previous != doc {
-			return nil, &xdm.Error{Code: "FODC0003", Message: "collection supplied conflicting document identities for " + doc.URL()}
+			return nil, &xdm.Error{Code: errCodeFODC0003, Message: "collection supplied conflicting document identities for " + doc.URL()}
 		}
 
 		r.ec.docCache[cacheKey] = doc

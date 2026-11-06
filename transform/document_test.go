@@ -77,6 +77,15 @@ func TestParseXMLCharacterInput(t *testing.T) {
 	e := engine(t, transform.Config{})
 
 	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		// XML 1.0 Fifth Edition [26] accepts 1.x declarations when the
+		// document uses only XML 1.0 syntax; encoding does not decode a string.
+		for _, declaration := range []string{"1.1", "1.7"} {
+			source := `<?xml version="` + declaration + `" encoding="UTF-16"?><r>text</r>`
+			value, err := query(t, e, `string(parse-xml($source)/r)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
+			if err != nil || text(t, value) != "text" {
+				t.Fatal("XML 1.x declaration compatibility", declaration, value, err)
+			}
+		}
 		for _, encoding := range []string{xmlLatinEncoding, "UTF-16", xmlASCIIEncoding, "x-unregistered-encoding"} {
 			source := `<?xml version="1.0" encoding="` + encoding + `" standalone="yes"?><r>café 中</r>`
 
@@ -90,7 +99,8 @@ func TestParseXMLCharacterInput(t *testing.T) {
 			`<?xml version="1.0" encoding="1bad"?><r/>`,
 			`<?xml version="1.0" encoding="bad encoding"?><r/>`,
 			`<?xml version="1.0" encoding="ISO-8859-1" encoding="UTF-8"?><r/>`,
-			`<?xml version="1.1" encoding="UTF-16"?><r/>`,
+			`<?xml version="2.0" encoding="UTF-16"?><r/>`,
+			`<?xml version="1.1"?><r>&#x1;</r>`,
 			`<?xml version="1.0" standalone="perhaps"?><r/>`,
 		} {
 			_, err := query(t, e, `parse-xml($source)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})

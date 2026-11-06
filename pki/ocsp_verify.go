@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/sha1" // #nosec G505 -- RFC 6960 ResponderID byKey requires SHA-1, independent of the signature algorithm.
 	"crypto/sha256"
 	"crypto/subtle"
@@ -18,6 +19,15 @@ import (
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509name"
+)
+
+const (
+	defaultOCSPMaxAge            = 24 * time.Hour
+	defaultOCSPResponseBytes     = 1 << 20
+	maximumOCSPClockSkew         = 10 * time.Minute
+	maximumOCSPMaxAge            = 30 * 24 * time.Hour
+	maximumOCSPResponderCRLBytes = 8 << 20
+	maximumOCSPResponderCRLs     = 32
 )
 
 // VerifyOCSP returns a result only for an authenticated fresh GOOD response.
@@ -46,11 +56,11 @@ func VerifyOCSP(ctx context.Context, response, certificateDER, issuerDER []byte,
 		return nil, report, err
 	}
 
-	if len(response) > o.MaxBytes || len(certificateDER) > 1<<20 || len(issuerDER) > 1<<20 {
+	if len(response) > o.MaxBytes || len(certificateDER) > certificateDERBytes || len(issuerDER) > certificateDERBytes {
 		return nil, report, ErrEvidence
 	}
 
-	sources, err := (&Verifier{maxBytes: 8 << 20}).validatedSources(ctx, certificateDER, Evidence{Intermediates: [][]byte{issuerDER}, OCSPResponses: [][]byte{response}, CRLs: o.ResponderCRLs, Sources: o.Sources})
+	sources, err := (&Verifier{maxBytes: defaultMaxEvidenceBytes, ocspOptions: o}).validatedSources(ctx, certificateDER, Evidence{Intermediates: [][]byte{issuerDER}, OCSPResponses: [][]byte{response}, CRLs: o.ResponderCRLs, Sources: o.Sources})
 	if err != nil {
 		return nil, report, err
 	}
@@ -130,6 +140,12 @@ func responderMatches(ctx context.Context, rid asn1.RawValue, c *x509.Certificat
 		return false, ErrEvidence
 	}
 
+	// RFC 6960 fixes byKey to SHA-1; it cannot be substituted with another hash
+	// when the runtime prohibits that primitive. byName remains available.
+	if fips140.Enabled() {
+		return false, ErrPolicy
+	}
+
 	bits, e := publicBits(c)
 	if e != nil {
 		return false, e
@@ -176,7 +192,7 @@ func authorizeResponder(ctx context.Context, r, issuer *x509.Certificate, at, pr
 
 	for _, ex := range r.Extensions {
 		if ex.Id.Equal(oidOCSPNoCheck()) {
-			if ex.Critical || !bytes.Equal(ex.Value, []byte{5, 0}) {
+			if ex.Critical || !bytes.Equal(ex.Value, []byte{asn1.TagNull, 0}) {
 				return nil, ErrEvidence
 			}
 
@@ -219,21 +235,21 @@ func normalizeOCSP(o OCSPOptions) (OCSPOptions, error) {
 	o.ExpectedNonce = bytes.Clone(o.ExpectedNonce)
 
 	if o.MaxAge == 0 {
-		o.MaxAge = 24 * time.Hour
+		o.MaxAge = defaultOCSPMaxAge
 	}
 
 	if o.MaxBytes == 0 {
-		o.MaxBytes = 1 << 20
+		o.MaxBytes = defaultOCSPResponseBytes
 	}
 
-	if o.MaxAge <= 0 || o.MaxAge > 30*24*time.Hour || o.ClockSkew < 0 || o.ClockSkew > 10*time.Minute || o.MaxBytes < 1 || o.MaxBytes > 8<<20 || len(o.ExpectedNonce) > 128 || len(o.ResponderCRLs) > 32 {
+	if o.MaxAge <= 0 || o.MaxAge > maximumOCSPMaxAge || o.ClockSkew < 0 || o.ClockSkew > maximumOCSPClockSkew || o.MaxBytes < 1 || o.MaxBytes > maximumOCSPResponseBytes || len(o.ExpectedNonce) > maximumOCSPNonceBytes || len(o.ResponderCRLs) > maximumOCSPResponderCRLs {
 		return o, ErrPolicy
 	}
 
 	n := 0
 	for _, b := range o.ResponderCRLs {
 		n += len(b)
-		if n > 8<<20 {
+		if n > maximumOCSPResponderCRLBytes {
 			return o, ErrPolicy
 		}
 	}
@@ -393,10 +409,13 @@ func matchingOCSPEntry(ctx context.Context, entries []singleResponse, certificat
 // findOCSPEntry distinguishes an ordinary miss from malformed or ambiguous
 // matching status data. The standalone verifier still requires a matching entry.
 func findOCSPEntry(ctx context.Context, entries []singleResponse, certificate, issuer *x509.Certificate) (*singleResponse, error) {
+	// Initial distinct-hash cache capacity; this does not restrict accepted CertIDs.
+	const identifierCacheCapacity = 4
+
 	var chosen *singleResponse
 	// CertID algorithms can vary across entries. Cache each expected identifier
 	// so a response cannot repeat certificate signature checks for every entry.
-	wantedIDs := make(map[crypto.Hash]certID, 4)
+	wantedIDs := make(map[crypto.Hash]certID, identifierCacheCapacity)
 
 	for i := range entries {
 		if err := ctx.Err(); err != nil {
@@ -529,9 +548,15 @@ func (e *ocspEvidence) checkChain(ctx context.Context, chain []*x509.Certificate
 
 			verification := ocspVerification{authorization: e.authorization, source: e.sources[j], parsed: parsed, certificate: chain[i], issuer: chain[i+1]}
 			report, err := verifyOCSPData(ctx, &verification, at, e.options)
+			// Failed verification can retain authenticated revocation diagnostics.
+			//noinspection GoDfaErrorMayBeNotNil
 			e.authenticated = appendOCSPEvidence(e.authenticated, report.evidence...)
 
-			if errors.Is(err, ErrRevoked) {
+			if cause := ctx.Err(); cause != nil {
+				return errors.Join(err, cause)
+			}
+
+			if errors.Is(err, ErrRevoked) || errors.Is(err, ErrLimit) {
 				return err
 			}
 

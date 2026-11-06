@@ -20,6 +20,20 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	attrReferencedData               = "referencedData"
+	nameInclude                      = "Include"
+	defaultDataTimestampInputBytes   = 16 << 20
+	defaultDataTimestamps            = 16
+	maximumDataTimestampInputBytes   = 64 << 20
+	maximumDataTimestamps            = 64
+	maximumTimestampObjectReferences = 256
+)
+
+const (
+	booleanTrueNumeric = "1"
+)
+
 // DataTimestampProperty supplies a pre-existing RFC3161 content timestamp.
 // When Individual is true, ObjectReferences selects ordered Reference URIs.
 // Otherwise, the timestamp covers direct SignedInfo data References in their
@@ -153,7 +167,7 @@ func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, in
 			}
 
 			value.references = append(value.references, ref)
-			value.identifiers = append(value.identifiers, "#"+localAttribute(element, "Id"))
+			value.identifiers = append(value.identifiers, "#"+localAttribute(element, lexicon.SecurityAttrID))
 		}
 	}
 
@@ -176,18 +190,18 @@ func (r *BaselineResult) DataTimestamps() []DataTimestamp {
 
 func normalizeDataTimestampLimits(options DataTimestampLimits) (DataTimestampLimits, error) {
 	if options.MaxTimestamps == 0 {
-		options.MaxTimestamps = 16
+		options.MaxTimestamps = defaultDataTimestamps
 	}
 
 	if options.MaxTokenBytes == 0 {
-		options.MaxTokenBytes = 4 << 20
+		options.MaxTokenBytes = defaultTimestampTokenBytes
 	}
 
 	if options.MaxInputBytes == 0 {
-		options.MaxInputBytes = 16 << 20
+		options.MaxInputBytes = defaultDataTimestampInputBytes
 	}
 
-	if options.MaxTimestamps < 1 || options.MaxTimestamps > 64 || options.MaxTokenBytes < 1 || options.MaxTokenBytes > 16<<20 || options.MaxInputBytes < 1 || options.MaxInputBytes > 64<<20 {
+	if options.MaxTimestamps < 1 || options.MaxTimestamps > maximumDataTimestamps || options.MaxTokenBytes < 1 || options.MaxTokenBytes > maximumTimestampTokenBytes || options.MaxInputBytes < 1 || options.MaxInputBytes > maximumDataTimestampInputBytes {
 		return options, ErrProfile
 	}
 
@@ -196,7 +210,7 @@ func normalizeDataTimestampLimits(options DataTimestampLimits) (DataTimestampLim
 
 func parseBaselineDataTimestamp(ctx context.Context, element document.Element, verified *xmldsig.SignatureResult, limits DataTimestampLimits, options BaselineVerifyOptions) (DataTimestamp, error) {
 	out := DataTimestamp{element: element, method: reference.Transform{Algorithm: c14n.Canonical10}, maximum: limits.MaxInputBytes}
-	if baselineAttrs(element, nil, "Id") != nil {
+	if baselineAttrs(element, nil, lexicon.SecurityAttrID) != nil {
 		return out, ErrProfile
 	}
 
@@ -206,9 +220,9 @@ func parseBaselineDataTimestamp(ctx context.Context, element document.Element, v
 	}
 
 	at := 0
-	for at < len(values) && values[at].Name() == name("Include") {
+	for at < len(values) && values[at].Name() == name(nameInclude) {
 		include := values[at]
-		if baselineAttrs(include, []string{"URI", "referencedData"}) != nil {
+		if baselineAttrs(include, []string{lexicon.SecurityAttrURI, attrReferencedData}) != nil {
 			return out, ErrProfile
 		}
 
@@ -216,20 +230,20 @@ func parseBaselineDataTimestamp(ctx context.Context, element document.Element, v
 			return out, err
 		}
 
-		truth := strings.Trim(localAttribute(include, "referencedData"), " \t\r\n")
-		if truth != "true" && truth != "1" {
+		truth := strings.Trim(localAttribute(include, attrReferencedData), lexicon.XMLWhitespace)
+		if truth != lexicon.ValueTrue && truth != booleanTrueNumeric {
 			return out, ErrProfile
 		}
 
-		if len(out.identifiers) >= 256 {
+		if len(out.identifiers) >= maximumTimestampObjectReferences {
 			return out, ErrProfile
 		}
 
-		out.identifiers = append(out.identifiers, localAttribute(include, "URI"))
+		out.identifiers = append(out.identifiers, localAttribute(include, lexicon.SecurityAttrURI))
 		at++
 	}
 
-	individual := element.Name() == name("IndividualDataObjectsTimeStamp")
+	individual := element.Name() == name(nameIndividualDataObjectsTimeStamp)
 	if individual != (len(out.identifiers) > 0) {
 		return out, ErrProfile
 	}
@@ -250,7 +264,7 @@ func parseBaselineDataTimestamp(ctx context.Context, element document.Element, v
 	}
 
 	token := values[at]
-	if token.Name() != name("EncapsulatedTimeStamp") || baselineAttrs(token, nil, "Id", attributeEncoding) != nil {
+	if token.Name() != name(nameEncapsulatedTimeStamp) || baselineAttrs(token, nil, lexicon.SecurityAttrID, attributeEncoding) != nil {
 		return out, ErrProfile
 	}
 
@@ -277,12 +291,12 @@ func parseBaselineDataTimestamp(ctx context.Context, element document.Element, v
 }
 
 func buildBaselineDataTimestamp(ctx context.Context, value DataTimestampProperty, limits DataTimestampLimits) (*tree.Node, error) {
-	local := "AllDataObjectsTimeStamp"
+	local := nameAllDataObjectsTimeStamp
 	if value.Individual {
-		local = "IndividualDataObjectsTimeStamp"
+		local = nameIndividualDataObjectsTimeStamp
 	}
 
-	if len(value.ObjectReferences) > 256 || value.Individual != (len(value.ObjectReferences) > 0) || len(value.TokenDER) == 0 || len(value.TokenDER) > limits.MaxTokenBytes {
+	if len(value.ObjectReferences) > maximumTimestampObjectReferences || value.Individual != (len(value.ObjectReferences) > 0) || len(value.TokenDER) == 0 || len(value.TokenDER) > limits.MaxTokenBytes {
 		return nil, ErrProfile
 	}
 
@@ -297,16 +311,16 @@ func buildBaselineDataTimestamp(ctx context.Context, value DataTimestampProperty
 			return nil, ErrProfile
 		}
 
-		include := xnode("Include")
-		attr(include, "URI", identifier)
-		attr(include, "referencedData", "true")
+		include := xnode(nameInclude)
+		attr(include, lexicon.SecurityAttrURI, identifier)
+		attr(include, attrReferencedData, lexicon.ValueTrue)
 		add(node, include)
 	}
 
 	method := value.Canonicalization
 	if method.Algorithm != "" {
 		canonical := dsnode(lexicon.DSigElementCanonicalizationMethod)
-		attr(canonical, "Algorithm", method.Algorithm)
+		attr(canonical, lexicon.SecurityAttrAlgorithm, method.Algorithm)
 
 		if err := transformxml.AppendParameters(ctx, canonical, method); err != nil {
 			return nil, err
@@ -321,7 +335,7 @@ func buildBaselineDataTimestamp(ctx context.Context, value DataTimestampProperty
 		return nil, ErrProfile
 	}
 
-	leaf(node, "EncapsulatedTimeStamp", base64.StdEncoding.EncodeToString(value.TokenDER))
+	leaf(node, nameEncapsulatedTimeStamp, base64.StdEncoding.EncodeToString(value.TokenDER))
 
 	return node, nil
 }

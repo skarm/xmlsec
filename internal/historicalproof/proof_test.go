@@ -12,12 +12,6 @@ import (
 	"github.com/skarm/xmlsec/internal/historicalproof"
 )
 
-func proofDigest(value int) [32]byte {
-	var digest [32]byte
-	binary.BigEndian.PutUint64(digest[:8], uint64(value))
-	return digest
-}
-
 func TestProofRolesTimeAndOwnership(t *testing.T) {
 	now := time.Unix(1700000000, 0).In(time.FixedZone("offset", 3*60*60))
 	first, second, source := proofDigest(1), proofDigest(2), proofDigest(3)
@@ -207,4 +201,10 @@ func BenchmarkProofSkewedLookup(b *testing.B) {
 			b.Fatal(at, found)
 		}
 	}
+}
+
+func proofDigest(value int) [32]byte {
+	var digest [32]byte
+	binary.BigEndian.PutUint64(digest[:8], uint64(value))
+	return digest
 }

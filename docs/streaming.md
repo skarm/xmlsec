@@ -7,10 +7,14 @@ cancellation themselves. See [common contracts](usage.md#common-contracts).
 
 ## Parsing and ownership
 
-`document.ParseReader`, `Engine.ParseReader` and `CompileXSLTReader` parse
-incrementally but retain complete trees and current lexical tokens. Large tags,
-comments or unfinished references can require token-sized storage. Language
-resources have a separate [DTD/encoding profile](transforms.md#xml-input-profiles).
+`document.ParseReader` and `Engine.ParseReader` parse incrementally but retain
+complete trees and current lexical tokens. Large tags, comments or unfinished
+references can require token-sized storage.
+
+`document.ParseOptions{NonValidating: true}`, `CompileXSLTReader` and language
+resource parsing can additionally retain bounded decoded and DTD-expanded input
+buffers, even when the caller supplies a reader. External entity text can remain
+cached during parsing. See the [DTD/encoding profile](transforms.md#xml-input-profiles).
 
 Node handles retain their owner document. `Result.Document(ctx)` detaches one
 selected element into an independent snapshot. Small string views can retain a

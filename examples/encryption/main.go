@@ -19,6 +19,10 @@ import (
 	"github.com/skarm/xmlsec/xmlenc"
 )
 
+const exampleRSABits = 2048
+
+const aesKeyBytes = 32
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -28,7 +32,7 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	recipient, err := rsa.GenerateKey(rand.Reader, 2048)
+	recipient, err := rsa.GenerateKey(rand.Reader, exampleRSABits)
 	if err != nil {
 		return err
 	}
@@ -70,7 +74,7 @@ func run() error {
 	fmt.Printf("Restored content of %s: %s; header is %s\n",
 		parent.Name().Local, parent.Text(), contentPlain.Root().Children()[0].Text())
 	// The application can also distribute a direct AES data key independently.
-	secret := make([]byte, 32)
+	secret := make([]byte, aesKeyBytes)
 	if _, err := rand.Read(secret); err != nil {
 		return err
 	}

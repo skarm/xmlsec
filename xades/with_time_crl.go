@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509crl"
 	"github.com/skarm/xmlsec/internal/x509name"
@@ -70,7 +71,7 @@ func recoveryCRLs(ctx context.Context, raw [][]byte) ([]*x509.RevocationList, er
 func recoveryCRLScope(ctx context.Context, list *x509.RevocationList) error {
 	for _, extension := range list.Extensions {
 		switch extension.Id.String() {
-		case "2.5.29.27", "2.5.29.28": // Delta indicator and issuing distribution point.
+		case lexicon.X509OIDDeltaCRLIndicator, lexicon.X509OIDIssuingDistributionPoint: // Delta indicator and issuing distribution point.
 			return fmt.Errorf("%w: with-time requires direct complete CRLs", ErrProfile)
 		}
 	}
@@ -81,7 +82,7 @@ func recoveryCRLScope(ctx context.Context, list *x509.RevocationList) error {
 		}
 
 		for _, extension := range entry.Extensions {
-			if extension.Id.String() == "2.5.29.29" { // certificateIssuer.
+			if extension.Id.String() == lexicon.X509OIDCertificateIssuer { // certificateIssuer.
 				return fmt.Errorf("%w: with-time requires direct CRL entries", ErrProfile)
 			}
 		}

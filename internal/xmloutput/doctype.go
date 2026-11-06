@@ -12,8 +12,10 @@ import (
 
 // ValidPublicID reports whether value consists of XML PubidChars.
 func ValidPublicID(value string) bool {
+	const publicIDPunctuation = " \r\n-'()+,./:=?;!*#@$_%"
+
 	for _, r := range value {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" \r\n-'()+,./:=?;!*#@$_%", r)) {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(publicIDPunctuation, r)) {
 			return false
 		}
 	}
@@ -55,12 +57,14 @@ func Quote(value string, preferred byte) byte {
 
 // WriteDoctype validates and writes output metadata, without an internal subset.
 func WriteDoctype(dst io.Writer, name, publicID, systemID string) error {
-	return writeDoctype(dst, name, publicID, systemID, false)
+	const allowPublicOnly = false
+	return writeDoctype(dst, name, publicID, systemID, allowPublicOnly)
 }
 
 // WriteHTMLDoctype also permits a PUBLIC identifier without a SYSTEM identifier.
 func WriteHTMLDoctype(dst io.Writer, name, publicID, systemID string) error {
-	return writeDoctype(dst, name, publicID, systemID, true)
+	const allowPublicOnly = true
+	return writeDoctype(dst, name, publicID, systemID, allowPublicOnly)
 }
 
 func writeDoctype(dst io.Writer, name, publicID, systemID string, publicOnly bool) error {

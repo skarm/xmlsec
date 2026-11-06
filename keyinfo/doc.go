@@ -17,7 +17,7 @@
 // collections. Accessors copy mutable key/certificate data. X509Data grouping
 // and selector spellings are retained without inferring chain relationships or
 // trust.
-// [Template.X509Data] builds separate nonempty groups of certificates, v2 CRLs,
+// [Template.X509Data] builds separate nonempty groups of certificates, v1/v2 CRLs,
 // issuer/serial pairs, subject names, plain subject key identifiers and certificate
 // digests. [Template.Certificates] retains its separate first group. Original DER
 // bytes and supplied DN spellings are preserved; serial numbers use the same

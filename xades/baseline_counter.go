@@ -3,9 +3,8 @@ package xades
 import (
 	"context"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -25,7 +24,7 @@ func (r *BaselineResult) CounterSignatures() []document.Element {
 	var out []document.Element
 
 	for _, property := range r.UnsignedSignatureProperties() {
-		if property.Name() != name("CounterSignature") {
+		if property.Name() != name(nameCounterSignature) {
 			continue
 		}
 
@@ -52,7 +51,7 @@ func VerifyCounterSignature(ctx context.Context, enclosing *BasicResult, counter
 	owner, node := tree.Unwrap(child)
 
 	parentOwner, _ := tree.Unwrap(parent)
-	if owner != parentOwner || node == nil || node.Parent == nil || node.Parent.Name != name("CounterSignature") {
+	if owner != parentOwner || node == nil || node.Parent == nil || node.Parent.Name != name(nameCounterSignature) {
 		return ErrProfile
 	}
 
@@ -62,22 +61,22 @@ func VerifyCounterSignature(ctx context.Context, enclosing *BasicResult, counter
 	}
 
 	usp := node.Parent.Parent
-	if usp == nil || usp.Name != name("UnsignedSignatureProperties") {
+	if usp == nil || usp.Name != name(nameUnsignedSignatureProperties) {
 		return ErrProfile
 	}
 
 	unsigned := usp.Parent
-	if unsigned == nil || unsigned.Name != name("UnsignedProperties") {
+	if unsigned == nil || unsigned.Name != name(nameUnsignedProperties) {
 		return ErrProfile
 	}
 
 	qp := unsigned.Parent
-	if qp == nil || qp.Name != name("QualifyingProperties") {
+	if qp == nil || qp.Name != name(nameQualifyingProperties) {
 		return ErrProfile
 	}
 
 	object := qp.Parent
-	if object == nil || object.Name != ds("Object") || object.Parent == nil || !tree.Wrap(owner, object.Parent).Same(parent) {
+	if object == nil || object.Name != ds(lexicon.DSigElementObject) || object.Parent == nil || !tree.Wrap(owner, object.Parent).Same(parent) {
 		return ErrProfile
 	}
 
@@ -100,7 +99,7 @@ func VerifyCounterSignature(ctx context.Context, enclosing *BasicResult, counter
 }
 
 func checkCounterContainer(element document.Element) error {
-	if baselineAttrs(element, nil, "Id") != nil {
+	if baselineAttrs(element, nil, lexicon.SecurityAttrID) != nil {
 		return ErrProfile
 	}
 

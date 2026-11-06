@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -48,6 +49,21 @@ func (e *Engine) registerFunctions(functions []Function) error {
 }
 
 func (e *Engine) languageContext(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, languageLimitsKey{}, e.limits)
+
+	resources := xslt.InvocationResources{
+		Collections: e.collectionResolver(), ParseOptions: e.languageParseOptions(),
+		MaxResourceBytes: int64(e.limits.MaxInputBytes),
+	}
+	if e.resolver != nil {
+		resources.URIResolver = resourceAdapter{engine: e}
+	}
+
+	if e.packages != nil {
+		resources.Packages = packageAdapter{engine: e}
+	}
+
+	ctx = xslt.WithInvocationResources(ctx, resources)
 	ctx = xpath.WithInvocationScope(ctx)
 	ctx = xpath.WithTextResourceCacheLimit(ctx, e.limits.MaxResourceBytes)
 	ctx = xpath.WithXMLSchemaVersion(ctx, int(e.xmlSchemaVersion))
@@ -113,6 +129,8 @@ type applicationFunction struct {
 	resultType xdm.SequenceType
 }
 
+type languageLimitsKey struct{}
+
 func (f *applicationFunction) MinArity() int { return f.definition.Arity }
 
 func (f *applicationFunction) MaxArity() int { return f.definition.Arity }
@@ -128,11 +146,27 @@ func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence
 		return nil, executionControlCause(err)
 	}
 
-	checker := sequenceChecker{ctx: ctx, limits: f.limits, input: true}
+	limits := f.limits
+	if current, ok := ctx.Value(languageLimitsKey{}).(Limits); ok {
+		limits = current
+	}
+
+	checker := sequenceChecker{ctx: ctx, limits: limits, input: true}
 
 	args := make([]Sequence, len(arguments))
 	for i, arg := range arguments {
+		before := checker.count
 		if err := checker.walk(arg, 0); err != nil {
+			return nil, executionControlCause(err)
+		}
+
+		// Validation is bounded by MaxNodes; charge that work before cloning
+		// the argument or allowing the application callback to run.
+		if err := xpath.Charge(ctx, checker.count-before); err != nil {
+			return nil, executionControlCause(err)
+		}
+
+		if err := chargeCallbackArgumentCopies(ctx, arg); err != nil {
 			return nil, executionControlCause(err)
 		}
 
@@ -144,7 +178,7 @@ func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence
 		return nil, executionControlCause(err)
 	}
 
-	checker = sequenceChecker{ctx: ctx, limits: f.limits, input: true}
+	checker = sequenceChecker{ctx: ctx, limits: limits, input: true}
 	if err := checker.walk(result.items, 0); err != nil {
 		return nil, executionControlCause(err)
 	}
@@ -158,4 +192,37 @@ func (f *applicationFunction) Call(ctx context.Context, arguments []xdm.Sequence
 	}
 
 	return xdm.CloneSequence(result.items), nil
+}
+
+// Immutable map/array entries and scalar strings are shared by CloneSequence.
+// Charge only top-level atomic payloads that CloneItem actually duplicates.
+func chargeCallbackArgumentCopies(ctx context.Context, argument xdm.Sequence) error {
+	for item := range xdm.SequenceItems(argument) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		value, ok := item.(xdm.AtomicValue)
+		if !ok {
+			continue
+		}
+
+		switch value.Value.(type) {
+		case *big.Int, *big.Rat, *xdm.FloatValue:
+			if err := xpath.ChargeNumber(ctx, value); err != nil {
+				return err
+			}
+		case []byte, xdm.Duration, *xdm.Duration:
+			text, err := lexical(value)
+			if err != nil {
+				return err
+			}
+
+			if err := xpath.ChargeString(ctx, len(text)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

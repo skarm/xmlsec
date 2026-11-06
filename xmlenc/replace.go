@@ -96,7 +96,7 @@ func selectedNode(doc *document.Document, selected document.Element) (*tree.Node
 	// XMLENC 1.1 section 2.1.5 permits super-encryption of complete structures;
 	// inserting EncryptedData into one of their descendants is outside this profile.
 	for parent := node.Parent; parent != nil; parent = parent.Parent {
-		if parent.Name.Space == Namespace && (parent.Name.Local == "EncryptedData" || parent.Name.Local == "EncryptedKey") {
+		if parent.Name.Space == Namespace && (parent.Name.Local == nameEncryptedData || parent.Name.Local == nameEncryptedKey) {
 			return nil, ErrFormat
 		}
 	}

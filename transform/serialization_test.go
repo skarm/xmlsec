@@ -49,7 +49,7 @@ func markupSerializationCases() []markupSerializationCase {
 	const before = `<xsl:comment>lead</xsl:comment><xsl:processing-instruction name="p">v</xsl:processing-instruction>`
 	const xmlOutput = `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" doctype-system="d.dtd"/>`
 	const xhtml5 = `<xsl:output method="xhtml" html-version="5" indent="no" omit-xml-declaration="yes" include-content-type="no"/>`
-	const maps = `<xsl:character-map name="m"><xsl:output-character character="a" string="A"/><xsl:output-character character="&#13;" string="BAD"/></xsl:character-map>`
+	const ms = `<xsl:character-map name="m"><xsl:output-character character="a" string="A"/><xsl:output-character character="&#13;" string="BAD"/></xsl:character-map>`
 	tests := []markupSerializationCase{
 		{"XML default omits prefix undeclarations", `<xsl:output method="xml" indent="no" omit-xml-declaration="yes"/>`, `<r xmlns:p="urn:p" xsl:inherit-namespaces="no"><xsl:element name="c"/></r>`, `<r xmlns:p="urn:p"><c/></r>`, ""},
 		{"XML 1.1 keeps requested prefix undeclarations", `<xsl:output method="xml" version="1.1" undeclare-prefixes="yes" indent="no"/>`, `<r xmlns:p="urn:p" xsl:inherit-namespaces="no"><xsl:element name="c"/></r>`, `<?xml version="1.1" encoding="UTF-8"?><r xmlns:p="urn:p"><c xmlns:p=""/></r>`, ""},
@@ -74,7 +74,7 @@ func markupSerializationCases() []markupSerializationCase {
 		{"HTML5 leading text", `<xsl:output method="html" html-version="5" indent="no" include-content-type="no"/>`, `text<html/>`, `text<html></html>`, ""},
 		{"XHTML5 automatic doctype", `<xsl:output method="xhtml" html-version="5" indent="no" include-content-type="no"/>`, before + `<html xmlns="http://www.w3.org/1999/xhtml"/>`, `<?xml version="1.0" encoding="UTF-8"?><!--lead--><?p v?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"></html>`, ""},
 		{"XHTML5 leading text", `<xsl:output method="xhtml" html-version="5" indent="no" include-content-type="no"/>`, `text<html xmlns="http://www.w3.org/1999/xhtml"/>`, `<?xml version="1.0" encoding="UTF-8"?>text<html xmlns="http://www.w3.org/1999/xhtml"></html>`, ""},
-		{"CDATA maps excluded", `<xsl:output method="xml" omit-xml-declaration="yes" cdata-section-elements="b" use-character-maps="m"/>` + maps, `<r a="aaa"><a>aaa</a><b>aaa&#13;]]&gt;</b></r>`, `<r a="AAA"><a>AAA</a><b><![CDATA[aaa]]>&#xD;<![CDATA[]]]]><![CDATA[>]]></b></r>`, `contains($s,'<a>AAA</a>') and contains($s,'<![CDATA[aaa') and not(contains($s,'BAD'))`},
+		{"CDATA maps excluded", `<xsl:output method="xml" omit-xml-declaration="yes" cdata-section-elements="b" use-character-maps="m"/>` + ms, `<r a="aaa"><a>aaa</a><b>aaa&#13;]]&gt;</b></r>`, `<r a="AAA"><a>AAA</a><b><![CDATA[aaa]]>&#xD;<![CDATA[]]]]><![CDATA[>]]></b></r>`, `contains($s,'<a>AAA</a>') and contains($s,'<![CDATA[aaa') and not(contains($s,'BAD'))`},
 		{"CDATA namespace union", `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" xmlns="urn:r" cdata-section-elements="a"/><xsl:output xmlns="urn:r" cdata-section-elements="b"/>`, `<r xmlns="urn:r"><a>x&amp;y</a><b>z&lt;t</b><a xmlns="">x&amp;y</a></r>`, `<r xmlns="urn:r"><a><![CDATA[x&y]]></a><b><![CDATA[z<t]]></b><a xmlns="">x&amp;y</a></r>`, ""},
 		{"CDATA no namespace stays exact", `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" cdata-section-elements="a"/>`, `<r><a>x&amp;y</a><a xmlns="urn:r">x&amp;y</a></r>`, `<r><a><![CDATA[x&y]]></a><a xmlns="urn:r">x&amp;y</a></r>`, ""},
 		{"CDATA fallback namespace stays exact", `<xsl:output method="xml" indent="no" omit-xml-declaration="yes" cdata-section-elements="a"/>`, `<r><xsl:text disable-output-escaping="yes">x</xsl:text><a xmlns="urn:r">x&amp;y</a></r>`, `<r>x<a xmlns="urn:r">x&amp;y</a></r>`, ""},
@@ -429,25 +429,6 @@ func TestOutputNameListsAcrossImports(t *testing.T) {
 	if !strings.Contains(secondary, `<b><![CDATA[x&y]]></b>`) || !strings.Contains(secondary, `<b xmlns="">x&amp;y</b>`) {
 		t.Fatal("dynamic CDATA namespace", secondary)
 	}
-}
-
-type markupCutWriter struct {
-	bytes.Buffer
-	remaining int
-}
-
-func (w *markupCutWriter) WriteString(data string) (int, error) {
-	return w.Write([]byte(data))
-}
-
-func (w *markupCutWriter) Write(data []byte) (int, error) {
-	n := min(w.remaining, len(data))
-	w.remaining -= n
-	_, _ = w.Buffer.Write(data[:n])
-	if n != len(data) {
-		return n, io.ErrClosedPipe
-	}
-	return n, nil
 }
 
 func TestMarkupSerializationDestinationErrors(t *testing.T) {
@@ -808,10 +789,6 @@ func TestSerializationRawHTMLDescendants(t *testing.T) {
 	}
 }
 
-func fullyNormalizedSerializationSource(version string, test fullyNormalizedSerializationCase) string {
-	return sheetStart + version + `" exclude-result-prefixes="xs"><xsl:output normalization-form="fully-normalized" omit-xml-declaration="yes" ` + test.declarations + `<xsl:template name="start">` + test.body + `</xsl:template></xsl:stylesheet>`
-}
-
 func TestSerializationFullyNormalizedCharacterMaps(t *testing.T) {
 	for _, processor := range []transform.XSLTVersion{transform.XSLT20, transform.XSLT30} {
 		version := version30
@@ -979,17 +956,6 @@ func TestJSONSerializationRules(t *testing.T) {
 	}
 }
 
-func assertSerializationSequence(t *testing.T, path string, value transform.Sequence, err error, want, code string) {
-	t.Helper()
-
-	got := ""
-	if err == nil {
-		got = text(t, value)
-	}
-
-	assertSerializationResult(t, path, got, err, want, code)
-}
-
 func TestSerializationEscapeBytes(t *testing.T) {
 	e := engine(t, transform.Config{})
 	input := "\x00\x01\x1f\"\\/\b\f\n\r\t\x7f\u009fé😀"
@@ -1025,30 +991,6 @@ func TestSerializationEscapeBytes(t *testing.T) {
 
 		_, err = result.WriterTo(t.Context()).WriteTo(&streamed)
 		assertSerializationResult(t, "WriterTo"+normalization, streamed.String(), err, want, "")
-	}
-}
-
-func assertSerializationOutput(t *testing.T, path string, output *transform.Output, err error, want, code string) {
-	t.Helper()
-
-	got := ""
-	if output != nil {
-		got = string(output.Primary)
-	}
-
-	assertSerializationResult(t, path, got, err, want, code)
-}
-
-func assertSerializationResult(t *testing.T, path, got string, err error, want, code string) {
-	t.Helper()
-
-	if code != "" {
-		var detail *transform.Error
-		if !errors.As(err, &detail) || detail.Code != code {
-			t.Errorf("%s: %q, %v; want %s", path, got, err, code)
-		}
-	} else if err != nil || got != want {
-		t.Errorf("%s: %q, %v; want %q", path, got, err, want)
 	}
 }
 
@@ -1490,60 +1432,6 @@ func TestJSONHTMLHeadMetadata(t *testing.T) {
 			t.Fatal("fn:transform HTML metadata", tc, value, err)
 		}
 	}
-}
-
-type markupSerializationErrorCase struct {
-	name       string
-	attributes string
-	expression string
-	options    string
-	code       string
-}
-
-func markupSerializationErrorCases() []markupSerializationErrorCase {
-	cases := make([]markupSerializationErrorCase, 0, 42)
-	cases = append(cases, []markupSerializationErrorCase{
-		{"XML standalone attribute", `method="xml"`, `parse-xml('<r a="x"/>')/r/@a`, `map{'method':'xml'}`, "SENR0001"},
-		{"XHTML standalone attribute", `method="xhtml"`, `parse-xml('<r a="x"/>')/r/@a`, `map{'method':'xhtml'}`, "SENR0001"},
-
-		{"XML unsupported valid VersionNum", `method="xml" version="1.2"`, `parse-xml('<r/>')`, `map{'method':'xml','version':'1.2'}`, "SESU0013"},
-		{"XHTML unsupported valid VersionNum", `method="xhtml" version="1.2"`, `parse-xml('<r/>')`, `map{'method':'xhtml','version':'1.2'}`, "SESU0013"},
-
-		{"XML unsupported output version", `method="xml" version="0.0"`, `parse-xml('<r/>')`, `map{'method':'xml','version':'0.0'}`, "SESU0013"},
-		{"XHTML unsupported output version", `method="xhtml" version="0.0"`, `parse-xml('<r/>')`, `map{'method':'xhtml','version':'0.0'}`, "SESU0013"},
-		{"XML standalone declaration conflict", `method="xml" standalone="yes" omit-xml-declaration="yes"`, `parse-xml('<r/>')`, `map{'method':'xml','standalone':true(),'omit-xml-declaration':true()}`, "SEPM0009"},
-		{"XHTML standalone declaration conflict", `method="xhtml" standalone="yes" omit-xml-declaration="yes"`, `parse-xml('<r/>')`, `map{'method':'xhtml','standalone':true(),'omit-xml-declaration':true()}`, "SEPM0009"},
-
-		{"HTML PI", `method="html"`, `parse-xml('<r><?p a>b?></r>')/r/processing-instruction()`, `map{'method':'html'}`, "SERE0015"},
-		{"HTML nested PI", `method="html"`, `parse-xml('<r><?p a>b?></r>')/r`, `map{'method':'html'}`, "SERE0015"},
-		{"HTML4 control", `method="html" html-version="4.01"`, `codepoints-to-string(127)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
-		{"HTML4 NEL", `method="html" html-version="4.01"`, `codepoints-to-string(133)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
-		{"HTML4 attribute", `method="html" html-version="4.01"`, `parse-xml('<r a="&#127;"/>')/r`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
-		{"HTML4 version parameter", `method="html" version="4.01"`, `codepoints-to-string(127)`, ``, "SERE0014"},
-		{"HTML4 separator", `method="html" html-version="4.01" item-separator="&#127;"`, `('a','b')`, `map{'method':'html','html-version':4.01,'item-separator':codepoints-to-string(127)}`, "SERE0014"},
-		{"unavailable HTML version", `method="html" version="0.0"`, `'text'`, ``, "SESU0013"},
-		{"XML default prefix undeclaration", `method="xml" undeclare-prefixes="yes"`, `parse-xml('<r/>')`, `map{'method':'xml','undeclare-prefixes':true()}`, "SEPM0010"},
-		{"unsupported HTML6", `method="html" html-version="6"`, `'text'`, `map{'method':'html','html-version':6}`, "SESU0013"},
-		{"XML ASCII name", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<é/>')`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
-		{"XML ASCII comment", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<!--é--><r/>')/comment()`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
-		{"XML ASCII PI", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<?é v?><r/>')/processing-instruction()`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
-		{"XHTML ASCII name", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<é/>')`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
-		{"XHTML ASCII comment", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<!--é--><r/>')/comment()`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
-		{"XHTML ASCII PI", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<?é v?><r/>')/processing-instruction()`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
-		{"HTML ASCII island name", `method="html" encoding="US-ASCII"`, `parse-xml('<p:é xmlns:p="urn:p"/>')`, `map{'method':'html','encoding':'US-ASCII'}`, "SERE0008"},
-		{"HTML ASCII attribute name", `method="html" encoding="US-ASCII"`, `parse-xml('<r é="x"/>')`, `map{'method':'html','encoding':'US-ASCII'}`, "SERE0008"},
-		{"HTML detached island PI", `method="html"`, `parse-xml('<p:r xmlns:p="urn:p"><?p a>b?></p:r>')/*/processing-instruction()`, `map{'method':'html'}`, "SERE0015"},
-		{"XML doctype fragment shape", `method="xml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xml','doctype-system':'d.dtd'}`, "SEPM0004"},
-		{"XHTML doctype fragment shape", `method="xhtml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xhtml','doctype-system':'d.dtd'}`, "SEPM0004"},
-		{"XML composing start", `method="xml" normalization-form="fully-normalized" omit-xml-declaration="yes"`, `codepoints-to-string(769)`, ``, "SERE0012"},
-	}...)
-	for _, method := range []string{"xml", "xhtml", "html", "text", "json", "adaptive"} {
-		cases = append(cases,
-			markupSerializationErrorCase{method + " invalid public identifier", `method="` + method + `" doctype-public="é"`, `parse-xml('<r>x</r>')`, `map{'method':'` + method + `','doctype-public':'é'}`, "SEPM0016"},
-			markupSerializationErrorCase{method + " invalid system identifier", `method="` + method + `" doctype-system="&quot;&apos;"`, `parse-xml('<r>x</r>')`, `map{'method':'` + method + `','doctype-system':concat(codepoints-to-string(34),codepoints-to-string(39))}`, "SEPM0016"},
-		)
-	}
-	return cases
 }
 
 func TestMarkupSerializationContentErrors(t *testing.T) {
@@ -2397,238 +2285,6 @@ func TestSerializationIgnoredParameters(t *testing.T) {
 	}
 }
 
-// selectedSerializationVector passes the same already constructed XDM value
-// through each selected host API. SER30 uses its required parameter document,
-// rather than silently exercising the newer map-option signature.
-type serializationMetadataNode struct {
-	XMLName    xml.Name
-	Attributes []xml.Attr                  `xml:",any,attr"`
-	Children   []serializationMetadataNode `xml:",any"`
-}
-
-func serializationMetadataAttribute(node serializationMetadataNode, name string) string {
-	for _, attribute := range node.Attributes {
-		if attribute.Name.Space == "" && attribute.Name.Local == name {
-			return attribute.Value
-		}
-	}
-	return ""
-}
-
-func serializationParameterDocumentFromOutput(t *testing.T, declarations string) string {
-	t.Helper()
-	var root serializationMetadataNode
-	if err := xml.Unmarshal([]byte(`<root xmlns:xsl="http://www.w3.org/1999/XSL/Transform">`+declarations+`</root>`), &root); err != nil {
-		t.Fatal(err)
-	}
-	values := map[string]string{}
-	prefixes := map[string]string{}
-	characterMaps := map[string]map[string]string{}
-	for _, node := range root.Children {
-		if node.XMLName.Local != "character-map" {
-			continue
-		}
-		characters := map[string]string{}
-		for _, entry := range node.Children {
-			if entry.XMLName.Local == "output-character" {
-				characters[serializationMetadataAttribute(entry, "character")] = serializationMetadataAttribute(entry, "string")
-			}
-		}
-		characterMaps[serializationMetadataAttribute(node, "name")] = characters
-	}
-	for _, node := range root.Children {
-		if node.XMLName.Local != "output" {
-			continue
-		}
-		namespaces := map[string]string{}
-		for _, attribute := range node.Attributes {
-			if attribute.Name.Space == "xmlns" {
-				namespaces[attribute.Name.Local] = attribute.Value
-			} else if attribute.Name.Space == "" && attribute.Name.Local == "xmlns" {
-				namespaces[""] = attribute.Value
-			}
-		}
-		for _, attribute := range node.Attributes {
-			if attribute.Name.Space != "" || attribute.Name.Local == "xmlns" || attribute.Name.Local == "name" {
-				continue
-			}
-			value := attribute.Value
-			if attribute.Name.Local == "cdata-section-elements" || attribute.Name.Local == "suppress-indentation" {
-				fields := strings.Fields(value)
-				names := make([]string, 0, len(fields))
-				for _, name := range fields {
-					prefix, local, qualified := strings.Cut(name, ":")
-					if !qualified {
-						local, prefix = prefix, ""
-					}
-					uri := namespaces[prefix]
-					if uri != "" {
-						stable := "p" + strconv.Itoa(len(prefixes))
-						prefixes[stable] = uri
-						local = stable + ":" + local
-					}
-					names = append(names, local)
-				}
-				value = strings.TrimSpace(values[attribute.Name.Local] + " " + strings.Join(names, " "))
-			}
-			values[attribute.Name.Local] = value
-		}
-	}
-	if values["method"] == "" {
-		values["method"] = "xml"
-	}
-	if _, present := values["omit-xml-declaration"]; !present && (values["method"] == "xml" || values["method"] == "xhtml") {
-		values["omit-xml-declaration"] = "no"
-	}
-	var document strings.Builder
-	document.WriteString(`<o:serialization-parameters xmlns:o="http://www.w3.org/2010/xslt-xquery-serialization"`)
-	keys := make([]string, 0, len(prefixes))
-	for prefix := range prefixes {
-		keys = append(keys, prefix)
-	}
-	slices.Sort(keys)
-	for _, prefix := range keys {
-		document.WriteString(` xmlns:` + prefix + `="`)
-		if err := xml.EscapeText(&document, []byte(prefixes[prefix])); err != nil {
-			t.Fatal(err)
-		}
-		document.WriteString(`"`)
-	}
-	document.WriteString(`>`)
-	keys = keys[:0]
-	for name := range values {
-		keys = append(keys, name)
-	}
-	slices.Sort(keys)
-	for _, name := range keys {
-		if name == "use-character-maps" {
-			characters := map[string]string{}
-			for mapName := range strings.FieldsSeq(values[name]) {
-				mapping, found := characterMaps[mapName]
-				if !found {
-					t.Fatal("missing literal character map", mapName)
-				}
-				maps.Copy(characters, mapping)
-			}
-			document.WriteString(`<o:use-character-maps>`)
-			chars := make([]string, 0, len(characters))
-			for character := range characters {
-				chars = append(chars, character)
-			}
-			slices.Sort(chars)
-			for _, character := range chars {
-				document.WriteString(`<o:character-map character="`)
-				if err := xml.EscapeText(&document, []byte(character)); err != nil {
-					t.Fatal(err)
-				}
-				document.WriteString(`" map-string="`)
-				if err := xml.EscapeText(&document, []byte(characters[character])); err != nil {
-					t.Fatal(err)
-				}
-				document.WriteString(`"/>`)
-			}
-			document.WriteString(`</o:use-character-maps>`)
-			continue
-		}
-		document.WriteString(`<o:` + name + ` value="`)
-		if err := xml.EscapeText(&document, []byte(values[name])); err != nil {
-			t.Fatal(err)
-		}
-		document.WriteString(`"/>`)
-	}
-	document.WriteString(`</o:serialization-parameters>`)
-	return document.String()
-}
-
-func selectedSerializationXPath(t *testing.T, e *transform.Engine, version transform.XPathVersion, test markupSerializationCase, input transform.Sequence) (string, error) {
-	t.Helper()
-	parameters := serializationParameterDocumentFromOutput(t, test.declarations)
-	value, err := query(t, e, `serialize($input,parse-xml($parameters)/*)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "input"}: input, {Local: "parameters"}: transform.Values(transform.String(parameters))}})
-	if err != nil {
-		return "", err
-	}
-	return text(t, value), nil
-}
-
-func selectedSerializationXPathError(t *testing.T, test markupSerializationCase, hostErr, fnErr error) {
-	t.Helper()
-	var host, fn *transform.Error
-	if !errors.As(hostErr, &host) || !errors.As(fnErr, &fn) {
-		t.Fatal("selected host/parameter-document errors", hostErr, fnErr)
-	}
-	expected := host.Code
-	// Published parameter documents validate lexical domains before extraction;
-	// fn:serialize only admits its four Unicode normalization forms.
-	if strings.Contains(test.name, "invalid public identifier") || strings.Contains(test.name, "invalid system identifier") {
-		expected = "SEPM0017"
-	}
-	if test.name == "XML composing start" {
-		expected = "SESU0011"
-	}
-	if fn.Code != expected {
-		t.Fatal("selected XPath31 parameter-document contract", fnErr, expected)
-	}
-	publishedProofVector(t, expected)
-}
-
-func selectedSerializationVector(t *testing.T, edition string, test markupSerializationCase, input transform.Sequence) (string, error) {
-	t.Helper()
-	e := engine(t, transform.Config{})
-	if edition == "30" {
-		return selectedSerializationXPath(t, e, transform.XPath30, test, input)
-	}
-	version, processor := version30, transform.XSLT30
-	if edition == "20" {
-		version, processor = version20, transform.XSLT20
-	}
-	source := `<xsl:stylesheet version="` + version + `" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:param name="input"/>` + test.declarations + `<xsl:template name="start"><xsl:sequence select="$input"/></xsl:template></xsl:stylesheet>`
-	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
-	if err != nil {
-		return "", err
-	}
-	result, err := compiled.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw, Parameters: transform.Bindings{{Local: "input"}: input}})
-	if err != nil {
-		return "", err
-	}
-	output, err := result.Serialize(t.Context())
-	if edition == "31" && test.name != "HTML auto method version" && test.name != "HTML empty output declaration" {
-		value, fnErr := selectedSerializationXPath(t, e, transform.XPath31, test, input)
-		if err != nil {
-			selectedSerializationXPathError(t, test, err, fnErr)
-			return "", err
-		}
-		expected := strings.TrimPrefix(string(output.Primary), "\uFEFF")
-		// HTML permits whitespace between the generated DOCTYPE and its root.
-		// Compare only that specific lexical freedom; content whitespace is exact.
-		matchedValue := value
-		if strings.Contains(expected, "<!DOCTYPE html><") {
-			matchedValue = strings.Replace(matchedValue, "<!DOCTYPE html>\n<", "<!DOCTYPE html><", 1)
-		}
-		if fnErr != nil || matchedValue != expected {
-			t.Fatal("selected XPath31/XSLT30 host contract", value, fnErr, expected)
-		}
-	}
-	if err != nil {
-		return "", err
-	}
-	return string(output.Primary), nil
-}
-
-func serializationVectorAdmitted(edition string, test markupSerializationCase) bool {
-	if strings.Contains(test.body, "disable-output-escaping") || strings.Contains(test.declarations, "Q{") {
-		return false
-	}
-	// fn:serialize has an explicit default method, whereas these two vectors
-	// test the XSLT host's automatic method selection from its result element.
-	if edition == "30" && (test.name == "HTML auto method version" || test.name == "HTML empty output declaration") {
-		return false
-	}
-	if edition == "20" && (strings.Contains(test.declarations, "html-version=") || strings.Contains(test.declarations, "item-separator=") || strings.Contains(test.declarations, "suppress-indentation=")) {
-		return false
-	}
-	return true
-}
-
 func TestSerializationSelectedEditionVectors(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, edition := range []string{"20", "30", "31"} {
@@ -3239,7 +2895,7 @@ func namedOutputCharacterMapCases() []struct {
 	attributes   string
 	want         string
 } {
-	const maps = `<xsl:character-map name="d"><xsl:output-character character="x" string="D"/></xsl:character-map><xsl:character-map name="b"><xsl:output-character character="x" string="B"/></xsl:character-map><xsl:character-map name="c"><xsl:output-character character="x" string="C"/></xsl:character-map>`
+	const ms = `<xsl:character-map name="d"><xsl:output-character character="x" string="D"/></xsl:character-map><xsl:character-map name="b"><xsl:output-character character="x" string="B"/></xsl:character-map><xsl:character-map name="c"><xsl:output-character character="x" string="C"/></xsl:character-map>`
 	const format = `<xsl:output name="n" method="xml" omit-xml-declaration="yes"`
 	return []struct {
 		name         string
@@ -3247,10 +2903,10 @@ func namedOutputCharacterMapCases() []struct {
 		attributes   string
 		want         string
 	}{
-		{"named map overrides unnamed output", `<xsl:output method="text"/>` + format + ` use-character-maps="b"/>` + maps, "", `<p>B</p>`},
-		{"empty named map excludes default map", `<xsl:output method="text" use-character-maps="d"/>` + format + `/>` + maps, "", `<p>x</p>`},
-		{"local map overrides named map", `<xsl:output method="text" use-character-maps="d"/>` + format + ` use-character-maps="b"/>` + maps, `use-character-maps="c"`, `<p>C</p>`},
-		{"merged named map order", `<xsl:output method="text"/><xsl:output name="n" use-character-maps="d"/>` + format + ` use-character-maps="b"/>` + maps, "", `<p>B</p>`},
+		{"named map overrides unnamed output", `<xsl:output method="text"/>` + format + ` use-character-maps="b"/>` + ms, "", `<p>B</p>`},
+		{"empty named map excludes default map", `<xsl:output method="text" use-character-maps="d"/>` + format + `/>` + ms, "", `<p>x</p>`},
+		{"local map overrides named map", `<xsl:output method="text" use-character-maps="d"/>` + format + ` use-character-maps="b"/>` + ms, `use-character-maps="c"`, `<p>C</p>`},
+		{"merged named map order", `<xsl:output method="text"/><xsl:output name="n" use-character-maps="d"/>` + format + ` use-character-maps="b"/>` + ms, "", `<p>B</p>`},
 	}
 }
 
@@ -3283,64 +2939,6 @@ func TestNamedOutputCharacterMaps(t *testing.T) {
 func BenchmarkSpecialSerialization(b *testing.B) { benchmarkSpecialSerialization(b, false) }
 
 func BenchmarkSpecialSerializationCollect(b *testing.B) { benchmarkSpecialSerialization(b, true) }
-
-func benchmarkSpecialSerialization(b *testing.B, collect bool) {
-	for _, tc := range []struct {
-		name   string
-		method string
-		body   string
-		extra  string
-	}{
-		{"JSONNode", "json", `<xsl:sequence select="."/>`, ""},
-		{"XHTML", "xhtml", `<xsl:copy-of select="."/>`, ` include-content-type="no"`},
-		{"XHTMLManyNodes", "xhtml", `<xsl:copy-of select="."/>`, ` include-content-type="no"`},
-		{"JSONMapNorm", "json", `<xsl:sequence select="."/>`, ` normalization-form="NFC" use-character-maps="m"`},
-		{"Adaptive", "adaptive", `<xsl:sequence select="string(.)"/>`, ""},
-		{"AdaptiveASCII", "adaptive", `<xsl:sequence select="string(.)"/>`, ""},
-		{"TextASCIINorm", "text", `<xsl:sequence select="string(.)"/>`, ` normalization-form="NFC"`},
-		{"AdaptiveMapNorm", "adaptive", `<xsl:sequence select="string(.)"/>`, ` normalization-form="NFC" use-character-maps="m"`},
-	} {
-		for _, size := range []int{64, 1 << 20} {
-			b.Run(tc.name+"/"+strconv.Itoa(size), func(b *testing.B) {
-				e := engine(b, transform.Config{})
-				payload := strings.Repeat(`hello &quot;é e&#x301; | `, max(1, size/16))
-				if tc.name == "AdaptiveASCII" || tc.name == "TextASCIINorm" {
-					payload = strings.Repeat("hello world ", max(1, size/12))
-				}
-				if tc.name == "XHTMLManyNodes" {
-					payload = strings.Repeat(`<p>hello é</p>`, max(1, size/128))
-				}
-				input := `<html xmlns="http://www.w3.org/1999/xhtml"><body>` + payload + `</body></html>`
-				d, err := e.Parse(b.Context(), []byte(input))
-				if err != nil {
-					b.Fatal(err)
-				}
-				source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:character-map name="m"><xsl:output-character character="|" string="&amp;marker;"/></xsl:character-map><xsl:output method="` + tc.method + `" omit-xml-declaration="yes" indent="no"` + tc.extra + `/><xsl:template match="/">` + tc.body + `</xsl:template></xsl:stylesheet>`
-				s, err := e.CompileXSLT(b.Context(), []byte(source), transform.XSLTOptions{})
-				if err != nil {
-					b.Fatal(err)
-				}
-				result, err := s.Execute(b.Context(), d, transform.XSLTContext{})
-				if err != nil {
-					b.Fatal(err)
-				}
-				b.ReportAllocs()
-				b.SetBytes(int64(len(input)))
-				for b.Loop() {
-					if collect {
-						if _, err := result.Serialize(b.Context()); err != nil {
-							b.Fatal(err)
-						}
-						continue
-					}
-					if _, err := result.WriterTo(b.Context()).WriteTo(io.Discard); err != nil {
-						b.Fatal(err)
-					}
-				}
-			})
-		}
-	}
-}
 
 func TestAdaptiveLargeWriterOwnership(t *testing.T) {
 	e := engine(t, transform.Config{})
@@ -3408,5 +3006,640 @@ func TestXHTMLWriterPreservesResultNodes(t *testing.T) {
 	})
 	if after := snapshot(); after != before {
 		t.Fatalf("XHTML serialization mutated reusable result: %q -> %q", before, after)
+	}
+}
+
+type markupCutWriter struct {
+	bytes.Buffer
+	remaining int
+}
+
+func (w *markupCutWriter) WriteString(data string) (int, error) {
+	return w.Write([]byte(data))
+}
+
+func (w *markupCutWriter) Write(data []byte) (int, error) {
+	n := min(w.remaining, len(data))
+	w.remaining -= n
+	_, _ = w.Buffer.Write(data[:n])
+	if n != len(data) {
+		return n, io.ErrClosedPipe
+	}
+	return n, nil
+}
+
+func fullyNormalizedSerializationSource(version string, test fullyNormalizedSerializationCase) string {
+	return sheetStart + version + `" exclude-result-prefixes="xs"><xsl:output normalization-form="fully-normalized" omit-xml-declaration="yes" ` + test.declarations + `<xsl:template name="start">` + test.body + `</xsl:template></xsl:stylesheet>`
+}
+
+func assertSerializationSequence(t *testing.T, path string, value transform.Sequence, err error, want, code string) {
+	t.Helper()
+
+	got := ""
+	if err == nil {
+		got = text(t, value)
+	}
+
+	assertSerializationResult(t, path, got, err, want, code)
+}
+
+func assertSerializationOutput(t *testing.T, path string, output *transform.Output, err error, want, code string) {
+	t.Helper()
+
+	got := ""
+	if output != nil {
+		got = string(output.Primary)
+	}
+
+	assertSerializationResult(t, path, got, err, want, code)
+}
+
+func assertSerializationResult(t *testing.T, path, got string, err error, want, code string) {
+	t.Helper()
+
+	if code != "" {
+		var detail *transform.Error
+		if !errors.As(err, &detail) || detail.Code != code {
+			t.Errorf("%s: %q, %v; want %s", path, got, err, code)
+		}
+	} else if err != nil || got != want {
+		t.Errorf("%s: %q, %v; want %q", path, got, err, want)
+	}
+}
+
+type markupSerializationErrorCase struct {
+	name       string
+	attributes string
+	expression string
+	options    string
+	code       string
+}
+
+func markupSerializationErrorCases() []markupSerializationErrorCase {
+	cases := make([]markupSerializationErrorCase, 0, 42)
+	cases = append(cases, []markupSerializationErrorCase{
+		{"XML standalone attribute", `method="xml"`, `parse-xml('<r a="x"/>')/r/@a`, `map{'method':'xml'}`, "SENR0001"},
+		{"XHTML standalone attribute", `method="xhtml"`, `parse-xml('<r a="x"/>')/r/@a`, `map{'method':'xhtml'}`, "SENR0001"},
+
+		{"XML unsupported valid VersionNum", `method="xml" version="1.2"`, `parse-xml('<r/>')`, `map{'method':'xml','version':'1.2'}`, "SESU0013"},
+		{"XHTML unsupported valid VersionNum", `method="xhtml" version="1.2"`, `parse-xml('<r/>')`, `map{'method':'xhtml','version':'1.2'}`, "SESU0013"},
+
+		{"XML unsupported output version", `method="xml" version="0.0"`, `parse-xml('<r/>')`, `map{'method':'xml','version':'0.0'}`, "SESU0013"},
+		{"XHTML unsupported output version", `method="xhtml" version="0.0"`, `parse-xml('<r/>')`, `map{'method':'xhtml','version':'0.0'}`, "SESU0013"},
+		{"XML standalone declaration conflict", `method="xml" standalone="yes" omit-xml-declaration="yes"`, `parse-xml('<r/>')`, `map{'method':'xml','standalone':true(),'omit-xml-declaration':true()}`, "SEPM0009"},
+		{"XHTML standalone declaration conflict", `method="xhtml" standalone="yes" omit-xml-declaration="yes"`, `parse-xml('<r/>')`, `map{'method':'xhtml','standalone':true(),'omit-xml-declaration':true()}`, "SEPM0009"},
+
+		{"HTML PI", `method="html"`, `parse-xml('<r><?p a>b?></r>')/r/processing-instruction()`, `map{'method':'html'}`, "SERE0015"},
+		{"HTML nested PI", `method="html"`, `parse-xml('<r><?p a>b?></r>')/r`, `map{'method':'html'}`, "SERE0015"},
+		{"HTML4 control", `method="html" html-version="4.01"`, `codepoints-to-string(127)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
+		{"HTML4 NEL", `method="html" html-version="4.01"`, `codepoints-to-string(133)`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
+		{"HTML4 attribute", `method="html" html-version="4.01"`, `parse-xml('<r a="&#127;"/>')/r`, `map{'method':'html','html-version':4.01}`, "SERE0014"},
+		{"HTML4 version parameter", `method="html" version="4.01"`, `codepoints-to-string(127)`, ``, "SERE0014"},
+		{"HTML4 separator", `method="html" html-version="4.01" item-separator="&#127;"`, `('a','b')`, `map{'method':'html','html-version':4.01,'item-separator':codepoints-to-string(127)}`, "SERE0014"},
+		{"unavailable HTML version", `method="html" version="0.0"`, `'text'`, ``, "SESU0013"},
+		{"XML default prefix undeclaration", `method="xml" undeclare-prefixes="yes"`, `parse-xml('<r/>')`, `map{'method':'xml','undeclare-prefixes':true()}`, "SEPM0010"},
+		{"unsupported HTML6", `method="html" html-version="6"`, `'text'`, `map{'method':'html','html-version':6}`, "SESU0013"},
+		{"XML ASCII name", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<é/>')`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XML ASCII comment", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<!--é--><r/>')/comment()`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XML ASCII PI", `method="xml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<?é v?><r/>')/processing-instruction()`, `map{'method':'xml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XHTML ASCII name", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<é/>')`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XHTML ASCII comment", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<!--é--><r/>')/comment()`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"XHTML ASCII PI", `method="xhtml" encoding="US-ASCII" omit-xml-declaration="yes"`, `parse-xml('<?é v?><r/>')/processing-instruction()`, `map{'method':'xhtml','encoding':'US-ASCII'}`, "SERE0008"},
+		{"HTML ASCII island name", `method="html" encoding="US-ASCII"`, `parse-xml('<p:é xmlns:p="urn:p"/>')`, `map{'method':'html','encoding':'US-ASCII'}`, "SERE0008"},
+		{"HTML ASCII attribute name", `method="html" encoding="US-ASCII"`, `parse-xml('<r é="x"/>')`, `map{'method':'html','encoding':'US-ASCII'}`, "SERE0008"},
+		{"HTML detached island PI", `method="html"`, `parse-xml('<p:r xmlns:p="urn:p"><?p a>b?></p:r>')/*/processing-instruction()`, `map{'method':'html'}`, "SERE0015"},
+		{"XML doctype fragment shape", `method="xml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xml','doctype-system':'d.dtd'}`, "SEPM0004"},
+		{"XHTML doctype fragment shape", `method="xhtml" omit-xml-declaration="yes" doctype-system="d.dtd"`, `(parse-xml('<a/>'),parse-xml('<b/>'))`, `map{'method':'xhtml','doctype-system':'d.dtd'}`, "SEPM0004"},
+		{"XML composing start", `method="xml" normalization-form="fully-normalized" omit-xml-declaration="yes"`, `codepoints-to-string(769)`, ``, "SERE0012"},
+	}...)
+	for _, method := range []string{"xml", "xhtml", "html", "text", "json", "adaptive"} {
+		cases = append(cases,
+			markupSerializationErrorCase{method + " invalid public identifier", `method="` + method + `" doctype-public="é"`, `parse-xml('<r>x</r>')`, `map{'method':'` + method + `','doctype-public':'é'}`, "SEPM0016"},
+			markupSerializationErrorCase{method + " invalid system identifier", `method="` + method + `" doctype-system="&quot;&apos;"`, `parse-xml('<r>x</r>')`, `map{'method':'` + method + `','doctype-system':concat(codepoints-to-string(34),codepoints-to-string(39))}`, "SEPM0016"},
+		)
+	}
+	return cases
+}
+
+// selectedSerializationVector passes the same already constructed XDM value
+// through each selected host API. SER30 uses its required parameter document,
+// rather than silently exercising the newer map-option signature.
+type serializationMetadataNode struct {
+	XMLName    xml.Name
+	Attributes []xml.Attr                  `xml:",any,attr"`
+	Children   []serializationMetadataNode `xml:",any"`
+}
+
+func serializationMetadataAttribute(node serializationMetadataNode, name string) string {
+	for _, attribute := range node.Attributes {
+		if attribute.Name.Space == "" && attribute.Name.Local == name {
+			return attribute.Value
+		}
+	}
+	return ""
+}
+
+func serializationParameterDocumentFromOutput(t *testing.T, declarations string) string {
+	t.Helper()
+	var root serializationMetadataNode
+	if err := xml.Unmarshal([]byte(`<root xmlns:xsl="http://www.w3.org/1999/XSL/Transform">`+declarations+`</root>`), &root); err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{}
+	prefixes := map[string]string{}
+	characterMaps := map[string]map[string]string{}
+	for _, node := range root.Children {
+		if node.XMLName.Local != "character-map" {
+			continue
+		}
+		characters := map[string]string{}
+		for _, entry := range node.Children {
+			if entry.XMLName.Local == "output-character" {
+				characters[serializationMetadataAttribute(entry, "character")] = serializationMetadataAttribute(entry, "string")
+			}
+		}
+		characterMaps[serializationMetadataAttribute(node, "name")] = characters
+	}
+	for _, node := range root.Children {
+		if node.XMLName.Local != "output" {
+			continue
+		}
+		namespaces := map[string]string{}
+		for _, attribute := range node.Attributes {
+			if attribute.Name.Space == "xmlns" {
+				namespaces[attribute.Name.Local] = attribute.Value
+			} else if attribute.Name.Space == "" && attribute.Name.Local == "xmlns" {
+				namespaces[""] = attribute.Value
+			}
+		}
+		for _, attribute := range node.Attributes {
+			if attribute.Name.Space != "" || attribute.Name.Local == "xmlns" || attribute.Name.Local == "name" {
+				continue
+			}
+			value := attribute.Value
+			if attribute.Name.Local == "cdata-section-elements" || attribute.Name.Local == "suppress-indentation" {
+				fields := strings.Fields(value)
+				names := make([]string, 0, len(fields))
+				for _, name := range fields {
+					prefix, local, qualified := strings.Cut(name, ":")
+					if !qualified {
+						local, prefix = prefix, ""
+					}
+					uri := namespaces[prefix]
+					if uri != "" {
+						stable := "p" + strconv.Itoa(len(prefixes))
+						prefixes[stable] = uri
+						local = stable + ":" + local
+					}
+					names = append(names, local)
+				}
+				value = strings.TrimSpace(values[attribute.Name.Local] + " " + strings.Join(names, " "))
+			}
+			values[attribute.Name.Local] = value
+		}
+	}
+	if values["method"] == "" {
+		values["method"] = "xml"
+	}
+	if _, present := values["omit-xml-declaration"]; !present && (values["method"] == "xml" || values["method"] == "xhtml") {
+		values["omit-xml-declaration"] = "no"
+	}
+	var document strings.Builder
+	document.WriteString(`<o:serialization-parameters xmlns:o="http://www.w3.org/2010/xslt-xquery-serialization"`)
+	keys := make([]string, 0, len(prefixes))
+	for prefix := range prefixes {
+		keys = append(keys, prefix)
+	}
+	slices.Sort(keys)
+	for _, prefix := range keys {
+		document.WriteString(` xmlns:` + prefix + `="`)
+		if err := xml.EscapeText(&document, []byte(prefixes[prefix])); err != nil {
+			t.Fatal(err)
+		}
+		document.WriteString(`"`)
+	}
+	document.WriteString(`>`)
+	keys = keys[:0]
+	for name := range values {
+		keys = append(keys, name)
+	}
+	slices.Sort(keys)
+	for _, name := range keys {
+		if name == "use-character-maps" {
+			characters := map[string]string{}
+			for mapName := range strings.FieldsSeq(values[name]) {
+				mapping, found := characterMaps[mapName]
+				if !found {
+					t.Fatal("missing literal character map", mapName)
+				}
+				maps.Copy(characters, mapping)
+			}
+			document.WriteString(`<o:use-character-maps>`)
+			chars := make([]string, 0, len(characters))
+			for character := range characters {
+				chars = append(chars, character)
+			}
+			slices.Sort(chars)
+			for _, character := range chars {
+				document.WriteString(`<o:character-map character="`)
+				if err := xml.EscapeText(&document, []byte(character)); err != nil {
+					t.Fatal(err)
+				}
+				document.WriteString(`" map-string="`)
+				if err := xml.EscapeText(&document, []byte(characters[character])); err != nil {
+					t.Fatal(err)
+				}
+				document.WriteString(`"/>`)
+			}
+			document.WriteString(`</o:use-character-maps>`)
+			continue
+		}
+		document.WriteString(`<o:` + name + ` value="`)
+		if err := xml.EscapeText(&document, []byte(values[name])); err != nil {
+			t.Fatal(err)
+		}
+		document.WriteString(`"/>`)
+	}
+	document.WriteString(`</o:serialization-parameters>`)
+	return document.String()
+}
+
+func selectedSerializationXPath(t *testing.T, e *transform.Engine, version transform.XPathVersion, test markupSerializationCase, input transform.Sequence) (string, error) {
+	t.Helper()
+	parameters := serializationParameterDocumentFromOutput(t, test.declarations)
+	value, err := query(t, e, `serialize($input,parse-xml($parameters)/*)`, version).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "input"}: input, {Local: "parameters"}: transform.Values(transform.String(parameters))}})
+	if err != nil {
+		return "", err
+	}
+	return text(t, value), nil
+}
+
+func selectedSerializationXPathError(t *testing.T, test markupSerializationCase, hostErr, fnErr error) {
+	t.Helper()
+	var host, fn *transform.Error
+	if !errors.As(hostErr, &host) || !errors.As(fnErr, &fn) {
+		t.Fatal("selected host/parameter-document errors", hostErr, fnErr)
+	}
+	expected := host.Code
+	// Published parameter documents validate lexical domains before extraction;
+	// fn:serialize only admits its four Unicode normalization forms.
+	if strings.Contains(test.name, "invalid public identifier") || strings.Contains(test.name, "invalid system identifier") {
+		expected = "SEPM0017"
+	}
+	if test.name == "XML composing start" {
+		expected = "SESU0011"
+	}
+	if fn.Code != expected {
+		t.Fatal("selected XPath31 parameter-document contract", fnErr, expected)
+	}
+	publishedProofVector(t, expected)
+}
+
+func selectedSerializationVector(t *testing.T, edition string, test markupSerializationCase, input transform.Sequence) (string, error) {
+	t.Helper()
+	e := engine(t, transform.Config{})
+	if edition == "30" {
+		return selectedSerializationXPath(t, e, transform.XPath30, test, input)
+	}
+	version, processor := version30, transform.XSLT30
+	if edition == "20" {
+		version, processor = version20, transform.XSLT20
+	}
+	source := `<xsl:stylesheet version="` + version + `" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:param name="input"/>` + test.declarations + `<xsl:template name="start"><xsl:sequence select="$input"/></xsl:template></xsl:stylesheet>`
+	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+	if err != nil {
+		return "", err
+	}
+	result, err := compiled.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}, ResultMode: transform.ResultRaw, Parameters: transform.Bindings{{Local: "input"}: input}})
+	if err != nil {
+		return "", err
+	}
+	output, err := result.Serialize(t.Context())
+	if edition == "31" && test.name != "HTML auto method version" && test.name != "HTML empty output declaration" {
+		value, fnErr := selectedSerializationXPath(t, e, transform.XPath31, test, input)
+		if err != nil {
+			selectedSerializationXPathError(t, test, err, fnErr)
+			return "", err
+		}
+		expected := strings.TrimPrefix(string(output.Primary), "\uFEFF")
+		// HTML permits whitespace between the generated DOCTYPE and its root.
+		// Compare only that specific lexical freedom; content whitespace is exact.
+		matchedValue := value
+		if strings.Contains(expected, "<!DOCTYPE html><") {
+			matchedValue = strings.Replace(matchedValue, "<!DOCTYPE html>\n<", "<!DOCTYPE html><", 1)
+		}
+		if fnErr != nil || matchedValue != expected {
+			t.Fatal("selected XPath31/XSLT30 host contract", value, fnErr, expected)
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(output.Primary), nil
+}
+
+func serializationVectorAdmitted(edition string, test markupSerializationCase) bool {
+	if strings.Contains(test.body, "disable-output-escaping") || strings.Contains(test.declarations, "Q{") {
+		return false
+	}
+	// fn:serialize has an explicit default method, whereas these two vectors
+	// test the XSLT host's automatic method selection from its result element.
+	if edition == "30" && (test.name == "HTML auto method version" || test.name == "HTML empty output declaration") {
+		return false
+	}
+	if edition == "20" && (strings.Contains(test.declarations, "html-version=") || strings.Contains(test.declarations, "item-separator=") || strings.Contains(test.declarations, "suppress-indentation=")) {
+		return false
+	}
+	return true
+}
+
+func benchmarkSpecialSerialization(b *testing.B, collect bool) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		body   string
+		extra  string
+	}{
+		{"JSONNode", "json", `<xsl:sequence select="."/>`, ""},
+		{"XHTML", "xhtml", `<xsl:copy-of select="."/>`, ` include-content-type="no"`},
+		{"XHTMLManyNodes", "xhtml", `<xsl:copy-of select="."/>`, ` include-content-type="no"`},
+		{"JSONMapNorm", "json", `<xsl:sequence select="."/>`, ` normalization-form="NFC" use-character-maps="m"`},
+		{"Adaptive", "adaptive", `<xsl:sequence select="string(.)"/>`, ""},
+		{"AdaptiveASCII", "adaptive", `<xsl:sequence select="string(.)"/>`, ""},
+		{"TextASCIINorm", "text", `<xsl:sequence select="string(.)"/>`, ` normalization-form="NFC"`},
+		{"AdaptiveMapNorm", "adaptive", `<xsl:sequence select="string(.)"/>`, ` normalization-form="NFC" use-character-maps="m"`},
+	} {
+		for _, size := range []int{64, 1 << 20} {
+			b.Run(tc.name+"/"+strconv.Itoa(size), func(b *testing.B) {
+				e := engine(b, transform.Config{})
+				payload := strings.Repeat(`hello &quot;é e&#x301; | `, max(1, size/16))
+				if tc.name == "AdaptiveASCII" || tc.name == "TextASCIINorm" {
+					payload = strings.Repeat("hello world ", max(1, size/12))
+				}
+				if tc.name == "XHTMLManyNodes" {
+					payload = strings.Repeat(`<p>hello é</p>`, max(1, size/128))
+				}
+				input := `<html xmlns="http://www.w3.org/1999/xhtml"><body>` + payload + `</body></html>`
+				d, err := e.Parse(b.Context(), []byte(input))
+				if err != nil {
+					b.Fatal(err)
+				}
+				source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:character-map name="m"><xsl:output-character character="|" string="&amp;marker;"/></xsl:character-map><xsl:output method="` + tc.method + `" omit-xml-declaration="yes" indent="no"` + tc.extra + `/><xsl:template match="/">` + tc.body + `</xsl:template></xsl:stylesheet>`
+				s, err := e.CompileXSLT(b.Context(), []byte(source), transform.XSLTOptions{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				result, err := s.Execute(b.Context(), d, transform.XSLTContext{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				b.SetBytes(int64(len(input)))
+				for b.Loop() {
+					if collect {
+						if _, err := result.Serialize(b.Context()); err != nil {
+							b.Fatal(err)
+						}
+						continue
+					}
+					if _, err := result.WriterTo(b.Context()).WriteTo(io.Discard); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSerializationIBM1141EscapesUnrepresentableCharacters(t *testing.T) {
+	e := engine(t, transform.Config{})
+	expression := `serialize(parse-xml('<r a="中">中€</r>'), map{'encoding':'ibm1141', 'omit-xml-declaration':true()})`
+	got := text(t, evaluate(t, e, expression, transform.XPath31))
+	want := `<r a="&#20013;">&#20013;€</r>`
+	if got != want {
+		t.Fatalf("serialized %q; want %q", got, want)
+	}
+}
+
+func TestTextFunctionsRejectMalformedLegacyEncoding(t *testing.T) {
+	for _, test := range []struct{ name, invalid string }{
+		{"euc-jp", "\xff"},
+		{"shift-jis", "\xff"},
+		{"iso-2022-jp", "\x1b"},
+		{"big5", "\xff"},
+		{"euc-kr", "\xff"},
+		{"hz-gb-2312", "\xff"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(test.invalid)), nil
+			})})
+			for _, function := range []string{"unparsed-text", "unparsed-text-lines"} {
+				expression := function + `('urn:malformed','` + test.name + `')`
+				_, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != "FOUT1190" {
+					t.Fatalf("%s: %v; want FOUT1190", function, err)
+				}
+			}
+			expression := `unparsed-text-available('urn:malformed','` + test.name + `')`
+			if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != nameFalse {
+				t.Fatal("malformed encoded text reported available", got)
+			}
+		})
+	}
+}
+
+func TestXPathHTMLMappedMalformedUTF8Bindings(t *testing.T) {
+	t.Parallel()
+
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, source, form, mapping, want string
+	}{
+		{"one malformed byte", "\xff", "NFC", `map{codepoints-to-string(65533):'x'}`, "x"},
+		{"two malformed bytes", "\xff\xfe", "NFC", `map{codepoints-to-string(65533):'x'}`, "xx"},
+		{"malformed middle", "A\xffB", "NFC", `map{codepoints-to-string(65533):'x'}`, "AxB"},
+		{"encoded replacement", "\uFFFD", "NFC", `map{codepoints-to-string(65533):'x'}`, "x"},
+		{"without map", "\xff", "NFC", `map{}`, "\xff"},
+		{"unrelated map", "\xff", "NFC", `map{'Q':'y'}`, "\xff"},
+		{"without normalization", "\xff", "none", `map{codepoints-to-string(65533):'x'}`, "x"},
+		{"valid composition", "A\u030A", "NFC", `map{codepoints-to-string(65533):'x'}`, "Å"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("public HTML serialization must not panic for a String binding: %v", p)
+				}
+			}()
+
+			expression := `serialize($v,map{'method':'html','include-content-type':false(),'normalization-form':'` + tc.form + `','use-character-maps':` + tc.mapping + `})`
+			query, err := e.CompileXPath(context.Background(), expression, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := query.Evaluate(context.Background(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "v"}: transform.Values(transform.String(tc.source))}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := result.Text()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathHTMLMappedMalformedUTF8Cancellation(t *testing.T) {
+	t.Parallel()
+
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	query, err := e.CompileXPath(context.Background(), `serialize($v,map{'method':'html','normalization-form':'NFC','use-character-maps':map{codepoints-to-string(65533):'x'}})`, transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := query.Evaluate(ctx, nil, transform.XPathContext{Variables: transform.Bindings{{Local: "v"}: transform.Values(transform.String("\xff"))}})
+	if !errors.Is(err, context.Canceled) || result != (transform.Sequence{}) {
+		t.Fatalf("got result %+v, error %v; want empty result and cancellation", result, err)
+	}
+}
+
+func TestHTMLSerializationEscapesNamespaceValues(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, source := range []string{
+		`<p:r xmlns:p="urn:a&amp;b"/>`,
+		`<r xmlns="urn:a&amp;b"/>`,
+		`<r xmlns:p="urn:a&amp;b" p:a="value"/>`,
+	} {
+		expression := `let $s := serialize(parse-xml($source),map{'method':'html','indent':false()}) return namespace-uri(parse-xml($s)/*) = namespace-uri(parse-xml($source)/*) and contains($s,'urn:a&amp;b')`
+		value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+			{Local: sourceName}: transform.Values(transform.String(source)),
+		}})
+		if err != nil || text(t, value) != nameTrue {
+			t.Fatal("HTML namespace serialization changed namespace identity", source, value, err)
+		}
+	}
+}
+
+func TestXPathSerializationMalformedUTF8Bindings(t *testing.T) {
+	t.Parallel()
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type fixture struct{ name, source, options, want string }
+	cases := make([]fixture, 0, 34)
+	for _, method := range []string{"text", "json"} {
+		for _, form := range []string{"none", "NFC"} {
+			for _, v := range []struct{ name, source, want string }{
+				{"one invalid byte", "\xff", "x"},
+				{"two invalid bytes", "\xff\xfe", "xx"},
+				{"invalid middle", "A\xffB", "AxB"},
+				{"valid encoded replacement", "\uFFFD", "x"},
+				{"valid ASCII", "ABC", "ABC"},
+			} {
+				want := v.want
+				if method == "json" {
+					want = `"` + want + `"`
+				}
+				cases = append(cases, fixture{method + "/" + form + "/" + v.name, v.source, `map{'method':'` + method + `','normalization-form':'` + form + `','use-character-maps':map{codepoints-to-string(65533):'x'}}`, want})
+			}
+		}
+	}
+	for _, form := range []string{"none", "NFC"} {
+		for _, v := range []struct{ name, source, want string }{
+			{"one invalid byte", "\xff", `"\uFFFD"`},
+			{"two invalid bytes", "\xff\xfe", `"\uFFFD\uFFFD"`},
+			{"invalid middle", "A\xffB", `"A\uFFFDB"`},
+			{"valid encoded replacement", "\uFFFD", `"\uFFFD"`},
+			{"valid ASCII", "ABC", `"ABC"`},
+		} {
+			cases = append(cases, fixture{"JSON ASCII/" + form + "/" + v.name, v.source, `map{'method':'json','encoding':'US-ASCII','normalization-form':'` + form + `'}`, v.want})
+		}
+	}
+	for _, method := range []string{"text", "json"} {
+		for _, mapping := range []string{`map{}`, `map{'Q':'y'}`} {
+			want := "\xff"
+			if method == "json" {
+				want = `"` + want + `"`
+			}
+			cases = append(cases, fixture{method + "/unmapped/" + mapping, "\xff", `map{'method':'` + method + `','normalization-form':'NFC','use-character-maps':` + mapping + `}`, want})
+		}
+	}
+	if len(cases) != 34 {
+		t.Fatalf("fixture count %d", len(cases))
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("public serialization panic for source %x: %v", tc.source, p)
+				}
+			}()
+			q, err := e.CompileXPath(t.Context(), `serialize($v,`+tc.options+`)`, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "v"}: transform.Values(transform.String(tc.source))}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := result.Text()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if actual != tc.want {
+				t.Errorf("actual %q bytes %x; want %q bytes %x", actual, actual, tc.want, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathSerializationMalformedUTF8Cancellation(t *testing.T) {
+	t.Parallel()
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, options := range []string{
+		`map{'method':'text','use-character-maps':map{codepoints-to-string(65533):'x'}}`,
+		`map{'method':'json','use-character-maps':map{codepoints-to-string(65533):'x'}}`,
+		`map{'method':'json','encoding':'US-ASCII'}`,
+	} {
+		t.Run(options, func(t *testing.T) {
+			t.Parallel()
+			q, err := e.CompileXPath(t.Context(), `serialize($v,`+options+`)`, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			result, err := q.Evaluate(ctx, nil, transform.XPathContext{Variables: transform.Bindings{{Local: "v"}: transform.Values(transform.String("\xff"))}})
+			if !errors.Is(err, context.Canceled) || result != (transform.Sequence{}) {
+				t.Fatalf("result %+v/error %v; want empty and context.Canceled", result, err)
+			}
+		})
 	}
 }

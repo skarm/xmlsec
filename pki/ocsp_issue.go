@@ -15,6 +15,23 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
+// Complete constructed identifier octets for streamed OCSP response framing.
+const (
+	ocspSequenceTag  = 0x30
+	ocspExplicit0Tag = 0xa0
+)
+
+const (
+	// Hard byte ceiling for supported OCSP response encodings.
+	maximumOCSPResponseBytes = 8 << 20
+	maximumOCSPTimeYear      = 9999
+	ocspOutputChunkBytes     = 32 << 10
+)
+
+const (
+	generalizedTimeEncoding = "generalized"
+)
+
 // OCSPResponseTemplate supplies caller-asserted certificate status and UTC times
 // at whole-second precision. Encoding does not determine whether a certificate is
 // revoked.
@@ -85,17 +102,17 @@ func WriteOCSPResponse(ctx context.Context, dst io.Writer, requestDER, certifica
 }
 
 func genTime(t time.Time) ([]byte, error) {
-	if t.IsZero() || t.Year() < 1 || t.Year() > 9999 || t.Nanosecond() != 0 {
+	if t.IsZero() || t.Year() < 1 || t.Year() > maximumOCSPTimeYear || t.Nanosecond() != 0 {
 		return nil, ErrPolicy
 	}
 
-	return asn1.MarshalWithParams(t.UTC(), "generalized")
+	return asn1.MarshalWithParams(t.UTC(), generalizedTimeEncoding)
 }
 
 func ocspResponseSize(parts [][]byte) (int, error) {
 	size := 0
 	for _, part := range parts {
-		if len(part) > 8<<20-size {
+		if len(part) > maximumOCSPResponseBytes-size {
 			return 0, ErrPolicy
 		}
 
@@ -118,7 +135,7 @@ func writeOCSPResponse(ctx context.Context, dst io.Writer, parts [][]byte, size 
 
 	for _, part := range parts {
 		for len(part) > 0 {
-			chunk := part[:min(len(part), 32<<10)]
+			chunk := part[:min(len(part), ocspOutputChunkBytes)]
 			if _, err := writer.Write(chunk); err != nil {
 				return writer.Written, errors.Join(err, ctx.Err())
 			}
@@ -182,9 +199,9 @@ func prepareOCSPResponse(ctx context.Context, requestDER, certificateDER, issuer
 
 	switch t.Status {
 	case OCSPGood:
-		st = der.Wrap(2, 0, false, nil)
+		st = der.Wrap(asn1.ClassContextSpecific, 0, false, nil)
 	case OCSPUnknown:
-		st = der.Wrap(2, 2, false, nil)
+		st = der.Wrap(asn1.ClassContextSpecific, 2, false, nil)
 	case OCSPRevoked:
 		if !validReason(t.RevocationReason) || t.RevokedAt.IsZero() || t.RevokedAt.After(t.ProducedAt) {
 			return nil, ErrPolicy
@@ -202,7 +219,7 @@ func prepareOCSPResponse(ctx context.Context, requestDER, certificateDER, issuer
 			f = append(f, der.Ctx(0, rr))
 		}
 
-		st = der.Wrap(2, 1, true, bytes.Join(f, nil))
+		st = der.Wrap(asn1.ClassContextSpecific, 1, true, bytes.Join(f, nil))
 	default:
 		return nil, ErrPolicy
 	}
@@ -245,18 +262,18 @@ func prepareOCSPResponse(ctx context.Context, requestDER, certificateDER, issuer
 		return nil, e
 	}
 
-	bv, _ := asn1.Marshal(asn1.BitString{Bytes: value, BitLength: len(value) * 8})
+	bv, _ := asn1.Marshal(asn1.BitString{Bytes: value, BitLength: len(value) * certificateOctetBits})
 
 	bs := [][]byte{tbs, signature.EncAlgorithm(alg), bv}
 	if !bytes.Equal(responder.Raw, issuer.Raw) {
-		bs = append(bs, frameOCSP(0xa0, frameOCSP(0x30, [][]byte{responder.Raw}))...)
+		bs = append(bs, frameOCSP(ocspExplicit0Tag, frameOCSP(ocspSequenceTag, [][]byte{responder.Raw}))...)
 	}
 
 	success, _ := asn1.Marshal(asn1.Enumerated(0))
 
-	response := frameOCSP(0x30, append([][]byte{der.OID(oidOCSPBasic())}, frameOCSP(4, frameOCSP(0x30, bs))...))
+	response := frameOCSP(ocspSequenceTag, append([][]byte{der.OID(oidOCSPBasic())}, frameOCSP(asn1.TagOctetString, frameOCSP(ocspSequenceTag, bs))...))
 
-	return frameOCSP(0x30, append([][]byte{success}, frameOCSP(0xa0, response)...)), nil
+	return frameOCSP(ocspSequenceTag, append([][]byte{success}, frameOCSP(ocspExplicit0Tag, response)...)), nil
 }
 
 func frameOCSP(tag byte, parts [][]byte) [][]byte {

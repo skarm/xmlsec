@@ -13,7 +13,7 @@ import (
 func safeMarshalPublic(public crypto.PublicKey) ([]byte, error) {
 	switch k := public.(type) {
 	case *rsa.PublicKey:
-		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.E < 3 {
+		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.E < minimumRSAExponent {
 			return nil, ErrCertificate
 		}
 	case *ecdsa.PublicKey:

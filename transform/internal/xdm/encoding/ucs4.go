@@ -37,15 +37,15 @@ type ucs4SwapTransformer struct {
 func (t *ucs4SwapTransformer) Reset() {}
 
 func (t *ucs4SwapTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
-	for nSrc+4 <= len(src) {
-		if nDst+4 > len(dst) {
+	for nSrc+utf32CodeUnitBytes <= len(src) {
+		if nDst+utf32CodeUnitBytes > len(dst) {
 			err = transform.ErrShortDst
 			return
 		}
 
 		t.swap(dst[nDst:], src[nSrc:])
-		nDst += 4
-		nSrc += 4
+		nDst += utf32CodeUnitBytes
+		nSrc += utf32CodeUnitBytes
 	}
 
 	if nSrc < len(src) {

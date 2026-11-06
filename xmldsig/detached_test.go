@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/asn1"
@@ -374,6 +375,59 @@ func TestDetachedValidationBeforeSigningIO(t *testing.T) {
 				t.Fatal(out, err, calls)
 			}
 		})
+	}
+}
+
+func TestDetachedSigningMethodPreflight(t *testing.T) {
+	key := rsaKey(t)
+	for _, test := range []struct {
+		name   string
+		method string
+		policy xmldsig.Policy
+		want   error
+	}{
+		{"generic-PSS", xmldsig.RSAPSS, xmldsig.ParameterizedPolicy(), xmldsig.ErrAlgorithm},
+		{"HMAC", xmldsig.HMACSHA256, xmldsig.HMACPolicy(), xmldsig.ErrAlgorithm},
+		{"legacy-generation-denied", xmldsig.RSASHA1, xmldsig.LegacyVerificationPolicy(), xmldsig.ErrPolicy},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				calls++
+				return io.NopCloser(strings.NewReader("payload")), nil
+			})
+			signer := &controlledSigner{Signer: key}
+
+			out, err := xmldsig.SignDetached(t.Context(), []xmldsig.DetachedReference{{URI: uriUrnPayload}}, signer, resolver, xmldsig.DetachedSignOptions{SignatureMethod: test.method, Policy: test.policy})
+			if out != nil || !errors.Is(err, test.want) || calls != 0 || signer.calls != 0 {
+				t.Fatalf("out=%t err=%v resolver=%d signer=%d", out != nil, err, calls, signer.calls)
+			}
+		})
+	}
+}
+
+func TestDetachedLegacyGenerationExplicitOptIn(t *testing.T) {
+	if fips140.Enabled() {
+		t.Skip("legacy compatibility is disabled in FIPS mode")
+	}
+
+	key := rsaKey(t)
+	signer := &controlledSigner{Signer: key}
+	calls := 0
+	resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		return io.NopCloser(strings.NewReader("payload")), nil
+	})
+	policy := xmldsig.LegacyVerificationPolicy()
+	policy.AllowLegacySigning = true
+
+	out, err := xmldsig.SignDetached(t.Context(), []xmldsig.DetachedReference{{URI: uriUrnPayload}}, signer, resolver, xmldsig.DetachedSignOptions{SignatureMethod: xmldsig.RSASHA1, Policy: policy})
+	if err != nil || out == nil || calls != 1 || signer.calls != 1 {
+		t.Fatalf("out=%t err=%v resolver=%d signer=%d", out != nil, err, calls, signer.calls)
+	}
+
+	if _, err := xmldsig.VerifyDetached(t.Context(), out, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnPayload}, Policy: policy}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -751,6 +805,56 @@ func FuzzVerifyDetached(f *testing.F) {
 	})
 }
 
+func TestCanonicalizedReferenceReadsAndTransformsOnce(t *testing.T) {
+	source := `<r xmlns:u="urn:unused">text</r>`
+	calls := 0
+	resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		calls++
+		value := source
+		if calls > 1 {
+			value = `<r>changed</r>`
+		}
+		return io.NopCloser(strings.NewReader(value)), nil
+	})
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "true()", Namespaces: map[string]string{"xml": document.XMLNamespace, "ds": xmldsig.Namespace}}}}
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := xmldsig.SignatureOptions{External: &xmldsig.ExternalReferences{Resolver: resolver, AllowedURIs: []string{uriUrnXML}}, Processing: reference.DefaultOptions()}
+	options.Processing.Extension = engine
+	options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, reference.XPath)
+	draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: uriUrnXML, Transforms: []reference.Transform{program}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Signing and its self-verification each require the same stable resource.
+	options.External.Resolver = xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(source)), nil
+	})
+	key := coreEC(t)
+	signed, err := xmldsig.SignTemplate(t.Context(), draft, selected, key, xmldsig.TemplateSignOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.External.Resolver = resolver
+	calls = 0
+	checked, err := xmldsig.VerifySignature(t.Context(), signed, signed.Root(), key.Public(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = 0
+	var alternate bytes.Buffer
+	_, err = checked.References()[0].WriteCanonicalizedInput(t.Context(), &alternate, reference.Transform{Algorithm: c14n.Exclusive})
+	if err != nil || calls != 1 || alternate.String() != `<r>text</r>` {
+		t.Fatal(alternate.String(), calls, err)
+	}
+	alternate.Reset()
+	if _, err := checked.References()[0].WriteCanonicalizedInput(t.Context(), &alternate, reference.Transform{Algorithm: c14n.Exclusive}); !errors.Is(err, xmldsig.ErrDigest) {
+		t.Fatal("changed resource was accepted", err)
+	}
+}
+
 func loadDetachedResources(t testing.TB) ([]string, xmldsig.Resolver) {
 	t.Helper()
 
@@ -839,53 +943,3 @@ func (stuckReader) Read([]byte) (int, error) { return 0, nil }
 type badCountReader struct{}
 
 func (badCountReader) Read([]byte) (int, error) { return -1, nil }
-
-func TestCanonicalizedReferenceReadsAndTransformsOnce(t *testing.T) {
-	source := `<r xmlns:u="urn:unused">text</r>`
-	calls := 0
-	resolver := xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
-		calls++
-		value := source
-		if calls > 1 {
-			value = `<r>changed</r>`
-		}
-		return io.NopCloser(strings.NewReader(value)), nil
-	})
-	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "true()", Namespaces: map[string]string{"xml": document.XMLNamespace, "ds": xmldsig.Namespace}}}}
-	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	options := xmldsig.SignatureOptions{External: &xmldsig.ExternalReferences{Resolver: resolver, AllowedURIs: []string{uriUrnXML}}, Processing: reference.DefaultOptions()}
-	options.Processing.Extension = engine
-	options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, reference.XPath)
-	draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: uriUrnXML, Transforms: []reference.Transform{program}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Signing and its self-verification each require the same stable resource.
-	options.External.Resolver = xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
-		return io.NopCloser(strings.NewReader(source)), nil
-	})
-	key := coreEC(t)
-	signed, err := xmldsig.SignTemplate(t.Context(), draft, selected, key, xmldsig.TemplateSignOptions{Validation: options})
-	if err != nil {
-		t.Fatal(err)
-	}
-	options.External.Resolver = resolver
-	calls = 0
-	checked, err := xmldsig.VerifySignature(t.Context(), signed, signed.Root(), key.Public(), options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls = 0
-	var alternate bytes.Buffer
-	_, err = checked.References()[0].WriteCanonicalizedInput(t.Context(), &alternate, reference.Transform{Algorithm: c14n.Exclusive})
-	if err != nil || calls != 1 || alternate.String() != `<r>text</r>` {
-		t.Fatal(alternate.String(), calls, err)
-	}
-	alternate.Reset()
-	if _, err := checked.References()[0].WriteCanonicalizedInput(t.Context(), &alternate, reference.Transform{Algorithm: c14n.Exclusive}); !errors.Is(err, xmldsig.ErrDigest) {
-		t.Fatal("changed resource was accepted", err)
-	}
-}

@@ -15,6 +15,12 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
+// Canonical output bytes and the exclusive-prefix vector are independent admission bounds.
+const (
+	defaultCanonicalBytes    = 32 << 20
+	maximumInclusivePrefixes = 128
+)
+
 const (
 	// AlgorithmExclusive is the Exclusive C14N 1.0 algorithm URI.
 	AlgorithmExclusive = "http://www.w3.org/2001/10/xml-exc-c14n#"
@@ -27,10 +33,15 @@ const (
 // CanonicalOptions sets the private canonicalization algorithm, selection and output
 // budget.
 type CanonicalOptions struct {
-	Algorithm         string
-	Comments          bool
+	// Algorithm selects the canonicalization algorithm URI.
+	Algorithm string
+	// Comments includes selected comment nodes in canonical output.
+	Comments bool
+	// InclusivePrefixes retains these prefixes for Exclusive C14N; #default selects
+	// the default namespace.
 	InclusivePrefixes []string
-	MaxBytes          int
+	// MaxBytes bounds canonical output bytes. Zero selects 32 MiB.
+	MaxBytes int
 	// Exclude removes a whole subtree for the restricted enveloped profile.
 	// It is not an XPath filter and is not exposed as a general transform API.
 	Exclude *Node
@@ -38,10 +49,14 @@ type CanonicalOptions struct {
 
 // ExclusiveOptions is retained for the existing signing implementation.
 type ExclusiveOptions struct {
-	Comments          bool
+	// Comments includes selected comment nodes in canonical output.
+	Comments bool
+	// InclusivePrefixes retains these prefixes in Exclusive C14N output.
 	InclusivePrefixes []string
-	MaxBytes          int
-	Exclude           *Node
+	// MaxBytes bounds canonical output bytes. Zero selects 32 MiB.
+	MaxBytes int
+	// Exclude removes the entire selected subtree for enveloped signatures.
+	Exclude *Node
 }
 
 // Exclusive writes Exclusive C14N using the private subtree selection options.
@@ -85,9 +100,17 @@ func Canonical(ctx context.Context, w io.Writer, d *Document, start *Node, set *
 		return err
 	}
 
+	if d.contextual {
+		if err := canonicalNamespaces(ctx, d.contextSource.children); err != nil {
+			return err
+		}
+	}
+
 	var parent *Node
 	if start != nil {
 		parent = start.Parent
+	} else if d.contextual {
+		parent = d.root.Parent
 	}
 
 	writer := canonicalWriter{
@@ -173,14 +196,14 @@ func normalizeCanonicalOptions(opt CanonicalOptions) (CanonicalOptions, error) {
 	}
 
 	if opt.MaxBytes == 0 {
-		opt.MaxBytes = 32 << 20
+		opt.MaxBytes = defaultCanonicalBytes
 	}
 
 	if opt.MaxBytes < 0 {
 		return opt, fmt.Errorf("%w: output budget", ErrLimit)
 	}
 
-	if len(opt.InclusivePrefixes) > 128 {
+	if len(opt.InclusivePrefixes) > maximumInclusivePrefixes {
 		return opt, fmt.Errorf("%w: inclusive prefixes", ErrLimit)
 	}
 
@@ -191,7 +214,7 @@ func canonicalInclusivePrefixes(prefixes []string) (map[string]struct{}, error) 
 	inclusive := make(map[string]struct{}, len(prefixes))
 
 	for _, prefix := range prefixes {
-		if prefix == "#default" {
+		if prefix == lexicon.C14NDefaultPrefixToken {
 			prefix = ""
 		} else if !NCName(prefix) || prefix == lexicon.PrefixXMLNS {
 			return nil, fmt.Errorf("%w: inclusive namespace prefix", ErrMalformed)
@@ -212,6 +235,14 @@ type canonicalSelection struct {
 func (s canonicalSelection) has(n *Node) bool {
 	if n == nil {
 		return false
+	}
+
+	if s.doc.contextual {
+		for parent := s.doc.root.Parent; parent != nil; parent = parent.Parent {
+			if parent == n {
+				return false
+			}
+		}
 	}
 
 	if s.set != nil {
@@ -286,7 +317,7 @@ func (w *canonicalWriter) carriage(value string) {
 	if w.err == nil {
 		w.err = w.escaper.write(&w.out, value, func(c byte) string {
 			if c == '\r' {
-				return "&#xD;"
+				return escapeCarriageReturn
 			}
 
 			return ""
@@ -368,12 +399,12 @@ func (w *canonicalWriter) writeLeaf(n *Node) {
 		w.escape(n.Data, false)
 	case CommentNode:
 		if w.opt.Comments {
-			w.put("<!--")
+			w.put(dtdCommentOpen)
 			w.carriage(n.Data)
 			w.put("-->")
 		}
 	case PINode:
-		w.put("<?")
+		w.put(dtdPIOpen)
 		w.put(n.Name.Local)
 
 		if n.Data != "" {
@@ -668,7 +699,7 @@ func inheritedXMLAttributes(attrs []Attribute, n *Node, algorithm string) []Attr
 				continue
 			}
 
-			if algorithm == AlgorithmCanonical11 && attribute.Name.Local != "lang" && attribute.Name.Local != xmlSpaceName {
+			if algorithm == AlgorithmCanonical11 && attribute.Name.Local != lexicon.AttrLang && attribute.Name.Local != xmlSpaceName {
 				continue
 			}
 

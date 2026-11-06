@@ -163,19 +163,6 @@ func TestEvidenceObservationOwnership(t *testing.T) {
 	}
 }
 
-func evidenceCollector(t testing.TB, transport http.RoundTripper, limits collect.Limits, hook func(*http.Request, []*http.Request) error) *collect.HTTP {
-	t.Helper()
-	c, err := collect.NewHTTP(collect.Config{Client: &http.Client{Transport: transport, CheckRedirect: hook}, AllowedURIs: []string{"https://evidence.test/first", "https://evidence.test/final"}, Limits: limits, Now: func() time.Time { return time.Unix(42, 0) }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
-
-func evidenceResponse(req *http.Request, status int, body io.ReadCloser) *http.Response {
-	return &http.Response{StatusCode: status, Header: make(http.Header), Body: body, Request: req}
-}
-
 func TestEvidenceCollectorSuccessAndConcurrentCalls(t *testing.T) {
 	request := []byte("OCSP request binding")
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -513,34 +500,6 @@ func TestHTTPResolverCancellationAtOpenAndFinalRead(t *testing.T) {
 		})
 	}
 }
-
-type openFunc func(string) (fs.File, error)
-
-func (f openFunc) Open(name string) (fs.File, error) { return f(name) }
-
-type testFile struct {
-	closes   int
-	closeErr error
-}
-
-func (f *testFile) Read([]byte) (int, error) { panic("unexpected read") }
-
-func (f *testFile) Stat() (fs.FileInfo, error) { panic("unexpected stat") }
-
-func (f *testFile) Close() error { f.closes++; return f.closeErr }
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-type callbackBody struct {
-	read  func([]byte) (int, error)
-	close func() error
-}
-
-func (r *callbackBody) Read(p []byte) (int, error) { return r.read(p) }
-
-func (r *callbackBody) Close() error { return r.close() }
 
 func TestEvidenceCollectorPreservesRedirectCloseError(t *testing.T) {
 	closeErr := errors.New("redirect close failed")
@@ -1102,5 +1061,86 @@ func TestEvidenceStoreFailedCleanupStopsAcquisition(t *testing.T) {
 	directories, err = os.ReadDir(parent)
 	if err != nil || len(directories) != 0 {
 		t.Fatal("close did not retry cleanup", directories, err)
+	}
+}
+
+func evidenceCollector(t testing.TB, transport http.RoundTripper, limits collect.Limits, hook func(*http.Request, []*http.Request) error) *collect.HTTP {
+	t.Helper()
+	c, err := collect.NewHTTP(collect.Config{Client: &http.Client{Transport: transport, CheckRedirect: hook}, AllowedURIs: []string{"https://evidence.test/first", "https://evidence.test/final"}, Limits: limits, Now: func() time.Time { return time.Unix(42, 0) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func evidenceResponse(req *http.Request, status int, body io.ReadCloser) *http.Response {
+	return &http.Response{StatusCode: status, Header: make(http.Header), Body: body, Request: req}
+}
+
+type openFunc func(string) (fs.File, error)
+
+func (f openFunc) Open(name string) (fs.File, error) { return f(name) }
+
+type testFile struct {
+	closes   int
+	closeErr error
+}
+
+func (f *testFile) Read([]byte) (int, error) { panic("unexpected read") }
+
+func (f *testFile) Stat() (fs.FileInfo, error) { panic("unexpected stat") }
+
+func (f *testFile) Close() error { f.closes++; return f.closeErr }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type callbackBody struct {
+	read  func([]byte) (int, error)
+	close func() error
+}
+
+func (r *callbackBody) Read(p []byte) (int, error) { return r.read(p) }
+
+func (r *callbackBody) Close() error { return r.close() }
+
+func TestHTTPResolverRejectsMalformedQueryEscapes(t *testing.T) {
+	calls := 0
+	wantQuery := "x=%23%2f%25+value;other=yes"
+	resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{
+		AllowedOrigins: []string{"https://resource.test"},
+		Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if req.URL.RawQuery != wantQuery {
+				t.Errorf("query changed: %q", req.URL.RawQuery)
+			}
+
+			return evidenceResponse(req, http.StatusOK, io.NopCloser(strings.NewReader("body"))), nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, query := range []string{"x=%zz", "x=%", "x=%0"} {
+		stream, err := resolver.Resolve(t.Context(), "https://resource.test/file?"+query)
+		if stream != nil {
+			_ = stream.Close()
+		}
+
+		if stream != nil || !errors.Is(err, resource.ErrPolicy) || calls != 0 {
+			t.Errorf("malformed query %q: stream=%v, err=%v, calls=%d", query, stream, err, calls)
+		}
+	}
+
+	calls = 0
+	stream, err := resolver.Resolve(t.Context(), "https://resource.test/file?"+wantQuery)
+	if err != nil || stream == nil || calls != 1 {
+		t.Fatalf("valid encoded query rejected: %v, calls=%d", err, calls)
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

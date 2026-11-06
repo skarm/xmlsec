@@ -92,7 +92,7 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 		return nil, err
 	}
 
-	children, err := structure(sig, lexicon.DSigElementSignature, "Id")
+	children, err := structure(sig, lexicon.DSigElementSignature, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 
 	si, sv := children[0], children[1]
 
-	signed, err := structure(si, lexicon.DSigElementSignedInfo, "Id")
+	signed, err := structure(si, lexicon.DSigElementSignedInfo, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,12 +130,12 @@ func Verify(ctx context.Context, d *document.Document, key crypto.PublicKey, opt
 		return nil, fmt.Errorf("%w: signature algorithm", ErrPolicy)
 	}
 
-	signatureValue, err := base64Value(ctx, sv, lexicon.DSigElementSignatureValue, 2048, "Id")
+	signatureValue, err := base64Value(ctx, sv, lexicon.DSigElementSignatureValue, maximumSignatureBytes, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
 
-	refs, err := parseEnvelopedReferenceSet(ctx, d, idAttr, signed[2:], sig, p)
+	refs, err := parseEnvelopedReferenceSet(ctx, d, idAttr, signed[signedInfoHeaderChildren:], sig, p)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +367,7 @@ func requiredAttribute(n *tree.Node, name string) (string, error) {
 }
 
 func simpleAlgorithm(n *tree.Node, local string) (string, error) {
-	children, err := structure(n, local, "Algorithm")
+	children, err := structure(n, local, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return "", err
 	}
@@ -376,7 +376,7 @@ func simpleAlgorithm(n *tree.Node, local string) (string, error) {
 		return "", fmt.Errorf("%w: algorithm parameters unsupported", ErrAlgorithm)
 	}
 
-	return requiredAttribute(n, "Algorithm")
+	return requiredAttribute(n, lexicon.SecurityAttrAlgorithm)
 }
 
 func parseCanonicalization(n *tree.Node, local string) ([]string, error) {
@@ -429,18 +429,20 @@ func base64Value(ctx context.Context, n *tree.Node, local string, maxBytes int, 
 }
 
 func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node, root, sig *tree.Node, p Policy) (parsedReference, error) {
+	const referenceChildren = 3 // Transforms, DigestMethod and DigestValue
+
 	var ref parsedReference
 
-	children, err := structure(n, lexicon.DSigElementReference, "URI", "Id")
+	children, err := structure(n, lexicon.DSigElementReference, lexicon.SecurityAttrURI, lexicon.SecurityAttrID)
 	if err != nil {
 		return ref, err
 	}
 
-	if len(children) != 3 || !isDS(children[0], lexicon.DSigElementTransforms) || !isDS(children[1], lexicon.DSigElementDigestMethod) || !isDS(children[2], lexicon.DSigElementDigestValue) {
+	if len(children) != referenceChildren || !isDS(children[0], lexicon.DSigElementTransforms) || !isDS(children[1], lexicon.DSigElementDigestMethod) || !isDS(children[2], lexicon.DSigElementDigestValue) {
 		return ref, fmt.Errorf("%w: Reference children", ErrStructure)
 	}
 
-	uri, err := requiredAttribute(n, "URI")
+	uri, err := requiredAttribute(n, lexicon.SecurityAttrURI)
 	if err != nil {
 		return ref, err
 	}
@@ -519,7 +521,12 @@ func parseReference(ctx context.Context, n *tree.Node, ids map[string]*tree.Node
 // validateSimpleSignatureChildren restricts this profile to SignedInfo,
 // SignatureValue, and an optional untrusted KeyInfo.
 func validateSimpleSignatureChildren(children []*tree.Node) error {
-	if len(children) < 2 || len(children) > 3 || !isDS(children[0], lexicon.DSigElementSignedInfo) || !isDS(children[1], lexicon.DSigElementSignatureValue) || len(children) == 3 && !isDS(children[2], lexicon.DSigElementKeyInfo) {
+	const (
+		signatureRequiredChildren = 2
+		signatureMaximumChildren  = 3
+	)
+
+	if len(children) < signatureRequiredChildren || len(children) > signatureMaximumChildren || !isDS(children[0], lexicon.DSigElementSignedInfo) || !isDS(children[1], lexicon.DSigElementSignatureValue) || len(children) == signatureMaximumChildren && !isDS(children[2], lexicon.DSigElementKeyInfo) {
 		return fmt.Errorf("%w: Signature children", ErrStructure)
 	}
 
@@ -552,7 +559,7 @@ func verifyEnvelopedReferences(ctx context.Context, refs []parsedReference, reso
 		}
 
 		if subtle.ConstantTimeCompare(digest.Sum(nil), ref.digest) != 1 {
-			return &ReferenceError{i, ref.uri, "digest", ErrDigest}
+			return &ReferenceError{i, ref.uri, stageDigest, ErrDigest}
 		}
 
 		result.references = append(result.references, ReferenceResult{uri: ref.uri, digestMethod: ref.digestMethod, target: tree.Wrap(d, ref.target), processed: processed, resolver: resolver, processing: processing, digest: digest.Sum(nil), transforms: ref.transforms})
@@ -562,7 +569,7 @@ func verifyEnvelopedReferences(ctx context.Context, refs []parsedReference, reso
 }
 
 func validateEnvelopedSignedInfo(signed []*tree.Node, maximum int) error {
-	if len(signed) < 3 || len(signed)-2 > maximum || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
+	if len(signed) < signedInfoMinimumChildren || len(signed)-signedInfoHeaderChildren > maximum || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
 		return fmt.Errorf("%w: SignedInfo children or reference count", ErrStructure)
 	}
 
@@ -574,19 +581,36 @@ func validateEnvelopedSignedInfo(signed []*tree.Node, maximum int) error {
 // subresource bytes. Target is valid only for a same-document element reference;
 // it is invalid for whole-document and external octet references.
 type ReferenceResult struct {
-	uri             string
-	digestMethod    string
-	typeURI         string
-	target          document.Element
-	processed       *reference.Report
-	resolver        *reference.SameDocumentResolver
-	external        *referenceSource
-	processing      reference.Options
-	digest          []byte
-	manifestInput   []byte
-	transforms      []reference.Transform
-	coverageDoc     *document.Document
-	coverageRoot    *tree.Node
+	// uri retains the original signed Reference URI spelling.
+	uri string
+	// digestMethod is the authenticated DigestMethod URI.
+	digestMethod string
+	// typeURI retains the signed Reference Type URI.
+	typeURI string
+	// target identifies a same-document element target; other reference forms leave
+	// it invalid.
+	target document.Element
+	// processed retains immutable transform execution diagnostics.
+	processed *reference.Report
+	// resolver retains the same-document snapshot and ID index for approved replay.
+	resolver *reference.SameDocumentResolver
+	// external retains the authorized source and raw-byte binding for external
+	// replay.
+	external *referenceSource
+	// processing retains the approved transform policy for replay.
+	processing reference.Options
+	// digest owns the authenticated digest of the processed reference input.
+	digest []byte
+	// manifestInput retains bounded original bytes for explicit Manifest traversal.
+	manifestInput []byte
+	// transforms retains the authenticated transform chain in execution order.
+	transforms []reference.Transform
+	// coverageDoc binds coverage claims to the exact checked document snapshot.
+	coverageDoc *document.Document
+	// coverageRoot identifies the conservatively proven covered subtree, if any.
+	coverageRoot *tree.Node
+	// coverageExclude identifies the Signature subtree actually removed by an
+	// enveloped transform.
 	coverageExclude *tree.Node
 }
 

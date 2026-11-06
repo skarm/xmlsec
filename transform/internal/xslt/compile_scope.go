@@ -31,7 +31,7 @@ func (c *compiler) recordVariableReferences(names []string, namespaces map[strin
 	// Processor 1.0 retains its evaluation-time variable lookup. A nil position
 	// denotes a static host expression (for example a shadow attribute), whose
 	// restricted static-variable context is checked by its compile-time evaluator.
-	if c.stylesheet.processorLanguage() < 20 || node == nil {
+	if c.stylesheet.processorLanguage() < processorXSLT20 || node == nil {
 		return nil
 	}
 
@@ -121,7 +121,7 @@ func (s *variableScopeChecker) visible(ctx context.Context, reference pendingVar
 
 		element, isElement := node.(*xdm.Element)
 		if isElement && element.URI() == lexicon.NamespaceXSLT {
-			if scope := element.LocalName(); scope == nameStylesheet || scope == fnNameTransform || scope == namePackage {
+			if scope := element.LocalName(); scope == nameStylesheet || scope == lexicon.XSLTElementTransform || scope == namePackage {
 				break
 			}
 
@@ -169,7 +169,7 @@ func isGlobalBindingElement(element *xdm.Element) bool {
 	}
 
 	switch parent.LocalName() {
-	case nameStylesheet, fnNameTransform, namePackage, xslElemOverride:
+	case nameStylesheet, lexicon.XSLTElementTransform, namePackage, xslElemOverride:
 		return true
 	default:
 		return false
@@ -183,7 +183,7 @@ func isScopeBarrier(element *xdm.Element) bool {
 func implicitVariableVisible(element *xdm.Element, reference pendingVariableReference) bool {
 	switch element.LocalName() {
 	case lexicon.XSLTElementAccumulatorRule:
-		return reference.name == lexicon.AttrValue && !(reference.accumulatorRuleMatch && element == reference.node)
+		return reference.name == accumulatorVariableValue && !(reference.accumulatorRuleMatch && element == reference.node)
 	case lexicon.XSLTElementCatch:
 		local, inErrors := strings.CutPrefix(reference.name, "{"+xpath.NSErr+"}")
 		if !inErrors {
@@ -191,7 +191,7 @@ func implicitVariableVisible(element *xdm.Element, reference pendingVariableRefe
 		}
 
 		switch local {
-		case "code", "description", lexicon.AttrValue, "module", "line-number", "column-number":
+		case catchVariableCode, catchVariableDescription, catchVariableValue, catchVariableModule, catchVariableLine, catchVariableColumn:
 			return true
 		}
 	}

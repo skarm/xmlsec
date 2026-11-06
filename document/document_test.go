@@ -500,6 +500,22 @@ func BenchmarkParse(b *testing.B) {
 	}
 }
 
+func BenchmarkParseEmptyElements(b *testing.B) {
+	for _, size := range []int{16, 1024, 8192} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			source := []byte(`<r>` + strings.Repeat(`<item a="1"/>`, size) + `</r>`)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(source)))
+			for b.Loop() {
+				doc, err := document.Parse(b.Context(), source, document.DefaultLimits())
+				if err != nil || doc.Root().Name().Local != "r" {
+					b.Fatal("empty element parsing changed", err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkLongCharacterReference measures a valid reference with leading zeros.
 // The expanded result remains one character as the encoded input grows.
 func BenchmarkLongCharacterReference(b *testing.B) {

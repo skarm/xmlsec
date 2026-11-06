@@ -79,60 +79,6 @@ func TestKeyWrapSuites(t *testing.T) {
 	}
 }
 
-func wrapAlgorithms() []algorithmSpec {
-	return []algorithmSpec{{xmlenc.AES128KeyWrap, 16}, {xmlenc.AES192KeyWrap, 24}, {xmlenc.AES256KeyWrap, 32}}
-}
-
-func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgorithm *algorithmSpec, ctx *context.Context, source **document.Document, before *[]byte) {
-	kek := bytes.Repeat([]byte{0x27}, keyAlgorithm.keyBytes)
-	originalKEK := bytes.Clone(kek)
-
-	options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{DataAlgorithm: dataAlgorithm.uri}, KeyAlgorithm: keyAlgorithm.uri}
-	for _, plaintext := range [][]byte{{}, []byte("binary\x00\xff"), bytes.Repeat([]byte{1, 2, 3}, 1000)} {
-		doc, err := xmlenc.EncryptBytesWithKeyWrap(*ctx, plaintext, kek, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		wire, _ := doc.XML(t.Context())
-		doc = parse(t, wire)
-
-		out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options)
-		if err != nil || !bytes.Equal(out, plaintext) {
-			t.Fatalf("roundtrip: %v", err)
-		}
-
-		wrapped, _ := base64.StdEncoding.DecodeString(doc.Root().Children()[1].Children()[0].Children()[1].Children()[0].Text())
-		if len(wrapped) != dataAlgorithm.keyBytes+8 {
-			t.Fatal("wrong wrapped length")
-		}
-	}
-
-	doc, err := xmlenc.EncryptDocumentWithKeyWrap(*ctx, *source, kek, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := xmlenc.DecryptDocumentWithKeyWrap(*ctx, doc, kek, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wire, _ := out.XML(t.Context())
-	if bytes.Contains(wire, []byte("outside")) || !bytes.Contains(wire, []byte("<!--inside-->")) {
-		t.Fatalf("element scope: %s", wire)
-	}
-
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
-		t.Fatal("type confusion", err)
-	}
-
-	after, _ := (*source).XML(t.Context())
-	if !bytes.Equal(*before, after) || !bytes.Equal(kek, originalKEK) {
-		t.Fatal("source document or KEK mutated")
-	}
-}
-
 func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 	ctx := t.Context()
 	kek := bytes.Repeat([]byte{0x42}, 32)
@@ -359,27 +305,6 @@ func FuzzDecryptWithKeyWrap(f *testing.F) {
 	})
 }
 
-type algorithmSpec struct {
-	uri      string
-	keyBytes int
-}
-
-func gcmAlgorithms() []algorithmSpec {
-	return []algorithmSpec{{xmlenc.AES128GCM, 16}, {xmlenc.AES192GCM, 24}, {xmlenc.AES256GCM, 32}}
-}
-
-type failingProvider struct {
-	public *rsa.PublicKey
-	result []byte
-	err    error
-}
-
-func (p *failingProvider) Public() crypto.PublicKey { return p.public }
-
-func (p *failingProvider) Decrypt(_ io.Reader, _ []byte, _ crypto.DecrypterOpts) ([]byte, error) {
-	return p.result, p.err
-}
-
 func TestLegacyCBCKeyTransports(t *testing.T) {
 	if fips140.Enabled() {
 		t.Skip("legacy CBC is forbidden in FIPS mode")
@@ -502,25 +427,6 @@ func TestLegacyCBCProviderAndPlaintextLimits(t *testing.T) {
 			}
 		})
 	}
-}
-
-func methodKeySizeFixture(t *testing.T, raw []byte, algorithm, content string, last bool) []byte {
-	t.Helper()
-	start := []byte(`<xenc:EncryptionMethod Algorithm="` + algorithm + `">`)
-	i := bytes.Index(raw, start)
-	if i < 0 {
-		t.Fatal("missing EncryptionMethod fixture", algorithm)
-	}
-	position := i + len(start)
-	if last {
-		end := bytes.Index(raw[position:], []byte(`</xenc:EncryptionMethod>`))
-		if end < 0 {
-			t.Fatal("missing method close")
-		}
-		position += end
-	}
-	out := append(bytes.Clone(raw[:position]), []byte(content)...)
-	return append(out, raw[position:]...)
 }
 
 func TestEncryptionMethodKeySize(t *testing.T) {
@@ -882,4 +788,98 @@ func TestKeyGraphImplicitCanonicalization(t *testing.T) {
 			}
 		})
 	}
+}
+
+func wrapAlgorithms() []algorithmSpec {
+	return []algorithmSpec{{xmlenc.AES128KeyWrap, 16}, {xmlenc.AES192KeyWrap, 24}, {xmlenc.AES256KeyWrap, 32}}
+}
+
+func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgorithm *algorithmSpec, ctx *context.Context, source **document.Document, before *[]byte) {
+	kek := bytes.Repeat([]byte{0x27}, keyAlgorithm.keyBytes)
+	originalKEK := bytes.Clone(kek)
+
+	options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{DataAlgorithm: dataAlgorithm.uri}, KeyAlgorithm: keyAlgorithm.uri}
+	for _, plaintext := range [][]byte{{}, []byte("binary\x00\xff"), bytes.Repeat([]byte{1, 2, 3}, 1000)} {
+		doc, err := xmlenc.EncryptBytesWithKeyWrap(*ctx, plaintext, kek, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		wire, _ := doc.XML(t.Context())
+		doc = parse(t, wire)
+
+		out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options)
+		if err != nil || !bytes.Equal(out, plaintext) {
+			t.Fatalf("roundtrip: %v", err)
+		}
+
+		wrapped, _ := base64.StdEncoding.DecodeString(doc.Root().Children()[1].Children()[0].Children()[1].Children()[0].Text())
+		if len(wrapped) != dataAlgorithm.keyBytes+8 {
+			t.Fatal("wrong wrapped length")
+		}
+	}
+
+	doc, err := xmlenc.EncryptDocumentWithKeyWrap(*ctx, *source, kek, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := xmlenc.DecryptDocumentWithKeyWrap(*ctx, doc, kek, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wire, _ := out.XML(t.Context())
+	if bytes.Contains(wire, []byte("outside")) || !bytes.Contains(wire, []byte("<!--inside-->")) {
+		t.Fatalf("element scope: %s", wire)
+	}
+
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		t.Fatal("type confusion", err)
+	}
+
+	after, _ := (*source).XML(t.Context())
+	if !bytes.Equal(*before, after) || !bytes.Equal(kek, originalKEK) {
+		t.Fatal("source document or KEK mutated")
+	}
+}
+
+type algorithmSpec struct {
+	uri      string
+	keyBytes int
+}
+
+func gcmAlgorithms() []algorithmSpec {
+	return []algorithmSpec{{xmlenc.AES128GCM, 16}, {xmlenc.AES192GCM, 24}, {xmlenc.AES256GCM, 32}}
+}
+
+type failingProvider struct {
+	public *rsa.PublicKey
+	result []byte
+	err    error
+}
+
+func (p *failingProvider) Public() crypto.PublicKey { return p.public }
+
+func (p *failingProvider) Decrypt(_ io.Reader, _ []byte, _ crypto.DecrypterOpts) ([]byte, error) {
+	return p.result, p.err
+}
+
+func methodKeySizeFixture(t *testing.T, raw []byte, algorithm, content string, last bool) []byte {
+	t.Helper()
+	start := []byte(`<xenc:EncryptionMethod Algorithm="` + algorithm + `">`)
+	i := bytes.Index(raw, start)
+	if i < 0 {
+		t.Fatal("missing EncryptionMethod fixture", algorithm)
+	}
+	position := i + len(start)
+	if last {
+		end := bytes.Index(raw[position:], []byte(`</xenc:EncryptionMethod>`))
+		if end < 0 {
+			t.Fatal("missing method close")
+		}
+		position += end
+	}
+	out := append(bytes.Clone(raw[:position]), []byte(content)...)
+	return append(out, raw[position:]...)
 }

@@ -25,6 +25,33 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Bounded reference-decoder states for numeric prefix, predefined entity name and digits; these tags do not change the XML characters accepted by the parser.
+const (
+	referencePhaseDigits = 'd'
+)
+
+// Internal fully-normalized preview states. normalizationModeText denotes
+// character data; input markup characters are tested independently of these tags.
+const (
+	normalizationModeText             = 0
+	normalizationModeCDATA            = 'd'
+	normalizationModeDeclarationStart = '!'
+	normalizationModePI               = 'p'
+	normalizationModeRawHTML          = 'r'
+	normalizationModeTag              = 't'
+)
+
+// Fully-normalized output charges one work unit per this many source bytes, plus the existing per-call unit; this is not a size ceiling.
+const (
+	normalizationWorkBytesPerUnit = 64
+)
+
+// Namespace-state categories in the fully-normalized HTML preview; XHTML is treated as HTML only under the existing HTML5 selection.
+const (
+	htmlNamespaceAbsent = 0
+	htmlNamespaceXHTML  = 1
+)
+
 // SerializeItems writes a sequence of items (maps, arrays, atomics, nodes)
 // using the specified output definition's method (json or adaptive).
 // This is used for result-documents with method="json" or method="adaptive".
@@ -77,7 +104,11 @@ func SerializeResult(w io.Writer, doc *xdm.Document, outDef *OutputDef) error {
 // serializeItemsWithSeparator serializes a sequence of items using the specified
 // output method, joining them with the item-separator.
 func serializeItemsWithSeparator(w io.Writer, items xdm.Sequence, _ *xdm.Document, outDef *OutputDef) error {
-	sep := "\n"
+	const (
+		defaultSeparatedItemSeparator = "\n"
+	)
+
+	sep := defaultSeparatedItemSeparator
 	if outDef.ItemSeparator != nil {
 		sep = *outDef.ItemSeparator
 	} else if outDef.ItemSeparatorAbsent {
@@ -219,7 +250,7 @@ func serializeResult(ctx context.Context, w io.Writer, doc *xdm.Document, outDef
 	}
 
 	enc := strings.ToLower(outDef.Encoding)
-	isUTF16 := enc == lexicon.EncodingUTF16 || enc == nameUtf16
+	isUTF16 := enc == lexicon.EncodingUTF16 || enc == nameUTF16
 	needsEncodingConversion := enc != "" && enc != lexicon.EncodingUTF8 && enc != lexicon.EncodingUTF8Alt && !isUTF16
 
 	needsNormalization := outDef.NormalizationForm != "" && outDef.NormalizationForm != normalizationFormNone
@@ -395,7 +426,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 	}
 
 	// SEPM0010: undeclare-prefixes="yes" with version="1.0"
-	if outDef.UndeclarePrefixes && (method == lexicon.MethodXML || method == lexicon.MethodXHTML) && (outDef.Version == "" || outDef.Version == lexicon.XSLTVersion10) {
+	if outDef.UndeclarePrefixes && (method == lexicon.MethodXML || method == lexicon.MethodXHTML) && (outDef.Version == "" || outDef.Version == lexicon.XMLVersion10) {
 		return dynamicError(lexicon.ErrSEPM0010,
 			"undeclare-prefixes=\"yes\" is not allowed with version=\"1.0\"")
 	}
@@ -405,7 +436,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 	}
 
 	enc := strings.ToLower(outDef.Encoding)
-	if enc != "" && enc != lexicon.EncodingUTF8 && enc != lexicon.EncodingUTF8Alt && enc != lexicon.EncodingUTF16 && enc != nameUtf16 {
+	if enc != "" && enc != lexicon.EncodingUTF8 && enc != lexicon.EncodingUTF8Alt && enc != lexicon.EncodingUTF16 && enc != nameUTF16 {
 		_, encErr := htmlindex.Get(enc)
 		if encErr != nil {
 			return dynamicError(errCodeSESU0007,
@@ -421,7 +452,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 	// SESU0011: unsupported normalization-form
 	if outDef.NormalizationForm != "" && outDef.NormalizationForm != normalizationFormNone {
 		switch outDef.NormalizationForm {
-		case normalizationFormNFC, "NFD", "NFKC", "NFKD", lexicon.NormFullyNormalized:
+		case lexicon.NormalizationFormNFC, lexicon.NormalizationFormNFD, lexicon.NormalizationFormNFKC, lexicon.NormalizationFormNFKD, lexicon.NormFullyNormalized:
 			// supported
 		default:
 			return dynamicError(lexicon.ErrSESU0011,
@@ -468,11 +499,11 @@ func isValidPublicID(s string) bool { return xmloutput.ValidPublicID(s) }
 func checkFullyNormalized(ctx context.Context, doc *xdm.Document, definition *OutputDef) error {
 	preview := cloneOutputDef(definition)
 
-	preview.NormalizationForm = normalizationFormNFC
+	preview.NormalizationForm = lexicon.NormalizationFormNFC
 	if len(preview.ResolvedCharMap) != 0 {
 		preview.ResolvedCharMap = make(map[rune]string, len(definition.ResolvedCharMap))
 		for character, replacement := range definition.ResolvedCharMap {
-			if err := xpath.Charge(ctx, 1+len(replacement)/64); err != nil {
+			if err := xpath.Charge(ctx, 1+len(replacement)/normalizationWorkBytesPerUnit); err != nil {
 				return err
 			}
 			// Map-generated references are deliberately opaque (SER 5.1.9).
@@ -507,7 +538,7 @@ type fullyNormalizedWriter struct {
 }
 
 func (writer *fullyNormalizedWriter) Write(p []byte) (int, error) {
-	if err := xpath.Charge(writer.ctx, 1+len(p)/64); err != nil {
+	if err := xpath.Charge(writer.ctx, 1+len(p)/normalizationWorkBytesPerUnit); err != nil {
 		return 0, err
 	}
 
@@ -521,7 +552,7 @@ func (writer *fullyNormalizedWriter) Write(p []byte) (int, error) {
 }
 
 func (writer *fullyNormalizedWriter) WriteString(s string) (int, error) {
-	if err := xpath.Charge(writer.ctx, 1+len(s)/64); err != nil {
+	if err := xpath.Charge(writer.ctx, 1+len(s)/normalizationWorkBytesPerUnit); err != nil {
 		return 0, err
 	}
 
@@ -543,7 +574,11 @@ func (writer *fullyNormalizedWriter) finish() error {
 }
 
 func (writer *fullyNormalizedWriter) consumeByte(b byte) error {
-	if writer.checked%4096 == 0 {
+	const (
+		normalizationCancelPollBytes = 4096
+	)
+
+	if writer.checked%normalizationCancelPollBytes == 0 {
 		if err := writer.ctx.Err(); err != nil {
 			return err
 		}
@@ -585,7 +620,7 @@ func (writer *fullyNormalizedWriter) consumeRune(r rune) error {
 		return nil
 	}
 
-	if r == '&' && writer.state.mode == 0 && !writer.state.plain {
+	if r == '&' && writer.state.mode == normalizationModeText && !writer.state.plain {
 		writer.reference.active = true
 		return nil
 	}
@@ -615,27 +650,40 @@ type fullyNormalizedReference struct {
 }
 
 func (reference *fullyNormalizedReference) add(r rune) {
+	const (
+		referencePhaseStart        = 0
+		referencePhaseName         = 'n'
+		referencePhaseNumericStart = '#'
+	)
+
+	const (
+		maximumPredefinedEntityNameBytes = 4
+		referenceDecimalRadix            = 10
+		referenceDigitParseBits          = 8
+		referenceHexadecimalRadix        = 16
+	)
+
 	switch reference.phase {
-	case 0:
+	case referencePhaseStart:
 		if r == '#' {
-			reference.phase = '#'
+			reference.phase = referencePhaseNumericStart
 			return
 		}
 
-		reference.phase = 'n'
-	case '#':
+		reference.phase = referencePhaseName
+	case referencePhaseNumericStart:
 		if r == 'x' {
 			reference.hexadecimal = true
-			reference.phase = 'd'
+			reference.phase = referencePhaseDigits
 
 			return
 		}
 
-		reference.phase = 'd'
+		reference.phase = referencePhaseDigits
 	}
 
-	if reference.phase == 'n' {
-		if len(reference.name) < 4 {
+	if reference.phase == referencePhaseName {
+		if len(reference.name) < maximumPredefinedEntityNameBytes {
 			reference.name += string(r)
 		} else {
 			reference.invalid = true
@@ -644,12 +692,12 @@ func (reference *fullyNormalizedReference) add(r rune) {
 		return
 	}
 
-	base := uint32(10)
+	base := uint32(referenceDecimalRadix)
 	if reference.hexadecimal {
-		base = 16
+		base = referenceHexadecimalRadix
 	}
 
-	digit, err := strconv.ParseUint(string(r), int(base), 8)
+	digit, err := strconv.ParseUint(string(r), int(base), referenceDigitParseBits)
 	if err != nil || reference.number > (utf8.MaxRune-uint32(digit))/base {
 		reference.invalid = true
 		return
@@ -660,19 +708,26 @@ func (reference *fullyNormalizedReference) add(r rune) {
 }
 
 func (reference *fullyNormalizedReference) value() rune {
-	if !reference.invalid && reference.phase == 'd' && reference.digits != 0 {
+	const (
+		predefinedEntityApostrophe  = "apos"
+		predefinedEntityGreaterThan = "gt"
+		predefinedEntityLessThan    = "lt"
+		predefinedEntityQuote       = "quot"
+	)
+
+	if !reference.invalid && reference.phase == referencePhaseDigits && reference.digits != 0 {
 		return rune(reference.number) // #nosec G115 -- add rejects references above utf8.MaxRune before updating number.
 	}
 
 	if !reference.invalid {
 		switch reference.name {
-		case "lt":
+		case predefinedEntityLessThan:
 			return '<'
-		case "gt":
+		case predefinedEntityGreaterThan:
 			return '>'
-		case "quot":
+		case predefinedEntityQuote:
 			return '"'
-		case "apos":
+		case predefinedEntityApostrophe:
 			return '\''
 		}
 	}
@@ -727,40 +782,46 @@ func (state *fullyNormalizedText) data(r rune) error {
 }
 
 func (state *fullyNormalizedText) consume(r rune) error {
+	const (
+		normalizationModeComment     = 'c'
+		normalizationModeDeclaration = 'v'
+		normalizationModeMarkupStart = '<'
+	)
+
 	if state.plain {
 		return state.data(r)
 	}
 
 	switch state.mode {
-	case 0:
+	case normalizationModeText:
 		if r == '<' {
-			state.mode = '<'
+			state.mode = normalizationModeMarkupStart
 			return nil
 		}
 
 		return state.data(r)
-	case '<':
+	case normalizationModeMarkupStart:
 		return state.markupStart(r)
-	case '!':
+	case normalizationModeDeclarationStart:
 		state.prefix += string(r)
 		switch state.prefix {
 		case "--":
-			state.mode, state.tail = 'c', 0
+			state.mode, state.tail = normalizationModeComment, 0
 		case "[CDATA[":
-			state.mode, state.tail, state.started = 'd', 0, false
+			state.mode, state.tail, state.started = normalizationModeCDATA, 0, false
 		default:
 			if !strings.HasPrefix("--", state.prefix) && !strings.HasPrefix("[CDATA[", state.prefix) { //nolint:gocritic // The candidate delimiters must start with the partial prefix.
-				state.mode = 'v'
+				state.mode = normalizationModeDeclaration
 				state.declaration(r)
 			}
 		}
-	case 't':
+	case normalizationModeTag:
 		return state.tag(r)
-	case 'c', 'p', 'd':
+	case normalizationModeComment, normalizationModePI, normalizationModeCDATA:
 		return state.delimited(r)
-	case 'v':
+	case normalizationModeDeclaration:
 		state.declaration(r)
-	case 'r':
+	case normalizationModeRawHTML:
 		return state.htmlRawRune(r)
 	}
 
@@ -770,14 +831,14 @@ func (state *fullyNormalizedText) consume(r rune) error {
 func (state *fullyNormalizedText) markupStart(r rune) error {
 	switch r {
 	case '!':
-		state.mode, state.prefix = '!', ""
+		state.mode, state.prefix = normalizationModeDeclarationStart, ""
 	case '?':
-		state.mode, state.tail, state.nameStart = 'p', 0, true
+		state.mode, state.tail, state.nameStart = normalizationModePI, 0, true
 	case '/':
-		state.mode, state.nameStart = 't', true
+		state.mode, state.nameStart = normalizationModeTag, true
 		state.beginHTMLTag(true)
 	default:
-		state.mode, state.nameStart = 't', true
+		state.mode, state.nameStart = normalizationModeTag, true
 		state.beginHTMLTag(false)
 
 		return state.tag(r)
@@ -787,16 +848,21 @@ func (state *fullyNormalizedText) markupStart(r rune) error {
 }
 
 func (state *fullyNormalizedText) tag(r rune) error {
+	const (
+		htmlNamespaceForeign        = 2
+		normalizationHTMLTokenBytes = 9
+	)
+
 	if state.quote != 0 {
 		if state.html && state.htmlAttributeNS {
 			if r == state.quote {
 				switch state.htmlURI {
 				case "":
-					state.htmlNamespace = 0
+					state.htmlNamespace = htmlNamespaceAbsent
 				case lexicon.NamespaceXHTML:
-					state.htmlNamespace = 1
+					state.htmlNamespace = htmlNamespaceXHTML
 				default:
-					state.htmlNamespace = 2
+					state.htmlNamespace = htmlNamespaceForeign
 				}
 
 				state.htmlAttributeNS = false
@@ -818,7 +884,7 @@ func (state *fullyNormalizedText) tag(r rune) error {
 		state.quote = r
 	case '>':
 		state.finishHTMLToken()
-		state.mode, state.started, state.nameStart = 0, false, false
+		state.mode, state.started, state.nameStart = normalizationModeText, false, false
 		state.finishHTMLTag()
 	case ' ', '\t', '\n', '\r':
 		state.finishHTMLToken()
@@ -831,7 +897,7 @@ func (state *fullyNormalizedText) tag(r rune) error {
 		state.htmlSelfClosing = true
 		state.nameStart = false
 	default:
-		if state.html && len(state.htmlToken) < 9 {
+		if state.html && len(state.htmlToken) < normalizationHTMLTokenBytes {
 			state.htmlToken += string(r)
 		}
 
@@ -853,7 +919,7 @@ func (state *fullyNormalizedText) beginHTMLTag(closing bool) {
 	state.htmlName, state.htmlToken, state.htmlURI = "", "", ""
 	state.htmlHadName, state.htmlAttributeNS, state.htmlSelfClosing = false, false, false
 
-	state.htmlNamespace = 0
+	state.htmlNamespace = htmlNamespaceAbsent
 	if len(state.htmlNamespaces) > 0 {
 		state.htmlNamespace = state.htmlNamespaces[len(state.htmlNamespaces)-1]
 	}
@@ -868,7 +934,7 @@ func (state *fullyNormalizedText) finishHTMLToken() {
 		state.htmlName = htmlpkg.LowerASCII(state.htmlToken)
 		state.htmlHadName = true
 	} else {
-		state.htmlAttributeNS = state.htmlToken == "xmlns"
+		state.htmlAttributeNS = state.htmlToken == lexicon.PrefixXMLNS
 		state.htmlURI = ""
 	}
 
@@ -876,6 +942,11 @@ func (state *fullyNormalizedText) finishHTMLToken() {
 }
 
 func (state *fullyNormalizedText) finishHTMLTag() {
+	const (
+		htmlRawTextScript = "script"
+		htmlRawTextStyle  = "style"
+	)
+
 	if !state.html {
 		return
 	}
@@ -885,14 +956,14 @@ func (state *fullyNormalizedText) finishHTMLTag() {
 		return
 	}
 
-	isHTML := state.htmlNamespace == 0 || state.html5 && state.htmlNamespace == 1
+	isHTML := state.htmlNamespace == htmlNamespaceAbsent || state.html5 && state.htmlNamespace == htmlNamespaceXHTML
 	if state.htmlSelfClosing || isHTML && htmlpkg.SerializationVoidElement(state.htmlName, state.html5, state.edition) {
 		return
 	}
 
 	state.htmlNamespaces = append(state.htmlNamespaces, state.htmlNamespace)
-	if isHTML && (state.htmlName == "script" || state.htmlName == "style") {
-		state.mode = 'r'
+	if isHTML && (state.htmlName == htmlRawTextScript || state.htmlName == htmlRawTextStyle) {
+		state.mode = normalizationModeRawHTML
 		state.htmlRaw = "</" + state.htmlName
 		state.htmlRawMatched = 0
 	}
@@ -912,12 +983,12 @@ func (state *fullyNormalizedText) htmlRawRune(r rune) error {
 	if state.htmlRawMatched == len(state.htmlRaw) {
 		switch r {
 		case '>':
-			state.mode, state.started = 0, false
+			state.mode, state.started = normalizationModeText, false
 			state.popHTMLNamespace()
 
 			return nil
 		case ' ', '\t', '\n', '\r', '/':
-			state.mode = 't'
+			state.mode = normalizationModeTag
 			state.htmlClosing = true
 			state.htmlHadName = true
 			state.htmlToken = ""
@@ -943,7 +1014,7 @@ func (state *fullyNormalizedText) htmlRawRune(r rune) error {
 }
 
 func (state *fullyNormalizedText) delimited(r rune) error {
-	if state.mode == 'p' && state.nameStart {
+	if state.mode == normalizationModePI && state.nameStart {
 		state.nameStart = false
 
 		if err := fullyNormalizedName(string(r)); err != nil {
@@ -954,14 +1025,14 @@ func (state *fullyNormalizedText) delimited(r rune) error {
 	delimiter, needed := '-', 2
 
 	switch state.mode {
-	case 'p':
+	case normalizationModePI:
 		delimiter, needed = '?', 1
-	case 'd':
+	case normalizationModeCDATA:
 		delimiter = ']'
 	}
 
 	if r == '>' && state.tail >= needed {
-		state.mode, state.tail, state.started = 0, 0, false
+		state.mode, state.tail, state.started = normalizationModeText, 0, false
 		return nil
 	}
 
@@ -971,7 +1042,7 @@ func (state *fullyNormalizedText) delimited(r rune) error {
 		state.tail = 0
 	}
 
-	if state.mode == 'd' {
+	if state.mode == normalizationModeCDATA {
 		return state.data(r)
 	}
 
@@ -998,7 +1069,7 @@ func (state *fullyNormalizedText) declaration(r rune) {
 		}
 	case '>':
 		if state.depth == 0 {
-			state.mode, state.started = 0, false
+			state.mode, state.started = normalizationModeText, false
 		}
 	}
 }
@@ -1016,16 +1087,20 @@ func effectiveHTMLVersion5(definition *OutputDef) bool {
 // isHTMLVersion5 returns true when the html-version string represents
 // version 5 or higher (e.g. "5", "5.0", "5.00", "5.1").
 func isHTMLVersion5(v string) bool {
+	const (
+		html5MinimumVersion = 5.0
+	)
+
 	if v == "" {
 		return false
 	}
 
-	f, err := strconv.ParseFloat(v, 64)
+	f, err := strconv.ParseFloat(v, float64ParseBits)
 	if err != nil {
 		return false
 	}
 
-	return f >= 5.0
+	return f >= html5MinimumVersion
 }
 
 // detectOutputMethod applies the host-language default for an unspecified method.
@@ -1036,7 +1111,7 @@ func detectOutputMethod(outDef *OutputDef, doc *xdm.Document, autoHTML bool) {
 				// Root is "html" in no namespace → HTML output method.
 				outDef.Method = lexicon.MethodHTML
 				outDef.OmitDeclaration = true
-			} else if outDef.languageVersion != 10 && !outDef.implicitXMLMethod && root.LocalName() == lexicon.MethodHTML && root.URI() == lexicon.NamespaceXHTML {
+			} else if outDef.languageVersion != processorXSLT10 && !outDef.implicitXMLMethod && root.LocalName() == lexicon.MethodHTML && root.URI() == lexicon.NamespaceXHTML {
 				// Root is "html" in XHTML namespace → XHTML output method.
 				outDef.Method = lexicon.MethodXHTML
 			}
@@ -1059,13 +1134,13 @@ func validateXMLOutputVersion(method, version string) error {
 }
 
 func validateSerializationParamsLanguageVersion(outDef *OutputDef, method string) error {
-	if outDef.languageVersion != 10 && outDef.OmitDeclaration && (method == lexicon.MethodXML || method == lexicon.MethodXHTML) {
+	if outDef.languageVersion != processorXSLT10 && outDef.OmitDeclaration && (method == lexicon.MethodXML || method == lexicon.MethodXHTML) {
 		if outDef.Standalone == lexicon.ValueYes || outDef.Standalone == lexicon.ValueNo {
 			return dynamicError(lexicon.ErrSEPM0009,
 				"omit-xml-declaration=\"yes\" conflicts with standalone=%q", outDef.Standalone)
 		}
 
-		if outDef.DoctypeSystem != "" && outDef.Version != "" && outDef.Version != lexicon.XSLTVersion10 {
+		if outDef.DoctypeSystem != "" && outDef.Version != "" && outDef.Version != lexicon.XMLVersion10 {
 			return dynamicError(lexicon.ErrSEPM0009,
 				"omit-xml-declaration=\"yes\" conflicts with doctype-system and version=%q", outDef.Version)
 		}
@@ -1078,12 +1153,12 @@ func serializeResultByteOrderMark(outDef *OutputDef, isUTF16 bool, w io.Writer) 
 	if outDef.ByteOrderMark || isUTF16 {
 		if isUTF16 {
 			// UTF-16 BE BOM
-			if werr := writeFullBytes(w, []byte{0xFE, 0xFF}); werr != nil {
+			if werr := writeFullBytes(w, []byte(lexicon.BOMUTF16BE)); werr != nil {
 				return werr
 			}
 		} else {
 			// UTF-8 BOM
-			if werr := writeFullBytes(w, []byte{0xEF, 0xBB, 0xBF}); werr != nil {
+			if werr := writeFullBytes(w, []byte(lexicon.BOMUTF8)); werr != nil {
 				return werr
 			}
 		}
@@ -1109,7 +1184,7 @@ func validateSerializationParamsStandalone(outDef *OutputDef, method string, doc
 // allowsHTMLAutoDetection excludes XSLT 1.0 results with leading non-whitespace
 // text; newer language versions inspect the document element directly.
 func allowsHTMLAutoDetection(outDef *OutputDef, doc *xdm.Document) bool {
-	if outDef.languageVersion == 10 {
+	if outDef.languageVersion == processorXSLT10 {
 		for child := range xdm.Children(doc) {
 			if child.Type() == xdm.ElementNode {
 				break
@@ -1307,7 +1382,11 @@ func validOutputXMLVersion(v string) string {
 // isValidOutputXMLVersion reports whether v is a valid XML VersionNum
 // ("1." followed by one or more digits, XML §2.8).
 func isValidOutputXMLVersion(v string) bool {
-	rest, ok := strings.CutPrefix(v, "1.")
+	const (
+		xmlVersionNumberPrefix = "1."
+	)
+
+	rest, ok := strings.CutPrefix(v, xmlVersionNumberPrefix)
 	if !ok || rest == "" {
 		return false
 	}

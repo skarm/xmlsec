@@ -28,6 +28,14 @@ import (
 )
 
 const (
+	maximumHistoricalSignatureBytes        = 1 << 20
+	maximumHistoricalSignatureLexicalBytes = 1 << 20
+	// Caps preservation properties examined while building or validating historical evidence.
+	maximumPreservationProperties        = 140
+	maximumPreservationTimestampChildren = 32
+)
+
+const (
 	historicalSignedInfoElement     = lexicon.DSigElementSignedInfo
 	historicalSignatureValueElement = lexicon.DSigElementSignatureValue
 	historicalDataObject            = historicalproof.Data
@@ -39,13 +47,13 @@ type historicalObjects struct {
 	maximum           int
 	remaining         int
 	objects           []historical.Object
-	index             map[[32]byte]int
-	references        [][32]byte
-	signedInfo        [32]byte
+	index             map[[sha256.Size]byte]int
+	references        [][sha256.Size]byte
+	signedInfo        [sha256.Size]byte
 	signedInfoOptions c14n.Options
 }
 
-func (b *historicalObjects) add(raw []byte, kind historicalproof.Kind, contains [][32]byte) ([32]byte, error) {
+func (b *historicalObjects) add(raw []byte, kind historicalproof.Kind, contains [][sha256.Size]byte) ([sha256.Size]byte, error) {
 	key := sha256.Sum256(raw)
 	if previous, ok := b.index[key]; ok {
 		object := &b.objects[previous]
@@ -88,15 +96,15 @@ func (b *historicalObjects) write(write func(io.Writer) error) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
-func (b *historicalObjects) canonical(e document.Element, options c14n.Options) ([32]byte, []byte, error) {
+func (b *historicalObjects) canonical(e document.Element, options c14n.Options) ([sha256.Size]byte, []byte, error) {
 	raw, err := b.write(func(dst io.Writer) error { return c14n.WriteElement(b.ctx, dst, e, options) })
 	if err != nil {
-		return [32]byte{}, nil, err
+		return [sha256.Size]byte{}, nil, err
 	}
 
 	contained, err := b.contained(raw)
 	if err != nil {
-		return [32]byte{}, nil, err
+		return [sha256.Size]byte{}, nil, err
 	}
 
 	key, err := b.add(raw, historicalDataObject, contained)
@@ -106,7 +114,7 @@ func (b *historicalObjects) canonical(e document.Element, options c14n.Options) 
 
 // contained parses the actual canonical/processed octets, rather than assuming
 // that transforms retained the original XML's embedded certificate/token bytes.
-func (b *historicalObjects) contained(raw []byte) ([][32]byte, error) {
+func (b *historicalObjects) contained(raw []byte) ([][sha256.Size]byte, error) {
 	if len(raw) == 0 || raw[0] != '<' {
 		return nil, nil
 	}
@@ -120,7 +128,7 @@ func (b *historicalObjects) contained(raw []byte) ([][32]byte, error) {
 		return nil, nil // Sparse C14N need not be a well-formed XML document.
 	}
 
-	var out [][32]byte
+	var out [][sha256.Size]byte
 
 	stack := []document.Element{doc.Root()}
 
@@ -146,29 +154,29 @@ func (b *historicalObjects) contained(raw []byte) ([][32]byte, error) {
 	return out, nil
 }
 
-func (b *historicalObjects) containedNode(node document.Element) ([32]byte, bool, error) {
+func (b *historicalObjects) containedNode(node document.Element) ([sha256.Size]byte, bool, error) {
 	kind := historicalContainedKind(node)
 	if kind == "" {
-		return [32]byte{}, false, nil
+		return [sha256.Size]byte{}, false, nil
 	}
 
 	value, err := decodeElementBase64(b.ctx, node, b.remaining*2, b.remaining)
 	if err != nil {
 		// Arbitrary signed data may contain lookalike invalid values.
-		return [32]byte{}, false, b.ctx.Err()
+		return [sha256.Size]byte{}, false, b.ctx.Err()
 	}
 
 	certificates, valid, err := b.containedCertificates(kind, value)
 	if err != nil || !valid {
-		return [32]byte{}, false, err
+		return [sha256.Size]byte{}, false, err
 	}
 
-	var children [][32]byte
+	var children [][sha256.Size]byte
 
 	for _, raw := range certificates {
 		key, err := b.add(raw, historicalproof.Certificate, nil)
 		if err != nil {
-			return [32]byte{}, false, err
+			return [sha256.Size]byte{}, false, err
 		}
 
 		children = append(children, key)
@@ -213,7 +221,7 @@ func (b *historicalObjects) containedCertificates(kind historicalproof.Kind, val
 // A timestamped serialization also proves an exact deterministic encoding
 // obtainable from those protected bytes alone. Ancestor context is never
 // borrowed from the original XML when checking this relation.
-func (b *historicalObjects) linkCanonicalEncoding(parent, original [32]byte, options c14n.Options) error {
+func (b *historicalObjects) linkCanonicalEncoding(parent, original [sha256.Size]byte, options c14n.Options) error {
 	if parent == original {
 		return nil
 	}
@@ -251,13 +259,13 @@ func historicalContainedKind(node document.Element) historicalproof.Kind {
 	switch node.Name() {
 	case ds(historicalSignatureValueElement):
 		return historicalproof.Signature
-	case ds(lexicon.DSigElementX509Certificate), name("EncapsulatedX509Certificate"):
+	case ds(lexicon.DSigElementX509Certificate), name(nameEncapsulatedX509Certificate):
 		return historicalproof.Certificate
-	case name("EncapsulatedCRLValue"):
+	case name(nameEncapsulatedCRLValue):
 		return historicalproof.CRL
-	case name("EncapsulatedOCSPValue"):
+	case name(nameEncapsulatedOCSPValue):
 		return historicalproof.OCSP
-	case name("EncapsulatedTimeStamp"):
+	case name(nameEncapsulatedTimeStamp):
 		return historicalproof.Timestamp
 	}
 
@@ -286,7 +294,7 @@ func (b *historicalInputBuilder) initializeSignature() error {
 
 	b.value = value
 
-	signatureValue, err := decodeElementBase64(b.ctx, value, 1<<20, 1<<20)
+	signatureValue, err := decodeElementBase64(b.ctx, value, maximumHistoricalSignatureLexicalBytes, maximumHistoricalSignatureBytes)
 	if err != nil {
 		return err
 	}
@@ -405,7 +413,11 @@ func (b *historicalInputBuilder) recordPolicy() error {
 
 func (b *historicalInputBuilder) prepareUnsigned() error {
 	for _, child := range b.baseline.UnsignedProperties().Children() {
-		if child.Name() == name("UnsignedSignatureProperties") {
+		if child.Name() == name(nameUnsignedDataObjectProperties) {
+			return fmt.Errorf("%w: unsupported historical unsigned data properties", ErrProfile)
+		}
+
+		if child.Name() == name(nameUnsignedSignatureProperties) {
 			if b.unsigned.Valid() {
 				return ErrProfile
 			}
@@ -415,7 +427,7 @@ func (b *historicalInputBuilder) prepareUnsigned() error {
 	}
 
 	b.entries = b.baseline.UnsignedSignatureProperties()
-	if len(b.entries) > 140 {
+	if len(b.entries) > maximumPreservationProperties {
 		return historical.ErrLimit
 	}
 
@@ -431,13 +443,13 @@ func (b *historicalInputBuilder) recordUnsignedMaterial() error {
 		var err error
 
 		switch entry.Name() {
-		case name("CertificateValues"):
+		case name(nameCertificateValues):
 			material.Certificates, err = parseCertificateValues(b.ctx, entry)
-		case name("RevocationValues"):
+		case name(nameRevocationValues):
 			material.CRLs, material.OCSPResponses, err = parseRevocationValues(b.ctx, entry)
-		case name141("TimeStampValidationData"):
+		case name141(nameTimeStampValidationData):
 			material, err = parseTSVD(b.ctx, entry)
-		case name("SignatureTimeStamp"), name141("ArchiveTimeStamp"):
+		case name(nameSignatureTimeStamp), name141(nameArchiveTimeStamp):
 			continue
 		default:
 			return fmt.Errorf("%w: unsupported historical unsigned property %s", ErrProfile, entry.Name().Local)
@@ -468,13 +480,13 @@ func (b *historicalInputBuilder) recordCertificateReferences() error {
 			return err
 		}
 
-		hash, err := historicalHash(reference.DigestMethod())
+		h, err := historicalHash(reference.DigestMethod())
 		if err != nil {
 			return err
 		}
 
-		b.result.Hashes = append(b.result.Hashes, hash)
-		b.result.Uses = append(b.result.Uses, historical.MaterialUse{Object: key, Hash: hash})
+		b.result.Hashes = append(b.result.Hashes, h)
+		b.result.Uses = append(b.result.Uses, historical.MaterialUse{Object: key, Hash: h})
 	}
 
 	return nil
@@ -482,7 +494,7 @@ func (b *historicalInputBuilder) recordCertificateReferences() error {
 
 func (b *historicalInputBuilder) recordUnsignedTimestamps() error {
 	for _, entry := range b.entries {
-		if entry.Name() != name("SignatureTimeStamp") && entry.Name() != name141("ArchiveTimeStamp") {
+		if entry.Name() != name(nameSignatureTimeStamp) && entry.Name() != name141(nameArchiveTimeStamp) {
 			continue
 		}
 
@@ -511,7 +523,7 @@ func (b *historicalInputBuilder) recordTimestamp(entry document.Element, method 
 		return err
 	}
 
-	candidate := historical.Candidate{Token: token, Archive: entry.Name() == name141("ArchiveTimeStamp")}
+	candidate := historical.Candidate{Token: token, Archive: entry.Name() == name141(nameArchiveTimeStamp)}
 	if candidate.Archive {
 		candidate.Imprint, candidate.Covered, err = historicalArchiveInput(b.ctx, b.objects, b.baseline, b.unsigned, entry, method, token.UnverifiedInfo().Imprint().Hash)
 	} else {
@@ -527,7 +539,7 @@ func (b *historicalInputBuilder) recordTimestamp(entry document.Element, method 
 	return nil
 }
 
-func (b *historicalInputBuilder) signatureTimestampInput(method string, hash crypto.Hash) (timestamp.Imprint, [][32]byte, error) {
+func (b *historicalInputBuilder) signatureTimestampInput(method string, hash crypto.Hash) (timestamp.Imprint, [][sha256.Size]byte, error) {
 	key, canonical, err := b.objects.canonical(b.value, c14n.Options{Algorithm: method, MaxOutputBytes: b.config.MaxBytes})
 	if err != nil {
 		return timestamp.Imprint{}, nil, err
@@ -536,7 +548,7 @@ func (b *historicalInputBuilder) signatureTimestampInput(method string, hash cry
 	state := hash.New()
 	_, _ = state.Write(canonical)
 
-	return timestamp.Imprint{Hash: hash, Digest: state.Sum(nil)}, [][32]byte{key}, nil
+	return timestamp.Imprint{Hash: hash, Digest: state.Sum(nil)}, [][sha256.Size]byte{key}, nil
 }
 
 func historicalInput(ctx context.Context, baseline *BaselineResult, baselineOptions BaselineVerifyOptions, config historical.Config, input ValidationEvidence) (historical.Input, ValidationEvidence, error) {
@@ -549,7 +561,7 @@ func historicalInput(ctx context.Context, baseline *BaselineResult, baselineOpti
 
 	builder := historicalInputBuilder{
 		ctx: ctx, baseline: baseline, options: baselineOptions, config: config, evidence: input,
-		objects: &historicalObjects{ctx: ctx, maximum: config.MaxObjects, remaining: config.MaxBytes, index: make(map[[32]byte]int)},
+		objects: &historicalObjects{ctx: ctx, maximum: config.MaxObjects, remaining: config.MaxBytes, index: make(map[[sha256.Size]byte]int)},
 		sig:     baseline.Basic().Signature().Signature(),
 	}
 	if err := builder.initializeSignature(); err != nil {
@@ -603,13 +615,13 @@ func historicalSignedInfoOptions(element document.Element, maximum int) (c14n.Op
 		return c14n.Options{}, err
 	}
 
-	options := c14n.Options{Algorithm: localAttribute(cm, "Algorithm"), MaxOutputBytes: maximum}
+	options := c14n.Options{Algorithm: localAttribute(cm, lexicon.SecurityAttrAlgorithm), MaxOutputBytes: maximum}
 	for _, parameter := range cm.Children() {
-		if parameter.Name() != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
+		if parameter.Name() != (document.Name{Space: c14n.Exclusive, Local: lexicon.C14NElementInclusiveNamespaces}) {
 			return options, ErrProfile
 		}
 
-		options.InclusivePrefixes = strings.Fields(localAttribute(parameter, "PrefixList"))
+		options.InclusivePrefixes = strings.Fields(localAttribute(parameter, lexicon.C14NAttrPrefixList))
 	}
 
 	return options, nil
@@ -629,7 +641,7 @@ type historicalArchiveBuilder struct {
 	baseline *BaselineResult
 	method   string
 	state    hash.Hash
-	covered  [][32]byte
+	covered  [][sha256.Size]byte
 }
 
 func (b *historicalArchiveBuilder) references() error {
@@ -681,7 +693,7 @@ func (b *historicalArchiveBuilder) reference(reference xmldsig.ReferenceResult, 
 	return nil
 }
 
-func (b *historicalArchiveBuilder) linkCertificateReferences(key [32]byte) error {
+func (b *historicalArchiveBuilder) linkCertificateReferences(key [sha256.Size]byte) error {
 	for _, certificate := range b.baseline.CertificateReferences() {
 		digest, err := historicalHash(certificate.DigestMethod())
 		if err != nil {
@@ -715,7 +727,7 @@ func (b *historicalArchiveBuilder) signatureElements() error {
 			return err
 		}
 
-		if local == historicalSignedInfoElement && b.objects.signedInfo != ([32]byte{}) {
+		if local == historicalSignedInfoElement && b.objects.signedInfo != ([sha256.Size]byte{}) {
 			if err := b.objects.linkCanonicalEncoding(key, b.objects.signedInfo, b.objects.signedInfoOptions); err != nil {
 				return err
 			}
@@ -758,7 +770,7 @@ func (b *historicalArchiveBuilder) otherObjects() error {
 	// EN319132-1 §5.5.2.3(6) covers ALL other ds:Object elements, including
 	// referenced Objects, in document order. The property-bearing Object is excluded.
 	for _, object := range b.baseline.Basic().Signature().Signature().Children() {
-		if object.Name() != ds("Object") || historicalObjectHasProperties(object) {
+		if object.Name() != ds(lexicon.DSigElementObject) || historicalObjectHasProperties(object) {
 			continue
 		}
 
@@ -770,7 +782,7 @@ func (b *historicalArchiveBuilder) otherObjects() error {
 	return nil
 }
 
-func historicalArchiveInput(ctx context.Context, objects *historicalObjects, baseline *BaselineResult, unsigned, before document.Element, method string, hash crypto.Hash) (timestamp.Imprint, [][32]byte, error) {
+func historicalArchiveInput(ctx context.Context, objects *historicalObjects, baseline *BaselineResult, unsigned, before document.Element, method string, hash crypto.Hash) (timestamp.Imprint, [][sha256.Size]byte, error) {
 	if hash == 0 || !hash.Available() {
 		return timestamp.Imprint{}, nil, ErrTimestamp
 	}
@@ -817,7 +829,7 @@ func historicalArchiveElement(signature document.Element, local string) (documen
 
 func historicalObjectHasProperties(object document.Element) bool {
 	for _, child := range object.Children() {
-		if child.Name() == name("QualifyingProperties") {
+		if child.Name() == name(nameQualifyingProperties) {
 			return true
 		}
 	}
@@ -838,27 +850,27 @@ func parseHistoricalTimeStamp(ctx context.Context, element document.Element, max
 	method := c14n.Canonical10
 
 	if len(children) > 0 && children[0].Name() == ds(lexicon.DSigElementCanonicalizationMethod) {
-		if attrs(children[0], "Algorithm") != nil || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
+		if attrs(children[0], lexicon.SecurityAttrAlgorithm) != nil || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
 			return "", nil, ErrTimestamp
 		}
 
-		method = localAttribute(children[0], "Algorithm")
+		method = localAttribute(children[0], lexicon.SecurityAttrAlgorithm)
 		children = children[1:]
 	}
 
-	if !timestampCanonicalization(method) || len(children) == 0 || len(children) > 32 {
+	if !timestampCanonicalization(method) || len(children) == 0 || len(children) > maximumPreservationTimestampChildren {
 		return "", nil, ErrTimestamp
 	}
 	// EN319132-1 6.3(n) restricts SignatureTimeStamp to one token.
 	// ArchiveTimeStamp141 may contain tokens from multiple TSAs (6.3(z)).
-	if element.Name() == name("SignatureTimeStamp") && len(children) != 1 {
+	if element.Name() == name(nameSignatureTimeStamp) && len(children) != 1 {
 		return "", nil, ErrProfile
 	}
 
 	var tokens [][]byte
 
 	for _, child := range children {
-		if child.Name() != name("EncapsulatedTimeStamp") {
+		if child.Name() != name(nameEncapsulatedTimeStamp) {
 			return "", nil, ErrTimestamp
 		}
 
@@ -898,14 +910,14 @@ func historicalAllReferences(basic *BasicResult) []xmldsig.ReferenceResult {
 }
 
 func historicalSignatureMethod(basic *BasicResult) (x509.SignatureAlgorithm, []crypto.Hash, error) {
-	algorithm, hash, err := historicalSignatureAlgorithm(basic)
+	algorithm, h, err := historicalSignatureAlgorithm(basic)
 	if err != nil {
 		return 0, nil, err
 	}
 
 	var hashes []crypto.Hash
-	if hash != 0 {
-		hashes = append(hashes, hash)
+	if h != 0 {
+		hashes = append(hashes, h)
 	}
 
 	for _, reference := range historicalAllReferences(basic) {

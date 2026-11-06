@@ -154,27 +154,6 @@ func TestWriterRejectsShortStringWrite(t *testing.T) {
 	}
 }
 
-func writeSteps(t testing.TB, steps ...func() error) {
-	t.Helper()
-
-	for _, step := range steps {
-		if err := step(); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-type failingWriter struct {
-	calls int
-	err   error
-}
-
-func (w *failingWriter) Write([]byte) (int, error) { w.calls++; return 0, w.err }
-
-type shortStringWriter struct{ strings.Builder }
-
-func (*shortStringWriter) WriteString(string) (int, error) { return 0, nil }
-
 func BenchmarkNamespaceWriterDepth(b *testing.B) {
 	for _, depth := range []int{4, 64} {
 		prefixes := make([]string, depth)
@@ -207,3 +186,24 @@ func BenchmarkNamespaceWriterDepth(b *testing.B) {
 		})
 	}
 }
+
+func writeSteps(t testing.TB, steps ...func() error) {
+	t.Helper()
+
+	for _, step := range steps {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type failingWriter struct {
+	calls int
+	err   error
+}
+
+func (w *failingWriter) Write([]byte) (int, error) { w.calls++; return 0, w.err }
+
+type shortStringWriter struct{ strings.Builder }
+
+func (*shortStringWriter) WriteString(string) (int, error) { return 0, nil }

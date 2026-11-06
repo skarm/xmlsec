@@ -27,6 +27,19 @@ import (
 )
 
 const (
+	// signatureOctetBits converts encoded key, digest and signature bytes to bit lengths.
+	signatureOctetBits = 8
+	maximumRSAExponent = 1<<31 - 1
+	// Caps decoded SignatureValue bytes before cryptographic verification or publication.
+	maximumSignatureBytes = 2048
+	// Smallest permitted odd RSA public exponent in the supported signature profile.
+	minimumRSAExponent      = 3
+	legacyDSAComponentBytes = 20
+	legacyDSASignatureBytes = 2 * legacyDSAComponentBytes
+	legacySHA1DigestBytes   = 20
+)
+
+const (
 	// Namespace is the XMLDSig 1.0 namespace URI.
 	Namespace = lexicon.NamespaceDSig
 	// EnvelopedSignature identifies the transform that removes its containing Signature.
@@ -35,7 +48,7 @@ const (
 	SHA1 = lexicon.DigestSHA1
 	// DSASHA1 is the legacy DSA-SHA1 URI, supported for verification only.
 	DSASHA1 = Namespace + "dsa-sha1"
-	// RSASHA1 is the legacy RSA-SHA1 URI, supported for verification only.
+	// RSASHA1 is the legacy RSA-SHA1 URI. Generation requires AllowLegacySigning.
 	RSASHA1 = Namespace + "rsa-sha1"
 	// SHA256 is the SHA-256 digest algorithm URI.
 	SHA256 = lexicon.DigestSHA256
@@ -155,7 +168,7 @@ func defaultSignature(key crypto.PublicKey) string {
 func validateKey(key crypto.PublicKey, p Policy) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.N.BitLen() < p.MinRSABits || k.N.BitLen() > p.MaxRSABits || k.N.Bit(0) == 0 || k.E < 3 || k.E%2 == 0 || k.E > 0x7fffffff {
+		if k == nil || k.N == nil || k.N.Sign() <= 0 || k.N.BitLen() < p.MinRSABits || k.N.BitLen() > p.MaxRSABits || k.N.Bit(0) == 0 || k.E < minimumRSAExponent || k.E%2 == 0 || k.E > maximumRSAExponent {
 			return fmt.Errorf("%w: RSA key outside policy", ErrKey)
 		}
 	case *ecdsa.PublicKey:
@@ -220,7 +233,7 @@ func signPreparedValue(ctx context.Context, uri string, signer crypto.Signer, pu
 		return nil, err
 	}
 
-	if uri == DSASHA1 || uri == RSASHA1 {
+	if uri == DSASHA1 {
 		return nil, fmt.Errorf("%w: legacy signature generation is disabled", ErrPolicy)
 	}
 
@@ -238,7 +251,7 @@ func signPreparedValue(ctx context.Context, uri string, signer crypto.Signer, pu
 		return nil, fmt.Errorf("signer: %w", err)
 	}
 
-	if len(raw) > 2048 {
+	if len(raw) > maximumSignatureBytes {
 		return nil, fmt.Errorf("%w: signer output size", ErrSignature)
 	}
 
@@ -253,7 +266,7 @@ func signPreparedValue(ctx context.Context, uri string, signer crypto.Signer, pu
 			return nil, fmt.Errorf("%w: signer returned invalid ECDSA DER", ErrSignature)
 		}
 
-		n := (k.Params().BitSize + 7) / 8
+		n := (k.Params().BitSize + signatureOctetBits - 1) / signatureOctetBits
 		raw = make([]byte, 2*n)
 		pair.R.FillBytes(raw[:n])
 		pair.S.FillBytes(raw[n:])
@@ -285,7 +298,7 @@ func verifyPreparedValue(uri string, pub crypto.PublicKey, h crypto.Hash, digest
 			return fmt.Errorf("%w: Ed25519", ErrSignature)
 		}
 	case *ecdsa.PublicKey:
-		n := (k.Params().BitSize + 7) / 8
+		n := (k.Params().BitSize + signatureOctetBits - 1) / signatureOctetBits
 		if len(sig) != 2*n {
 			return fmt.Errorf("%w: ECDSA must be fixed-width r || s", ErrSignature)
 		}
@@ -295,11 +308,11 @@ func verifyPreparedValue(uri string, pub crypto.PublicKey, h crypto.Hash, digest
 			return fmt.Errorf("%w: ECDSA", ErrSignature)
 		}
 	case *dsa.PublicKey:
-		if uri != DSASHA1 || h != crypto.SHA1 || len(digest) != 20 || len(sig) != 40 {
+		if uri != DSASHA1 || h != crypto.SHA1 || len(digest) != legacySHA1DigestBytes || len(sig) != legacyDSASignatureBytes {
 			return fmt.Errorf("%w: DSA-SHA1 requires fixed-width r || s", ErrSignature)
 		}
 
-		if !dsa.Verify(k, digest, new(big.Int).SetBytes(sig[:20]), new(big.Int).SetBytes(sig[20:])) {
+		if !dsa.Verify(k, digest, new(big.Int).SetBytes(sig[:legacyDSAComponentBytes]), new(big.Int).SetBytes(sig[legacyDSAComponentBytes:])) {
 			return fmt.Errorf("%w: DSA", ErrSignature)
 		}
 	default:

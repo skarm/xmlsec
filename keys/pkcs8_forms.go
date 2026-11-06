@@ -17,13 +17,13 @@ func normalizePrivateBER(ctx context.Context, input []byte, maximum int, limits 
 		return nil, pkcs12BERError(err)
 	}
 
-	if root.Tag != 0x30 {
+	if root.Tag != encodedSequenceTag {
 		return nil, ErrFormat
 	}
 
 	// Preserve strict DER PKCS#1/SEC1 inputs on the unencrypted API. A BER
 	// traditional key remains invalid; compatibility is confined to PKCS#8.
-	if !encrypted && len(root.Children) >= 2 && root.Children[1].Tag != 0x30 {
+	if !encrypted && len(root.Children) >= 2 && root.Children[1].Tag != encodedSequenceTag {
 		if _, err := readDER(input, maximum, limits); err != nil {
 			return nil, err
 		}
@@ -39,7 +39,7 @@ func normalizePrivateBER(ctx context.Context, input []byte, maximum int, limits 
 		}
 
 		at = 1
-	} else if len(root.Children) < 3 || len(root.Children) > 4 {
+	} else if len(root.Children) < privateKeyInfoMinimumFields || len(root.Children) > privateKeyInfoMaximumFields {
 		return nil, ErrFormat
 	}
 

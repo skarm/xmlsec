@@ -10,8 +10,19 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
+)
+
+// Core verification and recursive Manifest traversal have separate count/depth defaults; recursive validation remains an explicit mode choice.
+const (
+	cliNoManifests               = "none"
+	cliDefaultSignatures         = 16
+	cliMaxSignatures             = 64
+	cliDefaultManifestDepth      = 8
+	cliDefaultManifestNodes      = 64
+	cliDefaultManifestReferences = 256
 )
 
 const nameRecursiveExternal = "recursive-external"
@@ -43,22 +54,22 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	input := fs.String("in", "-", "input XML; - reads stdin")
 	output := fs.String("out", "-", "output signed XML or diagnostic JSON")
 	keyFile := fs.String("key", "", "private key for sign-template; trusted public key for verify-core")
-	index := fs.Int("signature-index", -1, "REQUIRED zero-based Signature index (explicit selection, not trust)")
-	idAttr := fs.String("id-attr", "ID", "application ID attribute local name")
+	index := fs.Int("signature-index", cliUnspecifiedSelectionIndex, "REQUIRED zero-based Signature index (explicit selection, not trust)")
+	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "application ID attribute local name")
 	idNS := fs.String("id-ns", "", "application ID namespace URI")
-	methods := fs.String(nameC14n, c14n.Exclusive, "comma-separated allowed SignedInfo canonicalization URIs")
+	methods := fs.String(nameC14N, c14n.Exclusive, "comma-separated allowed SignedInfo canonicalization URIs")
 	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
-	manifests := fs.String("manifests", "none", "Manifest validation: none, recursive or recursive-external")
+	manifests := fs.String("manifests", cliNoManifests, "Manifest validation: none, recursive or recursive-external")
 	manifestTransforms := fs.Bool("manifest-transforms", false, "follow authenticated Manifest transform results; requires recursive mode")
-	depth := fs.Int("manifest-max-depth", 8, "recursive Manifest depth limit")
-	nodes := fs.Int("manifest-max-nodes", 64, "maximum unique Manifest elements")
-	refs := fs.Int("manifest-max-references", 256, "maximum total direct and nested Reference elements")
+	depth := fs.Int("manifest-max-depth", cliDefaultManifestDepth, "recursive Manifest depth limit")
+	nodes := fs.Int("manifest-max-nodes", cliDefaultManifestNodes, "maximum unique Manifest elements")
+	refs := fs.Int("manifest-max-references", cliDefaultManifestReferences, "maximum total direct and nested Reference elements")
 	resources := fs.String("resources", "", "optional trusted JSON URI/path allowlist for external references")
 	baseURI := fs.String("base-uri", "", "explicit absolute signature document URI for relative external references; requires -resources")
-	resourceLimit := fs.Int("max-resource-bytes", 8<<20, "maximum bytes per external resource")
-	totalLimit := fs.Int("max-total-resource-bytes", 32<<20, "maximum fetched source bytes per operation")
+	resourceLimit := fs.Int("max-resource-bytes", cliDefaultResourceBytes, "maximum bytes per external resource")
+	totalLimit := fs.Int("max-total-resource-bytes", cliDefaultTotalResourceBytes, "maximum fetched source bytes per operation")
 	allowedTransforms := fs.String("allowed-transforms", "", "comma-separated permitted Reference transform URIs")
-	maxSignatures := fs.Int("max-signatures", 16, "maximum Signature elements (1..64)")
+	maxSignatures := fs.Int("max-signatures", cliDefaultSignatures, "maximum Signature elements (1..64)")
 	idRules := fs.String("id-rules", "", "trusted JSON array of additional IDAttributeRule values")
 	secretFile := fs.String("secret-file", "", "HMAC shared-secret file, instead of -key; requires -policy hmac")
 
@@ -266,7 +277,7 @@ func (c coreValidationFlags) options(ctx context.Context, doc *document.Document
 	}
 
 	switch c.manifests {
-	case "none":
+	case cliNoManifests:
 	case "recursive", nameRecursiveExternal:
 		if c.manifests == nameRecursiveExternal && c.resources == "" {
 			return opt, errors.New("external Manifest validation requires -resources")
@@ -338,12 +349,12 @@ func coreExternalReferencesContext(ctx context.Context, path string, resourceLim
 func requiredIDElements(ctx context.Context, doc *document.Document, opt xmldsig.SignatureOptions, ids []string) ([]document.Element, error) {
 	attribute := opt.IDAttribute
 	if attribute == (document.Name{}) {
-		attribute.Local = "ID"
+		attribute.Local = cliDefaultIDAttribute
 	}
 
 	rules := append([]reference.IDAttributeRule{{Attribute: attribute}}, opt.AdditionalIDRules...)
 	rules = append(rules, reference.IDAttributeRule{
-		Attribute: document.Name{Local: "Id"},
+		Attribute: document.Name{Local: lexicon.SecurityAttrID},
 		Elements: []document.Name{
 			{
 				Space: xmldsig.Namespace,
@@ -353,19 +364,19 @@ func requiredIDElements(ctx context.Context, doc *document.Document, opt xmldsig
 				Local: "Manifest",
 			}, {
 				Space: xmldsig.Namespace,
-				Local: "Signature",
+				Local: lexicon.DSigElementSignature,
 			}, {
 				Space: xmldsig.Namespace,
-				Local: "SignedInfo",
+				Local: lexicon.DSigElementSignedInfo,
 			}, {
 				Space: xmldsig.Namespace,
-				Local: "Reference",
+				Local: lexicon.DSigElementReference,
 			}, {
 				Space: xmldsig.Namespace,
-				Local: "KeyInfo",
+				Local: lexicon.DSigElementKeyInfo,
 			}, {
 				Space: xmldsig.Namespace,
-				Local: "SignatureValue",
+				Local: lexicon.DSigElementSignatureValue,
 			},
 		},
 	})
@@ -414,11 +425,11 @@ func (c coreInvocation) validate() error {
 		return usageError("an explicit nonnegative -signature-index and -key or -secret-file are required")
 	}
 
-	if c.maxSignatures < 1 || c.maxSignatures > 64 {
+	if c.maxSignatures < 1 || c.maxSignatures > cliMaxSignatures {
 		return usageError("-max-signatures must be 1..64")
 	}
 
-	if c.resourceLimit < 1 || c.resourceLimit > 64<<20 || c.totalLimit < 1 || c.totalLimit > 64<<20 {
+	if c.resourceLimit < 1 || c.resourceLimit > cliMaxBytes || c.totalLimit < 1 || c.totalLimit > cliMaxBytes {
 		return usageError("resource byte limits must be 1..67108864")
 	}
 

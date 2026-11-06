@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/pattern"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	xpathregex "github.com/skarm/xmlsec/transform/internal/xpath/regex"
@@ -36,65 +37,89 @@ const (
 	fnNameMatches          = "matches"
 )
 
+// Regex acceptance bounds source bytes independently of cache retention.
+const xpathRegexSourceBytes = 64 << 10
+
+// Free-spacing and literal flags are shared by preprocessing and compilation.
+// Negative match limits enumerate all matches, independently of function arity.
+const (
+	regexFreeSpacingRune  = 'x'
+	regexLiteralRune      = 'q'
+	regexUnlimitedMatches = -1
+)
+
 func lookupFunctionsString(name string) (*builtinFunc, bool) {
+	// Standard string-function local names; concat alone keeps an unbounded maximum arity.
+	const (
+		fnNameCodepointsToString = "codepoints-to-string"
+		fnNameStringToCodepoints = "string-to-codepoints"
+		fnNameCompare            = "compare"
+		fnNameCodepointEqual     = "codepoint-equal"
+		fnNameUpperCase          = "upper-case"
+		fnNameLowerCase          = "lower-case"
+		fnNameEndsWith           = "ends-with"
+		fnNameReplace            = "replace"
+		variadicConcatArity      = -1
+	)
+
 	switch name {
-	case lexicon.TypeString:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnString}, true
-	case "codepoints-to-string":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnCodepointsToString}, true
-	case "string-to-codepoints":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnStringToCodepoints}, true
-	case "compare":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnCompare}, true
-	case "codepoint-equal":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnCodepointEqual}, true
+	case fnNameString:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnString}, true
+	case fnNameCodepointsToString:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnCodepointsToString}, true
+	case fnNameStringToCodepoints:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnStringToCodepoints}, true
+	case fnNameCompare:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnCompare}, true
+	case fnNameCodepointEqual:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnCodepointEqual}, true
 	case nameConcat:
-		return &builtinFunc{name: name, min: 2, max: -1, fn: fnConcat}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: variadicConcatArity, fn: fnConcat}, true
 	case fnNameStringJoin:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnStringJoin}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnStringJoin}, true
 	case fnNameSubstring:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnSubstring}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnSubstring}, true
 	case nameStringLength:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnStringLength}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnStringLength}, true
 	case fnNameNormalizeSpace:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNormalizeSpace}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnNormalizeSpace}, true
 	case fnNameNormalizeUnicode:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnNormalizeUnicode}, true
-	case "upper-case":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnUpperCase}, true
-	case "lower-case":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnLowerCase}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnNormalizeUnicode}, true
+	case fnNameUpperCase:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnUpperCase}, true
+	case fnNameLowerCase:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnLowerCase}, true
 	case fnNameTranslate:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnTranslate}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnTranslate}, true
 	case fnNameContains:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnContains}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnContains}, true
 	case fnNameStartsWith:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnStartsWith}, true
-	case "ends-with":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnEndsWith}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnStartsWith}, true
+	case fnNameEndsWith:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnEndsWith}, true
 	case fnNameSubstringBefore:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnSubstringBefore}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnSubstringBefore}, true
 	case fnNameSubstringAfter:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnSubstringAfter}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnSubstringAfter}, true
 	case fnNameMatches:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnMatches}, true
-	case "replace":
-		return &builtinFunc{name: name, min: 3, max: 4, fn: fnReplace}, true
-	case "tokenize":
-		return &builtinFunc{name: name, min: 1, max: 3, fn: fnTokenize}, true
-	case "analyze-string":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnAnalyzeString}, true
-	case "contains-token":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnContainsToken}, true
-	case "collation-key":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnCollationKey}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnMatches}, true
+	case fnNameReplace:
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityFour, fn: fnReplace}, true
+	case fnNameTokenize:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityThree, fn: fnTokenize}, true
+	case fnNameAnalyzeString:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnAnalyzeString}, true
+	case fnNameContainsToken:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnContainsToken}, true
+	case fnNameCollationKey:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnCollationKey}, true
 	}
 
 	return nil, false
 }
 
 func fnString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		s, err := contextItemString(ctx)
 		if err != nil {
 			return nil, err
@@ -107,7 +132,7 @@ func fnString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return xdm.SingleString(""), nil
 	}
 
-	if xdm.SequenceLen(args[0]) > 1 {
+	if xdm.SequenceLen(args[0]) > singletonFunctionArgument {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:string requires a single item, got sequence of length > 1"}
 	}
 
@@ -154,6 +179,8 @@ func contextItemString(ctx context.Context) (string, error) {
 }
 
 func fnCodepointsToString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const singleCodepointInput = 1 // singleton input fast path, not an output limit
+
 	seq := args[0]
 	if err := fnCountOps(ctx, getFnContext(ctx), xdm.SequenceLen(seq)); err != nil {
 		return nil, err
@@ -171,7 +198,7 @@ func fnCodepointsToString(ctx context.Context, args []xdm.Sequence) (xdm.Sequenc
 
 	// Fast path: singleton integer (common in unicode-90 where each codepoint
 	// is mapped individually via codepoints-to-string(.))
-	if xdm.SequenceLen(seq) == 1 {
+	if xdm.SequenceLen(seq) == singleCodepointInput {
 		cp, err := itemToCodepoint(seq.Get(0))
 		if err != nil {
 			return nil, err
@@ -249,7 +276,7 @@ func isValidXMLCodepoint(cp int) bool {
 		return true
 	}
 
-	if cp >= 0x10000 && cp <= 0x10FFFF {
+	if cp >= 0x10000 && cp <= utf8.MaxRune {
 		return true
 	}
 
@@ -268,7 +295,7 @@ func isValidXML11Codepoint(cp int) bool {
 		return true
 	}
 
-	if cp >= 0x10000 && cp <= 0x10FFFF {
+	if cp >= 0x10000 && cp <= utf8.MaxRune {
 		return true
 	}
 
@@ -379,7 +406,7 @@ func fnConcat(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 func fnStringJoin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	sep := ""
 
-	if len(args) > 1 {
+	if len(args) > builtinArityOne {
 		if getFnContext(ctx).xpath10CompatMode() {
 			// The separator's expected type is xs:string, so XPath 1.0 compatibility
 			// mode converts it with fn:string applied to its first item.
@@ -431,6 +458,11 @@ func fnStringJoin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 }
 
 func fnSubstring(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const (
+		substringFirstPosition     = 1.0  // XPath character positions count from one
+		substringContextCheckBytes = 4096 // cancellation polling stride, not an input cap
+	)
+
 	s, err := coerceArgToString(ctx, args[0])
 	if err != nil {
 		return nil, err
@@ -442,24 +474,24 @@ func fnSubstring(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	}
 
 	// XPath round
-	rStart := roundHalfUpFloat(startPos, 0)
+	rStart := roundHalfUpFloat(startPos, positionRoundPrecision)
 	end := math.Inf(1)
 
-	if len(args) == 3 {
+	if len(args) == builtinArityThree {
 		length, err := coerceArgToDoubleRequired(ctx, args[2])
 		if err != nil {
 			return nil, err
 		}
 
-		end = rStart + roundHalfUpFloat(length, 0)
+		end = rStart + roundHalfUpFloat(length, positionRoundPrecision)
 	}
 
-	if math.IsNaN(rStart) || math.IsNaN(end) || end <= 1 || end <= rStart || math.IsInf(rStart, 1) {
+	if math.IsNaN(rStart) || math.IsNaN(end) || end <= substringFirstPosition || end <= rStart || math.IsInf(rStart, 1) {
 		return xdm.SingleString(""), nil
 	}
 
 	startByte, endByte := len(s), len(s)
-	position := 1.0
+	position := substringFirstPosition
 
 	checked := 0
 	for offset := range s {
@@ -468,7 +500,7 @@ func fnSubstring(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 				return nil, err
 			}
 
-			checked = offset + 4096
+			checked = offset + substringContextCheckBytes
 		}
 
 		if position >= end {
@@ -498,7 +530,7 @@ func fnSubstring(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 func fnStringLength(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	var s string
 
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		var err error
 
 		s, err = contextItemString(ctx)
@@ -520,7 +552,7 @@ func fnStringLength(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 func fnNormalizeSpace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	var s string
 
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		var err error
 
 		s, err = contextItemString(ctx)
@@ -553,13 +585,13 @@ func fnNormalizeUnicode(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 
 	formName := nameNFC // default
 
-	if len(args) > 1 {
+	if len(args) > builtinArityOne {
 		form, err := coerceArgToStringRequired(ctx, args[1])
 		if err != nil {
 			return nil, err
 		}
 
-		formName = strings.Trim(strings.ToUpper(form), " \t\r\n")
+		formName = strings.Trim(strings.ToUpper(form), lexicon.XMLWhitespace)
 		if formName == "" {
 			// Empty form string means return input unchanged
 			return xdm.SingleString(s), nil
@@ -581,7 +613,7 @@ func fnNormalizeUnicode(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 		nf = norm.NFKC
 	case nameNFKD:
 		nf = norm.NFKD
-	case "FULLY-NORMALIZED":
+	case lexicon.NormFullyNormalized:
 		// W3C Charmod Normalization: NFC + if the result starts with a
 		// composing character, prepend a space. A composing character is
 		// one that can be consumed by NFC composition with a preceding
@@ -819,7 +851,7 @@ func fnMatches(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	flags := ""
 
-	if len(args) > 2 {
+	if len(args) > builtinArityTwo {
 		if xdm.SequenceLen(args[2]) == 0 {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:matches flags must not be empty sequence"}
 		}
@@ -905,7 +937,7 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	flags := ""
 
-	if len(args) > 3 {
+	if len(args) > builtinArityThree {
 		if xdm.SequenceLen(args[3]) == 0 {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:replace flags must not be empty sequence"}
 		}
@@ -916,7 +948,7 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 	}
 
-	isLiteral := strings.Contains(flags, "q")
+	isLiteral := strings.Contains(flags, regexLiteralFlag)
 
 	if err := checkVersionRegex(ctx, required, flags); err != nil {
 		return nil, err
@@ -1041,6 +1073,8 @@ func appendXPathReplacementGroup(builder *strings.Builder, repl string, i, numGr
 }
 
 func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const allSplitParts = -1 // the regex split keeps every resulting part
+
 	if xdm.SequenceLen(args[0]) == 0 {
 		return nil, nil // input is xs:string? — empty yields empty
 	}
@@ -1055,8 +1089,11 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 	}
 
 	// 1-arg form: normalize XML whitespace (#x20, #x9, #xA, #xD), then split
-	if len(args) == 1 {
-		tokens := splitXMLWhitespace(s)
+	if len(args) == builtinArityOne {
+		tokens, err := splitXMLWhitespaceBounded(ctx, s)
+		if err != nil {
+			return nil, err
+		}
 
 		result := make(xdm.ItemSlice, len(tokens))
 		for i, t := range tokens {
@@ -1077,7 +1114,7 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 
 	flags := ""
 
-	if len(args) > 2 {
+	if len(args) > builtinArityTwo {
 		if xdm.SequenceLen(args[2]) == 0 {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:tokenize flags must not be empty sequence"}
 		}
@@ -1107,7 +1144,7 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		return nil, &xdm.Error{Code: errCodeFORX0003, Message: "tokenize pattern matches zero-length string"}
 	}
 
-	parts, err := re.Split(ctx, s, -1)
+	parts, err := re.Split(ctx, s, allSplitParts)
 	if err != nil {
 		return nil, regexExecutionError(ctx, err, "regex split failed")
 	}
@@ -1149,6 +1186,36 @@ func splitXMLWhitespace(s string) []string {
 	return tokens
 }
 
+// Bound token production before append even when a caller consumes only count().
+func splitXMLWhitespaceBounded(ctx context.Context, s string) ([]string, error) {
+	// Charge a base visit and one logical scan operation per 64 input bytes.
+	const (
+		whitespaceTokenScanBaseWork   = 1
+		whitespaceTokenScanChunkBytes = 64
+	)
+
+	ec := getFnContext(ctx)
+	if err := fnCountOps(ctx, ec, whitespaceTokenScanBaseWork+len(s)/whitespaceTokenScanChunkBytes); err != nil {
+		return nil, err
+	}
+
+	var tokens []string
+
+	for token := range strings.FieldsFuncSeq(s, xmlchar.IsSpace) {
+		if len(tokens) >= fnMaxNodes(ec) {
+			return nil, ErrNodeSetLimit
+		}
+
+		if err := fnCountOp(ctx, ec); err != nil {
+			return nil, err
+		}
+
+		tokens = append(tokens, strings.Clone(token))
+	}
+
+	return tokens, nil
+}
+
 func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	s, err := coerceArgToString(ctx, args[0])
 	if err != nil {
@@ -1161,7 +1228,7 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 	}
 
 	flags := ""
-	if len(args) > 2 {
+	if len(args) > builtinArityTwo {
 		flags, err = coerceArgToString(ctx, args[2])
 		if err != nil {
 			return nil, err
@@ -1190,14 +1257,21 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 }
 
 func buildAnalyzeStringResult(ctx context.Context, re *compiledXPathRegex, s, pattern, flags string) (xdm.Sequence, error) {
+	// F&O analyze-string result element names in the standard fn: namespace.
+	const (
+		analyzeStringResultElement   = "analyze-string-result"
+		analyzeStringNonMatchElement = "non-match"
+		analyzeStringMatchElement    = "match"
+	)
+
 	doc := xdm.NewDefaultDocument()
 
-	root, err := createAnalyzeStringElement(doc, "analyze-string-result")
+	root, err := createAnalyzeStringElement(doc, analyzeStringResultElement)
 	if err != nil {
 		return nil, &xdm.Error{Code: errCodeFOER0000, Message: fmt.Sprintf("analyze-string: failed to build result: %v", err)}
 	}
 
-	if err := root.DeclareNamespace("fn", NSFn); err != nil {
+	if err := root.DeclareNamespace(prefixFn, NSFn); err != nil {
 		return nil, &xdm.Error{Code: errCodeFOER0000, Message: fmt.Sprintf("analyze-string: failed to build result: %v", err)}
 	}
 
@@ -1222,7 +1296,7 @@ func buildAnalyzeStringResult(ctx context.Context, re *compiledXPathRegex, s, pa
 	// callback observes the one match that exhausts the budget and rejects
 	// without producing the rest; an unbounded budget streams uncapped.
 	ec := getFnContext(ctx)
-	findLimit := -1
+	findLimit := regexUnlimitedMatches
 
 	if remaining, bounded := fnRemainingOps(ec); bounded {
 		if n := remaining + 1; n > 0 {
@@ -1250,12 +1324,12 @@ func buildAnalyzeStringResult(ctx context.Context, re *compiledXPathRegex, s, pa
 
 		start, end := m[0], m[1]
 		if start > pos {
-			if err := appendAnalyzeStringTextElement(doc, root, "non-match", s[pos:start]); err != nil {
+			if err := appendAnalyzeStringTextElement(doc, root, analyzeStringNonMatchElement, s[pos:start]); err != nil {
 				return buildFail(err)
 			}
 		}
 
-		matchElem, err := createAnalyzeStringElement(doc, "match")
+		matchElem, err := createAnalyzeStringElement(doc, analyzeStringMatchElement)
 		if err != nil {
 			return buildFail(err)
 		}
@@ -1282,7 +1356,7 @@ func buildAnalyzeStringResult(ctx context.Context, re *compiledXPathRegex, s, pa
 	}
 
 	if pos < len(s) {
-		if err := appendAnalyzeStringTextElement(doc, root, "non-match", s[pos:]); err != nil {
+		if err := appendAnalyzeStringTextElement(doc, root, analyzeStringNonMatchElement, s[pos:]); err != nil {
 			return nil, &xdm.Error{Code: errCodeFOER0000, Message: fmt.Sprintf("analyze-string: failed to build result: %v", err)}
 		}
 	}
@@ -1319,11 +1393,11 @@ type analyzeStringGroup struct {
 // (e.g. "( a \ ) (b) )" with "x" compiles to "(a\)(b))" — group 2 nested in
 // group 1 — but the raw form looks like two siblings).
 func analyzeStringGroupParents(pattern, flags string) []int {
-	if strings.ContainsRune(flags, 'q') {
+	if strings.ContainsRune(flags, regexLiteralRune) {
 		return nil // literal pattern: no capturing groups
 	}
 
-	if strings.ContainsRune(flags, 'x') {
+	if strings.ContainsRune(flags, regexFreeSpacingRune) {
 		pattern = stripFreeSpacing(pattern)
 	}
 
@@ -1554,6 +1628,12 @@ func analyzeStringParentOf(groupParents []int, g int) int {
 // renderAnalyzeStringGroup emits, into parent, the text spans of node not covered
 // by a child group interleaved with the child fn:group elements, in document order.
 func renderAnalyzeStringGroup(doc *xdm.Document, parent *xdm.Element, node *analyzeStringGroup, s string) error {
+	// Captures render as fn:group with an unqualified nr attribute.
+	const (
+		analyzeStringGroupElement         = "group"
+		analyzeStringGroupNumberAttribute = "nr"
+	)
+
 	cursor := node.start
 	for _, child := range node.children {
 		if child.start > cursor {
@@ -1562,12 +1642,12 @@ func renderAnalyzeStringGroup(doc *xdm.Document, parent *xdm.Element, node *anal
 			}
 		}
 
-		groupElem, err := createAnalyzeStringElement(doc, "group")
+		groupElem, err := createAnalyzeStringElement(doc, analyzeStringGroupElement)
 		if err != nil {
 			return err
 		}
 
-		if err := groupElem.SetAttribute("nr", fmt.Sprintf("%d", child.nr)); err != nil {
+		if err := groupElem.SetAttribute(analyzeStringGroupNumberAttribute, fmt.Sprintf("%d", child.nr)); err != nil {
 			return err
 		}
 
@@ -1597,7 +1677,7 @@ func createAnalyzeStringElement(doc *xdm.Document, localName string) (*xdm.Eleme
 		return nil, err
 	}
 
-	if err := elem.SetActiveNamespace("fn", NSFn); err != nil {
+	if err := elem.SetActiveNamespace(prefixFn, NSFn); err != nil {
 		return nil, err
 	}
 
@@ -1641,7 +1721,7 @@ func (r *compiledXPathRegex) ReplaceAllString(ctx context.Context, s, replacemen
 
 	var failure error
 
-	err := r.program.Each(ctx, s, -1, patternWork(ctx), func(m []int) bool {
+	err := r.program.Each(ctx, s, regexUnlimitedMatches, patternWork(ctx), func(m []int) bool {
 		if failure = ChargeString(ctx, m[0]-last); failure != nil {
 			return false
 		}
@@ -1675,19 +1755,26 @@ func (r *compiledXPathRegex) ReplaceAllString(ctx context.Context, s, replacemen
 }
 
 func (r *compiledXPathRegex) Split(ctx context.Context, s string, n int) ([]string, error) {
+	const splitPartVisitWork = 1 // one logical operation before appending a split part
+
 	var out []string
 
 	last := 0
 
 	var failure error
 
-	limit := -1
+	limit := regexUnlimitedMatches
 	if n > 0 {
 		limit = n - 1
 	}
 
 	err := r.program.Each(ctx, s, limit, patternWork(ctx), func(m []int) bool {
-		if failure = Charge(ctx, 1); failure != nil {
+		if len(out) >= NodeLimit(ctx, fnMaxNodes(getFnContext(ctx))) {
+			failure = ErrNodeSetLimit
+			return false
+		}
+
+		if failure = Charge(ctx, splitPartVisitWork); failure != nil {
 			return false
 		}
 
@@ -1704,6 +1791,10 @@ func (r *compiledXPathRegex) Split(ctx context.Context, s string, n int) ([]stri
 		return nil, failure
 	}
 
+	if len(out) >= NodeLimit(ctx, fnMaxNodes(getFnContext(ctx))) {
+		return nil, ErrNodeSetLimit
+	}
+
 	return append(out, stringPart(s, last, len(s))), nil
 }
 
@@ -1717,7 +1808,7 @@ func (r *compiledXPathRegex) FindAllStringSubmatchIndex(ctx context.Context, s s
 
 func (r *compiledXPathRegex) eachStringSubmatchIndex(ctx context.Context, s string, limit int, fn func([]int) bool) error {
 	if limit <= 0 {
-		limit = -1
+		limit = regexUnlimitedMatches
 	}
 
 	return r.program.Each(ctx, s, limit, patternWork(ctx), fn)
@@ -1739,17 +1830,21 @@ func patternWork(ctx context.Context) pattern.Work {
 
 // compileXPathRegex reuses immutable programs within the owning runtime.
 func compileXPathRegex(ctx context.Context, source, flags string) (*compiledXPathRegex, error) {
+	// Retained source+flag key bytes have an independent cap; larger valid
+	// keys remain usable uncached. This is not the regex source acceptance cap.
+	const xpathRegexCacheKeyBytes = 64 << 10
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if len(source) > 64<<10 {
+	if len(source) > xpathRegexSourceBytes {
 		return nil, pattern.ErrLimit
 	}
 
-	if XMLSchemaVersion(ctx) == 10 && !strings.ContainsRune(flags, 'q') {
+	if XMLSchemaVersion(ctx) == schemaEdition10 && !strings.ContainsRune(flags, regexLiteralRune) {
 		checked := source
-		if strings.ContainsRune(flags, 'x') {
+		if strings.ContainsRune(flags, regexFreeSpacingRune) {
 			checked = stripFreeSpacing(checked)
 		}
 
@@ -1776,7 +1871,7 @@ func compileXPathRegex(ctx context.Context, source, flags string) (*compiledXPat
 
 	// Dynamic keys may be slices of much larger caller-owned strings. Bound
 	// retained key bytes and compile from owned strings on a cache miss.
-	if len(source) > 64<<10 || len(flags) > (64<<10)-len(source) {
+	if len(source) > xpathRegexCacheKeyBytes || len(flags) > xpathRegexCacheKeyBytes-len(source) {
 		return compileXPathRegexUncached(source, flags)
 	}
 
@@ -1797,7 +1892,14 @@ func compileXPathRegex(ctx context.Context, source, flags string) (*compiledXPat
 }
 
 func compileXPathRegexUncached(source, flags string) (*compiledXPathRegex, error) {
-	if len(source) > 64<<10 {
+	// F&O rune-valued options consumed only by this pattern compiler.
+	const (
+		regexIgnoreCaseRune = 'i'
+		regexMultilineRune  = 'm'
+		regexDotAllRune     = 's'
+	)
+
+	if len(source) > xpathRegexSourceBytes {
 		return nil, pattern.ErrLimit
 	}
 
@@ -1805,14 +1907,14 @@ func compileXPathRegexUncached(source, flags string) (*compiledXPathRegex, error
 
 	for _, flag := range flags {
 		switch flag {
-		case 'i':
+		case regexIgnoreCaseRune:
 			options.IgnoreCase = true
-		case 'm':
+		case regexMultilineRune:
 			options.Multiline = true
-		case 's':
+		case regexDotAllRune:
 			options.DotAll = true
-		case 'x':
-		case 'q':
+		case regexFreeSpacingRune:
+		case regexLiteralRune:
 			options.Literal = true
 		default:
 			return nil, &xdm.Error{Code: errCodeFORX0001, Message: fmt.Sprintf("invalid regex flag: %c", flag)}
@@ -1820,7 +1922,7 @@ func compileXPathRegexUncached(source, flags string) (*compiledXPathRegex, error
 	}
 
 	if !options.Literal {
-		if strings.ContainsRune(flags, 'x') {
+		if strings.ContainsRune(flags, regexFreeSpacingRune) {
 			source = stripFreeSpacing(source)
 		}
 
@@ -1915,7 +2017,7 @@ func fnContainsToken(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, err
 	}
 
-	token = strings.Trim(token, " \t\r\n")
+	token = strings.Trim(token, lexicon.XMLWhitespace)
 	if token == "" {
 		return xdm.SingleBoolean(false), nil
 	}

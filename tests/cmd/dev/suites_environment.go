@@ -22,6 +22,13 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+// Environment references are counted during resolution. Output URI and language/catalog identities come from the deterministic offline harness context.
+const (
+	suiteBaseOutputURI                = "file:///xmlsec-suite-output/"
+	suiteQT3Namespace                 = "http://www.w3.org/2010/09/qt-fots-catalog"
+	suiteMaximumEnvironmentReferences = 64
+)
+
 func suiteApplicability(options suiteOptions, item suiteCase) (string, string) {
 	var (
 		dependencies          []*suiteNode
@@ -108,7 +115,7 @@ func suiteEnvironmentApplicability(item suiteCase) (string, string) {
 	// annotations to run those cases as untyped Basic input. XSLT's catalog has
 	// a different declaration contract, so unused XSLT schemas stay applicable.
 	for _, schema := range ref.node.children("schema") {
-		if schema.XMLName.Space == "http://www.w3.org/2010/09/qt-fots-catalog" && !suiteBuiltinJSONSchema(schema) {
+		if schema.XMLName.Space == suiteQT3Namespace && !suiteBuiltinJSONSchema(schema) {
 			return suiteNotApplicable, "QT3 catalog schema declaration implies schema-awareness, which is outside the selected Basic profile (catalog-schema.xsd: schema)"
 		}
 	}
@@ -134,7 +141,7 @@ func suiteSourceRequirements(source *suiteNode) (string, string) {
 			continue
 		}
 
-		if value != "true" && value != "1" {
+		if value != suiteTrue && value != "1" {
 			return suiteFailed, fmt.Sprintf("invalid source %s=%q", name, value)
 		}
 
@@ -192,15 +199,15 @@ func suiteDependency(options suiteOptions, kind, value string) (bool, bool) {
 		// and case mappings can change between Unicode releases.
 		return value == strings.TrimSuffix(unicode.Version, ".0"), true
 	case "default-language", "default_language_for_numbering":
-		return value == "en", true
+		return value == suiteDefaultLanguage, true
 	case suiteLanguage, "languages_for_numbering":
-		return value == "en", true
+		return value == suiteDefaultLanguage, true
 	case "unicode-normalization-form":
 		return slices.Contains([]string{"NFC", "NFD", "NFKC", "NFKD", "FULLY-NORMALIZED"}, value), true
 	case "additional_normalization_form":
 		return strings.HasPrefix(value, "support "), true
 	case "default_output_encoding":
-		return value == "UTF-8", true
+		return value == lexicon.EncodingUTF8U, true
 	case "on-multiple-match":
 		return value == "recover", true
 	case "maximum_number_of_decimal_digits":
@@ -235,7 +242,7 @@ func suiteImplementationDependency(options suiteOptions, kind, value string) (bo
 	case "ignore_doc_failure":
 		return false, true
 	case "unparsed_text_encoding":
-		return strings.EqualFold(value, "UTF-8"), true
+		return strings.EqualFold(value, lexicon.EncodingUTF8U), true
 	case "default_html_version":
 		return value == "5", true
 	case "available_documents":
@@ -523,7 +530,7 @@ func prepareSuiteEnvironmentWithLimits(ctx context.Context, options suiteOptions
 		return nil, err
 	}
 
-	environment := &preparedSuiteEnvironment{currentTime: options.currentTime, engine: engine, namespaces: make(map[string]string), variables: make(transform.Bindings), staticParameters: make(transform.Bindings), baseURI: suiteFileURI(item.base) + "/", resources: resources, baseOutputURI: "file:///xmlsec-suite-output/"}
+	environment := &preparedSuiteEnvironment{currentTime: options.currentTime, engine: engine, namespaces: make(map[string]string), variables: make(transform.Bindings), staticParameters: make(transform.Bindings), baseURI: suiteFileURI(item.base) + "/", resources: resources, baseOutputURI: suiteBaseOutputURI}
 	suiteNamespaceDeclarations(item.setNode, environment.namespaces)
 	suiteNamespaceDeclarations(item.node, environment.namespaces)
 
@@ -568,7 +575,7 @@ func prepareSuiteEnvironmentWithLimits(ctx context.Context, options suiteOptions
 }
 
 func resolveSuiteEnvironment(item suiteCase, ref suiteEnvironmentRef, seen map[*suiteNode]struct{}) (suiteEnvironmentRef, error) {
-	if _, exists := seen[ref.node]; exists || len(seen) >= 64 {
+	if _, exists := seen[ref.node]; exists || len(seen) >= suiteMaximumEnvironmentReferences {
 		return suiteEnvironmentRef{}, suiteHarness("environment reference cycle or depth limit")
 	}
 
@@ -754,7 +761,7 @@ func loadSuiteSchema(root, base string, resources *suiteResourceResolver, enviro
 }
 
 func suiteBuiltinJSONSchema(node *suiteNode) bool {
-	return node.XMLName.Space == "http://www.w3.org/2010/09/qt-fots-catalog" && node.attr("role") == "import" && node.attr("uri") == lexicon.NamespaceFn && node.attr(suiteFile) == ""
+	return node.XMLName.Space == suiteQT3Namespace && node.attr("role") == "import" && node.attr("uri") == lexicon.NamespaceFn && node.attr(suiteFile) == ""
 }
 
 func loadSuiteOutput(base string, environment *preparedSuiteEnvironment, node *suiteNode) error {
@@ -1105,7 +1112,7 @@ func suiteSourceValue(ctx context.Context, environment *preparedSuiteEnvironment
 
 func registerSuiteResource(root, base string, resources *suiteResourceResolver, staticBase string, node *suiteNode) (string, error) {
 	file, err := url.Parse(node.attr(suiteFile))
-	if err == nil && node.XMLName.Local == suiteResourceTag && (file.Scheme == "http" || file.Scheme == "https") && file.Host != "" && file.User == nil && file.Fragment == "" {
+	if err == nil && node.XMLName.Local == suiteResourceTag && (file.Scheme == lexicon.SchemeHTTP || file.Scheme == lexicon.SchemeHTTPS) && file.Host != "" && file.User == nil && file.Fragment == "" {
 		return registerSuiteRemoteResource(resources, staticBase, node, file.String())
 	}
 
@@ -1399,5 +1406,5 @@ func suiteDynamicContext(currentTime time.Time) transform.DynamicContext {
 		currentTime, _ = time.Parse(time.RFC3339Nano, suiteDefaultCurrentTime)
 	}
 
-	return transform.DynamicContext{CurrentTime: currentTime, ImplicitTimezone: time.UTC, DefaultLanguage: "en"}
+	return transform.DynamicContext{CurrentTime: currentTime, ImplicitTimezone: time.UTC, DefaultLanguage: suiteDefaultLanguage}
 }

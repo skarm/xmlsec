@@ -8,7 +8,44 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+)
+
+// Representation sizes count magnitude bytes, with a one-byte minimum per
+// integer component. IEEE storage sizes stay separate from accounting quanta:
+// numeric work charges per eight BYTES, while preflight words contain 64 BITS.
+// These are logical representation costs, not measured Go allocation sizes.
+const (
+	bitsPerByte               = 8
+	minimumNumericBytes       = 1
+	singleNumericStorageBytes = 4
+	doubleNumericStorageBytes = 8
+	numericChargeBytes        = 8
+	minimumNumericWork        = 1
+	numericWorkWordBits       = 64
+	minimumPreflightWords     = 1
+	constructedDurationWork   = 1
+	additionCarryBits         = 1
+	numericDecimalRadix       = 10
+	numericParseBits          = 64
+)
+
+// Numeric preflight retains its rational upper estimate 3322/1000 for log2(10),
+// ceiling offset and independent overflow margin. Round temporaries keep their
+// existing spare-bit bounds; a binary64 subnormal denominator can need 1075 bits.
+const (
+	decimalBitEstimateNumerator    = 3322
+	decimalBitEstimateDenominator  = 1000
+	decimalBitCeilOffset           = 999
+	numericLexicalOverflowMargin   = 1000
+	decimalPowerExtraBits          = 1
+	decimalRoundSpareBits          = 3
+	integerRoundSpareBits          = 1
+	minimumRationalDenominatorBits = 1
+	invalidNumericBitCount         = -1
+	doubleRationalMarginBits       = xdm.PrecisionDouble + 1
+	doubleMaxRationalComponentBits = 1075
 )
 
 // NumericSize measures unsigned binary magnitudes, with at least one byte per
@@ -29,9 +66,9 @@ func NumericSize(value xdm.AtomicValue) (int, bool) {
 		r := value.BigRat()
 		return magnitudeBytes(r.Num().BitLen()) + magnitudeBytes(r.Denom().BitLen()), true
 	case xdm.TypeFloat:
-		return 4, true
+		return singleNumericStorageBytes, true
 	case xdm.TypeDouble:
-		return 8, true
+		return doubleNumericStorageBytes, true
 	}
 
 	return 0, false
@@ -45,7 +82,7 @@ func ChargeNumber(ctx context.Context, value xdm.AtomicValue) error {
 		return ctx.Err()
 	}
 
-	if err := Charge(ctx, max(1, n/8)); err != nil {
+	if err := Charge(ctx, max(minimumNumericWork, n/numericChargeBytes)); err != nil {
 		return err
 	}
 
@@ -69,17 +106,17 @@ func CastAtomicContext(ctx context.Context, value xdm.AtomicValue, target string
 			err = preflightNumericLexical(ctx, source.StringVal(), target)
 		case source.TypeName == xdm.TypeFloat || source.TypeName == xdm.TypeDouble:
 			f := source.ToFloat64()
-			if !math.IsNaN(f) && !math.IsInf(f, 0) {
+			if !math.IsNaN(f) && !math.IsInf(f, eitherInfinitySign) {
 				_, exponent := math.Frexp(f)
 				if target == xdm.TypeDecimal {
-					err = preflightNumeric(ctx, max(0, exponent)+53, max(1, 54-exponent))
+					err = preflightNumeric(ctx, max(0, exponent)+xdm.PrecisionDouble, max(minimumRationalDenominatorBits, doubleRationalMarginBits-exponent))
 				} else {
 					err = preflightNumeric(ctx, max(0, exponent))
 				}
 			}
 		default:
 			if n, numeric := NumericSize(source); numeric {
-				err = preflightNumeric(ctx, n*8)
+				err = preflightNumeric(ctx, n*bitsPerByte)
 			}
 		}
 
@@ -94,10 +131,40 @@ func CastAtomicContext(ctx context.Context, value xdm.AtomicValue, target string
 
 	result, err := CastAtomic(value, target)
 	if err == nil {
-		err = ChargeNumber(ctx, result)
+		err = chargeConstructedAtomic(ctx, result)
 	}
 
 	return result, err
+}
+
+// Duration values use the same canonical lexical size as public result checks.
+// Input length is not that size: long fractional zeros can reduce to PT0S.
+func chargeConstructedAtomic(ctx context.Context, value xdm.AtomicValue) error {
+	switch value.TypeName {
+	case xdm.TypeDuration, xdm.TypeDayTimeDuration, xdm.TypeYearMonthDuration:
+		if err := Charge(ctx, constructedDurationWork); err != nil {
+			return err
+		}
+
+		text, err := CastAtomic(value, xdm.TypeString)
+		if err != nil {
+			return err
+		}
+
+		return ChargeString(ctx, len(text.StringVal()))
+	default:
+		return ChargeNumber(ctx, value)
+	}
+}
+
+// boundedDurationResult applies the canonical size guard before publishing a
+// newly constructed duration from an aggregate or timezone accessor.
+func boundedDurationResult(ctx context.Context, value xdm.AtomicValue) (xdm.Sequence, error) {
+	if err := chargeConstructedAtomic(ctx, value); err != nil {
+		return nil, err
+	}
+
+	return xdm.SingleAtomic(value), nil
 }
 
 func int64Bits(n int64) int {
@@ -109,7 +176,9 @@ func int64Bits(n int64) int {
 	return bits.Len64(u)
 }
 
-func magnitudeBytes(n int) int { return max(1, n/8+boolInt(n%8 != 0)) }
+func magnitudeBytes(n int) int {
+	return max(minimumNumericBytes, n/bitsPerByte+boolInt(n%bitsPerByte != 0))
+}
 
 func boolInt(b bool) int {
 	if b {
@@ -146,7 +215,7 @@ func preflightNumeric(ctx context.Context, componentBits ...int) error {
 		}
 
 		remaining -= n
-		words := max(1, size/64+boolInt(size%64 != 0))
+		words := max(minimumPreflightWords, size/numericWorkWordBits+boolInt(size%numericWorkWordBits != 0))
 
 		available := b.operations - b.usedOperations - work
 		if words > available/words {
@@ -161,7 +230,7 @@ func preflightNumeric(ctx context.Context, componentBits ...int) error {
 
 func addBits(a, b int) int {
 	if a < 0 || b < 0 || a > math.MaxInt-b {
-		return -1
+		return invalidNumericBitCount
 	}
 
 	return a + b
@@ -180,7 +249,7 @@ func preflightInteger(ctx context.Context, op TokenType, a, b *big.Int) error {
 
 	switch op {
 	case TokenPlus, TokenMinus:
-		size = addBits(max(size, b.BitLen()), 1)
+		size = addBits(max(size, b.BitLen()), additionCarryBits)
 	case TokenStar:
 		size = productBits(a, b)
 	case TokenDiv:
@@ -197,7 +266,7 @@ func preflightDecimal(ctx context.Context, op TokenType, a, b *big.Rat) error {
 
 	switch op {
 	case TokenPlus, TokenMinus:
-		numerator = addBits(max(productBits(a.Num(), b.Denom()), productBits(b.Num(), a.Denom())), 1)
+		numerator = addBits(max(productBits(a.Num(), b.Denom()), productBits(b.Num(), a.Denom())), additionCarryBits)
 		denominator = productBits(a.Denom(), b.Denom())
 	case TokenStar:
 		numerator, denominator = productBits(a.Num(), b.Num()), productBits(a.Denom(), b.Denom())
@@ -209,29 +278,30 @@ func preflightDecimal(ctx context.Context, op TokenType, a, b *big.Rat) error {
 }
 
 func preflightRound(ctx context.Context, value xdm.AtomicValue, scale int) error {
-	if scale < 0 || scale > (math.MaxInt-999)/3322 {
+	if scale < 0 || scale > (math.MaxInt-decimalBitCeilOffset)/decimalBitEstimateNumerator {
 		return ErrBudget
 	}
 
-	powerBits := (scale*3322+999)/1000 + 1
+	powerBits := (scale*decimalBitEstimateNumerator+decimalBitCeilOffset)/decimalBitEstimateDenominator + decimalPowerExtraBits
 
 	if value.TypeName == xdm.TypeDecimal {
 		r := value.BigRat()
-		return preflightNumeric(ctx, addBits(r.Num().BitLen(), powerBits+3), addBits(r.Denom().BitLen(), powerBits))
+		return preflightNumeric(ctx, addBits(r.Num().BitLen(), powerBits+decimalRoundSpareBits), addBits(r.Denom().BitLen(), powerBits))
 	}
 
 	if xdm.IsIntegerDerived(value.TypeName) {
-		return preflightNumeric(ctx, addBits(value.BigInt().BitLen(), powerBits+1))
+		return preflightNumeric(ctx, addBits(value.BigInt().BitLen(), powerBits+integerRoundSpareBits))
 	}
 
-	return preflightNumeric(ctx, addBits(powerBits, 1075))
+	return preflightNumeric(ctx, addBits(powerBits, doubleMaxRationalComponentBits))
 }
 
-// lexicalNumberBits uses a safe rational upper approximation to log2(10).
+// preflightNumericLexical bounds numeric storage using a safe rational upper
+// approximation to log2(10).
 // Leading integer zeroes are ignored. Decimal denominator scale is counted
 // even when normalization could subsequently cancel factors.
 func preflightNumericLexical(ctx context.Context, source, target string) error {
-	source = strings.Trim(source, " \t\r\n")
+	source = strings.Trim(source, lexicon.XMLWhitespace)
 
 	source = strings.TrimPrefix(strings.TrimPrefix(source, "+"), "-")
 	if strings.ContainsAny(source, "eE") {
@@ -241,20 +311,20 @@ func preflightNumericLexical(ctx context.Context, source, target string) error {
 	whole, fraction, decimal := strings.Cut(source, ".")
 
 	digits := len(strings.TrimLeft(whole, "0")) + len(fraction)
-	if digits > (math.MaxInt-1000)/3322 || len(fraction) > (math.MaxInt-1000)/3322 {
+	if digits > (math.MaxInt-numericLexicalOverflowMargin)/decimalBitEstimateNumerator || len(fraction) > (math.MaxInt-numericLexicalOverflowMargin)/decimalBitEstimateNumerator {
 		return ErrBudget
 	}
 
-	numerator := (digits*3322 + 999) / 1000
+	numerator := (digits*decimalBitEstimateNumerator + decimalBitCeilOffset) / decimalBitEstimateDenominator
 
 	if fraction == "" {
-		if number, err := strconv.ParseUint(whole, 10, 64); err == nil {
+		if number, err := strconv.ParseUint(whole, numericDecimalRadix, numericParseBits); err == nil {
 			numerator = bits.Len64(number)
 		}
 	}
 
 	if decimal || target == xdm.TypeDecimal {
-		return preflightNumeric(ctx, numerator, (len(fraction)*3322+999)/1000+1)
+		return preflightNumeric(ctx, numerator, (len(fraction)*decimalBitEstimateNumerator+decimalBitCeilOffset)/decimalBitEstimateDenominator+decimalPowerExtraBits)
 	}
 
 	return preflightNumeric(ctx, numerator)

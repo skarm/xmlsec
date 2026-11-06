@@ -31,7 +31,7 @@ func transformXMLError(err error) error {
 func prepareProgramReferences(ctx context.Context, p *corePlan) error {
 	for _, task := range p.graph.tasks {
 		if err := reference.PrepareTransforms(ctx, task.ref.transforms, p.processing); err != nil {
-			return task.wrap("preflight", processingError(err))
+			return task.wrap(stagePreflight, processingError(err))
 		}
 	}
 

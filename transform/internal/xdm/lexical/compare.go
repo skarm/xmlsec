@@ -17,6 +17,58 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// XML Schema whiteSpace facet names select preservation, replacement or collapse.
+const (
+	whiteSpacePreserveFacet = "preserve"
+	whiteSpaceReplaceFacet  = "replace"
+	whiteSpaceCollapseFacet = "collapse"
+)
+
+// Numeric comparison and key formatting preserve IEEE widths and strconv conventions.
+// The precision mode selects float32 rounding; infinity signs follow math.Inf/IsInf.
+// The decimal radix is shared with lexical validation; key formats preserve their field order.
+const (
+	decimalComparisonInvalid = -2
+	singlePrecisionBits      = 32
+	doublePrecisionBits      = 64
+	singlePrecisionMode      = true
+	doublePrecisionMode      = false
+	positiveInfinitySign     = 1
+	negativeInfinitySign     = -1
+	anyInfinitySign          = 0
+	floatKeyNotation         = 'g'
+	shortestFloatPrecision   = -1
+	decimalRadix             = 10
+	durationKeyFormat        = "%s|%s"
+	dateTimeKeyFormat        = "%s|%d|%d|%d|%d|%s|%t"
+)
+
+// Calendar arithmetic and validation share these units and Gregorian cycle lengths.
+// XML Schema timezones are bounded by fourteen hours. The time reference date is
+// this implementation's common anchor for comparing xs:time and constructing keys.
+const (
+	monthsPerYear              = 12
+	minutesPerHour             = 60
+	secondsPerMinute           = 60
+	hoursPerDay                = 24
+	secondsPerHour             = 3600
+	secondsPerDay              = 86400
+	maxTimezoneHours           = 14
+	calendarFirstMonth         = 1
+	calendarFirstDay           = 1
+	daysPerCommonYear          = 365
+	gregorianLeapInterval      = 4
+	gregorianCenturyYears      = 100
+	gregorianEraYears          = 400
+	durationReferenceDateCount = 4
+	timeReferenceYear          = 2000
+	timeReferenceMonth         = 1
+	timeReferenceDay           = 15
+)
+
+// Date lexicals split into year, month and day fields.
+const dateFieldCount = 3
+
 // XSDFields splits s into items on runs of XSD whitespace only (space, tab, CR,
 // LF), the exported form of xsdFields. xs:list item separation is defined over
 // XSD whitespace, so callers must use this in place of strings.Fields: a list
@@ -48,13 +100,13 @@ func Compare(a, b, builtinLocal string) (int, bool) {
 	case lexicon.TypeBoolean:
 		return compareBoolean(a, b)
 	case lexicon.TypeFloat:
-		return compareFloat(a, b, true)
+		return compareFloat(a, b, singlePrecisionMode)
 	case lexicon.TypeDouble:
-		return compareFloat(a, b, false)
+		return compareFloat(a, b, doublePrecisionMode)
 	case lexicon.TypeDateTime, lexicon.TypeDateTimeStamp:
 		// xs:dateTimeStamp is a subtype of xs:dateTime; compare in the dateTime
-		// value space.
-		return compareDateTime(a, b, lexicon.TypeDateTime)
+		// value space after validating the requested subtype.
+		return compareDateTime(a, b, builtinLocal)
 	case lexicon.TypeDate:
 		return compareDate(a, b, builtinLocal)
 	case lexicon.TypeTime:
@@ -72,7 +124,7 @@ func Compare(a, b, builtinLocal string) (int, bool) {
 	case lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration:
 		// xs:dayTimeDuration and xs:yearMonthDuration are subtypes of xs:duration;
 		// compare in the duration value space.
-		return compareDuration(a, b)
+		return compareDuration(a, b, builtinLocal)
 	case lexicon.TypeHexBinary:
 		return compareHexBinary(a, b)
 	case lexicon.TypeBase64Binary:
@@ -93,7 +145,7 @@ func Compare(a, b, builtinLocal string) (int, bool) {
 		}
 
 		cmp := CompareDecimal(trimXSDSpace(a), trimXSDSpace(b))
-		if cmp == -2 {
+		if cmp == decimalComparisonInvalid {
 			return 0, false
 		}
 
@@ -114,20 +166,20 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 			return trimmed, false
 		}
 
-		if trimmed == lexicon.ValueTrue || trimmed == "1" {
-			return "1", true
+		if trimmed == lexicon.ValueTrue || trimmed == booleanTrueDigit {
+			return booleanTrueDigit, true
 		}
 
-		return "0", true
+		return booleanFalseDigit, true
 	case lexicon.TypeFloat:
-		return canonicalFloatKey(s, 32) // xs:float is 32-bit IEEE-754
+		return canonicalFloatKey(s, singlePrecisionBits) // xs:float is 32-bit IEEE-754
 	case lexicon.TypeDouble:
-		return canonicalFloatKey(s, 64)
+		return canonicalFloatKey(s, doublePrecisionBits)
 	case lexicon.TypeDateTime, lexicon.TypeDate, lexicon.TypeTime, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeGMonth, lexicon.TypeGDay, lexicon.TypeGMonthDay:
 		return canonicalDateTimeKey(trimXSDSpace(s), builtinLocal)
 	case lexicon.TypeDateTimeStamp:
 		// xs:dateTimeStamp canonicalizes in the xs:dateTime value space.
-		return canonicalDateTimeKey(trimXSDSpace(s), lexicon.TypeDateTime)
+		return canonicalDateTimeKey(trimXSDSpace(s), builtinLocal)
 	case lexicon.TypeHexBinary:
 		trimmed := trimXSDSpace(s)
 		if ValidateBuiltin(trimmed, lexicon.TypeHexBinary, Version11) != nil {
@@ -157,10 +209,9 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		// xs:dayTimeDuration / xs:yearMonthDuration canonicalize in the xs:duration
 		// value space (they are valid xs:duration lexicals).
 		trimmed := trimXSDSpace(s)
-		// Validate against the strict xs:duration lexical space before the lenient
-		// parseXSDDurationValue below, so CanonicalKey never canonicalizes a value
-		// the validator rejects.
-		if ValidateBuiltin(trimmed, lexicon.TypeDuration, Version11) != nil {
+		// Validate the requested subtype before the shared base-type parser, so
+		// CanonicalKey never canonicalizes a value the subtype validator rejects.
+		if ValidateBuiltin(trimmed, builtinLocal, Version11) != nil {
 			return trimmed, false
 		}
 
@@ -178,7 +229,7 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 			months, seconds = new(big.Int).Neg(months), new(big.Rat).Neg(seconds)
 		}
 
-		return fmt.Sprintf("%s|%s", months.String(), seconds.RatString()), true
+		return fmt.Sprintf(durationKeyFormat, months.String(), seconds.RatString()), true
 	case lexicon.TypeDecimal, lexicon.TypeInteger,
 		lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte,
 		lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte,
@@ -197,7 +248,7 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 		}
 
 		return r.RatString(), true
-	case "string":
+	case lexicon.TypeString:
 		// whiteSpace=preserve: the value space is the exact lexical string, so
 		// leading/trailing/internal whitespace is significant. Do not alter it.
 		return s, false
@@ -225,12 +276,12 @@ func CanonicalKey(s, builtinLocal string) (string, bool) {
 // "collapse" so callers normalize conservatively.
 func WhiteSpace(builtinLocal string) string {
 	switch builtinLocal {
-	case "string":
-		return "preserve"
+	case lexicon.TypeString:
+		return whiteSpacePreserveFacet
 	case lexicon.TypeNormalizedString:
-		return "replace"
+		return whiteSpaceReplaceFacet
 	default:
-		return "collapse"
+		return whiteSpaceCollapseFacet
 	}
 }
 
@@ -241,13 +292,90 @@ func WhiteSpace(builtinLocal string) string {
 // and "collapse" additionally collapses runs of spaces and trims the ends.
 func Normalize(s, builtinLocal string) string {
 	switch WhiteSpace(builtinLocal) {
-	case "preserve":
+	case whiteSpacePreserveFacet:
 		return s
-	case "replace":
+	case whiteSpaceReplaceFacet:
 		return whitespaceReplace(s)
 	default: // collapse
 		return whitespaceCollapse(s)
 	}
+}
+
+// CompareDecimal compares two decimal string values with the ordering of
+// math/big.Rat. Returns -1 if a < b, 0 if a == b, 1 if a > b, or -2 on parse
+// error.
+//
+// When both operands match the plain xs:decimal lexical grammar
+// (+|-)?(digits('.'digits?)?|'.'digits) the comparison runs digit-wise without
+// allocating. Every other input (exponents, fractions such as "1/2", base
+// prefixes, whitespace, malformed text) goes through big.Rat.SetString, so the
+// result, including the -2 error value, is always what big.Rat gives.
+func CompareDecimal(a, b string) int {
+	da, ok := parsePlainDecimal(a)
+	if !ok {
+		return compareDecimalRat(a, b)
+	}
+
+	db, ok := parsePlainDecimal(b)
+	if !ok {
+		return compareDecimalRat(a, b)
+	}
+
+	return comparePlainDecimal(da, db)
+}
+
+// IsFloatNaN reports whether s is a valid xs:float/xs:double lexical form that
+// denotes NaN. Only the bare "NaN" qualifies; the sign-prefixed +NaN/-NaN are
+// not valid XSD lexical forms and are rejected.
+func IsFloatNaN(s string) bool {
+	f, ok := parseXSDFloat(s)
+	return ok && math.IsNaN(f)
+}
+
+// CompareFloatFacetBound compares two xs:float/xs:double facet BOUND lexicals for
+// the purpose of the same-type range-facet consistency check (e.g. minInclusive
+// vs maxInclusive). It differs from the ordinary value-space Compare in its
+// treatment of NaN: where Compare returns incomparable (ok=false) for any NaN
+// operand, this orders NaN as EQUAL to NaN and GREATER THAN every non-NaN value.
+// That matches xmllint, which rejects a schema whose minInclusive="NaN" exceeds
+// a finite maxInclusive while accepting minInclusive=finite with maxInclusive=NaN.
+//
+// builtinLocal must be xs:float or xs:double; for any other type it returns
+// ok=false so the caller falls back to its normal comparator. Both operands are
+// validated as valid float/double lexicals first: an invalid bound yields
+// ok=false (no ordering decision), so the caller's invalid-bound check — not this
+// consistency check — reports the error.
+func CompareFloatFacetBound(a, b, builtinLocal string) (int, bool) {
+	if builtinLocal != lexicon.TypeFloat && builtinLocal != lexicon.TypeDouble {
+		return 0, false
+	}
+
+	if !validBuiltinOperands(a, b, builtinLocal) {
+		return 0, false
+	}
+
+	fa, ok1 := parseXSDFloat(trimXSDSpace(a))
+
+	fb, ok2 := parseXSDFloat(trimXSDSpace(b))
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+
+	aNaN := math.IsNaN(fa)
+
+	bNaN := math.IsNaN(fb)
+	if aNaN || bNaN {
+		switch {
+		case aNaN && bNaN:
+			return 0, true
+		case aNaN:
+			return 1, true
+		default:
+			return -1, true
+		}
+	}
+
+	return compareFloat(a, b, builtinLocal == lexicon.TypeFloat)
 }
 
 // numericComparableTypes is the set of integer-family and decimal builtins that
@@ -280,9 +408,9 @@ func validDateTimeOperands(a, b, builtinLocal string) bool {
 // true and "false"/"0" map to false. Any other input is not a valid boolean.
 func parseXSDBoolean(s string) (bool, bool) {
 	switch s {
-	case lexicon.ValueTrue, "1":
+	case lexicon.ValueTrue, booleanTrueDigit:
 		return true, true
-	case "false", "0":
+	case lexicon.ValueFalse, booleanFalseDigit:
 		return false, true
 	}
 
@@ -425,7 +553,7 @@ func compareDateTimeMixedTZ(a, b xsdDateTime) (int, bool) {
 	// of partial Gregorian types would otherwise cause invalid day/month rollover.
 	// Year 0000 is valid; only nil denotes a missing year. compareTime supplies its
 	// own reference date, so time values can use the determinate path.
-	if a.year == nil || b.year == nil || a.month < 1 || b.month < 1 || a.day < 1 || b.day < 1 {
+	if a.year == nil || b.year == nil || a.month < calendarFirstMonth || b.month < calendarFirstMonth || a.day < calendarFirstDay || b.day < calendarFirstDay {
 		return 0, false
 	}
 
@@ -446,12 +574,12 @@ func compareDateTimeMixedTZ(a, b xsdDateTime) (int, bool) {
 	// build the UTC-normalized plain value at each extreme.
 	low := plain
 	low.hasTZ = true
-	low.tzMin = 14 * 60
+	low.tzMin = maxTimezoneHours * minutesPerHour
 	low = low.normalizeToUTC()
 
 	high := plain
 	high.hasTZ = true
-	high.tzMin = -14 * 60
+	high.tzMin = -maxTimezoneHours * minutesPerHour
 	high = high.normalizeToUTC()
 
 	cmpLow := compareDateTimeFields(low, tz)
@@ -534,8 +662,8 @@ func compareTime(a, b, builtinLocal string) (int, bool) {
 	da = da.normalizeHour24()
 	db = db.normalizeHour24()
 	// Set a reference date so TZ normalization day overflow works.
-	da.year, da.month, da.day = big.NewInt(2000), 1, 15
-	db.year, db.month, db.day = big.NewInt(2000), 1, 15
+	da.year, da.month, da.day = big.NewInt(timeReferenceYear), timeReferenceMonth, timeReferenceDay
+	db.year, db.month, db.day = big.NewInt(timeReferenceYear), timeReferenceMonth, timeReferenceDay
 
 	return compareDateTimeParsed(da, db)
 }
@@ -620,8 +748,8 @@ func compareGMonthDay(a, b, builtinLocal string) (int, bool) {
 	return compareDateTimeParsed(da, db)
 }
 
-func compareDuration(a, b string) (int, bool) {
-	if !validBuiltinOperands(a, b, lexicon.TypeDuration) {
+func compareDuration(a, b, builtinLocal string) (int, bool) {
+	if !validBuiltinOperands(a, b, builtinLocal) {
 		return 0, false
 	}
 
@@ -638,8 +766,8 @@ func compareDuration(a, b string) (int, bool) {
 	return compareDurationComponents(am, as, bm, bs)
 }
 
-func durationReferenceDates() [4]durationReferenceDate {
-	return [4]durationReferenceDate{
+func durationReferenceDates() [durationReferenceDateCount]durationReferenceDate {
+	return [durationReferenceDateCount]durationReferenceDate{
 		{1696, 9, 1},
 		{1697, 2, 1},
 		{1903, 3, 1},
@@ -698,12 +826,12 @@ func compareDurationTimelinePoint(a, b durationTimelinePoint) int {
 }
 
 func addMonthsToDate(year *big.Int, month, day int, delta *big.Int) (*big.Int, int, int) {
-	totalMonths := new(big.Int).Mul(year, big.NewInt(12))
+	totalMonths := new(big.Int).Mul(year, big.NewInt(monthsPerYear))
 	totalMonths.Add(totalMonths, big.NewInt(int64(month-1)))
 	totalMonths.Add(totalMonths, delta)
 
 	newYear, monthRemainder := new(big.Int), new(big.Int)
-	newYear.DivMod(totalMonths, big.NewInt(12), monthRemainder)
+	newYear.DivMod(totalMonths, big.NewInt(monthsPerYear), monthRemainder)
 
 	newMonth := int(monthRemainder.Int64()) + 1
 	if maxDay := daysInMonth(newYear, newMonth); day > maxDay {
@@ -721,10 +849,10 @@ func daysBeforeDate(year *big.Int, month, day int) *big.Int {
 }
 
 func daysBeforeYear(year *big.Int) *big.Int {
-	days := new(big.Int).Mul(year, big.NewInt(365))
-	days.Add(days, floorDivInt(new(big.Int).Add(year, big.NewInt(3)), 4))
-	days.Sub(days, floorDivInt(new(big.Int).Add(year, big.NewInt(99)), 100))
-	days.Add(days, floorDivInt(new(big.Int).Add(year, big.NewInt(399)), 400))
+	days := new(big.Int).Mul(year, big.NewInt(daysPerCommonYear))
+	days.Add(days, floorDivInt(new(big.Int).Add(year, big.NewInt(gregorianLeapInterval-1)), gregorianLeapInterval))
+	days.Sub(days, floorDivInt(new(big.Int).Add(year, big.NewInt(gregorianCenturyYears-1)), gregorianCenturyYears))
+	days.Add(days, floorDivInt(new(big.Int).Add(year, big.NewInt(gregorianEraYears-1)), gregorianEraYears))
 
 	return days
 }
@@ -733,12 +861,12 @@ func daysBeforeMonth(year *big.Int, month int) int {
 	common := [...]int{0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334}
 	leap := [...]int{0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335}
 
-	if month < 1 {
+	if month < calendarFirstMonth {
 		return 0
 	}
 
-	if month > 12 {
-		month = 12
+	if month > monthsPerYear {
+		month = monthsPerYear
 	}
 
 	if isLeapYearBig(year) {
@@ -754,7 +882,7 @@ func floorDivInt(n *big.Int, d int64) *big.Int {
 
 func splitSecondsInDay(seconds *big.Rat) (*big.Int, *big.Rat) {
 	numerator := seconds.Num()
-	divisor := new(big.Int).Mul(seconds.Denom(), big.NewInt(86400))
+	divisor := new(big.Int).Mul(seconds.Denom(), big.NewInt(secondsPerDay))
 	dayOffset, remainder := new(big.Int), new(big.Int)
 	dayOffset.DivMod(numerator, divisor, remainder)
 	secondOfDay := new(big.Rat).SetFrac(remainder, seconds.Denom())
@@ -784,15 +912,15 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 		return lexicon.FloatNaN, true
 	}
 
-	if math.IsInf(f, 1) {
+	if math.IsInf(f, positiveInfinitySign) {
 		return lexicon.FloatINF, true
 	}
 
-	if math.IsInf(f, -1) {
+	if math.IsInf(f, negativeInfinitySign) {
 		return lexicon.FloatNegINF, true
 	}
 
-	if bitSize == 32 {
+	if bitSize == singlePrecisionBits {
 		f = float64(float32(f)) // round to xs:float precision
 	}
 	// A finite lexical value can overflow to infinity at the target precision
@@ -800,11 +928,11 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 	// key matches the XSD-canonical "INF"/"-INF" form, in place of Go's
 	// strconv.FormatFloat output ("+Inf"/"-Inf"), keeping equal values' keys
 	// consistent with the literal INF/-INF spellings above.
-	if math.IsInf(f, 1) {
+	if math.IsInf(f, positiveInfinitySign) {
 		return lexicon.FloatINF, true
 	}
 
-	if math.IsInf(f, -1) {
+	if math.IsInf(f, negativeInfinitySign) {
 		return lexicon.FloatNegINF, true
 	}
 
@@ -812,7 +940,7 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 		f = 0 // normalize -0 to +0; they are equal in the value space
 	}
 
-	return strconv.FormatFloat(f, 'g', -1, bitSize), true
+	return strconv.FormatFloat(f, floatKeyNotation, shortestFloatPrecision, bitSize), true
 }
 
 func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
@@ -830,7 +958,7 @@ func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
 	)
 
 	switch builtinLocal {
-	case lexicon.TypeDateTime:
+	case lexicon.TypeDateTime, lexicon.TypeDateTimeStamp:
 		dt, ok = parseXSDDateTime(s)
 	case lexicon.TypeDate:
 		dt, ok = parseXSDDate(s)
@@ -860,14 +988,14 @@ func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
 		// timezoned value whose UTC offset crosses midnight (e.g. "11:30:00+01:00"
 		// vs "10:30:00Z", both 10:30 UTC) would key off a zero date and differ in
 		// the day/month/year fields, missing the equality compareTime reports.
-		dt.year, dt.month, dt.day = big.NewInt(2000), 1, 15
+		dt.year, dt.month, dt.day = big.NewInt(timeReferenceYear), timeReferenceMonth, timeReferenceDay
 	}
 
 	if dt.hasTZ {
 		dt = dt.normalizeToUTC()
 	}
 
-	return fmt.Sprintf("%s|%d|%d|%d|%d|%s|%t", dt.yearVal().String(), dt.month, dt.day, dt.hour, dt.min, dt.secVal().RatString(), dt.hasTZ), true
+	return fmt.Sprintf(dateTimeKeyFormat, dt.yearVal().String(), dt.month, dt.day, dt.hour, dt.min, dt.secVal().RatString(), dt.hasTZ), true
 }
 
 // whitespaceCollapse applies the XSD whiteSpace="collapse" normalization:
@@ -909,83 +1037,6 @@ type plainDecimal struct {
 	neg     bool
 	intPart string
 	frac    string
-}
-
-// CompareDecimal compares two decimal string values with the ordering of
-// math/big.Rat. Returns -1 if a < b, 0 if a == b, 1 if a > b, or -2 on parse
-// error.
-//
-// When both operands match the plain xs:decimal lexical grammar
-// (+|-)?(digits('.'digits?)?|'.'digits) the comparison runs digit-wise without
-// allocating. Every other input (exponents, fractions such as "1/2", base
-// prefixes, whitespace, malformed text) goes through big.Rat.SetString, so the
-// result, including the -2 error value, is always what big.Rat gives.
-func CompareDecimal(a, b string) int {
-	da, ok := parsePlainDecimal(a)
-	if !ok {
-		return compareDecimalRat(a, b)
-	}
-
-	db, ok := parsePlainDecimal(b)
-	if !ok {
-		return compareDecimalRat(a, b)
-	}
-
-	return comparePlainDecimal(da, db)
-}
-
-// IsFloatNaN reports whether s is a valid xs:float/xs:double lexical form that
-// denotes NaN. Only the bare "NaN" qualifies; the sign-prefixed +NaN/-NaN are
-// not valid XSD lexical forms and are rejected.
-func IsFloatNaN(s string) bool {
-	f, ok := parseXSDFloat(s)
-	return ok && math.IsNaN(f)
-}
-
-// CompareFloatFacetBound compares two xs:float/xs:double facet BOUND lexicals for
-// the purpose of the same-type range-facet consistency check (e.g. minInclusive
-// vs maxInclusive). It differs from the ordinary value-space Compare in its
-// treatment of NaN: where Compare returns incomparable (ok=false) for any NaN
-// operand, this orders NaN as EQUAL to NaN and GREATER THAN every non-NaN value.
-// That matches xmllint, which rejects a schema whose minInclusive="NaN" exceeds
-// a finite maxInclusive while accepting minInclusive=finite with maxInclusive=NaN.
-//
-// builtinLocal must be xs:float or xs:double; for any other type it returns
-// ok=false so the caller falls back to its normal comparator. Both operands are
-// validated as valid float/double lexicals first: an invalid bound yields
-// ok=false (no ordering decision), so the caller's invalid-bound check — not this
-// consistency check — reports the error.
-func CompareFloatFacetBound(a, b, builtinLocal string) (int, bool) {
-	if builtinLocal != lexicon.TypeFloat && builtinLocal != lexicon.TypeDouble {
-		return 0, false
-	}
-
-	if !validBuiltinOperands(a, b, builtinLocal) {
-		return 0, false
-	}
-
-	fa, ok1 := parseXSDFloat(trimXSDSpace(a))
-
-	fb, ok2 := parseXSDFloat(trimXSDSpace(b))
-	if !ok1 || !ok2 {
-		return 0, false
-	}
-
-	aNaN := math.IsNaN(fa)
-
-	bNaN := math.IsNaN(fb)
-	if aNaN || bNaN {
-		switch {
-		case aNaN && bNaN:
-			return 0, true
-		case aNaN:
-			return 1, true
-		default:
-			return -1, true
-		}
-	}
-
-	return compareFloat(a, b, builtinLocal == lexicon.TypeFloat)
 }
 
 // parsePlainDecimal parses s against the xs:decimal lexical grammar
@@ -1082,7 +1133,7 @@ func compareDecimalRat(a, b string) int {
 
 	rb, ok2 := new(big.Rat).SetString(b)
 	if !ok1 || !ok2 {
-		return -2
+		return decimalComparisonInvalid
 	}
 
 	return ra.Cmp(rb)
@@ -1159,10 +1210,10 @@ func decodeBase64Binary(s string) ([]byte, bool) {
 
 func parseXSDFloat(s string) (float64, bool) {
 	switch s {
-	case lexicon.FloatINF, "+INF":
-		return math.Inf(1), true
+	case lexicon.FloatINF, lexicon.FloatPosINF:
+		return math.Inf(positiveInfinitySign), true
 	case lexicon.FloatNegINF:
-		return math.Inf(-1), true
+		return math.Inf(negativeInfinitySign), true
 	// Per XSD the only valid lexical form for NaN is the bare "NaN"; +NaN and
 	// -NaN are not valid (floatRegex rejects them). Reject them here too so the
 	// value space stays consistent with the lexical space — otherwise an invalid
@@ -1171,12 +1222,12 @@ func parseXSDFloat(s string) (float64, bool) {
 		return math.NaN(), true
 	}
 
-	f, err := strconv.ParseFloat(s, 64)
+	f, err := strconv.ParseFloat(s, doublePrecisionBits)
 	// XSD 1.1 maps a float/double lexical whose magnitude overflows the value
 	// space to ±INF, and ValidateBuiltin accepts such lexicals (e.g. "1e400").
 	// strconv.ParseFloat signals this with ErrRange and returns ±Inf as the
 	// result, so honor that infinity and accept the value.
-	if errors.Is(err, strconv.ErrRange) && math.IsInf(f, 0) {
+	if errors.Is(err, strconv.ErrRange) && math.IsInf(f, anyInfinitySign) {
 		return f, true
 	}
 
@@ -1187,7 +1238,7 @@ func parseXSDFloat(s string) (float64, bool) {
 	// "NAN", "inf", and "Infinity". The only valid XSD lexicals denoting NaN/±INF
 	// are the exact forms handled in the switch above, so any NaN/Inf reaching
 	// here came from one of those lenient spellings and must be rejected.
-	if math.IsNaN(f) || math.IsInf(f, 0) {
+	if math.IsNaN(f) || math.IsInf(f, anyInfinitySign) {
 		return 0, false
 	}
 
@@ -1299,31 +1350,31 @@ func (dt xsdDateTime) normalizeToUTC() xsdDateTime {
 
 	// Propagate minutes overflow.
 	for r.min < 0 {
-		r.min += 60
+		r.min += minutesPerHour
 		r.hour--
 	}
 
-	for r.min >= 60 {
-		r.min -= 60
+	for r.min >= minutesPerHour {
+		r.min -= minutesPerHour
 		r.hour++
 	}
 
 	// Propagate hours overflow.
 	for r.hour < 0 {
-		r.hour += 24
+		r.hour += hoursPerDay
 		r.day--
 	}
 
-	for r.hour >= 24 {
-		r.hour -= 24
+	for r.hour >= hoursPerDay {
+		r.hour -= hoursPerDay
 		r.day++
 	}
 
 	// Propagate day overflow.
-	for r.day < 1 {
+	for r.day < calendarFirstDay {
 		r.month--
-		if r.month < 1 {
-			r.month = 12
+		if r.month < calendarFirstMonth {
+			r.month = monthsPerYear
 			r.year.Sub(r.year, big.NewInt(1))
 		}
 
@@ -1334,8 +1385,8 @@ func (dt xsdDateTime) normalizeToUTC() xsdDateTime {
 		r.day -= daysInMonth(r.year, r.month)
 
 		r.month++
-		if r.month > 12 {
-			r.month = 1
+		if r.month > monthsPerYear {
+			r.month = calendarFirstMonth
 			r.year.Add(r.year, big.NewInt(1))
 		}
 	}
@@ -1351,7 +1402,7 @@ func (dt xsdDateTime) normalizeToUTC() xsdDateTime {
 // the year-agnostic g-types) simply reset the hour, matching how XSD treats
 // 24:00:00 and 00:00:00 of the next day as the same xs:time value.
 func (dt xsdDateTime) normalizeHour24() xsdDateTime {
-	if dt.hour != 24 {
+	if dt.hour != hoursPerDay {
 		return dt
 	}
 
@@ -1363,7 +1414,7 @@ func (dt xsdDateTime) normalizeHour24() xsdDateTime {
 	}
 	// Only advance the calendar date when a full date is present; partial
 	// gregorian types (year/month/day zero) carry no date to roll over.
-	if r.day < 1 || r.month < 1 {
+	if r.day < calendarFirstDay || r.month < calendarFirstMonth {
 		return r
 	}
 
@@ -1372,14 +1423,14 @@ func (dt xsdDateTime) normalizeHour24() xsdDateTime {
 		return r
 	}
 
-	r.day = 1
+	r.day = calendarFirstDay
 
 	r.month++
-	if r.month <= 12 {
+	if r.month <= monthsPerYear {
 		return r
 	}
 
-	r.month = 1
+	r.month = calendarFirstMonth
 	if r.year == nil {
 		r.year = big.NewInt(0)
 	}
@@ -1406,7 +1457,7 @@ func parseYearBig(s string, neg bool) (*big.Int, bool) {
 		}
 	}
 
-	n, ok := new(big.Int).SetString(s, 10)
+	n, ok := new(big.Int).SetString(s, decimalRadix)
 	if !ok {
 		return nil, false
 	}
@@ -1435,7 +1486,7 @@ func parseTZ(s string) (bool, int) {
 			return false, 0
 		}
 
-		offset := hh*60 + mm
+		offset := hh*minutesPerHour + mm
 		if s[0] == '-' {
 			offset = -offset
 		}
@@ -1460,8 +1511,8 @@ func parseXSDDateTime(s string) (xsdDateTime, bool) {
 		return dt, false
 	}
 
-	dParts := strings.SplitN(datePart, "-", 3)
-	if len(dParts) != 3 {
+	dParts := strings.SplitN(datePart, "-", dateFieldCount)
+	if len(dParts) != dateFieldCount {
 		return dt, false
 	}
 
@@ -1559,7 +1610,7 @@ func parseXSDDate(s string) (xsdDateTime, bool) {
 	}
 
 	dashIdx := strings.IndexByte(s, '-')
-	if dashIdx < 4 {
+	if dashIdx < minExpandedYearDigits {
 		return dt, false
 	}
 
@@ -1616,7 +1667,7 @@ func parseXSDGYear(s string) (xsdDateTime, bool) {
 		i++
 	}
 
-	if i < 4 {
+	if i < minExpandedYearDigits {
 		return dt, false
 	}
 
@@ -1647,7 +1698,7 @@ func parseXSDGYearMonth(s string) (xsdDateTime, bool) {
 		i++
 	}
 
-	if i < 4 || i >= len(s) || s[i] != '-' {
+	if i < minExpandedYearDigits || i >= len(s) || s[i] != '-' {
 		return dt, false
 	}
 
@@ -1768,15 +1819,15 @@ func isLeapYearBig(year *big.Int) bool {
 	mod := func(m int64) int64 {
 		return new(big.Int).Mod(year, big.NewInt(m)).Int64()
 	}
-	if mod(4) != 0 {
+	if mod(gregorianLeapInterval) != 0 {
 		return false
 	}
 
-	if mod(100) != 0 {
+	if mod(gregorianCenturyYears) != 0 {
 		return true
 	}
 
-	return mod(400) == 0
+	return mod(gregorianEraYears) == 0
 }
 
 type xsdDuration struct {
@@ -1818,18 +1869,18 @@ func (d *xsdDuration) addDateComponent(numStr string, designator byte) bool {
 	// (the scan admits digits and at most one '.', but '.' is only valid
 	// for seconds and is rejected here). Parse as *big.Int so huge
 	// year/month components do not overflow.
-	n, ok := new(big.Int).SetString(numStr, 10)
+	n, ok := new(big.Int).SetString(numStr, decimalRadix)
 	if !ok {
 		return false
 	}
 
 	switch designator {
 	case 'Y':
-		d.months.Add(d.months, new(big.Int).Mul(n, big.NewInt(12)))
+		d.months.Add(d.months, new(big.Int).Mul(n, big.NewInt(monthsPerYear)))
 	case 'M':
 		d.months.Add(d.months, n)
 	case 'D':
-		d.seconds.Add(d.seconds, new(big.Rat).Mul(new(big.Rat).SetInt(n), big.NewRat(86400, 1)))
+		d.seconds.Add(d.seconds, new(big.Rat).Mul(new(big.Rat).SetInt(n), big.NewRat(secondsPerDay, 1)))
 	default:
 		return false
 	}
@@ -1840,19 +1891,19 @@ func (d *xsdDuration) addDateComponent(numStr string, designator byte) bool {
 func (d *xsdDuration) addTimeComponent(numStr string, designator byte) bool {
 	switch designator {
 	case 'H':
-		n, ok := new(big.Int).SetString(numStr, 10)
+		n, ok := new(big.Int).SetString(numStr, decimalRadix)
 		if !ok {
 			return false
 		}
 
-		d.seconds.Add(d.seconds, new(big.Rat).Mul(new(big.Rat).SetInt(n), big.NewRat(3600, 1)))
+		d.seconds.Add(d.seconds, new(big.Rat).Mul(new(big.Rat).SetInt(n), big.NewRat(secondsPerHour, 1)))
 	case 'M':
-		n, ok := new(big.Int).SetString(numStr, 10)
+		n, ok := new(big.Int).SetString(numStr, decimalRadix)
 		if !ok {
 			return false
 		}
 
-		d.seconds.Add(d.seconds, new(big.Rat).Mul(new(big.Rat).SetInt(n), big.NewRat(60, 1)))
+		d.seconds.Add(d.seconds, new(big.Rat).Mul(new(big.Rat).SetInt(n), big.NewRat(secondsPerMinute, 1)))
 	case 'S':
 		// big.Rat.SetString accepts forms the seconds field must not use,
 		// but the digit-run scan above admits only ASCII digits and a single

@@ -6,6 +6,16 @@ package xdm
 import (
 	"context"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+// The generic ID heuristic accepts exactly these additional spellings beside
+// the lowercase XML local name; this is the FROZEN name set documented below.
+const (
+	idAttributeTitleCase = "Id"
+	idAttributeUpperCase = "ID"
+	xmlIDAttribute       = lexicon.PrefixXML + ":" + lexicon.AttrID
 )
 
 // FindElementsByID walks the subtree rooted at root (root included) and
@@ -35,24 +45,25 @@ func FindElementsByID(root Node, id string) []*Element {
 	)
 
 	walk = func(n Node) {
-		elem, ok := AsNode[*Element](n)
-		if !ok {
+		if IsNilNode(n) {
 			return
 		}
 
-		for _, attr := range elem.Attributes() {
-			if !isIDAttribute(attr) {
-				continue
-			}
-			// xs:ID derives from xs:NCName, which collapses whitespace;
-			// apply XML whitespace collapsing for xml:id.
-			if strings.TrimSpace(attr.Value()) == id {
-				matches = append(matches, elem)
-				break
+		if elem, ok := AsNode[*Element](n); ok {
+			for _, attr := range elem.Attributes() {
+				if !isIDAttribute(attr) {
+					continue
+				}
+				// xs:ID derives from xs:NCName, which collapses whitespace;
+				// apply XML whitespace collapsing for xml:id.
+				if strings.TrimSpace(attr.Value()) == id {
+					matches = append(matches, elem)
+					break
+				}
 			}
 		}
 
-		for child := elem.FirstChild(); child != nil; child = child.NextSibling() {
+		for child := n.FirstChild(); child != nil; child = child.NextSibling() {
 			walk(child)
 		}
 	}
@@ -88,35 +99,36 @@ func BuildIDIndex(ctx context.Context, root Node) (map[string][]*Element, error)
 			}
 		}
 
-		elem, ok := AsNode[*Element](n)
-		if !ok {
+		if IsNilNode(n) {
 			return nil
 		}
 
-		for _, attr := range elem.Attributes() {
-			if !isIDAttribute(attr) {
-				continue
-			}
-			// xs:ID derives from xs:NCName, which collapses whitespace;
-			// apply XML whitespace collapsing for xml:id.
-			id := strings.TrimSpace(attr.Value())
-			// Every id on the element is recorded, so an element carrying
-			// two ID attributes cannot hide the second one from a caller
-			// checking len(index[id]) > 1. Only a repeat of the SAME id on
-			// the SAME element is dropped, matching the value-conditional
-			// break in FindElementsByID. Checking the last entry suffices:
-			// the walk runs one element's attributes to completion before
-			// descending into its children, so an element's appends for a
-			// given id are never interleaved with another element's.
-			existing := index[id]
-			if len(existing) > 0 && existing[len(existing)-1] == elem {
-				continue
-			}
+		if elem, ok := AsNode[*Element](n); ok {
+			for _, attr := range elem.Attributes() {
+				if !isIDAttribute(attr) {
+					continue
+				}
+				// xs:ID derives from xs:NCName, which collapses whitespace;
+				// apply XML whitespace collapsing for xml:id.
+				id := strings.TrimSpace(attr.Value())
+				// Every id on the element is recorded, so an element carrying
+				// two ID attributes cannot hide the second one from a caller
+				// checking len(index[id]) > 1. Only a repeat of the SAME id on
+				// the SAME element is dropped, matching the value-conditional
+				// break in FindElementsByID. Checking the last entry suffices:
+				// the walk runs one element's attributes to completion before
+				// descending into its children, so an element's appends for a
+				// given id are never interleaved with another element's.
+				existing := index[id]
+				if len(existing) > 0 && existing[len(existing)-1] == elem {
+					continue
+				}
 
-			index[id] = append(index[id], elem)
+				index[id] = append(index[id], elem)
+			}
 		}
 
-		for child := elem.FirstChild(); child != nil; child = child.NextSibling() {
+		for child := n.FirstChild(); child != nil; child = child.NextSibling() {
 			if err := walk(child); err != nil {
 				return err
 			}
@@ -137,5 +149,5 @@ func BuildIDIndex(ctx context.Context, root Node) (map[string][]*Element, error)
 // rule lives.
 func isIDAttribute(attr *Attribute) bool {
 	name := attr.Name()
-	return name == "Id" || name == "ID" || name == "id" || name == "xml:id" || attr.IDType() == IDAttribute
+	return name == idAttributeTitleCase || name == idAttributeUpperCase || name == lexicon.AttrID || name == xmlIDAttribute || attr.IDType() == IDAttribute
 }

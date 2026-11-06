@@ -14,6 +14,11 @@ import (
 	"github.com/skarm/xmlsec/document"
 )
 
+const (
+	initialLineBufferBytes = 64 << 10
+	maximumLineBytes       = 32 << 20
+)
+
 type request struct {
 	Select    *[]selector `json:"select"`
 	XML       string      `json:"xml"`
@@ -28,7 +33,11 @@ type request struct {
 type response struct {
 	Canonical []byte     `json:"canonical,omitempty"`
 	Nodes     []selector `json:"nodes,omitempty"`
-	Error     string     `json:"error,omitempty"`
+}
+
+type reply struct {
+	response
+	Error string `json:"error,omitempty"`
 }
 
 type selector struct {
@@ -41,21 +50,21 @@ type selector struct {
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 64<<10), 32<<20)
+	scanner.Buffer(make([]byte, initialLineBufferBytes), maximumLineBytes)
 
 	encoder := json.NewEncoder(os.Stdout)
 
 	for scanner.Scan() {
 		var (
 			r   request
-			out response
+			out reply
 		)
 		if err := json.Unmarshal(scanner.Bytes(), &r); err != nil {
 			out.Error = err.Error()
 		} else {
 			var err error
 
-			out, err = process(r)
+			out.response, err = process(r)
 			if err != nil {
 				out.Error = err.Error()
 			}

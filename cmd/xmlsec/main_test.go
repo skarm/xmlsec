@@ -89,7 +89,7 @@ func TestCLI(t *testing.T) {
 	}
 
 	var canonical bytes.Buffer
-	if err := run(t.Context(), []string{nameC14n}, strings.NewReader(`<r b="2" a="1"/>`), &canonical, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameC14N}, strings.NewReader(`<r b="2" a="1"/>`), &canonical, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -108,7 +108,7 @@ func TestCLI(t *testing.T) {
 }
 
 func TestCLIRejects(t *testing.T) {
-	for _, args := range [][]string{{nameBogus}, {nameSign}, {nameVerify}, {nameSign, flagKey, "-"}, {nameC14n, "unexpected"}, {nameC14n, "-id", "missing"}} {
+	for _, args := range [][]string{{nameBogus}, {nameSign}, {nameVerify}, {nameSign, flagKey, "-"}, {nameC14N, "unexpected"}, {nameC14N, "-id", "missing"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var out, errout bytes.Buffer
 			if err := run(t.Context(), args, strings.NewReader(`<r/>`), &out, &errout); err == nil {
@@ -122,7 +122,7 @@ func TestCLICanonicalAlgorithms(t *testing.T) {
 	for _, alg := range []string{c14n.Canonical10, c14n.Canonical11, c14n.Exclusive} {
 		t.Run(alg, func(t *testing.T) {
 			var out, errout bytes.Buffer
-			if err := run(t.Context(), []string{nameC14n, "-algorithm", alg},
+			if err := run(t.Context(), []string{nameC14N, "-algorithm", alg},
 				strings.NewReader(`<r xmlns:p="urn:p"><c/></r>`), &out, &errout); err != nil {
 				t.Fatal(err)
 			}
@@ -139,7 +139,7 @@ func TestCLICanonicalAlgorithms(t *testing.T) {
 	}
 
 	var out, errout bytes.Buffer
-	if err := run(t.Context(), []string{nameC14n, "-algorithm", nameUnknown},
+	if err := run(t.Context(), []string{nameC14N, "-algorithm", nameUnknown},
 		strings.NewReader(`<r/>`), &out, &errout); err == nil {
 		t.Fatal("unknown algorithm accepted")
 	}

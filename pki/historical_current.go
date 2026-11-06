@@ -7,6 +7,14 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+const (
+	codeCryptoConstraintsFailureNoPoe = "CRYPTO_CONSTRAINTS_FAILURE_NO_POE"
+	codeRevokedCaNoPoe                = "REVOKED_CA_NO_POE"
+	codeRevokedNoPoe                  = "REVOKED_NO_POE"
 )
 
 const (
@@ -54,7 +62,7 @@ func (s *HistoricalSession) CheckCurrentPolicy(ctx context.Context, result *Resu
 }
 
 func (s *HistoricalSession) checkCurrentPathPolicy(ctx context.Context, path *HistoricalPath) (string, error) {
-	evaluator := currentPolicyEvaluation{session: s, active: make(map[[32]byte]struct{})}
+	evaluator := currentPolicyEvaluation{session: s, active: make(map[[sha256.Size]byte]struct{})}
 	return evaluator.check(ctx, path, false, false)
 }
 
@@ -74,7 +82,7 @@ func historicalResultPath(result *Result, path *HistoricalPath) bool {
 
 type currentPolicyEvaluation struct {
 	session *HistoricalSession
-	active  map[[32]byte]struct{}
+	active  map[[sha256.Size]byte]struct{}
 }
 
 func (e *currentPolicyEvaluation) check(ctx context.Context, path *HistoricalPath, source, skipLeaf bool) (string, error) {
@@ -128,7 +136,7 @@ func (e *currentPolicyEvaluation) checkCertificate(ctx context.Context, path *Hi
 	}
 
 	if cutoff := evaluator.materialCutoff(certificate.SignatureAlgorithm, path.chain[index+1]); !cutoff.IsZero() && !s.now.Before(cutoff) {
-		return "CRYPTO_CONSTRAINTS_FAILURE_NO_POE", ErrPolicy
+		return codeCryptoConstraintsFailureNoPoe, ErrPolicy
 	}
 
 	if skipLeaf && index == 0 {
@@ -142,18 +150,18 @@ func (e *currentPolicyEvaluation) checkCertificate(ctx context.Context, path *Hi
 
 	if selected.revoked {
 		if index == 0 && !source {
-			if selected.reason == 6 {
+			if selected.reason == lexicon.RevocationReasonCertificateHold {
 				return historicalTryLater, ErrRevoked
 			}
 
-			return "REVOKED_NO_POE", ErrRevoked
+			return codeRevokedNoPoe, ErrRevoked
 		}
 
-		return "REVOKED_CA_NO_POE", ErrRevoked
+		return codeRevokedCaNoPoe, ErrRevoked
 	}
 
 	if evaluator.cryptoBoundary(certificate, selected, s.now) {
-		return "CRYPTO_CONSTRAINTS_FAILURE_NO_POE", ErrPolicy
+		return codeCryptoConstraintsFailureNoPoe, ErrPolicy
 	}
 
 	return e.checkSources(ctx, path, index, selected)

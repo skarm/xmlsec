@@ -64,4 +64,13 @@ Supported behavior and exclusions are in [compatibility](compatibility.md).
 - [RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html): AES Key Wrap
 - [RFC 3217](https://www.rfc-editor.org/rfc/rfc3217.html): explicit legacy TripleDES Key Wrap
 
+The [ECP integration guide](saml.md#ecp-2013-holder-of-key) uses
+[ECP 2.0 CS01](https://docs.oasis-open.org/security/saml/Post2.0/saml-ecp/v2.0/cs01/saml-ecp-v2.0-cs01.html),
+[Channel Binding Extensions CS01](https://docs.oasis-open.org/security/saml/Post2.0/saml-channel-binding-ext/v1.0/saml-channel-binding-ext-v1.0.html),
+[HoK SSO CS02](https://docs.oasis-open.org/security/saml/Post2.0/sstc-saml-holder-of-key-browser-sso-cs-02.pdf)
+and [HoK Assertion Profile CS02](https://docs.oasis-open.org/security/saml/Post2.0/sstc-saml2-holder-of-key-cs-02.pdf).
+Whole-SOAP proof uses [XMLDSig Second Edition §§4.3.3.3, 6.6.4](https://www.w3.org/TR/2008/REC-xmldsig-core-20080610/);
+channel bindings use [RFC 5929 §4.1](https://www.rfc-editor.org/rfc/rfc5929.html#section-4.1)
+and [RFC 9266](https://www.rfc-editor.org/rfc/rfc9266.html).
+
 The library does not perform XSD validation or download schemas.

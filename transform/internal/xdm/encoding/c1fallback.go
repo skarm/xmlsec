@@ -18,36 +18,48 @@ package encoding
 //   output to replace U+FFFD with the C1 character corresponding to the
 //   original byte
 // - c1EncoderTransformer: wraps an encoder Transformer, pre-processing its
-//   input to pass C1 characters (U+0080-U+009F) directly as bytes 0x80-0x9F
+//   input to reverse the decoder's fallback for otherwise unassigned C1 bytes
 
 import (
 	"encoding/binary"
 	"unicode/utf8"
 
 	enc "golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/transform"
 )
 
+// C1 fallback covers only the unassigned control-code range, not every
+// undefined single-byte mapping. The ASCII fast path handles one uint64 word
+// in bytes; its mask selects the high bit of each octet.
+const (
+	c1ControlStart    = 0x80
+	c1ControlEnd      = 0x9F
+	asciiWordBytes    = 8
+	asciiWordHighBits = 0x8080808080808080
+)
+
 // c1Encoding wraps a charmap Encoding to provide C1 control character support.
-// Bytes 0x80-0x9F are mapped to/from U+0080-U+009F instead of U+FFFD.
+// Unassigned bytes 0x80-0x9F are mapped to/from U+0080-U+009F instead of U+FFFD.
 type c1Encoding struct {
-	enc.Encoding
+	*charmap.Charmap
 }
 
 func (e *c1Encoding) NewDecoder() *enc.Decoder {
 	return &enc.Decoder{Transformer: &c1DecoderTransformer{
-		base: e.Encoding.NewDecoder().Transformer,
+		base: e.Charmap.NewDecoder().Transformer,
 	}}
 }
 
 func (e *c1Encoding) NewEncoder() *enc.Encoder {
 	return &enc.Encoder{Transformer: &c1EncoderTransformer{
-		base: e.Encoding.NewEncoder().Transformer,
+		base:    e.Charmap.NewEncoder().Transformer,
+		charmap: e.Charmap,
 	}}
 }
 
-func withC1Fallback(e enc.Encoding) enc.Encoding {
-	return &c1Encoding{Encoding: e}
+func withC1Fallback(e *charmap.Charmap) enc.Encoding {
+	return &c1Encoding{Charmap: e}
 }
 
 // c1DecoderTransformer wraps a decoder transformer. After the base decoder
@@ -73,16 +85,16 @@ func (t *c1DecoderTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSr
 		// set holds eight ASCII bytes, each of which the branch below would
 		// copy unchanged. A word that does not fit in dst is left to that
 		// branch, which reports ErrShortDst after the bytes that fit.
-		for len(src)-nSrc >= 8 && len(dst)-nDst >= 8 {
+		for len(src)-nSrc >= asciiWordBytes && len(dst)-nDst >= asciiWordBytes {
 			w := binary.LittleEndian.Uint64(src[nSrc:])
-			if w&0x8080808080808080 != 0 {
+			if w&asciiWordHighBits != 0 {
 				break
 			}
 
 			binary.LittleEndian.PutUint64(dst[nDst:], w)
 
-			nSrc += 8
-			nDst += 8
+			nSrc += asciiWordBytes
+			nDst += asciiWordBytes
 		}
 
 		if nSrc >= len(src) {
@@ -92,7 +104,7 @@ func (t *c1DecoderTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSr
 		b := src[nSrc]
 
 		// ASCII bytes pass through unchanged
-		if b < 0x80 {
+		if b < utf8.RuneSelf {
 			if nDst >= len(dst) {
 				err = transform.ErrShortDst
 				return
@@ -122,9 +134,14 @@ func (t *c1DecoderTransformer) decodeByte(dst, src []byte, atEOF bool) (int, int
 	written, consumed, err := t.base.Transform(decoded, src, atEOF)
 
 	fallback := consumed == 0
-	if src[0] <= 0x9f {
+
+	replacement := written == len(replacementUTF8) && decoded[0] == replacementUTF8[0] && decoded[1] == replacementUTF8[1] && decoded[2] == replacementUTF8[2]
+	if src[0] <= c1ControlEnd {
 		// C1 bytes use their own code points when the base decoder has no mapping.
-		fallback = fallback || written == 3 && decoded[0] == 0xef && decoded[1] == 0xbf && decoded[2] == 0xbd
+		fallback = fallback || replacement
+	} else if replacement {
+		// Outside C1, the replacement denotes an undefined source octet.
+		return 0, 0, ErrInvalidEncodedChar
 	} else if fallback && (err == transform.ErrShortDst || err == transform.ErrShortSrc) { //nolint:errorlint // Only exact transform retry sentinels permit conversion to continue.
 		// Only the Transformer's exact retry signals request more input/output space.
 		return 0, 0, err
@@ -148,10 +165,11 @@ func (t *c1DecoderTransformer) decodeByte(dst, src []byte, atEOF bool) (int, int
 }
 
 // c1EncoderTransformer wraps an encoder transformer. It handles C1 control
-// characters (U+0080-U+009F) by writing them directly as bytes 0x80-0x9F
-// instead of passing them through the base encoder (which would error).
+// characters (U+0080-U+009F) by reversing the decoder's fallback for unassigned
+// bytes. Characters with an existing mapping stay with the base encoder.
 type c1EncoderTransformer struct {
-	base transform.Transformer
+	base    transform.Transformer
+	charmap *charmap.Charmap
 }
 
 func (t *c1EncoderTransformer) Reset() {
@@ -176,7 +194,7 @@ func (t *c1EncoderTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSr
 		}
 
 		r, size := utf8.DecodeRune(src[nSrc:])
-		if r == utf8.RuneError && size <= 1 {
+		if r == utf8.RuneError && size <= malformedUTF8Width {
 			if !atEOF && !utf8.FullRune(src[nSrc:]) {
 				err = transform.ErrShortSrc
 				return
@@ -194,8 +212,10 @@ func (t *c1EncoderTransformer) Transform(dst, src []byte, atEOF bool) (nDst, nSr
 			continue
 		}
 
-		// C1 control character? Write directly as the byte value.
-		if r >= 0x80 && r <= 0x9F {
+		// Add only missing C1 mappings. An already assigned byte (for example
+		// Windows-1252's 0x80 for U+20AC) must retain its original character;
+		// writing U+0080 there would silently change it on the next decode.
+		if r >= c1ControlStart && r <= c1ControlEnd && t.charmap.DecodeByte(byte(r)) == utf8.RuneError {
 			if nDst >= len(dst) {
 				err = transform.ErrShortDst
 				return

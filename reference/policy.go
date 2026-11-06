@@ -7,8 +7,19 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
+)
+
+const (
+	defaultMaxInputBytes     = 8 << 20
+	defaultMaxNodeVisits     = 2_000_000
+	defaultMaxOutputBytes    = 32 << 20
+	defaultMaxProducedBytes  = 32 << 20
+	defaultMaxTransforms     = 8
+	maximumInclusivePrefixes = 128
+	maximumTransforms        = 64
 )
 
 // Options sets the allowed transform chain, processing budgets and optional trusted
@@ -47,8 +58,8 @@ func DefaultOptions() Options {
 			EnvelopedSignature, Base64, c14n.Exclusive, c14n.ExclusiveWithComments,
 			c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments,
 		},
-		MaxTransforms: 8, MaxInputBytes: 8 << 20, MaxOutputBytes: 32 << 20,
-		MaxProducedBytes: 32 << 20, MaxNodeVisits: 2_000_000, XMLLimits: document.DefaultLimits(),
+		MaxTransforms: defaultMaxTransforms, MaxInputBytes: defaultMaxInputBytes, MaxOutputBytes: defaultMaxOutputBytes,
+		MaxProducedBytes: defaultMaxProducedBytes, MaxNodeVisits: defaultMaxNodeVisits, XMLLimits: document.DefaultLimits(),
 	}
 }
 
@@ -98,7 +109,7 @@ func normalize(opt Options) (Options, error) {
 		opt.XMLLimits = d.XMLLimits
 	}
 
-	if opt.MaxTransforms < 1 || opt.MaxTransforms > 64 || opt.MaxInputBytes < 1 || opt.MaxOutputBytes < 1 || opt.MaxProducedBytes < 1 || opt.MaxNodeVisits < 1 {
+	if opt.MaxTransforms < 1 || opt.MaxTransforms > maximumTransforms || opt.MaxInputBytes < 1 || opt.MaxOutputBytes < 1 || opt.MaxProducedBytes < 1 || opt.MaxNodeVisits < 1 {
 		return opt, fmt.Errorf("%w: invalid limits", ErrPolicy)
 	}
 
@@ -154,12 +165,12 @@ func validate(ctx context.Context, ts []Transform, opt Options) error {
 			return &StepError{i, t.Algorithm, fmt.Errorf("%w: InclusiveNamespaces not applicable", ErrInput)}
 		}
 
-		if len(t.InclusivePrefixes) > 128 {
+		if len(t.InclusivePrefixes) > maximumInclusivePrefixes {
 			return &StepError{i, t.Algorithm, ErrLimit}
 		}
 
 		for _, p := range t.InclusivePrefixes {
-			if p != "#default" && (!tree.NCName(p) || p == "xmlns") {
+			if p != lexicon.C14NDefaultPrefixToken && (!tree.NCName(p) || p == lexicon.PrefixXMLNS) {
 				return &StepError{i, t.Algorithm, fmt.Errorf("%w: inclusive prefix", ErrInput)}
 			}
 		}

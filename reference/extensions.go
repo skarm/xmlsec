@@ -12,6 +12,21 @@ import (
 )
 
 const (
+	// Filter2 operation names select how an expression changes the input node set.
+	filterIntersect = "intersect"
+	filterSubtract  = "subtract"
+	filterUnion     = "union"
+
+	// These hard caps bound serialized programs and their static namespace context
+	// before approval callbacks; byte counts refer to UTF-8 source, not runtime output.
+	maximumNamespaceURIBytes = 4096
+	maximumStylesheetBytes   = 1 << 20
+	maximumXPathBytes        = 16 << 10
+	maximumXPathNamespaces   = 128
+	maximumXPathParameters   = 16
+)
+
+const (
 	// XPath is the XMLDSig XPath 1.0 transform URI.
 	XPath = "http://www.w3.org/TR/1999/REC-xpath-19991116"
 	// XPathFilter2 is the XMLDSig XPath Filter 2.0 transform URI.
@@ -97,7 +112,7 @@ func ValidateTransformParameters(t Transform) error {
 		return err
 	}
 
-	if len(t.Stylesheet) != 0 || len(t.XPath) == 0 || len(t.XPath) > 16 || t.Algorithm == XPath && len(t.XPath) != 1 {
+	if len(t.Stylesheet) != 0 || len(t.XPath) == 0 || len(t.XPath) > maximumXPathParameters || t.Algorithm == XPath && len(t.XPath) != 1 {
 		return fmt.Errorf("%w: XPath parameter count", ErrInput)
 	}
 
@@ -132,7 +147,14 @@ func PrepareTransforms(ctx context.Context, ts []Transform, opt Options) error {
 }
 
 func checkedStylesheet(ctx context.Context, t Transform) (*document.Document, error) {
-	if len(t.InclusivePrefixes) != 0 || len(t.XPath) != 0 || len(t.Stylesheet) == 0 || len(t.Stylesheet) > 1<<20 {
+	const (
+		// The XMLDSig XSLT profile requires the stylesheet's unqualified version
+		// attribute, independently of an XML declaration or output serialization.
+		stylesheetVersionAttribute = "version"
+		stylesheetVersion10        = "1.0"
+	)
+
+	if len(t.InclusivePrefixes) != 0 || len(t.XPath) != 0 || len(t.Stylesheet) == 0 || len(t.Stylesheet) > maximumStylesheetBytes {
 		return nil, fmt.Errorf("%w: stylesheet size/parameters", ErrInput)
 	}
 
@@ -142,12 +164,12 @@ func checkedStylesheet(ctx context.Context, t Transform) (*document.Document, er
 	}
 
 	name := doc.Root().Name()
-	if name.Space != lexicon.NamespaceXSLT || name.Local != "stylesheet" && name.Local != "transform" {
+	if name.Space != lexicon.NamespaceXSLT || name.Local != lexicon.XSLTElementStylesheet && name.Local != lexicon.XSLTElementTransform {
 		return nil, fmt.Errorf("%w: XSLT stylesheet root", ErrInput)
 	}
 
-	version, ok := doc.Root().Attribute(document.Name{Local: "version"})
-	if !ok || version != "1.0" {
+	version, ok := doc.Root().Attribute(document.Name{Local: stylesheetVersionAttribute})
+	if !ok || version != stylesheetVersion10 {
 		return nil, fmt.Errorf("%w: XSLT 1.0 required", ErrUnsupported)
 	}
 
@@ -155,7 +177,7 @@ func checkedStylesheet(ctx context.Context, t Transform) (*document.Document, er
 }
 
 func validateTransformParametersNCName(p string, u string) error {
-	if p != "" && !tree.NCName(p) || p == "xmlns" || p == "xml" && u != tree.XMLNamespace || len(u) > 4096 || !utf8.ValidString(u) || p != "" && u == "" {
+	if p != "" && !tree.NCName(p) || p == lexicon.PrefixXMLNS || p == lexicon.PrefixXML && u != tree.XMLNamespace || len(u) > maximumNamespaceURIBytes || !utf8.ValidString(u) || p != "" && u == "" {
 		return fmt.Errorf("%w: XPath namespace", ErrInput)
 	}
 
@@ -163,7 +185,7 @@ func validateTransformParametersNCName(p string, u string) error {
 }
 
 func validateTransformParametersAlgorithm(t *Transform, x *XPathExpression) error {
-	if t.Algorithm == XPath && x.Filter != "" || t.Algorithm == XPathFilter2 && x.Filter != "intersect" && x.Filter != "subtract" && x.Filter != "union" {
+	if t.Algorithm == XPath && x.Filter != "" || t.Algorithm == XPathFilter2 && x.Filter != filterIntersect && x.Filter != filterSubtract && x.Filter != filterUnion {
 		return fmt.Errorf("%w: XPath filter operation", ErrInput)
 	}
 
@@ -172,7 +194,7 @@ func validateTransformParametersAlgorithm(t *Transform, x *XPathExpression) erro
 
 func validateTransformParametersXPath(t *Transform) error {
 	for _, x := range t.XPath {
-		if len(x.Expression) == 0 || len(x.Expression) > 16<<10 || !utf8.ValidString(x.Expression) || len(x.Namespaces) > 128 {
+		if len(x.Expression) == 0 || len(x.Expression) > maximumXPathBytes || !utf8.ValidString(x.Expression) || len(x.Namespaces) > maximumXPathNamespaces {
 			return fmt.Errorf("%w: XPath expression/context size", ErrLimit)
 		}
 

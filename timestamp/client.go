@@ -47,7 +47,7 @@ func (v *Verifier) Fetch(ctx context.Context, t Transport, q *Request, at time.T
 
 	body, err := t.RoundTrip(ctx, q.DER())
 	if err != nil {
-		if !nilcheck.IsNil(body) {
+		if body != nil && !nilcheck.IsNil(body) {
 			err = errors.Join(err, body.Close())
 		}
 

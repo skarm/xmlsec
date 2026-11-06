@@ -107,7 +107,7 @@ func (c *compiler) pushStandardAttrs(ctx context.Context, elem *xdm.Element) (st
 		c.effectiveVersion = ver
 	}
 
-	if xdn, ok := elem.GetAttribute(nameXpathDefaultNamespace); ok {
+	if xdn, ok := elem.GetAttribute(nameXPathDefaultNamespace); ok {
 		c.xpathDefaultNS = xdn
 		c.hasXPathDefaultNS = true
 	}
@@ -368,14 +368,14 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 		Name:         qn,
 		Params:       params,
 		Body:         body,
-		As:           getAttr(elem, "as"),
+		As:           getAttr(elem, nameAs),
 		Visibility:   getAttr(elem, xslAttrVisibility),
 		IsOverride:   true,
 		OwnerPackage: c.stylesheet,
 	}
 	fn.signatureTypeKey = c.declarationTypeKey(elem, fn.As)
-	fn.NewEachTime = getAttr(elem, "new-each-time")
-	fn.Streamability = getAttr(elem, "streamability")
+	fn.NewEachTime = getAttr(elem, nameNewEachTime)
+	fn.Streamability = getAttr(elem, nameStreamability)
 
 	pkgFn := pkg.functions[funcKey{Name: qn, Arity: len(params)}]
 	if pkgFn == nil {
@@ -450,7 +450,7 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 		return nil, err
 	}
 
-	if prio := getAttr(elem, "priority"); prio != "" {
+	if prio := getAttr(elem, namePriority); prio != "" {
 		f, err := parseTemplatePriority(prio)
 		if err != nil {
 			return nil, err
@@ -501,7 +501,7 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 	tmpl.Params = params
 	tmpl.Body = body
 
-	tmpl.As = getAttr(elem, "as")
+	tmpl.As = getAttr(elem, nameAs)
 	tmpl.signatureTypeKey = c.declarationTypeKey(elem, tmpl.As)
 
 	tmpl.contextTypeKey = c.declarationTypeKey(elem, lexicon.NodeTestItem)
@@ -559,7 +559,7 @@ func (c *compiler) compileOverrideVariable(ctx context.Context, elem *xdm.Elemen
 	c.originalVariableVisibility = effectiveVis
 	defer func() { c.originalVariableVisibility = savedOriginal }()
 
-	v := &variable{Name: resolvedName, As: getAttr(elem, "as"), Visibility: getAttr(elem, xslAttrVisibility), OwnerPackage: c.stylesheet}
+	v := &variable{Name: resolvedName, As: getAttr(elem, nameAs), Visibility: getAttr(elem, xslAttrVisibility), OwnerPackage: c.stylesheet}
 	if err := c.validateAsSequenceType(ctx, elem, v.As, "overriding variable"); err != nil {
 		return nil, err
 	}

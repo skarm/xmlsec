@@ -13,6 +13,23 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Scalar arithmetic operands and duration results have independent singleton
+// cardinalities; these names preserve the existing checks/accounting fast path.
+const (
+	singleArithmeticOperand        = 1
+	singleArithmeticDurationResult = 1
+)
+
+// Recurring decimal quotients retain at least twenty fractional/significant
+// places. Preflight conservatively budgets four bits per added decimal digit,
+// one denominator spare bit, and three lexical bytes for sign/point/leading zero.
+const (
+	decimalQuotientMinimumPlaces       = 20
+	decimalQuotientBitsPerDigit        = 4
+	decimalQuotientDenominatorSpareBit = 1
+	decimalQuotientLexicalOverhead     = 3
+)
+
 func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e BinaryExpr) (xdm.Sequence, error) {
 	left, err := evalFn(ctx, ec, e.Left)
 	if err != nil {
@@ -59,7 +76,7 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 		return nil, nil // empty sequence
 	}
 
-	if len(lAtoms) > 1 || len(rAtoms) > 1 {
+	if len(lAtoms) > singleArithmeticOperand || len(rAtoms) > singleArithmeticOperand {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "arithmetic operand must be a single item"}
 	}
 
@@ -70,7 +87,7 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	// Contract: evalDateTimeArithmetic returns handled==false only when both
 	// operands are non-duration/non-datetime, in which case err is always nil.
 	if result, handled, err := evalDateTimeArithmetic(ctx, ec, e.Op, la, ra); err != nil || handled {
-		return result, err
+		return chargeDurationArithmeticResult(ctx, result, err)
 	}
 
 	// Promote xs:untypedAtomic to xs:double for arithmetic
@@ -122,6 +139,24 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	}
 	// Tier 3: float/double → float64 arithmetic
 	return floatArith(e.Op, la, ra)
+}
+
+// Charge only constructed durations here. Numeric duration ratios retain their
+// existing numeric accounting, and date/time results keep their existing path.
+func chargeDurationArithmeticResult(ctx context.Context, result xdm.Sequence, err error) (xdm.Sequence, error) {
+	if err != nil {
+		return nil, err
+	}
+
+	if xdm.SequenceLen(result) == singleArithmeticDurationResult {
+		if value, ok := result.Get(0).(xdm.AtomicValue); ok && isDurationType(value.TypeName) {
+			if err := chargeConstructedAtomic(ctx, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // promoteSchemaNumeric promotes a user-defined numeric type to its built-in base.
@@ -382,9 +417,9 @@ func finiteDecimalValue(ctx context.Context, value *big.Rat) (*big.Rat, error) {
 		return nil, err
 	}
 
-	numerator := value.Num().Text(10)
+	numerator := value.Num().Text(numericDecimalRadix)
 
-	denominator := value.Denom().Text(10)
+	denominator := value.Denom().Text(numericDecimalRadix)
 	if err := ChargeString(ctx, len(numerator)+len(denominator)); err != nil {
 		return nil, err
 	}
@@ -394,12 +429,12 @@ func finiteDecimalValue(ctx context.Context, value *big.Rat) (*big.Rat, error) {
 		digits--
 	}
 
-	places := 20 + max(0, len(denominator)-digits)
-	if err := preflightNumeric(ctx, value.Num().BitLen()+places*4, places*4+1); err != nil {
+	places := decimalQuotientMinimumPlaces + max(0, len(denominator)-digits)
+	if err := preflightNumeric(ctx, value.Num().BitLen()+places*decimalQuotientBitsPerDigit, places*decimalQuotientBitsPerDigit+decimalQuotientDenominatorSpareBit); err != nil {
 		return nil, err
 	}
 
-	if err := ChargeString(ctx, digits+places+3); err != nil {
+	if err := ChargeString(ctx, digits+places+decimalQuotientLexicalOverhead); err != nil {
 		return nil, err
 	}
 
@@ -453,13 +488,13 @@ func floatArith(op TokenType, la, ra xdm.AtomicValue) (xdm.Sequence, error) {
 			return nil, &xdm.Error{Code: errCodeFOAR0001, Message: textIntegerDivisionByZero}
 		}
 
-		if math.IsInf(ln, 0) {
+		if math.IsInf(ln, eitherInfinitySign) {
 			return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "idiv with infinite dividend"}
 		}
 		// Per F&O §6.2.4: finite idiv ±INF = 0 (math.Trunc(finite/Inf) = 0).
 		truncated := math.Trunc(ln / rn)
 
-		bi, _ := new(big.Float).SetFloat64(truncated).Int(nil)
+		bi, _ := new(big.Float).SetFloat64(truncated).Int(new(big.Int))
 		if bi == nil {
 			return nil, &xdm.Error{Code: errCodeFOAR0002, Message: "idiv quotient overflow"}
 		}
@@ -509,7 +544,7 @@ func evalUnaryExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 		return nil, nil
 	}
 
-	if len(rAtoms) > 1 {
+	if len(rAtoms) > singleArithmeticOperand {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "unary minus operand must be a single item"}
 	}
 

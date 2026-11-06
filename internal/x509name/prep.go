@@ -10,8 +10,23 @@ import (
 	"github.com/skarm/xmlsec/internal/normalization"
 )
 
+const (
+	cancellationMask    = 255
+	unicodeTableVersion = "17.0.0"
+)
+
+// Packed generated tables store code points as four big-endian bytes. A range
+// stores two code points; a fold stores a code point, two-byte offset and length.
+const (
+	packedCodePointBytes = 4
+	packedOffsetBytes    = 2
+	packedRangeBytes     = 2 * packedCodePointBytes
+	packedFoldBytes      = packedCodePointBytes + packedOffsetBytes + 1
+	packedOctetBits      = 8
+)
+
 func uint32At(s string, i int) uint32 {
-	return uint32(s[i])<<24 | uint32(s[i+1])<<16 | uint32(s[i+2])<<8 | uint32(s[i+3])
+	return uint32(s[i])<<(3*packedOctetBits) | uint32(s[i+1])<<(2*packedOctetBits) | uint32(s[i+2])<<packedOctetBits | uint32(s[i+3])
 }
 
 func inRanges(table string, r rune) bool {
@@ -21,11 +36,11 @@ func inRanges(table string, r rune) bool {
 
 	n := uint32(r) // #nosec G115 -- r is nonnegative and no greater than the Unicode scalar range.
 
-	lo, hi := 0, len(table)/8
+	lo, hi := 0, len(table)/packedRangeBytes
 	for lo < hi {
 		mid := lo + (hi-lo)/2
 
-		start, end := uint32At(table, mid*8), uint32At(table, mid*8+4)
+		start, end := uint32At(table, mid*packedRangeBytes), uint32At(table, mid*packedRangeBytes+packedCodePointBytes)
 		if n < start {
 			hi = mid
 		} else if n > end {
@@ -45,20 +60,20 @@ func caseFold32(r rune) string {
 
 	n := uint32(r) // #nosec G115 -- decoded UTF-8 rune, checked nonnegative.
 
-	lo, hi := 0, len(foldKeys32)/7
+	lo, hi := 0, len(foldKeys32)/packedFoldBytes
 	for lo < hi {
 		mid := lo + (hi-lo)/2
 
-		k := uint32At(foldKeys32, mid*7)
+		k := uint32At(foldKeys32, mid*packedFoldBytes)
 		if n < k {
 			hi = mid
 		} else if n > k {
 			lo = mid + 1
 		} else {
-			at := mid * 7
-			offset := int(foldKeys32[at+4])<<8 | int(foldKeys32[at+5])
+			at := mid * packedFoldBytes
+			offset := int(foldKeys32[at+packedCodePointBytes])<<packedOctetBits | int(foldKeys32[at+packedCodePointBytes+1])
 
-			return foldValues32[offset : offset+int(foldKeys32[at+6])]
+			return foldValues32[offset : offset+int(foldKeys32[at+packedCodePointBytes+packedOffsetBytes])]
 		}
 	}
 
@@ -73,7 +88,7 @@ func mappedSpace(r rune) bool {
 func prepare(ctx context.Context, input string) (string, error) {
 	// Normalization is stable for assigned Unicode3.2 characters except the five
 	// Corrigendum4 changes below. Pin the reused table version for future review.
-	if norm.Version != "17.0.0" {
+	if norm.Version != unicodeTableVersion {
 		return "", ErrUnsupported
 	}
 
@@ -93,7 +108,7 @@ func prepare(ctx context.Context, input string) (string, error) {
 
 	values := []rune(normal)
 	for i, r := range values {
-		if i&255 == 0 {
+		if i&cancellationMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
@@ -120,7 +135,7 @@ func mapStoredValue(ctx context.Context, input string) (string, error) {
 	steps := 0
 	for _, r := range input {
 		steps++
-		if steps&255 == 0 {
+		if steps&cancellationMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
@@ -190,6 +205,11 @@ func normalize32(ctx context.Context, mapped string) (string, error) {
 }
 
 func insignificantSpaces(values []rune) string {
+	const (
+		encodedSpace        = "  "
+		initialBytesPerRune = 2
+	)
+
 	space := func(i int) bool {
 		return values[i] == ' ' && (i+1 == len(values) || !inRanges(combining32, values[i+1]))
 	}
@@ -204,16 +224,16 @@ func insignificantSpaces(values []rune) string {
 	}
 
 	if start == end {
-		return "  "
+		return encodedSpace
 	}
 
 	var out strings.Builder
-	out.Grow((end-start)*2 + 2)
+	out.Grow((end-start)*initialBytesPerRune + len(encodedSpace))
 	out.WriteByte(' ')
 
 	for i := start; i < end; {
 		if space(i) {
-			out.WriteString("  ")
+			out.WriteString(encodedSpace)
 
 			for i < end && space(i) {
 				i++

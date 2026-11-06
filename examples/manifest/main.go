@@ -19,6 +19,12 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	manifestMaxDepth      = 4
+	manifestMaxNodes      = 8
+	manifestMaxReferences = 16
+)
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -53,7 +59,7 @@ func run() error {
 	fetches := 0
 	opt := xmldsig.SignatureOptions{
 		Policy: xmldsig.ModernPolicy(), ExpectedURIs: []string{"#manifest"},
-		Manifests: xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, MaxDepth: 4, MaxManifests: 8, MaxReferences: 16},
+		Manifests: xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, MaxDepth: manifestMaxDepth, MaxManifests: manifestMaxNodes, MaxReferences: manifestMaxReferences},
 		External: &xmldsig.ExternalReferences{
 			AllowedURIs: []string{uriUrnExampleAttachment},
 			Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {

@@ -16,6 +16,46 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// XSD atomic type names retain their conventional qualified spelling. The
+// local names are shared with other XML type consumers through lexicon.
+const (
+	xsdTypePrefix          = lexicon.PrefixXS + ":"
+	alternateXSDTypePrefix = lexicon.PrefixXSD + ":"
+)
+
+// Numeric lexical conversion uses decimal digits and shortest float64 keys.
+// Nonterminating decimal fallback precision counts fractional decimal digits;
+// the no-timezone marker uses a zero-second location offset but remains distinct.
+const (
+	decimalRadix                = 10
+	nonTerminatingDecimalDigits = 20
+	decimalZero                 = "0"
+	decimalPoint                = "."
+	numericKeyNotation          = 'g'
+	shortestFloatPrecision      = -1
+	doubleFormatBits            = 64
+	noTimezoneOffsetSeconds     = 0
+)
+
+// Canonical map-key markers distinguish absence of timezone and numeric
+// infinities. Delimiters separate QName and duration components unambiguously.
+const (
+	noTimezoneKeyPrefix     = "notz:"
+	noTimezoneKeyLayout     = "2006-01-02T15:04:05.999999999"
+	qnameMapKeySeparator    = "\x00"
+	durationMapKeySeparator = "|"
+	positiveInfinityMapKey  = "+Inf"
+	negativeInfinityMapKey  = "-Inf"
+)
+
+// Collection cardinalities describe separate contracts: arrays are one-based,
+// single-entry maps skip their index, and repeated parameter metadata has one type.
+const (
+	arrayFirstIndex            = 1
+	singleEntryMapSize         = 1
+	repeatedParameterTypeCount = 1
+)
+
 // Type family constants used for aggregate, comparison, and collation grouping.
 const (
 	FamilyNumeric    = "numeric"
@@ -25,70 +65,70 @@ const (
 
 // Atomic type name constants matching XSD types.
 const (
-	TypeString            = "xs:string"
-	TypeInteger           = "xs:integer"
-	TypeDecimal           = "xs:decimal"
-	TypeDouble            = "xs:double"
-	TypeFloat             = "xs:float"
-	TypeBoolean           = "xs:boolean"
-	TypeDate              = "xs:date"
-	TypeDateTime          = "xs:dateTime"
-	TypeTime              = "xs:time"
-	TypeDuration          = "xs:duration"
-	TypeDayTimeDuration   = "xs:dayTimeDuration"
-	TypeYearMonthDuration = "xs:yearMonthDuration"
-	TypeAnyURI            = "xs:anyURI"
-	TypeQName             = "xs:QName"
-	TypeBase64Binary      = "xs:base64Binary"
-	TypeHexBinary         = "xs:hexBinary"
-	TypeUntypedAtomic     = "xs:untypedAtomic"
-	TypeAnyAtomicType     = "xs:anyAtomicType"
+	TypeString            = lexicon.XSString
+	TypeInteger           = lexicon.XSInteger
+	TypeDecimal           = xsdTypePrefix + lexicon.TypeDecimal
+	TypeDouble            = xsdTypePrefix + lexicon.TypeDouble
+	TypeFloat             = xsdTypePrefix + lexicon.TypeFloat
+	TypeBoolean           = lexicon.XSBoolean
+	TypeDate              = xsdTypePrefix + lexicon.TypeDate
+	TypeDateTime          = xsdTypePrefix + lexicon.TypeDateTime
+	TypeTime              = xsdTypePrefix + lexicon.TypeTime
+	TypeDuration          = xsdTypePrefix + lexicon.TypeDuration
+	TypeDayTimeDuration   = xsdTypePrefix + lexicon.TypeDayTimeDuration
+	TypeYearMonthDuration = xsdTypePrefix + lexicon.TypeYearMonthDuration
+	TypeAnyURI            = xsdTypePrefix + lexicon.TypeAnyURI
+	TypeQName             = xsdTypePrefix + lexicon.TypeQName
+	TypeBase64Binary      = xsdTypePrefix + lexicon.TypeBase64Binary
+	TypeHexBinary         = xsdTypePrefix + lexicon.TypeHexBinary
+	TypeUntypedAtomic     = lexicon.XSUntypedAtomic
+	TypeAnyAtomicType     = lexicon.XSAnyAtomicType
 
 	// TypeLong and the following are derived integer types.
-	TypeLong               = "xs:long"
-	TypeInt                = "xs:int"
-	TypeShort              = "xs:short"
-	TypeByte               = "xs:byte"
-	TypeUnsignedLong       = "xs:unsignedLong"
-	TypeUnsignedInt        = "xs:unsignedInt"
-	TypeUnsignedShort      = "xs:unsignedShort"
-	TypeUnsignedByte       = "xs:unsignedByte"
-	TypeNonNegativeInteger = "xs:nonNegativeInteger"
-	TypeNonPositiveInteger = "xs:nonPositiveInteger"
-	TypePositiveInteger    = "xs:positiveInteger"
-	TypeNegativeInteger    = "xs:negativeInteger"
+	TypeLong               = xsdTypePrefix + lexicon.TypeLong
+	TypeInt                = xsdTypePrefix + lexicon.TypeInt
+	TypeShort              = xsdTypePrefix + lexicon.TypeShort
+	TypeByte               = xsdTypePrefix + lexicon.TypeByte
+	TypeUnsignedLong       = xsdTypePrefix + lexicon.TypeUnsignedLong
+	TypeUnsignedInt        = xsdTypePrefix + lexicon.TypeUnsignedInt
+	TypeUnsignedShort      = xsdTypePrefix + lexicon.TypeUnsignedShort
+	TypeUnsignedByte       = xsdTypePrefix + lexicon.TypeUnsignedByte
+	TypeNonNegativeInteger = xsdTypePrefix + lexicon.TypeNonNegativeInteger
+	TypeNonPositiveInteger = xsdTypePrefix + lexicon.TypeNonPositiveInteger
+	TypePositiveInteger    = xsdTypePrefix + lexicon.TypePositiveInteger
+	TypeNegativeInteger    = xsdTypePrefix + lexicon.TypeNegativeInteger
 
 	// TypeNormalizedString and the following are derived string types.
-	TypeNormalizedString = "xs:normalizedString"
-	TypeToken            = "xs:token"
-	TypeLanguage         = "xs:language"
-	TypeName             = "xs:Name"
-	TypeNCName           = "xs:NCName"
-	TypeNMTOKEN          = "xs:NMTOKEN"  // #nosec G101 -- XML Schema type name, not a credential.
-	TypeNMTOKENS         = "xs:NMTOKENS" // #nosec G101 -- XML Schema type name, not a credential.
-	TypeENTITY           = "xs:ENTITY"
-	TypeID               = "xs:ID"
-	TypeIDREF            = "xs:IDREF"
-	TypeIDREFS           = "xs:IDREFS"
-	TypeENTITIES         = "xs:ENTITIES"
+	TypeNormalizedString = xsdTypePrefix + lexicon.TypeNormalizedString
+	TypeToken            = xsdTypePrefix + lexicon.TypeToken
+	TypeLanguage         = xsdTypePrefix + lexicon.TypeLanguage
+	TypeName             = xsdTypePrefix + lexicon.TypeName
+	TypeNCName           = xsdTypePrefix + lexicon.TypeNCName
+	TypeNMTOKEN          = xsdTypePrefix + lexicon.TypeNMToken  // #nosec G101 -- XML Schema type name, not a credential.
+	TypeNMTOKENS         = xsdTypePrefix + lexicon.TypeNMTokens // #nosec G101 -- XML Schema type name, not a credential.
+	TypeENTITY           = xsdTypePrefix + lexicon.TypeENTITY
+	TypeID               = xsdTypePrefix + lexicon.TypeID
+	TypeIDREF            = xsdTypePrefix + lexicon.TypeIDREF
+	TypeIDREFS           = xsdTypePrefix + lexicon.TypeIDREFS
+	TypeENTITIES         = xsdTypePrefix + lexicon.TypeENTITIES
 
 	// TypeGDay and the following are Gregorian date part types.
-	TypeGDay       = "xs:gDay"
-	TypeGMonth     = "xs:gMonth"
-	TypeGMonthDay  = "xs:gMonthDay"
-	TypeGYear      = "xs:gYear"
-	TypeGYearMonth = "xs:gYearMonth"
+	TypeGDay       = xsdTypePrefix + lexicon.TypeGDay
+	TypeGMonth     = xsdTypePrefix + lexicon.TypeGMonth
+	TypeGMonthDay  = xsdTypePrefix + lexicon.TypeGMonthDay
+	TypeGYear      = xsdTypePrefix + lexicon.TypeGYear
+	TypeGYearMonth = xsdTypePrefix + lexicon.TypeGYearMonth
 
 	// TypeDateTimeStamp and the following are other derived types.
-	TypeDateTimeStamp = "xs:dateTimeStamp"
-	TypeError         = "xs:error"
-	TypeNumeric       = "xs:numeric"
+	TypeDateTimeStamp = xsdTypePrefix + lexicon.TypeDateTimeStamp
+	TypeError         = xsdTypePrefix + lexicon.TypeError
+	TypeNumeric       = xsdTypePrefix + lexicon.TypeNumeric
 
 	// TypeAnyType and the following are non-atomic / structural types.
-	TypeAnyType       = "xs:anyType"
-	TypeAnySimpleType = "xs:anySimpleType"
-	TypeUntyped       = "xs:untyped"
-	TypeNOTATION      = "xs:NOTATION"
+	TypeAnyType       = lexicon.XSAnyType
+	TypeAnySimpleType = xsdTypePrefix + lexicon.TypeAnySimpleType
+	TypeUntyped       = lexicon.XSUntyped
+	TypeNOTATION      = xsdTypePrefix + lexicon.TypeNotation
 )
 
 // noTimezoneName is reserved for XSD values without an explicit timezone.
@@ -254,7 +294,7 @@ func (a AtomicValue) BigInt() *big.Int {
 	case int64:
 		return big.NewInt(v)
 	case string:
-		n, ok := new(big.Int).SetString(v, 10)
+		n, ok := new(big.Int).SetString(v, decimalRadix)
 		if ok {
 			return n
 		}
@@ -341,13 +381,21 @@ func (a AtomicValue) QNameVal() QNameValue {
 
 // IsNaN returns true if the atomic value is NaN (xs:double or xs:float).
 func (a AtomicValue) IsNaN() bool {
-	if a.TypeName != TypeDouble && a.TypeName != TypeFloat {
+	kind := a.effectiveNumericType()
+	if kind != TypeDouble && kind != TypeFloat {
 		return false
 	}
 
-	fv, ok := a.Value.(*FloatValue)
+	switch value := a.Value.(type) {
+	case *FloatValue:
+		return value != nil && value.IsNaN()
+	case float64:
+		return math.IsNaN(value)
+	case float32:
+		return math.IsNaN(float64(value))
+	}
 
-	return ok && fv.IsNaN()
+	return false
 }
 
 // IsNumeric returns true if the type is xs:integer (or derived), xs:decimal, xs:double, or xs:float.
@@ -514,7 +562,7 @@ func FunctionParameterType(params []SequenceType, repeated bool, index int) (Seq
 		return SequenceType{}, false
 	}
 
-	if repeated && len(params) == 1 {
+	if repeated && len(params) == repeatedParameterTypeCount {
 		return params[0], true
 	}
 
@@ -532,19 +580,11 @@ type MapItem struct {
 	index   map[MapKey]int // index into entries
 }
 
-// SingleEntryMap creates a MapItem with exactly one entry without cloning the value.
-// Used by map:entry where the value is already owned by the caller.
-func SingleEntryMap(key AtomicValue, value Sequence) MapItem {
-	return MapItem{
-		entries: []EntryView{{key: CloneMapKey(key), Value: value}},
-	}
-}
-
 // NewMap creates a MapItem from a slice of MapEntry.
 func NewMap(entries []MapEntry) MapItem {
 	// Fast path for single-entry maps (e.g., map:entry results):
 	// skip the index map allocation entirely.
-	if len(entries) == 1 {
+	if len(entries) == singleEntryMapSize {
 		return MapItem{
 			entries: []EntryView{{key: CloneMapKey(entries[0].Key), Value: CloneSequence(entries[0].Value)}},
 		}
@@ -560,6 +600,14 @@ func NewMap(entries []MapEntry) MapItem {
 	}
 
 	return m
+}
+
+// SingleEntryMap creates a MapItem with exactly one entry without cloning the value.
+// Used by map:entry where the value is already owned by the caller.
+func SingleEntryMap(key AtomicValue, value Sequence) MapItem {
+	return MapItem{
+		entries: []EntryView{{key: CloneMapKey(key), Value: value}},
+	}
 }
 
 // MergeMaps merges multiple maps according to the given policy.
@@ -580,7 +628,7 @@ func MergeMaps(maps []MapItem, policy MergePolicy) (MapItem, error) {
 					continue
 				case MergeReject:
 					return MapItem{}, &Error{
-						Code:    "FOJS0003",
+						Code:    lexicon.ErrFOJS0003,
 						Message: fmt.Sprintf("duplicate key in map merge: %v", e.key.Value),
 					}
 				case MergeCombine:
@@ -611,7 +659,7 @@ func MergeMaps(maps []MapItem, policy MergePolicy) (MapItem, error) {
 func (m MapItem) Get(key AtomicValue) (Sequence, bool) {
 	if m.index == nil {
 		// Single-entry fast path: compare directly
-		if len(m.entries) == 1 && NormalizeMapKey(m.entries[0].key) == NormalizeMapKey(key) {
+		if len(m.entries) == singleEntryMapSize && NormalizeMapKey(m.entries[0].key) == NormalizeMapKey(key) {
 			return CloneSequence(m.entries[0].Value), true
 		}
 
@@ -633,7 +681,7 @@ func (m MapItem) Get(key AtomicValue) (Sequence, bool) {
 // value's length before deciding whether to clone/materialize it.
 func (m MapItem) GetView(key AtomicValue) (Sequence, bool) {
 	if m.index == nil {
-		if len(m.entries) == 1 && NormalizeMapKey(m.entries[0].key) == NormalizeMapKey(key) {
+		if len(m.entries) == singleEntryMapSize && NormalizeMapKey(m.entries[0].key) == NormalizeMapKey(key) {
 			return m.entries[0].Value, true
 		}
 
@@ -672,7 +720,7 @@ func (m MapItem) Put(key AtomicValue, value Sequence) MapItem {
 // Contains returns true if the map contains the given key.
 func (m MapItem) Contains(key AtomicValue) bool {
 	if m.index == nil {
-		return len(m.entries) == 1 && NormalizeMapKey(m.entries[0].key) == NormalizeMapKey(key)
+		return len(m.entries) == singleEntryMapSize && NormalizeMapKey(m.entries[0].key) == NormalizeMapKey(key)
 	}
 
 	_, ok := m.index[NormalizeMapKey(key)]
@@ -749,7 +797,7 @@ func (m MapItem) EntriesView() []EntryView {
 func (m MapItem) Remove(key AtomicValue) MapItem {
 	nk := NormalizeMapKey(key)
 	if m.index == nil {
-		if len(m.entries) == 1 && NormalizeMapKey(m.entries[0].key) == nk {
+		if len(m.entries) == singleEntryMapSize && NormalizeMapKey(m.entries[0].key) == nk {
 			return MapItem{}
 		}
 
@@ -842,12 +890,12 @@ func NormalizeMapKey(key AtomicValue) MapKey {
 			return MapKey{typeName: tn, value: v.UTC().Format(time.RFC3339Nano)}
 		}
 
-		return MapKey{typeName: tn, value: "notz:" + v.Format("2006-01-02T15:04:05.999999999")}
+		return MapKey{typeName: tn, value: noTimezoneKeyPrefix + v.Format(noTimezoneKeyLayout)}
 	case []byte:
 		return MapKey{typeName: tn, value: hex.EncodeToString(v)}
 	case QNameValue:
 		// QName equality is based on URI and local name, not prefix
-		return MapKey{typeName: tn, value: v.URI + "\x00" + v.Local}
+		return MapKey{typeName: tn, value: v.URI + qnameMapKeySeparator + v.Local}
 	case Duration:
 		// Duration holds a *big.Rat (FracSec) whose pointer breaks Go map
 		// equality, and Seconds (a float64) can carry an exact fractional part
@@ -856,9 +904,9 @@ func NormalizeMapKey(key AtomicValue) MapKey {
 		// seconds (whole seconds plus the rational fraction). DurationToRat
 		// folds the sign into each rational, and big.Rat normalizes -0 to 0,
 		// so -PT0S and PT0S produce the same key.
-		months := DurationToRat(v, true)
-		secs := DurationToRat(v, false)
-		canon := months.RatString() + "|" + secs.RatString()
+		months := DurationToRat(v, durationMonthsMode)
+		secs := DurationToRat(v, durationSecondsMode)
+		canon := months.RatString() + durationMapKeySeparator + secs.RatString()
 		// The Go value is unambiguously a duration, so fold every duration-derived
 		// key (built-in or schema-derived through any number of levels) to
 		// TypeDuration. This catches schema types whose BaseType is itself another
@@ -867,93 +915,6 @@ func NormalizeMapKey(key AtomicValue) MapKey {
 	default:
 		return MapKey{typeName: tn, value: key.Value}
 	}
-}
-
-func normalizeNumericMapKey(key AtomicValue) MapKey {
-	// Fast path: integer keys stored as int64 — use directly as map key
-	// to avoid big.Rat/RatString overhead. This is safe because int64
-	// has Go map equality and any numeric type that equals this integer
-	// will also be detected as an exact integer below.
-	if v, ok := key.Value.(int64); ok {
-		return MapKey{typeName: FamilyNumeric, value: v}
-	}
-	// Exact numeric types must normalize with exact arithmetic, never float64:
-	// ToFloat64 overflows values > MaxFloat64 to +Inf, collapsing distinct keys.
-	// Also consult BaseType so a user-defined schema type derived from
-	// xs:integer/xs:decimal is normalized exactly, and never via float64.
-	if IsIntegerDerived(key.TypeName) || IsIntegerDerived(key.BaseType) {
-		bi := key.BigInt()
-		if bi.IsInt64() {
-			return MapKey{typeName: FamilyNumeric, value: bi.Int64()}
-		}
-
-		return MapKey{typeName: FamilyNumeric, value: new(big.Rat).SetInt(bi).RatString()}
-	}
-
-	if key.TypeName == TypeDecimal || key.BaseType == TypeDecimal {
-		r := key.BigRat()
-		if r.IsInt() && r.Num().IsInt64() {
-			return MapKey{typeName: FamilyNumeric, value: r.Num().Int64()}
-		}
-
-		return MapKey{typeName: FamilyNumeric, value: new(big.Rat).Set(r).RatString()}
-	}
-	// Remaining numerics are xs:float / xs:double (and user-defined types whose
-	// effective base is a float/double). ToFloat64 keys off TypeName only, so a
-	// schema-derived double/float (custom TypeName, BaseType=xs:double/xs:float)
-	// would collapse to 0. Promote to the built-in base type first so ToFloat64
-	// reads the underlying FloatValue exactly.
-	f := PromoteSchemaType(key).ToFloat64()
-	// xs:float keys are compared in single precision: a plain float64/float32
-	// backing (schema-derived or directly constructed) may not yet be rounded,
-	// so collapse to single precision before keying. Otherwise 16777217 and
-	// 16777216 — equal as xs:float — would land in distinct slots.
-	if key.effectiveNumericType() == TypeFloat {
-		f = float64(float32(f))
-	}
-
-	if math.IsNaN(f) {
-		return MapKey{typeName: FamilyNumeric, value: "NaN"}
-	}
-
-	if math.IsInf(f, 1) {
-		return MapKey{typeName: FamilyNumeric, value: "+Inf"}
-	}
-
-	if math.IsInf(f, -1) {
-		return MapKey{typeName: FamilyNumeric, value: "-Inf"}
-	}
-	// Remaining numerics are xs:float / xs:double (and user-defined types whose
-	// underlying value is a float). Build an exact rational and use the int64
-	// fast path ONLY when the value is an exact integer that fits in int64.
-	// A naive "f <= math.MaxInt64" guard is unsafe: math.MaxInt64 (2^63-1)
-	// rounds UP to 2^63 as a float64, so xs:double(2^63) would pass the check
-	// and int64(f) would overflow-wrap to -2^63, colliding with xs:integer(-2^63).
-	// Routing through the rational avoids that: r.Num().IsInt64() is exact.
-	r := new(big.Rat).SetFloat64(f)
-	if r == nil {
-		// SetFloat64 returns nil for NaN/Inf; those are handled above, but
-		// guard defensively so a stray non-finite value still produces a key.
-		return MapKey{typeName: FamilyNumeric, value: strconv.FormatFloat(f, 'g', -1, 64)}
-	}
-
-	if r.IsInt() && r.Num().IsInt64() {
-		return MapKey{typeName: FamilyNumeric, value: r.Num().Int64()}
-	}
-
-	return MapKey{typeName: FamilyNumeric, value: r.RatString()}
-}
-
-func isStringMapKey(key AtomicValue) bool {
-	return key.TypeName == TypeUntypedAtomic || key.TypeName == TypeAnyURI || IsStringDerived(key.TypeName) || key.BaseType == TypeAnyURI || IsStringDerived(key.BaseType)
-}
-
-func mapKeyTypeName(typeName, baseType string) string {
-	if typeName == TypeDuration || typeName == TypeYearMonthDuration || typeName == TypeDayTimeDuration || baseType == TypeDuration || baseType == TypeYearMonthDuration || baseType == TypeDayTimeDuration {
-		return TypeDuration
-	}
-
-	return typeName
 }
 
 // MergePolicy controls how duplicate keys are handled in MergeMaps.
@@ -1004,7 +965,7 @@ func (b *MapBuilder) Add(key AtomicValue, value Sequence) error {
 			return nil
 		case MergeReject:
 			return &Error{
-				Code:    "FOJS0003",
+				Code:    lexicon.ErrFOJS0003,
 				Message: fmt.Sprintf("duplicate key in map merge: %v", key.Value),
 			}
 		case MergeCombine:
@@ -1073,14 +1034,14 @@ func NewArrayFromImmutableMembers(members []Sequence) ArrayItem {
 
 // Get returns the member at the given 1-based index.
 func (a ArrayItem) Get(index int) (Sequence, error) {
-	if index < 1 || index > len(a.members) {
+	if index < arrayFirstIndex || index > len(a.members) {
 		return nil, &Error{
 			Code:    lexicon.ErrFOAY0001,
 			Message: fmt.Sprintf("array index %d out of bounds (size %d)", index, len(a.members)),
 		}
 	}
 
-	return CloneSequence(a.members[index-1]), nil
+	return CloneSequence(a.members[index-arrayFirstIndex]), nil
 }
 
 // Size returns the number of members.
@@ -1090,7 +1051,7 @@ func (a ArrayItem) Size() int {
 
 // Put returns a new array with the member at the given 1-based index replaced.
 func (a ArrayItem) Put(index int, value Sequence) (ArrayItem, error) {
-	if index < 1 || index > len(a.members) {
+	if index < arrayFirstIndex || index > len(a.members) {
 		return ArrayItem{}, &Error{
 			Code:    lexicon.ErrFOAY0001,
 			Message: fmt.Sprintf("array index %d out of bounds (size %d)", index, len(a.members)),
@@ -1099,7 +1060,7 @@ func (a ArrayItem) Put(index int, value Sequence) (ArrayItem, error) {
 
 	newMembers := make([]Sequence, len(a.members))
 	copy(newMembers, a.members)
-	newMembers[index-1] = CloneSequence(value)
+	newMembers[index-arrayFirstIndex] = CloneSequence(value)
 
 	return ArrayItem{members: newMembers}, nil
 }
@@ -1127,14 +1088,14 @@ func (a ArrayItem) MembersView() []Sequence {
 // GetView returns the member at the given 1-based index without cloning.
 // Callers must not mutate the returned sequence.
 func (a ArrayItem) GetView(index int) (Sequence, error) {
-	if index < 1 || index > len(a.members) {
+	if index < arrayFirstIndex || index > len(a.members) {
 		return nil, &Error{
 			Code:    lexicon.ErrFOAY0001,
 			Message: fmt.Sprintf("array index %d out of bounds (size %d)", index, len(a.members)),
 		}
 	}
 
-	return a.members[index-1], nil
+	return a.members[index-arrayFirstIndex], nil
 }
 
 // SubArray returns a new array from start to end (1-based, inclusive).
@@ -1143,10 +1104,10 @@ func (a ArrayItem) SubArray(start, length int) (ArrayItem, error) {
 	// Bounds are checked without forming start+length, which can overflow for
 	// huge positions and bypass the guard, leading to a make([]Sequence, length)
 	// panic. With start>=1 established first, size-start+1 cannot overflow.
-	if start < 1 || start > size+1 || length < 0 || length > size-start+1 {
+	if start < arrayFirstIndex || start > size+arrayFirstIndex || length < 0 || length > size-start+arrayFirstIndex {
 		code := lexicon.ErrFOAY0001
-		if start >= 1 && start <= size+1 && length < 0 {
-			code = "FOAY0002"
+		if start >= arrayFirstIndex && start <= size+arrayFirstIndex && length < 0 {
+			code = lexicon.ErrFOAY0002
 		}
 
 		return ArrayItem{}, &Error{
@@ -1156,7 +1117,7 @@ func (a ArrayItem) SubArray(start, length int) (ArrayItem, error) {
 	}
 
 	newMembers := make([]Sequence, length)
-	copy(newMembers, a.members[start-1:start-1+length])
+	copy(newMembers, a.members[start-arrayFirstIndex:start-arrayFirstIndex+length])
 
 	return ArrayItem{members: newMembers}, nil
 }
@@ -1209,12 +1170,11 @@ func (a ArrayItem) Flatten() Sequence {
 
 func (ArrayItem) itemTag() {}
 
-// CloneSequence returns a deep copy of the Sequence. Bounded call sites charge
-// its length against OpLimit before materializing it. It then deep-copies each item
-// so that pointer-backed atomic values (*big.Int, *big.Rat, *FloatValue,
-// []byte) and nested maps/arrays are not shared with the source. This preserves
-// XPath 3.1 value semantics: mutating a value after it was inserted into a
-// map/array must not change the stored map/array.
+// CloneSequence copies a materialized sequence using CloneItem: mutable atomic
+// payloads and item metadata slices are copied, while immutable maps, arrays,
+// ranges and shared node/function identities retain CloneItem's ownership rules.
+// Immutable range descriptors are returned without materializing their items.
+// Bounded call sites charge the sequence length before materialization.
 func CloneSequence(seq Sequence) Sequence {
 	if seq == nil {
 		return nil
@@ -1350,11 +1310,11 @@ func DecimalToString(r *big.Rat) string {
 	n, exact := r.FloatPrec()
 	if !exact {
 		// Not exactly representable in decimal; use high precision
-		s := r.FloatString(20)
+		s := r.FloatString(nonTerminatingDecimalDigits)
 
-		s = strings.TrimRight(s, "0")
-		if strings.HasSuffix(s, ".") {
-			s += "0"
+		s = strings.TrimRight(s, decimalZero)
+		if strings.HasSuffix(s, decimalPoint) {
+			s += decimalZero
 		}
 
 		return s
@@ -1362,16 +1322,16 @@ func DecimalToString(r *big.Rat) string {
 
 	s := r.FloatString(n)
 
-	s = strings.TrimRight(s, "0")
-	if strings.HasSuffix(s, ".") {
-		s += "0"
+	s = strings.TrimRight(s, decimalZero)
+	if strings.HasSuffix(s, decimalPoint) {
+		s += decimalZero
 	}
 
 	return s
 }
 
 // NoTimezone constructs the location for a timezone-less XSD date/time.
-func NoTimezone() *time.Location { return time.FixedZone(noTimezoneName, 0) }
+func NoTimezone() *time.Location { return time.FixedZone(noTimezoneName, noTimezoneOffsetSeconds) }
 
 // HasTimezone reports whether a value carries an explicit timezone.
 func HasTimezone(t time.Time) bool { return t.Location().String() != noTimezoneName }
@@ -1406,7 +1366,7 @@ func SchemaAnnotationParts(name string) (local, ns string, ok bool) {
 		return name[end+1:], name[2:end], true
 	}
 
-	if strings.HasPrefix(name, "xs:") || strings.HasPrefix(name, "xsd:") {
+	if strings.HasPrefix(name, xsdTypePrefix) || strings.HasPrefix(name, alternateXSDTypePrefix) {
 		return "", "", false
 	}
 
@@ -1419,6 +1379,100 @@ func SchemaAnnotationParts(name string) (local, ns string, ok bool) {
 	}
 
 	return name, "", true
+}
+
+func normalizeNumericMapKey(key AtomicValue) MapKey {
+	// Fast path: integer keys stored as int64 — use directly as map key
+	// to avoid big.Rat/RatString overhead. This is safe because int64
+	// has Go map equality and any numeric type that equals this integer
+	// will also be detected as an exact integer below.
+	if v, ok := key.Value.(int64); ok {
+		return MapKey{typeName: FamilyNumeric, value: v}
+	}
+	// Exact numeric types must normalize with exact arithmetic, never float64:
+	// ToFloat64 overflows values > MaxFloat64 to +Inf, collapsing distinct keys.
+	// Also consult BaseType so a user-defined schema type derived from
+	// xs:integer/xs:decimal is normalized exactly, and never via float64.
+	if IsIntegerDerived(key.TypeName) || IsIntegerDerived(key.BaseType) {
+		bi := key.BigInt()
+		if bi.IsInt64() {
+			return MapKey{typeName: FamilyNumeric, value: bi.Int64()}
+		}
+
+		return MapKey{typeName: FamilyNumeric, value: new(big.Rat).SetInt(bi).RatString()}
+	}
+
+	if key.TypeName == TypeDecimal || key.BaseType == TypeDecimal {
+		r := key.BigRat()
+		if r.IsInt() && r.Num().IsInt64() {
+			return MapKey{typeName: FamilyNumeric, value: r.Num().Int64()}
+		}
+
+		return MapKey{typeName: FamilyNumeric, value: new(big.Rat).Set(r).RatString()}
+	}
+	// Remaining numerics are xs:float / xs:double (and user-defined types whose
+	// effective base is a float/double). ToFloat64 keys off TypeName only, so a
+	// schema-derived double/float (custom TypeName, BaseType=xs:double/xs:float)
+	// would collapse to 0. Promote to the built-in base type first so ToFloat64
+	// reads the underlying FloatValue exactly.
+	f := PromoteSchemaType(key).ToFloat64()
+	// xs:float keys are compared in single precision: a plain float64/float32
+	// backing (schema-derived or directly constructed) may not yet be rounded,
+	// so collapse to single precision before keying. Otherwise 16777217 and
+	// 16777216 — equal as xs:float — would land in distinct slots.
+	if key.effectiveNumericType() == TypeFloat {
+		f = float64(float32(f))
+	}
+
+	if math.IsNaN(f) {
+		return MapKey{typeName: FamilyNumeric, value: lexicon.FloatNaN}
+	}
+
+	if math.IsInf(f, positiveSign) {
+		return MapKey{typeName: FamilyNumeric, value: positiveInfinityMapKey}
+	}
+
+	if math.IsInf(f, negativeSign) {
+		return MapKey{typeName: FamilyNumeric, value: negativeInfinityMapKey}
+	}
+	// Remaining numerics are xs:float / xs:double (and user-defined types whose
+	// underlying value is a float). Build an exact rational and use the int64
+	// fast path ONLY when the value is an exact integer that fits in int64.
+	// A naive "f <= math.MaxInt64" guard is unsafe: math.MaxInt64 (2^63-1)
+	// rounds UP to 2^63 as a float64, so xs:double(2^63) would pass the check
+	// and int64(f) would overflow-wrap to -2^63, colliding with xs:integer(-2^63).
+	// Routing through the rational avoids that: r.Num().IsInt64() is exact.
+	r := new(big.Rat).SetFloat64(f)
+	if r == nil {
+		// SetFloat64 returns nil for NaN/Inf; those are handled above, but
+		// guard defensively so a stray non-finite value still produces a key.
+		return MapKey{typeName: FamilyNumeric, value: strconv.FormatFloat(f, numericKeyNotation, shortestFloatPrecision, doubleFormatBits)}
+	}
+
+	if r.IsInt() && r.Num().IsInt64() {
+		return MapKey{typeName: FamilyNumeric, value: r.Num().Int64()}
+	}
+
+	return MapKey{typeName: FamilyNumeric, value: r.RatString()}
+}
+
+func isStringMapKey(key AtomicValue) bool {
+	return key.TypeName == TypeUntypedAtomic || key.TypeName == TypeAnyURI || IsStringDerived(key.TypeName) || key.BaseType == TypeAnyURI || IsStringDerived(key.BaseType)
+}
+
+func mapKeyTypeName(typeName, baseType string) string {
+	if !IsKnownXSDType(typeName) && IsKnownXSDType(baseType) {
+		typeName = baseType
+	}
+
+	switch typeName {
+	case TypeDateTimeStamp:
+		return TypeDateTime
+	case TypeDuration, TypeYearMonthDuration, TypeDayTimeDuration:
+		return TypeDuration
+	}
+
+	return typeName
 }
 
 func computeIsSubtypeOf(actualType, targetType string) bool {

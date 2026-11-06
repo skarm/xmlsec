@@ -24,6 +24,8 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const browserBindingBytes = 32
+
 const (
 	spEntity  = "https://sp.example.test/entity"
 	idpEntity = "https://idp.example.test/entity"
@@ -108,7 +110,14 @@ func run() error {
 		return e
 	}
 
-	browserSecret := make([]byte, 32)
+	// Provision the demo account's opaque identifier before its authentication
+	// request. A real IdP persists this association with the account and both peers.
+	identifier, e := protocol.NewPersistentNameID(idpEntity, spEntity)
+	if e != nil {
+		return e
+	}
+
+	browserSecret := make([]byte, browserBindingBytes)
 	if _, e = rand.Read(browserSecret); e != nil {
 		return e
 	}
@@ -124,7 +133,7 @@ func run() error {
 	}
 	// In a real IdP these values come from the application's completed, verified
 	// authentication, never from untrusted request fields or this sample alone.
-	authenticated := idp.Authentication{NameID: "alice", NameIDFormat: protocol.NameIDPersistent, AuthnInstant: now.Add(time.Second), AuthnContext: authClass, FreshAuthentication: true, InteractionUsed: true, SessionIndex: "_session", Attributes: []protocol.Attribute{{Name: "email", Values: []string{"alice@example.test"}}}}
+	authenticated := idp.Authentication{NameID: identifier.Value, NameIDFormat: identifier.Format, NameQualifier: identifier.NameQualifier, SPNameQualifier: identifier.SPNameQualifier, AuthnInstant: now.Add(time.Second), AuthnContext: authClass, FreshAuthentication: true, InteractionUsed: true, SessionIndex: "_session", Attributes: []protocol.Attribute{{Name: "email", Values: []string{"alice@example.test"}}}}
 
 	response, e := identity.Issue(ctx, accepted, authenticated, now.Add(2*time.Second))
 	if e != nil {

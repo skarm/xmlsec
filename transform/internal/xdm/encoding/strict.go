@@ -11,9 +11,32 @@ package encoding
 
 import (
 	"errors"
+	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 
 	enc "golang.org/x/text/encoding"
 	"golang.org/x/text/transform"
+)
+
+// Unicode validation and codec construction share code-unit widths in bytes.
+// A UTF-16 surrogate pair contains two units; honoring a leading BOM permits it
+// to override the configured default order, while ignoring it keeps that order.
+const (
+	utf16CodeUnitBytes      = 2
+	utf32CodeUnitBytes      = 4
+	utf16SurrogatePairUnits = 2
+	honorLeadingBOM         = true
+	ignoreLeadingBOM        = false
+)
+
+// Unicode scalar packing uses octets, and UTF-16 reserves these surrogate ranges.
+const (
+	octetBits          = 8
+	highSurrogateStart = 0xD800
+	highSurrogateEnd   = 0xDBFF
+	lowSurrogateStart  = 0xDC00
+	lowSurrogateEnd    = 0xDFFF
 )
 
 // ErrInvalidEncodedChar is returned when the source contains malformed input
@@ -38,7 +61,7 @@ const (
 func (o byteOrder) scalar(unit []byte) uint32 {
 	var v uint32
 	for _, idx := range o {
-		v = v<<8 | uint32(unit[idx])
+		v = v<<octetBits | uint32(unit[idx])
 	}
 
 	return v
@@ -204,24 +227,24 @@ func (t *strictDecoderTransformer) validate(src []byte, atEOF bool) error {
 // that must be validated. The default matches x/text's UseBOM fallback, which
 // keeps the encoding's configured endianness when no BOM is present.
 func (t *strictDecoderTransformer) resolveBOM(bom []byte) (byteOrder, bool) {
-	if t.width == 2 {
+	if t.width == utf16CodeUnitBytes {
 		// LE BOM: FF FE. BE BOM: FE FF.
-		if bom[0] == 0xFF && bom[1] == 0xFE {
+		if bom[0] == lexicon.BOMUTF16LE[0] && bom[1] == lexicon.BOMUTF16LE[1] {
 			return orderLE2, true
 		}
 
-		if bom[0] == 0xFE && bom[1] == 0xFF {
+		if bom[0] == lexicon.BOMUTF16BE[0] && bom[1] == lexicon.BOMUTF16BE[1] {
 			return orderBE2, true
 		}
 
 		return t.order, false
 	}
 	// width 4. LE BOM: FF FE 00 00. BE BOM: 00 00 FE FF.
-	if bom[0] == 0xFF && bom[1] == 0xFE && bom[2] == 0x00 && bom[3] == 0x00 {
+	if bom[0] == lexicon.BOMUTF32LE[0] && bom[1] == lexicon.BOMUTF32LE[1] && bom[2] == lexicon.BOMUTF32LE[2] && bom[3] == lexicon.BOMUTF32LE[3] {
 		return orderLE4, true
 	}
 
-	if bom[0] == 0x00 && bom[1] == 0x00 && bom[2] == 0xFE && bom[3] == 0xFF {
+	if bom[0] == lexicon.BOMUTF32BE[0] && bom[1] == lexicon.BOMUTF32BE[1] && bom[2] == lexicon.BOMUTF32BE[2] && bom[3] == lexicon.BOMUTF32BE[3] {
 		return orderBE4, true
 	}
 
@@ -235,37 +258,37 @@ func (t *strictDecoderTransformer) resolveBOM(bom []byte) (byteOrder, bool) {
 func (t *strictDecoderTransformer) unitOK(buf []byte, off int, order byteOrder) (int, unitStatus) {
 	v := order.scalar(buf[off : off+t.width])
 
-	if t.width == 4 {
-		if v == 0xFFFD {
-			return off + 4, unitGood
+	if t.width == utf32CodeUnitBytes {
+		if v == utf8.RuneError {
+			return off + utf32CodeUnitBytes, unitGood
 		}
 
-		if v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF) {
+		if v > utf8.MaxRune || (v >= highSurrogateStart && v <= lowSurrogateEnd) {
 			return off, unitBad
 		}
 
-		return off + 4, unitGood
+		return off + utf32CodeUnitBytes, unitGood
 	}
 
 	// width == 2 (UTF-16 / UCS-2).
 	switch {
-	case v >= 0xD800 && v <= 0xDBFF:
+	case v >= highSurrogateStart && v <= highSurrogateEnd:
 		// High surrogate: must be followed by a low surrogate.
-		if off+2*t.width > len(buf) {
+		if off+utf16SurrogatePairUnits*t.width > len(buf) {
 			return off, unitIncomplete
 		}
 
-		lo := order.scalar(buf[off+t.width : off+2*t.width])
-		if lo < 0xDC00 || lo > 0xDFFF {
+		lo := order.scalar(buf[off+t.width : off+utf16SurrogatePairUnits*t.width])
+		if lo < lowSurrogateStart || lo > lowSurrogateEnd {
 			return off, unitBad
 		}
 
-		return off + 2*t.width, unitGood
-	case v >= 0xDC00 && v <= 0xDFFF:
+		return off + utf16SurrogatePairUnits*t.width, unitGood
+	case v >= lowSurrogateStart && v <= lowSurrogateEnd:
 		// Lone low surrogate.
 		return off, unitBad
 	default:
-		// BMP scalar (includes a genuine 0xFFFD).
+		// BMP scalar (includes a genuine utf8.RuneError).
 		return off + t.width, unitGood
 	}
 }

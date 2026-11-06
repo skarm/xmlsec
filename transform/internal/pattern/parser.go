@@ -10,7 +10,12 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
+
+// maxGroupDepth caps nested parenthesized groups independently of the capture-count ceiling.
+const maxGroupDepth = 128
 
 // maxBacktrackGroups bounds the capture count. The capture vector is copied on
 // each saved branch, so the limit bounds snapshot size.
@@ -114,7 +119,7 @@ type btParser struct {
 }
 
 func (p *btParser) errf(format string, a ...any) error {
-	return fmt.Errorf("FORX0002: "+format, a...)
+	return fmt.Errorf(lexicon.ErrFORX0002+": "+format, a...)
 }
 
 // parseAlternation is the top level: branch ("|" branch)*.
@@ -335,7 +340,7 @@ func (p *btParser) parseGroup() (btNode, error) {
 	p.depth++
 	defer func() { p.depth-- }()
 
-	if p.depth > 128 {
+	if p.depth > maxGroupDepth {
 		return nil, ErrLimit
 	}
 

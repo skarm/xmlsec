@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/keyinfo"
 )
 
@@ -17,8 +18,8 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	input := fs.String("in", "-", "XML input for inspect")
 	output := fs.String("out", "-", "output XML or diagnostic JSON")
 	id := fs.String("id", "", "KeyInfo Id (build) or exact selection ID (inspect)")
-	index := fs.Int("index", -1, "explicit zero-based KeyInfo index")
-	format := fs.String("format", "der", "public key representation: der or xml")
+	index := fs.Int("index", cliUnspecifiedSelectionIndex, "explicit zero-based KeyInfo index")
+	format := fs.String("format", string(keyinfo.DERKeyValue), "public key representation: der or xml")
 	resources := fs.String("resources", "", "separate trusted URI/path allowlist for external KeyInfo retrieval")
 	configFile := fs.String("config", "", "trusted JSON keyinfo.Options for inspection limits, ID rules and allowed representations")
 	baseURI := fs.String("base-uri", "", "explicit KeyInfo document base URI; requires -resources")
@@ -29,7 +30,7 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&certs, "certificate", "certificate file; repeatable")
 	fs.Var(&refs, "reference", "KeyInfoReference URI; repeatable")
 
-	specific := "in out id index resources config base-uri"
+	specific := "in out id index resources config base-uri allowed-programs"
 	if cmd == "build" {
 		specific = "out id format name key certificate reference"
 	}
@@ -60,7 +61,7 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return err
 	}
 
-	selected, err := selectElement(doc, document.Name{Local: "Id"}, *id, *index, document.Name{Space: keyinfo.Namespace, Local: "KeyInfo"})
+	selected, err := selectElement(doc, document.Name{Local: lexicon.SecurityAttrID}, *id, *index, document.Name{Space: keyinfo.Namespace, Local: lexicon.DSigElementKeyInfo})
 	if err != nil {
 		return err
 	}
@@ -144,7 +145,7 @@ func inspectionKeyInfoOptions(ctx context.Context, exec *executionFlags, configF
 }
 
 func buildKeyInfoCLI(ctx context.Context, stdout io.Writer, output string, spec keyinfo.Template, keys, certs []string, format string) error {
-	if format != "der" && format != "xml" {
+	if format != string(keyinfo.DERKeyValue) && format != string(keyinfo.XMLKeyValue) {
 		return usageError("-format must be der or xml")
 	}
 

@@ -236,6 +236,8 @@ func TestTSARevocationUsesVerificationTimeAndExactTarget(t *testing.T) {
 					result, err := xades.VerifyTimedEnveloped(t.Context(), stamped, xmldsig.Signatures(stamped)[0], chain.Leaf.Raw, verify)
 					trusted, report, trustErr := withTime.ValidateEnveloped(t.Context(), stamped, xmldsig.Signatures(stamped)[0], chain.Leaf.Raw, verifiedAt, xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{datedCRL(t, chain, generated, 1)}}, TSA: verify.Evidence})
 					if want != nil {
+						// Verification reports retain diagnostics on failure.
+						//noinspection GoDfaErrorMayBeNotNil
 						if result != nil || trusted != nil || !errors.Is(err, want) || !errors.Is(trustErr, want) || report.Cause() == nil {
 							t.Fatalf("TSA rejection: timed=%v trusted=%v errors=%v, %v; want %v", result != nil, trusted != nil, err, trustErr, want)
 						}
@@ -520,8 +522,12 @@ func TestHistoricalSignedContentTimestampRequired(t *testing.T) {
 				}
 				evidence := xades.ValidationEvidence{Signer: tsa.Evidence, TSA: tsa.Evidence}
 				trusted, report, err := verifier.Validate(t.Context(), signed, result.Basic().Signature().Signature(), chain.Leaf.Raw, at, evidence)
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if correct {
-					if err != nil || trusted == nil || report.Indication() != xades.Passed || len(report.Timestamps()) != 1 || !report.Timestamps()[0].Content || !report.BestSignatureTime().Equal(at) {
+					if err != nil {
+						t.Fatal(err)
+					} else if trusted == nil || report.Indication() != xades.Passed || len(report.Timestamps()) != 1 || !report.Timestamps()[0].Content || !report.BestSignatureTime().Equal(at) {
 						t.Fatalf("content timestamp current proof: %v %s %v %+v", report.Indication(), report.SubIndication(), err, report.Timestamps())
 					}
 					signatureHash := sha256.Sum256(mustSignatureValue(t, signed))

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"math"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/tree"
@@ -145,5 +148,186 @@ func TestXMLSerializationStandaloneAttributeEscaping(t *testing.T) {
 	sentinel := errors.New("attribute target failed")
 	if err := (xdm.XMLSerialization{}).WriteAttributeValue(t.Context(), failingXMLWriter{sentinel}, "text"); !errors.Is(err, sentinel) {
 		t.Fatalf("attribute target cause %v", err)
+	}
+}
+
+type declarationShortWriter struct {
+	output bytes.Buffer
+	cause  error
+	failed bool
+	after  int
+}
+
+func (w *declarationShortWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
+
+func (w *declarationShortWriter) Write(p []byte) (int, error) {
+	if w.failed {
+		w.after++
+	}
+	if strings.HasPrefix(string(p), "<?xml") {
+		w.failed = true
+		n, _ := w.output.Write(p[:len(p)-1])
+		return n, w.cause
+	}
+	return w.output.Write(p)
+}
+
+func TestXMLDeclarationChecksShortWritesAndPreservesCause(t *testing.T) {
+	t.Parallel()
+	doc := parseNodeDocument(t, `<r/>`)
+	sentinel := errors.New("declaration destination failed")
+	for _, cause := range []error{nil, sentinel} {
+		out := &declarationShortWriter{cause: cause}
+		err := (xdm.XMLSerialization{}).WriteTo(out, doc)
+		want := cause
+		if want == nil {
+			want = io.ErrShortWrite
+		}
+		if !out.failed || !errors.Is(err, want) || out.after != 0 {
+			t.Fatalf("error=%v; want %v, declaration attempted=%v, later writes=%d", err, want, out.failed, out.after)
+		}
+	}
+}
+
+func TestXMLDeclarationRejectsInvalidMetadataBeforeWriting(t *testing.T) {
+	t.Parallel()
+	for _, writer := range []xdm.XMLSerialization{
+		{Version: `1.0" extra="yes`},
+		{Version: "1."},
+		{Version: "2.0"},
+		{Encoding: `UTF-8" extra="yes`},
+		{Encoding: "1UTF8"},
+		{Encoding: "UTF 8"},
+		{Standalone: `yes" extra="yes`},
+		{Standalone: "YES"},
+	} {
+		doc := parseNodeDocument(t, `<r/>`)
+		var output bytes.Buffer
+		if err := writer.WriteTo(&output, doc); err == nil || output.Len() != 0 {
+			t.Errorf("invalid declaration emitted %q; error=%v", output.String(), err)
+		}
+	}
+	for _, encoding := range []bool{false, true} {
+		doc := parseNodeDocument(t, `<r/>`)
+		if encoding {
+			doc.SetEncoding("bad encoding")
+		} else {
+			doc.SetVersion("1.0\" bad=\"yes")
+		}
+		var output bytes.Buffer
+		if err := (xdm.XMLSerialization{}).WriteTo(&output, doc); err == nil || output.Len() != 0 {
+			t.Error("invalid source declaration metadata was emitted", output.String(), err)
+		}
+		output.Reset()
+		if err := (xdm.XMLSerialization{OmitDeclaration: true}).WriteTo(&output, doc); err != nil || output.String() != "<r/>" {
+			t.Fatal("omitted declaration consumed unused metadata", output.String(), err)
+		}
+	}
+	for _, version := range []string{"1.0", "1.1", "1.23"} {
+		for _, encoding := range []string{"UTF-8", "ISO_8859-1", "custom.encoding"} {
+			doc := parseNodeDocument(t, `<r/>`)
+			var output bytes.Buffer
+			writer := xdm.XMLSerialization{Version: version, Encoding: encoding, Standalone: "no", CompactDeclaration: true}
+			if err := writer.WriteTo(&output, doc); err != nil || !strings.HasPrefix(output.String(), `<?xml version="`+version+`" encoding="`+encoding+`" standalone="no"?>`) {
+				t.Fatal("valid declaration spelling rejected", output.String(), err)
+			}
+		}
+	}
+}
+
+func TestXMLSerializationRejectsTypedNilInputs(t *testing.T) {
+	t.Parallel()
+	doc := parseNodeDocument(t, `<r/>`)
+	var absentDocument *xdm.Document
+	var absentWriter *bytes.Buffer
+	for _, run := range []func() error{
+		func() error { return (xdm.XMLSerialization{}).WriteTo(io.Discard, absentDocument) },
+		func() error { return (xdm.XMLSerialization{}).WriteTo(absentWriter, doc) },
+	} {
+		func() {
+			defer func() {
+				if value := recover(); value != nil {
+					t.Errorf("typed nil input panicked: %v", value)
+				}
+			}()
+			if err := run(); err == nil {
+				t.Error("typed nil input was accepted")
+			}
+		}()
+	}
+}
+
+func TestIDWalkSupportsDocumentRootAndPreservesDuplicatePolicy(t *testing.T) {
+	t.Parallel()
+	doc := parseNodeDocument(t, `<r Id="same" ID="same"><a xml:id="same"/><b token="typed"/><c AssertionID="hidden"/></r>`)
+	root := doc.DocumentElement()
+	root.FirstChild().NextSibling().(*xdm.Element).GetAttributeNodeNS("token", "").SetIDType(xdm.IDAttribute)
+	want, err := xdm.BuildIDIndex(t.Context(), root)
+	requireNodeSuccess(t, err)
+	got, err := xdm.BuildIDIndex(t.Context(), doc)
+	requireNodeSuccess(t, err)
+	if !reflect.DeepEqual(got, want) || len(got["same"]) != 2 || len(got["typed"]) != 1 || len(got["hidden"]) != 0 {
+		t.Fatal("document-root ID index changed completeness or ID profile", got, want)
+	}
+	for id, expected := range want {
+		if actual := xdm.FindElementsByID(doc, id); !reflect.DeepEqual(actual, expected) {
+			t.Fatal("document-root ID search disagrees with index", id, actual, expected)
+		}
+	}
+	for _, node := range []xdm.Node{nil, (*xdm.Document)(nil), (*xdm.Element)(nil), (*xdm.Attribute)(nil)} {
+		index, err := xdm.BuildIDIndex(nil, node)
+		if err != nil || len(index) != 0 || len(xdm.FindElementsByID(node, "same")) != 0 {
+			t.Fatal("nil ID root produced a result", node, index, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	mid := &cancelAfterErrChecks{Context: ctx, cancel: cancel, remaining: 2}
+	index, err := xdm.BuildIDIndex(mid, doc)
+	cancel()
+	if index != nil || !errors.Is(err, context.Canceled) {
+		t.Fatal("cancelled document walk returned partial ID index", index, err)
+	}
+}
+
+func TestInScopeNamespacesIncludesImplicitXMLAndOmitsUndeclarations(t *testing.T) {
+	t.Parallel()
+	doc := parseNodeDocument(t, `<r xmlns="urn:r" xmlns:p="urn:old"><child xmlns="" xmlns:p="urn:new"><leaf/></child></r>`)
+	leaf := doc.DocumentElement().FirstChild().FirstChild().(*xdm.Element)
+	scope := xdm.InScopeNamespaces(leaf, false)
+	if len(scope) != 2 || scope["xml"] == nil || scope["xml"].URI() != tree.XMLNamespace || scope["p"] == nil || scope["p"].URI() != "urn:new" {
+		t.Fatal("implicit binding or namespace shadowing/undeclaration lost", scope)
+	}
+	if scope = xdm.InScopeNamespaces(leaf, true); len(scope) != 1 || scope["p"] == nil {
+		t.Fatal("dropXML changed non-xml scope", scope)
+	}
+	if uri, found := xdm.LookupNSPrefixURI(leaf, "xml"); found || uri != "" {
+		t.Fatal("lexical namespace profile gained implicit binding", uri, found)
+	}
+}
+
+func TestAtomicIsNaNRecognizesSupportedFloatRepresentations(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{xdm.TypeDouble, xdm.TypeFloat} {
+		for _, value := range []any{math.NaN(), float32(math.NaN()), xdm.NewDouble(math.NaN())} {
+			for _, custom := range []bool{false, true} {
+				a := xdm.AtomicValue{TypeName: kind, Value: value}
+				if custom {
+					a.TypeName, a.BaseType = "Q{u}derived", kind
+				}
+				if !a.IsNaN() || !math.IsNaN(a.ToFloat64()) {
+					t.Error("supported NaN representation missed", a)
+				}
+			}
+		}
+	}
+	for _, a := range []xdm.AtomicValue{
+		{TypeName: xdm.TypeString, Value: "NaN"},
+		{TypeName: xdm.TypeDouble, Value: math.Inf(1)},
+		{TypeName: xdm.TypeFloat, Value: math.Copysign(0, -1)},
+		{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(1)},
+	} {
+		if a.IsNaN() {
+			t.Error("non-NaN classified as NaN", a)
+		}
 	}
 }

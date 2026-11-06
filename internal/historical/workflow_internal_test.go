@@ -5,14 +5,21 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"math/big"
 	"math/rand/v2"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/historicalproof"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
@@ -83,6 +90,8 @@ func TestWorkflowCancellationNeverProducesPassingReport(t *testing.T) {
 	cancel()
 	now := testcert.Now()
 	report, err := Validate(ctx, Config{}, Input{}, now, pki.Evidence{}, pki.Evidence{})
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, context.Canceled) || report == nil || report.Indication != Indeterminate || !errors.Is(report.Cause, context.Canceled) || !report.At.Equal(now) || report.Proofs != nil || report.Current != nil || report.Past != nil {
 		t.Fatal("failed workflow granted state", report, err)
 	}
@@ -434,4 +443,378 @@ func containmentChain(depth int) (map[[32]byte]Object, [][32]byte) {
 		objects[key] = object
 	}
 	return objects, keys
+}
+
+// Independent linear oracle retained from the pre-memo helper. These tests check
+// admission state, not acceptance/authentication of an entire historical Input.
+func linearAdmissionOracle(objects []Object, raw []byte, kind historicalproof.Kind) []Object {
+	digest := sha256.Sum256(raw)
+	for index, object := range objects {
+		if sha256.Sum256(object.Bytes) == digest {
+			if object.Kind == objectData {
+				objects[index].Kind = kind
+			}
+			return objects
+		}
+	}
+	return append(objects, Object{Bytes: raw, Kind: kind})
+}
+
+func checkAdmissionObjects(t *testing.T, got, want []Object) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("admission changed order/bytes/kind/metadata: got%+v want%+v", got, want)
+	}
+	for i := range got {
+		if len(got[i].Bytes) > 0 && &got[i].Bytes[0] != &want[i].Bytes[0] {
+			t.Fatalf("object%d copied or replaced first bytes", i)
+		}
+		if len(got[i].Contains) > 0 && &got[i].Contains[0] != &want[i].Contains[0] {
+			t.Fatalf("object%d copied containment", i)
+		}
+		if len(got[i].Refs) > 0 && &got[i].Refs[0] != &want[i].Refs[0] {
+			t.Fatalf("object%d copied references", i)
+		}
+	}
+}
+
+func TestAdmissionPrefixMatchesLinearFirstOccurrence(t *testing.T) {
+	chain := testcert.New(t)
+	certificate := chain.Leaf.Raw
+	child := sha256.Sum256(certificate)
+	parent := []byte(`<r><certificate>` + base64.StdEncoding.EncodeToString(certificate) + `</certificate><digest>` + base64.StdEncoding.EncodeToString(child[:]) + `</digest></r>`)
+	metadata := Object{Bytes: parent, Kind: objectData, Contains: [][32]byte{child}, Refs: []HashReference{{Hash: crypto.SHA256, Digest: child[:], Target: child}}}
+	initial := []Object{{Bytes: certificate, Kind: objectData}, {Bytes: bytes.Clone(certificate), Kind: historicalproof.Certificate}, metadata}
+	want := slices.Clone(initial)
+	w := validationWorkflow{input: Input{Objects: slices.Clone(initial)}}
+	for _, step := range []struct {
+		raw  []byte
+		kind historicalproof.Kind
+	}{
+		{bytes.Clone(certificate), historicalproof.Certificate},
+		{parent, objectData},
+		{certificate, objectData},
+		{[]byte("new exact data object"), objectData},
+		{parent, objectData},
+	} {
+		want = linearAdmissionOracle(want, step.raw, step.kind)
+		w.admit(step.raw, step.kind)
+		checkAdmissionObjects(t, w.input.Objects, want)
+	}
+	if w.admitted[child] != 0 || w.input.Objects[0].Kind != historicalproof.Certificate || w.input.Objects[1].Kind != historicalproof.Certificate {
+		t.Fatal("first duplicate promotion or retained non-Data kind changed")
+	}
+}
+
+func TestAdmissionPrefixDoesNotSeedEarlyHitTail(t *testing.T) {
+	raw := [][]byte{[]byte("first"), []byte("middle"), []byte("last"), []byte("miss")}
+	initial := []Object{{Bytes: raw[0], Kind: objectData}, {Bytes: raw[1], Kind: objectData}, {Bytes: raw[2], Kind: objectData}}
+	w := validationWorkflow{input: Input{Objects: slices.Clone(initial)}}
+	want := slices.Clone(initial)
+	for i, position := range []int{0, 0, 2, 3, 0, 1} {
+		w.admit(raw[position], objectData)
+		want = linearAdmissionOracle(want, raw[position], objectData)
+		checkAdmissionObjects(t, w.input.Objects, want)
+		if i < 2 && (w.admittedPrefix != 1 || len(w.admitted) != 1) {
+			t.Fatal("first hit scanned or memoized the tail", w.admittedPrefix, len(w.admitted))
+		}
+	}
+	if w.admittedPrefix != len(w.input.Objects) || len(w.admitted) != 4 {
+		t.Fatal("late hit/miss did not complete the prefix")
+	}
+}
+
+func TestAdmissionPrefixKeepsContainmentFirstParent(t *testing.T) {
+	certificate := testcert.New(t).Leaf.Raw
+	child := sha256.Sum256(certificate)
+	parent := []byte(`<r><certificate>` + base64.StdEncoding.EncodeToString(certificate) + `</certificate></r>`)
+	parentKey := sha256.Sum256(parent)
+	initial := []Object{{Bytes: parent, Kind: objectData}, {Bytes: bytes.Clone(parent), Kind: objectData}}
+	w := validationWorkflow{input: Input{Objects: slices.Clone(initial)}}
+	w.containCertificates(parentKey, [][]byte{certificate})
+	if len(w.input.Objects) != 3 || !slices.Equal(w.input.Objects[0].Contains, [][32]byte{child}) || len(w.input.Objects[1].Contains) != 0 {
+		t.Fatal("legacy first-parent containment changed", w.input.Objects)
+	}
+	if &w.input.Objects[0].Bytes[0] != &initial[0].Bytes[0] || &w.input.Objects[1].Bytes[0] != &initial[1].Bytes[0] || &w.input.Objects[2].Bytes[0] != &certificate[0] {
+		t.Fatal("containment changed byte ownership")
+	}
+	if w.admitted[parentKey] != 0 {
+		t.Fatal("duplicate parent replaced the first memo position")
+	}
+}
+
+func TestAdmissionPrefixIsLocalToWorkflow(t *testing.T) {
+	a, b := []byte("a"), []byte("b")
+	first := validationWorkflow{input: Input{Objects: []Object{{Bytes: a, Kind: objectData}}}}
+	second := validationWorkflow{input: Input{Objects: []Object{{Bytes: b, Kind: objectData}}}}
+	first.admit(a, objectData)
+	first.admit(b, objectData)
+	second.admit(b, objectData)
+	second.admit(a, objectData)
+	checkAdmissionObjects(t, first.input.Objects, []Object{{Bytes: a, Kind: objectData}, {Bytes: b, Kind: objectData}})
+	checkAdmissionObjects(t, second.input.Objects, []Object{{Bytes: b, Kind: objectData}, {Bytes: a, Kind: objectData}})
+	if first.admitted[sha256.Sum256(a)] != 0 || second.admitted[sha256.Sum256(a)] != 1 {
+		t.Fatal("workflow indexes leaked positions")
+	}
+}
+
+func historicalLimitCertificates(t testing.TB, chain testcert.Chain, count, padding int) [][]byte {
+	t.Helper()
+	var extra []pkix.Extension
+	if padding > 0 {
+		value, err := asn1.Marshal(bytes.Repeat([]byte{7}, padding))
+		if err != nil {
+			t.Fatal(err)
+		}
+		extra = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5, 6, 7}, Value: value}}
+	}
+	raw := make([][]byte, count)
+	seen := map[[32]byte]bool{sha256.Sum256(chain.Leaf.Raw): true}
+	total := 0
+	for i := range raw {
+		template := &x509.Certificate{SerialNumber: big.NewInt(int64(10000 + i)), Subject: pkix.Name{CommonName: fmt.Sprintf("bounded preflight certificate %d", i)}, NotBefore: chain.Leaf.NotBefore, NotAfter: chain.Leaf.NotAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}, ExtraExtensions: extra}
+		cert := testcert.Issue(t, template, chain.Root, chain.LeafKey.Public(), chain.RootKey)
+		if err := cert.CheckSignatureFrom(chain.Root); err != nil {
+			t.Fatal(err)
+		}
+		raw[i] = cert.Raw
+		key := sha256.Sum256(raw[i])
+		if seen[key] {
+			t.Fatal("fixture DER identities must be distinct")
+		}
+		seen[key] = true
+		total += len(raw[i])
+	}
+	if total > 128<<10 {
+		t.Fatal("fixture must remain below128KiB")
+	}
+	return raw
+}
+
+func historicalLimitWorkflow(t *testing.T, chain testcert.Chain, group string, raw [][]byte, maximum int) validationWorkflow {
+	t.Helper()
+	policy := pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL, MaxEvidenceBytes: maximum, MaxCRLs: 1, MaxOCSPResponses: 1}
+	signer, err := pki.NewVerifier(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: policy, AllowedPolicies: []asn1.ObjectIdentifier{{1, 2, 3, 4}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := []byte("already authenticated format adapter signature")
+	w := validationWorkflow{ctx: t.Context(), config: Config{Signer: signer, TSA: tsa}, now: testcert.Now(), report: &Report{}, input: Input{Signature: sha256.Sum256(signature), Certificate: bytes.Clone(chain.Leaf.Raw), SignatureMethod: chain.Leaf.SignatureAlgorithm, Hashes: []crypto.Hash{crypto.SHA256}, Objects: []Object{{Bytes: signature, Kind: historicalproof.Signature}}}}
+	if group == "signer" {
+		w.signerEvidence.Intermediates = raw
+	} else {
+		w.tsaEvidence.Intermediates = raw
+	}
+	return w
+}
+
+// Invalid raw Evidence must not populate the pregraph object set.
+func TestEvidenceLimitsBeforeAdmission(t *testing.T) {
+	chain := testcert.New(t)
+	counted := historicalLimitCertificates(t, chain, 65, 0)
+	padded := historicalLimitCertificates(t, chain, 2, 2048)
+	sum := len(padded[0]) + len(padded[1])
+	cases := []struct {
+		name    string
+		raw     [][]byte
+		maximum int
+		over    bool
+	}{
+		{"count64", counted[:64], 128 << 10, false},
+		{"count65", counted, 128 << 10, true},
+		{"bytes_exact", padded, sum, false},
+		{"bytes_over_one", padded, sum - 1, true},
+	}
+	for _, group := range []string{"signer", "TSA"} {
+		for _, tc := range cases {
+			t.Run(group+"/"+tc.name, func(t *testing.T) {
+				w := historicalLimitWorkflow(t, chain, group, tc.raw, tc.maximum)
+				snapshots := make([][]byte, len(tc.raw))
+				for i, b := range tc.raw {
+					snapshots[i] = bytes.Clone(b)
+				}
+				defer func() {
+					for i, b := range tc.raw {
+						if !bytes.Equal(b, snapshots[i]) {
+							t.Errorf("caller DER%d changed", i)
+						}
+					}
+				}()
+				e := pki.Evidence{Intermediates: tc.raw}
+				var directErr error
+				if group == "signer" {
+					_, directErr = w.config.Signer.NewHistoricalSession(t.Context(), w.config.SignerHistory, w.now, e)
+				} else {
+					_, directErr = w.config.TSA.NewHistoricalSession(t.Context(), w.config.TSAHistory, w.now, e)
+				}
+				if tc.over {
+					if !errors.Is(directErr, pki.ErrLimit) {
+						t.Fatalf("direct session should reject configured bound: %v", directErr)
+					}
+				} else if directErr != nil {
+					t.Fatal("direct session positive control", directErr)
+				}
+				before := len(w.input.Objects)
+				if err := w.initialize(); err != nil {
+					if tc.over && errors.Is(err, pki.ErrLimit) && len(w.input.Objects) == before && w.report.Proofs == nil && w.report.Current == nil && w.report.Past == nil {
+						return
+					}
+					t.Fatal("initialize", err)
+				}
+				err := w.admitEvidence()
+				t.Logf("validDER=%d bytes=%d cap=%d beforeObjects=%d afterObjects=%d admission=%v directSession=%v", len(tc.raw), historicalLimitBytes(tc.raw), tc.maximum, before, len(w.input.Objects), err, directErr)
+				if tc.over {
+					if (!errors.Is(err, pki.ErrLimit) && !errors.Is(err, ErrLimit)) || len(w.input.Objects) != before {
+						t.Fatalf("over-limit DER reached admitted state before session guard: objects=%d->%d err=%v", before, len(w.input.Objects), err)
+					}
+				} else if err != nil || len(w.input.Objects) != before+1+len(tc.raw) {
+					t.Fatalf("positive admission: objects=%d err=%v", len(w.input.Objects), err)
+				}
+			})
+		}
+	}
+}
+
+func historicalLimitBytes(raw [][]byte) int {
+	total := 0
+	for _, b := range raw {
+		total += len(b)
+	}
+	return total
+}
+
+func TestEvidenceLimitsStillCheckTimestampAdditions(t *testing.T) {
+	issuer := newTimestampIssuer(t)
+	raw := make([][]byte, 64)
+	for i := range raw {
+		raw[i] = issuer.chain.Root.Raw
+	}
+	w := historicalLimitWorkflow(t, issuer.chain, "TSA", raw, 128<<10)
+	zero := time.Duration(0)
+	w.config.MissingAccuracy = &zero
+	stamp := issuer.issueStamp(t, 17, testcert.Now().Add(-time.Second), &zero, false, w.input.Objects[0].Bytes)
+	stamp.candidate.Covered = [][32]byte{w.input.Signature}
+	w.input.Timestamps = []Candidate{stamp.candidate}
+	if err := w.initialize(); err != nil {
+		t.Fatal("initial64 evidence", err)
+	}
+	if err := w.admitEvidence(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.prepareTimestamps(); err != nil {
+		t.Fatal("timestamp preparation", err)
+	}
+	if len(w.prepared) != 1 || len(w.tsaEvidence.Intermediates) <= 64 {
+		t.Fatal("fixture did not add an authenticated token certificate")
+	}
+	if err := w.preparePaths(); !errors.Is(err, pki.ErrLimit) {
+		t.Fatal("late session bound lost", err)
+	}
+	if w.graph != nil || w.report.Proofs != nil || w.report.Current != nil || w.report.Past != nil {
+		t.Fatal("late limit published acceptance")
+	}
+	if len(raw) != 64 {
+		t.Fatal("caller evidence slice changed")
+	}
+}
+
+func TestEvidenceLimitsBeforeRevocationInspection(t *testing.T) {
+	chain := testcert.New(t)
+	crl := testcert.CRL(t, chain)
+	for _, group := range []string{"signer", "TSA"} {
+		for _, kind := range []string{"CRL", "OCSP"} {
+			t.Run(group+"/"+kind, func(t *testing.T) {
+				w := historicalLimitWorkflow(t, chain, group, nil, 128<<10)
+				target := &w.signerEvidence
+				if group == "TSA" {
+					target = &w.tsaEvidence
+				}
+				if kind == "CRL" {
+					target.CRLs = [][]byte{crl, crl}
+				} else {
+					target.OCSPResponses = [][]byte{{0x30, 0}, {0x30, 0}}
+				}
+				before := len(w.input.Objects)
+				if err := w.initialize(); !errors.Is(err, pki.ErrLimit) || len(w.input.Objects) != before {
+					t.Fatal("configured count checked after admission/inspection", kind, err, len(w.input.Objects))
+				}
+			})
+		}
+		t.Run(group+"/under-limit OCSP still inspected", func(t *testing.T) {
+			w := historicalLimitWorkflow(t, chain, group, nil, 128<<10)
+			if group == "TSA" {
+				w.tsaEvidence.OCSPResponses = [][]byte{{0x30, 0}}
+			} else {
+				w.signerEvidence.OCSPResponses = [][]byte{{0x30, 0}}
+			}
+			if err := w.initialize(); err != nil {
+				t.Fatal("under-limit metadata", err)
+			}
+			if err := w.admitEvidence(); !errors.Is(err, pki.ErrEvidence) || errors.Is(err, pki.ErrLimit) {
+				t.Fatal("under-limit material parser changed", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowTimestampSourcesRetainCountLimit(t *testing.T) {
+	t.Parallel()
+
+	issuer := newTimestampIssuer(t)
+	signer, err := pki.NewVerifier(pki.Config{Roots: [][]byte{issuer.chain.Root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signatureBytes := []byte("authenticated format signature encoding")
+	signature := sha256.Sum256(signatureBytes)
+	stamp := issuer.issueStamp(t, 1, testcert.Now().Add(-30*time.Second), new(time.Duration(0)), false, signatureBytes)
+	stamp.candidate.Covered = [][32]byte{signature}
+	source, err := evidence.NewObservation(t.Context(), evidence.Timestamp, stamp.candidate.Token.DER(), evidence.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := Input{
+		Signature: signature, Certificate: issuer.chain.Leaf.Raw, SignatureMethod: issuer.chain.Leaf.SignatureAlgorithm,
+		Hashes: []crypto.Hash{crypto.SHA256}, Objects: []Object{{Bytes: signatureBytes, Kind: historicalproof.Signature}},
+		Timestamps: []Candidate{stamp.candidate},
+	}
+	crl := testcert.CRL(t, issuer.chain)
+	for _, count := range []int{1024, 1025} {
+		for _, group := range []string{"signer", "TSA"} {
+			t.Run(group+"/"+strconv.Itoa(count), func(t *testing.T) {
+				t.Parallel()
+
+				sources := make([]*evidence.Observation, count)
+				for index := range sources {
+					sources[index] = source
+				}
+				signerEvidence, tsaEvidence := pki.Evidence{CRLs: [][]byte{crl}}, pki.Evidence{CRLs: [][]byte{crl}}
+				if group == "signer" {
+					signerEvidence.Sources = sources
+				} else {
+					tsaEvidence.Sources = sources
+				}
+				report, err := Validate(t.Context(), Config{Signer: signer, TSA: issuer.verifier}, input, testcert.Now(), signerEvidence, tsaEvidence)
+				if count == 1024 {
+					if err != nil || report.Indication != Passed || report.Current == nil || len(report.Stamps) != 1 || report.Stamps[0].Indication != Passed {
+						t.Fatal("permitted observations changed valid signed-input acceptance", report, err)
+					}
+
+					return
+				}
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
+				if !errors.Is(err, ErrLimit) || report.Indication == Passed || !errors.Is(report.Cause, ErrLimit) || report.Current != nil || report.Past != nil || report.Proofs != nil {
+					t.Fatal("timestamp filtering bypassed evidence source count", report, err)
+				}
+				if len(sources) != count || sources[0] != source || sources[len(sources)-1] != source {
+					t.Fatal("source filtering mutated caller observations")
+				}
+			})
+		}
+	}
 }

@@ -2,6 +2,8 @@ package keyinfo
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"fmt"
 	"strings"
 
@@ -10,6 +12,14 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509crl"
+)
+
+const (
+	nameX509Digest       = "X509Digest"
+	nameX509IssuerName   = "X509IssuerName"
+	nameX509IssuerSerial = "X509IssuerSerial"
+	nameX509SerialNumber = "X509SerialNumber"
+	nameX509SubjectName  = "X509SubjectName"
 )
 
 func (p *parser) certificate(s *scope, n *tree.Node, der []byte) error {
@@ -74,7 +84,7 @@ func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 		}
 
 		group.crls = append(group.crls, der)
-	case document.Name{Space: Namespace, Local: "X509SubjectName"}:
+	case document.Name{Space: Namespace, Local: nameX509SubjectName}:
 		name, err := p.stringValue(n)
 		if err != nil {
 			return err
@@ -92,14 +102,14 @@ func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 		}
 
 		group.skis = append(group.skis, keyID)
-	case document.Name{Space: Namespace, Local: "X509IssuerSerial"}:
+	case document.Name{Space: Namespace, Local: nameX509IssuerSerial}:
 		issuer, err := p.x509IssuerSerial(n)
 		if err != nil {
 			return err
 		}
 
 		group.issuers = append(group.issuers, issuer)
-	case document.Name{Space: Namespace11, Local: "X509Digest"}:
+	case document.Name{Space: Namespace11, Local: nameX509Digest}:
 		digest, err := p.x509Digest(n)
 		if err != nil {
 			return err
@@ -114,12 +124,12 @@ func (p *parser) x509DataItem(s *scope, n *tree.Node, group *X509Group) error {
 }
 
 func (p *parser) x509IssuerSerial(n *tree.Node) (IssuerSerial, error) {
-	children, err := structure(n, Namespace, "X509IssuerSerial")
+	children, err := structure(n, Namespace, nameX509IssuerSerial)
 	if err != nil {
 		return IssuerSerial{}, err
 	}
 
-	if len(children) != 2 || !is(children[0], Namespace, "X509IssuerName") || !is(children[1], Namespace, "X509SerialNumber") {
+	if len(children) != 2 || !is(children[0], Namespace, nameX509IssuerName) || !is(children[1], Namespace, nameX509SerialNumber) {
 		return IssuerSerial{}, ErrInput
 	}
 
@@ -137,7 +147,7 @@ func (p *parser) x509IssuerSerial(n *tree.Node) (IssuerSerial, error) {
 }
 
 func (p *parser) x509Digest(n *tree.Node) (CertificateDigest, error) {
-	algorithm, ok := attr(n, "Algorithm")
+	algorithm, ok := attr(n, lexicon.SecurityAttrAlgorithm)
 	if !ok {
 		return CertificateDigest{}, ErrInput
 	}
@@ -147,7 +157,7 @@ func (p *parser) x509Digest(n *tree.Node) (CertificateDigest, error) {
 		return CertificateDigest{}, fmt.Errorf("%w: certificate digest algorithm", ErrUnsupported)
 	}
 
-	value, err := p.binary(n, "Algorithm")
+	value, err := p.binary(n, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return CertificateDigest{}, err
 	}
@@ -173,7 +183,7 @@ func (p *parser) tick() error {
 }
 
 func normalizeIssuerSerial(issuer, serial string) (IssuerSerial, error) {
-	serial = strings.Trim(serial, " \t\r\n")
+	serial = strings.Trim(serial, lexicon.XMLWhitespace)
 	serial = strings.TrimPrefix(serial, "+")
 
 	if serial == "" || strings.TrimSpace(issuer) == "" {
@@ -235,7 +245,7 @@ func x509SourceBudget(group X509Data, charge func(int) error) error {
 }
 
 func buildX509Data(ctx context.Context, root *tree.Node, group X509Data) error {
-	n := element(Namespace, "ds", nameX509Data)
+	n := element(Namespace, lexicon.PrefixDSig, nameX509Data)
 
 	for _, issuer := range group.IssuerSerials {
 		value, err := normalizeIssuerSerial(issuer.Issuer, issuer.Serial)
@@ -243,9 +253,9 @@ func buildX509Data(ctx context.Context, root *tree.Node, group X509Data) error {
 			return err
 		}
 
-		pair := element(Namespace, "ds", "X509IssuerSerial")
-		addString(pair, "X509IssuerName", value.Issuer)
-		addString(pair, "X509SerialNumber", value.Serial)
+		pair := element(Namespace, lexicon.PrefixDSig, nameX509IssuerSerial)
+		addString(pair, nameX509IssuerName, value.Issuer)
+		addString(pair, nameX509SerialNumber, value.Serial)
 		add(n, pair)
 	}
 
@@ -254,7 +264,7 @@ func buildX509Data(ctx context.Context, root *tree.Node, group X509Data) error {
 			return ErrInput
 		}
 
-		addString(n, "X509SubjectName", subject)
+		addString(n, nameX509SubjectName, subject)
 	}
 
 	if err := buildX509Blobs(ctx, n, group); err != nil {
@@ -271,8 +281,8 @@ func buildX509Data(ctx context.Context, root *tree.Node, group X509Data) error {
 			return ErrInput
 		}
 
-		child := element(Namespace11, "dsig11", "X509Digest")
-		set(child, "Algorithm", digest.Algorithm)
+		child := element(Namespace11, lexicon.PrefixDSig11, nameX509Digest)
+		set(child, lexicon.SecurityAttrAlgorithm, digest.Algorithm)
 
 		encoded, err := tree.EncodeBase64(ctx, digest.Value)
 		if err != nil {
@@ -289,7 +299,7 @@ func buildX509Data(ctx context.Context, root *tree.Node, group X509Data) error {
 }
 
 func addString(parent *tree.Node, local, value string) {
-	n := element(Namespace, "ds", local)
+	n := element(Namespace, lexicon.PrefixDSig, local)
 	addText(n, value)
 	add(parent, n)
 }
@@ -323,7 +333,7 @@ func buildX509Blobs(ctx context.Context, node *tree.Node, group X509Data) error 
 				}
 			}
 
-			if err := blob(ctx, node, Namespace, "ds", field.name, value); err != nil {
+			if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, field.name, value); err != nil {
 				return err
 			}
 		}
@@ -333,15 +343,17 @@ func buildX509Blobs(ctx context.Context, node *tree.Node, group X509Data) error 
 }
 
 func x509DigestSize(algorithm string) int {
+	const legacySHA1DigestBytes = 20
+
 	switch algorithm {
 	case lexicon.DigestSHA1:
-		return 20
+		return legacySHA1DigestBytes
 	case lexicon.DigestSHA256:
-		return 32
+		return sha256.Size
 	case lexicon.DigestSHA384:
-		return 48
+		return sha512.Size384
 	case lexicon.DigestSHA512:
-		return 64
+		return sha512.Size
 	default:
 		return 0
 	}

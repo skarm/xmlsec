@@ -11,6 +11,14 @@ import (
 	"github.com/skarm/xmlsec/timestamp"
 )
 
+const (
+	profileEnvelopedCurrentTime = "xmlsec-enveloped-current-time-v1"
+	defaultArchiveBytes         = 16 << 20
+	defaultArchiveTimestamps    = 8
+	maximumArchiveBytes         = 64 << 20
+	maximumArchiveTimestamps    = 16
+)
+
 // ErrLevel reports missing evidence or an unavailable required XAdES profile level.
 var ErrLevel = errors.New("required XAdES profile level or evidence unavailable")
 
@@ -57,14 +65,23 @@ type ValidatorConfig struct {
 // Validator retains immutable policy for closed-profile XAdES signatures and offline
 // evidence validation.
 type Validator struct {
-	signer          *pki.Verifier
-	tsa             *timestamp.Verifier
-	minimum         Level
-	unchecked       bool
-	basic           VerifyOptions
-	maxTimestamps   int
-	maxTokenBytes   int
-	maxArchives     int
+	// signer retains explicit signer certificate and revocation policy.
+	signer *pki.Verifier
+	// tsa retains timestamp authority verification policy.
+	tsa *timestamp.Verifier
+	// minimum is the least XAdES level accepted by this validator.
+	minimum Level
+	// unchecked explicitly permits signer verification without revocation checking.
+	unchecked bool
+	// basic retains the closed basic signature profile and algorithm policy.
+	basic VerifyOptions
+	// maxTimestamps bounds signature timestamp tokens.
+	maxTimestamps int
+	// maxTokenBytes bounds each encoded timestamp token in bytes.
+	maxTokenBytes int
+	// maxArchives bounds archive timestamps.
+	maxArchives int
+	// maxArchiveBytes bounds archive timestamp input in bytes.
 	maxArchiveBytes int
 }
 
@@ -92,14 +109,14 @@ func NewValidator(c ValidatorConfig) (*Validator, error) {
 	}
 
 	if c.MaxArchiveTimestamps == 0 {
-		c.MaxArchiveTimestamps = 8
+		c.MaxArchiveTimestamps = defaultArchiveTimestamps
 	}
 
 	if c.MaxArchiveBytes == 0 {
-		c.MaxArchiveBytes = 16 << 20
+		c.MaxArchiveBytes = defaultArchiveBytes
 	}
 
-	if c.MaxArchiveTimestamps < 1 || c.MaxArchiveTimestamps > 16 || c.MaxArchiveBytes < 1 || c.MaxArchiveBytes > 64<<20 {
+	if c.MaxArchiveTimestamps < 1 || c.MaxArchiveTimestamps > maximumArchiveTimestamps || c.MaxArchiveBytes < 1 || c.MaxArchiveBytes > maximumArchiveBytes {
 		return nil, ErrProfile
 	}
 
@@ -177,13 +194,20 @@ type ValidationEvidence struct {
 // ValidationResult retains an immutable accepted XAdES signature, its achieved level,
 // trust results and evidence.
 type ValidationResult struct {
-	basic      *BasicResult
+	// basic retains the accepted basic signature and signed properties.
+	basic *BasicResult
+	// timestamps retains verified signature timestamp results.
 	timestamps []*timestamp.Result
-	trust      *pki.Result
-	level      Level
-	at         time.Time
-	archives   []*timestamp.Result
-	material   ValidationMaterial
+	// trust retains the accepted signer certificate and revocation result.
+	trust *pki.Result
+	// level records the XAdES level achieved under this validator's policy.
+	level Level
+	// at is the explicit validation time.
+	at time.Time
+	// archives retains verified archive timestamp results.
+	archives []*timestamp.Result
+	// material retains the validation material used by the accepted profile.
+	material ValidationMaterial
 }
 
 // Basic returns the immutable basic XAdES result.
@@ -258,5 +282,5 @@ func (r *ValidationResult) Profile() string {
 		return ""
 	}
 
-	return "xmlsec-enveloped-current-time-v1"
+	return profileEnvelopedCurrentTime
 }

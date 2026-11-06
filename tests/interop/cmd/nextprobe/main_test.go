@@ -95,7 +95,9 @@ func TestSymmetricProbeRoutesAndRejectsWrongKey(t *testing.T) {
 	for _, test := range []struct{ encrypt, decrypt string }{{nameEncryptDirect, "decrypt-direct"}, {nameEncryptWrap, "decrypt-wrap"}} {
 		t.Run(test.encrypt, func(t *testing.T) {
 			encrypted, err := process(t.Context(), task{Mode: test.encrypt, Input: input, Key: secret, KeyAlgorithm: xmlenc.AES256KeyWrap, DataAlgorithm: xmlenc.AES256GCM})
-			if err != nil || len(encrypted.Data) == 0 || bytes.Contains(encrypted.Data, plaintext) || !bytes.Contains(encrypted.Data, []byte(xmlenc.AES256GCM)) {
+			if err != nil {
+				t.Fatal(err)
+			} else if len(encrypted.Data) == 0 || bytes.Contains(encrypted.Data, plaintext) || !bytes.Contains(encrypted.Data, []byte(xmlenc.AES256GCM)) {
 				t.Fatalf("encryption route: %q %v", encrypted.Data, err)
 			}
 			wrapped := bytes.Contains(encrypted.Data, []byte(xmlenc.AES256KeyWrap))
@@ -104,11 +106,15 @@ func TestSymmetricProbeRoutesAndRejectsWrongKey(t *testing.T) {
 			}
 			encoded := write(test.encrypt+".xml", encrypted.Data)
 			decrypted, err := process(t.Context(), task{Mode: test.decrypt, Input: encoded, Key: secret})
-			if err != nil || !bytes.Equal(decrypted.Data, plaintext) {
+			if err != nil {
+				t.Fatal(err)
+			} else if !bytes.Equal(decrypted.Data, plaintext) {
 				t.Fatalf("decryption route: %x %v", decrypted.Data, err)
 			}
 			wrong := write("wrong-key.bin", bytes.Repeat([]byte{0x71}, 32))
 			rejected, err := process(t.Context(), task{Mode: test.decrypt, Input: encoded, Key: wrong})
+			// Failure assertions inspect the probe's diagnostic payload.
+			//noinspection GoDfaErrorMayBeNotNil
 			if err == nil || len(rejected.Data) != 0 {
 				t.Fatal("wrong key released plaintext")
 			}

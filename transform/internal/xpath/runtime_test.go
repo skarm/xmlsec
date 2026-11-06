@@ -587,12 +587,6 @@ func TestNumericBudgetASTAndVM(t *testing.T) {
 	}
 }
 
-func evaluateRuntimeAST(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
-	return evalWith(func(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
-		return dispatchExpr(evaluateRuntimeAST, ctx, ec, expr)
-	}, ctx, ec, expr)
-}
-
 func TestVersionedContractsASTAndVM(t *testing.T) {
 	for _, version := range []int{20, 30, 31} {
 		for _, tc := range []struct {
@@ -1282,36 +1276,6 @@ func TestWhitespaceNormalizationPreservesValues(t *testing.T) {
 	}
 }
 
-func checkSubstring(t *testing.T, source string, start, length float64, bounded bool) {
-	t.Helper()
-
-	args := []xdm.Sequence{xdm.SingleString(source), xdm.SingleDouble(start)}
-	if bounded {
-		args = append(args, xdm.SingleDouble(length))
-	}
-
-	actual, err := fnSubstring(t.Context(), args)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var expected strings.Builder
-
-	roundedStart := roundHalfUpFloat(start, 0)
-
-	for i, r := range []rune(source) {
-		p := float64(i + 1)
-		if p >= roundedStart && (!bounded || p < roundedStart+roundHalfUpFloat(length, 0)) {
-			expected.WriteRune(r)
-		}
-	}
-
-	value, ok := actual.Get(0).(xdm.AtomicValue)
-	if !ok || value.StringVal() != expected.String() {
-		t.Fatalf("substring(%.80q, %v, %v), bounded=%v: %.80q, want %.80q", source, start, length, bounded, value.StringVal(), expected.String())
-	}
-}
-
 func TestFunctionConversionBudgets(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -1986,4 +1950,40 @@ func BenchmarkRegexRuntimeCache(b *testing.B) {
 			}
 		})
 	})
+}
+
+func evaluateRuntimeAST(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
+	return evalWith(func(ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
+		return dispatchExpr(evaluateRuntimeAST, ctx, ec, expr)
+	}, ctx, ec, expr)
+}
+
+func checkSubstring(t *testing.T, source string, start, length float64, bounded bool) {
+	t.Helper()
+
+	args := []xdm.Sequence{xdm.SingleString(source), xdm.SingleDouble(start)}
+	if bounded {
+		args = append(args, xdm.SingleDouble(length))
+	}
+
+	actual, err := fnSubstring(t.Context(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var expected strings.Builder
+
+	roundedStart := roundHalfUpFloat(start, 0)
+
+	for i, r := range []rune(source) {
+		p := float64(i + 1)
+		if p >= roundedStart && (!bounded || p < roundedStart+roundHalfUpFloat(length, 0)) {
+			expected.WriteRune(r)
+		}
+	}
+
+	value, ok := actual.Get(0).(xdm.AtomicValue)
+	if !ok || value.StringVal() != expected.String() {
+		t.Fatalf("substring(%.80q, %v, %v), bounded=%v: %.80q, want %.80q", source, start, length, bounded, value.StringVal(), expected.String())
+	}
 }

@@ -14,29 +14,44 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
+const (
+	maximumSpoolRecords = 64
+)
+
+const (
+	spoolRecordPrefix    = "observation-"
+	spoolDirectoryPrefix = "xmlsec-evidence-"
+)
+
 // Store retains untrusted observation bytes in a private temporary directory and
 // keeps their metadata in memory. Construct it with NewStore and call Close when
 // finished. It supports concurrent calls. The application owns the parent directory
 // and available disk capacity. Open readers remain caller-owned and must be closed
 // before releasing storage. Reading a Record does not authenticate its contents.
 type Store struct {
-	mutex     sync.Mutex
+	// mutex serializes storage accounting, record creation and closure.
+	mutex sync.Mutex
+	// directory holds temporary files owned by this store.
 	directory string
-	maximum   int64
-	used      int64
-	records   int
-	closed    bool
+	// maximum bounds the aggregate stored bytes.
+	maximum int64
+	// used counts bytes charged to the store.
+	used int64
+	// records counts committed records and active write reservations.
+	records int
+	// closed prevents further access after store cleanup begins.
+	closed bool
 }
 
 // NewStore creates a private child directory in directory (empty uses the OS
 // temporary directory). maximum bounds committed plus reserved input bytes and
 // must be 1..64 MiB. At most 64 records, including active writes, may coexist.
 func NewStore(directory string, maximum int64) (*Store, error) {
-	if maximum < 1 || maximum > 64<<20 {
+	if maximum < 1 || maximum > maximumRecordBytes {
 		return nil, ErrLimit
 	}
 
-	root, err := os.MkdirTemp(directory, "xmlsec-evidence-")
+	root, err := os.MkdirTemp(directory, spoolDirectoryPrefix)
 	if err != nil {
 		return nil, errors.Join(ErrResource, err)
 	}
@@ -59,7 +74,7 @@ func (s *Store) PutReader(ctx context.Context, kind Kind, src io.Reader, provena
 		return nil, err
 	}
 
-	if maximum < 1 || maximum > 64<<20 {
+	if maximum < 1 || maximum > maximumRecordBytes {
 		return nil, ErrLimit
 	}
 
@@ -75,12 +90,12 @@ func (s *Store) PutReader(ctx context.Context, kind Kind, src io.Reader, provena
 		return nil, errors.Join(ErrResource, os.ErrClosed)
 	}
 
-	if s.records >= 64 || int64(maximum) > s.maximum-s.used {
+	if s.records >= maximumSpoolRecords || int64(maximum) > s.maximum-s.used {
 		s.mutex.Unlock()
 		return nil, ErrLimit
 	}
 
-	f, err := os.CreateTemp(s.directory, "observation-")
+	f, err := os.CreateTemp(s.directory, spoolRecordPrefix)
 	if err != nil {
 		s.mutex.Unlock()
 		return nil, errors.Join(ErrResource, err)
@@ -141,11 +156,12 @@ func (s *Store) Close() error {
 	}
 
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	s.closed = true
+	err := os.RemoveAll(s.directory)
+	s.mutex.Unlock()
 
-	if err := os.RemoveAll(s.directory); err != nil {
+	if err != nil {
 		return errors.Join(ErrResource, err)
 	}
 
@@ -157,11 +173,17 @@ func (s *Store) Close() error {
 // and storage reservation; repeated Close calls are safe. Open fails after the
 // record or its store has closed.
 type Record struct {
-	store      *Store
-	path       string
-	size       int
-	kind       Kind
-	digest     [32]byte
+	// store owns the backing file and controls the record's lifetime.
+	store *Store
+	// path identifies the store-owned backing file.
+	path string
+	// size is the recorded object length in bytes.
+	size int
+	// kind identifies the stored DER object's encoding.
+	kind Kind
+	// digest binds the record to its exact SHA-256 content digest.
+	digest [sha256.Size]byte
+	// provenance retains collection metadata independently of trust.
 	provenance Provenance
 	closed     bool // protected by store.mutex
 }
@@ -250,9 +272,9 @@ func (r *Record) Kind() Kind {
 }
 
 // DigestSHA256 returns the digest computed over the exact received bytes.
-func (r *Record) DigestSHA256() [32]byte {
+func (r *Record) DigestSHA256() [sha256.Size]byte {
 	if r == nil {
-		return [32]byte{}
+		return [sha256.Size]byte{}
 	}
 
 	return r.digest

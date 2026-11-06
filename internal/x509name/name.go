@@ -16,6 +16,10 @@ import (
 )
 
 const (
+	maximumOIDBytes = 128
+)
+
+const (
 	maxNameBytes = 64 << 10
 	maxRDNs      = 256
 	maxAVAs      = 1024
@@ -117,12 +121,18 @@ func EqualOrExact(ctx context.Context, a, b []byte) (bool, error) {
 }
 
 func key(ctx context.Context, raw []byte) (string, error) {
-	root, err := der.ReadLimits(raw, maxNameBytes, 6, 1+maxRDNs+5*maxAVAs)
+	const (
+		maximumNameDepth    = 6
+		maximumAVANodes     = 5
+		comparisonKeyPrefix = "DN4518\x00"
+	)
+
+	root, err := der.ReadLimits(raw, maxNameBytes, maximumNameDepth, 1+maxRDNs+maximumAVANodes*maxAVAs)
 	if err != nil {
 		return "", nameDERError(err)
 	}
 
-	if root.Class != 0 || root.Tag != asn1.TagSequence || !root.IsCompound {
+	if root.Class != asn1.ClassUniversal || root.Tag != asn1.TagSequence || !root.IsCompound {
 		return "", ErrInvalid
 	}
 
@@ -131,7 +141,7 @@ func key(ctx context.Context, raw []byte) (string, error) {
 		return "", nameDERError(err)
 	}
 
-	out := binary.AppendUvarint([]byte("DN4518\x00"), uint64(len(rdns)))
+	out := binary.AppendUvarint([]byte(comparisonKeyPrefix), uint64(len(rdns)))
 	count := 0
 	unsupported := false
 
@@ -140,7 +150,7 @@ func key(ctx context.Context, raw []byte) (string, error) {
 			return "", err
 		}
 
-		if rdn.Class != 0 || rdn.Tag != asn1.TagSet || !rdn.IsCompound {
+		if rdn.Class != asn1.ClassUniversal || rdn.Tag != asn1.TagSet || !rdn.IsCompound {
 			return "", ErrInvalid
 		}
 
@@ -174,7 +184,7 @@ func key(ctx context.Context, raw []byte) (string, error) {
 
 		out = binary.AppendUvarint(out, uint64(len(keys)))
 		for _, k := range keys {
-			if len(k) > maxKeyBytes-len(out)-10 {
+			if len(k) > maxKeyBytes-len(out)-binary.MaxVarintLen64 {
 				return "", ErrLimit
 			}
 
@@ -191,22 +201,28 @@ func key(ctx context.Context, raw []byte) (string, error) {
 }
 
 func avaKey(ctx context.Context, ava asn1.RawValue) (string, error) {
-	if ava.Class != 0 || ava.Tag != asn1.TagSequence || !ava.IsCompound {
+	const (
+		avaFields             = 2
+		unicodeMatchKind byte = 1
+		domainMatchKind  byte = 2
+	)
+
+	if ava.Class != asn1.ClassUniversal || ava.Tag != asn1.TagSequence || !ava.IsCompound {
 		return "", ErrInvalid
 	}
 
-	fields, err := der.ChildrenLimit(ava, 2)
-	if err != nil || len(fields) != 2 {
+	fields, err := der.ChildrenLimit(ava, avaFields)
+	if err != nil || len(fields) != avaFields {
 		return "", ErrInvalid
 	}
 
 	typ, value := fields[0], fields[1]
 
-	if typ.Class != 0 || typ.Tag != asn1.TagOID || typ.IsCompound {
+	if typ.Class != asn1.ClassUniversal || typ.Tag != asn1.TagOID || typ.IsCompound {
 		return "", ErrInvalid
 	}
 
-	if len(typ.Bytes) > 128 {
+	if len(typ.Bytes) > maximumOIDBytes {
 		return "", ErrLimit
 	}
 
@@ -215,13 +231,13 @@ func avaKey(ctx context.Context, ava asn1.RawValue) (string, error) {
 		return "", ErrInvalid
 	}
 
-	if value.Class != 0 || value.IsCompound {
+	if value.Class != asn1.ClassUniversal || value.IsCompound {
 		return "", ErrUnsupported
 	}
 
 	var prepared string
 
-	kind := byte(1)
+	kind := unicodeMatchKind
 
 	if oid.Equal(asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}) {
 		if value.Tag != asn1.TagIA5String {
@@ -229,7 +245,7 @@ func avaKey(ctx context.Context, ava asn1.RawValue) (string, error) {
 		}
 
 		prepared = strings.ToLower(string(value.Bytes)) // DER scanner already enforces ASCII.
-		kind = 2
+		kind = domainMatchKind
 	} else {
 		if value.Tag != asn1.TagUTF8String && value.Tag != asn1.TagPrintableString {
 			return "", ErrUnsupported

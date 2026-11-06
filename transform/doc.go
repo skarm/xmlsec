@@ -30,6 +30,8 @@
 // DTD processing. External DTDs and entities require the configured resolver
 // and invocation resource policy. This mode supports entity expansion, default
 // attributes and declared attribute normalization without DTD or XSD validation.
+// Engine XML input preserves relative namespace names, unlike the default
+// document parser and C14N. Import and Export do not rewrite those names.
 //
 // # Results, resources and limits
 //
@@ -41,7 +43,8 @@
 // [Stylesheet.Write] return byte counts and allow partial output on error.
 // Ordinary execution retains the complete result; serialization writes common
 // formats incrementally and uses intermediate storage for specialized options.
-// [Engine.ParseReader] and [Engine.CompileXSLTReader] parse incrementally. For
+// [Engine.ParseReader] parses incrementally; stylesheet and language-resource
+// parsing can also retain bounded decoded and DTD-expanded input buffers. For
 // independent records, [Stylesheet.WriteRecords] retains one record and its
 // result alongside parser state, stylesheet, parameters and invocation resources;
 // it does not retain the complete enclosing document or collect all output.

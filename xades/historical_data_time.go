@@ -71,7 +71,7 @@ func appendHistoricalDataTimestamps(ctx context.Context, baseline *BaselineResul
 // only when canonicalizing those actual protected bytes reproduces a known
 // original encoding exactly. No original ancestor or unprotected namespace is
 // borrowed to manufacture the link.
-func linkDataTimestampCanonicalEncoding(ctx context.Context, objects *historicalObjects, parent [32]byte, raw []byte, maximum int) error {
+func linkDataTimestampCanonicalEncoding(ctx context.Context, objects *historicalObjects, parent [sha256.Size]byte, raw []byte, maximum int) error {
 	doc, err := document.Parse(ctx, raw, document.DefaultLimits())
 	if err != nil {
 		return ctx.Err()

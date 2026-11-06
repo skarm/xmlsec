@@ -19,6 +19,11 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+const (
+	allocationMeasurementTrials = 3
+	peakHeapSampleInterval      = 100 * time.Microsecond
+)
+
 func newEngine(t *testing.T, config transform.Config) *transform.Engine {
 	t.Helper()
 	e, err := transform.NewEngine(config)
@@ -111,7 +116,7 @@ func (r *streamingInput) Read(p []byte) (int, error) {
 func allocatedDuring(t *testing.T, run func() error) uint64 {
 	t.Helper()
 	allocated := ^uint64(0)
-	for range 3 {
+	for range allocationMeasurementTrials {
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
 		if err := run(); err != nil {
@@ -157,7 +162,7 @@ func peakHeapDuring(t *testing.T, run func() error) uint64 {
 	ready, stop := make(chan struct{}), make(chan struct{})
 	done := make(chan uint64, 1)
 	go func() {
-		ticker := time.NewTicker(100 * time.Microsecond)
+		ticker := time.NewTicker(peakHeapSampleInterval)
 		defer ticker.Stop()
 		peak := before
 		close(ready)

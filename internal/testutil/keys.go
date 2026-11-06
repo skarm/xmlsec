@@ -6,6 +6,8 @@ import (
 	"encoding/pem"
 	"os"
 	"testing"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // WritePrivateKey writes a disposable test key as PKCS#8 PEM.
@@ -17,7 +19,7 @@ func WritePrivateKey(t testing.TB, dir, name string, key crypto.Signer) string {
 		t.Fatal(err)
 	}
 
-	return WriteFile(t, dir, name, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	return WriteFile(t, dir, name, pem.EncodeToMemory(&pem.Block{Type: lexicon.PEMPrivateKey, Bytes: der}))
 }
 
 // WritePublicKey writes a disposable test public key as PKIX PEM.
@@ -29,7 +31,7 @@ func WritePublicKey(t testing.TB, dir, name string, key crypto.PublicKey) string
 		t.Fatal(err)
 	}
 
-	return WriteFile(t, dir, name, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	return WriteFile(t, dir, name, pem.EncodeToMemory(&pem.Block{Type: lexicon.PEMPublicKey, Bytes: der}))
 }
 
 // ReadPublicKey reads a PKIX public key from a PEM fixture.

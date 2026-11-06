@@ -23,7 +23,7 @@ type retrievalPlan struct {
 }
 
 type retrievalOutput struct {
-	digest   [32]byte
+	digest   [sha256.Size]byte
 	resource string
 }
 
@@ -50,9 +50,9 @@ func (p *parser) configureRetrieval() error {
 		fallback int
 		maximum  int
 	}{
-		{value: &o.MaxTransforms, fallback: defaults.MaxTransforms, maximum: 64},
-		{value: &o.MaxInputBytes, fallback: defaults.MaxInputBytes, maximum: p.limits.MaxBlobBytes * 2},
-		{value: &o.MaxOutputBytes, fallback: defaults.MaxOutputBytes, maximum: p.limits.MaxBlobBytes * 2},
+		{value: &o.MaxTransforms, fallback: defaults.MaxTransforms, maximum: maxRetrievalTransforms},
+		{value: &o.MaxInputBytes, fallback: defaults.MaxInputBytes, maximum: p.limits.MaxBlobBytes * encodedBlobSizeFactor},
+		{value: &o.MaxOutputBytes, fallback: defaults.MaxOutputBytes, maximum: p.limits.MaxBlobBytes * encodedBlobSizeFactor},
 		{value: &o.MaxProducedBytes, fallback: defaults.MaxProducedBytes, maximum: p.limits.MaxTransformBytes},
 		{value: &o.MaxNodeVisits, fallback: defaults.MaxNodeVisits, maximum: p.limits.MaxTransformNodes},
 	} {
@@ -67,10 +67,10 @@ func (p *parser) configureRetrieval() error {
 		o.XMLLimits = document.DefaultLimits()
 	}
 
-	o.XMLLimits.MaxBytes = min(o.XMLLimits.MaxBytes, p.limits.MaxBlobBytes*2)
-	o.XMLLimits.MaxNodes = min(o.XMLLimits.MaxNodes, p.limits.MaxElements*8, p.limits.MaxTransformNodes)
+	o.XMLLimits.MaxBytes = min(o.XMLLimits.MaxBytes, p.limits.MaxBlobBytes*encodedBlobSizeFactor)
+	o.XMLLimits.MaxNodes = min(o.XMLLimits.MaxNodes, p.limits.MaxElements*retrievalXMLNodesPerElement, p.limits.MaxTransformNodes)
 	o.XMLLimits.MaxNodeSetNodes = min(o.XMLLimits.MaxNodeSetNodes, p.limits.MaxTransformNodes)
-	o.XMLLimits.MaxDepth = min(o.XMLLimits.MaxDepth, 64)
+	o.XMLLimits.MaxDepth = min(o.XMLLimits.MaxDepth, maxRetrievedXMLDepth)
 	p.options.RetrievalProcessing = &o
 
 	return nil
@@ -84,23 +84,23 @@ func (p *parser) prepareRetrieval(s *scope, n *tree.Node) (retrievalPlan, error)
 
 	var plan retrievalPlan
 
-	children, err := structure(n, Namespace, "RetrievalMethod", "URI", "Type")
+	children, err := structure(n, Namespace, lexicon.DSigElementRetrievalMethod, lexicon.SecurityAttrURI, lexicon.SecurityAttrType)
 	if err != nil {
 		return plan, err
 	}
 
 	var ok bool
 
-	plan.uri, ok = attr(n, "URI")
+	plan.uri, ok = attr(n, lexicon.SecurityAttrURI)
 	if !ok {
 		return plan, fmt.Errorf("%w: RetrievalMethod URI is required", ErrInput)
 	}
 
-	if len(plan.uri) > 8192 {
+	if len(plan.uri) > maxURIBytes {
 		return plan, ErrLimit
 	}
 
-	plan.typ, _ = attr(n, "Type")
+	plan.typ, _ = attr(n, lexicon.SecurityAttrType)
 
 	representation, err := retrievalType(plan.typ)
 	if err != nil {
@@ -286,19 +286,22 @@ func (p *parser) processRetrieval(s *scope, n *tree.Node, depth int, plan retrie
 }
 
 func (p *parser) retrievalScope(data []byte, resource string) (*scope, error) {
+	// Charge parsing and indexing each expanded node of a transformed XML snapshot.
+	const transformNodeVisitCost = 2
+
 	key := retrievalOutput{digest: sha256.Sum256(data), resource: resource}
 	if cached, ok := p.transformedScopes[key]; ok {
 		return cached, nil
 	}
 
 	remaining := p.limits.MaxTransformNodes - p.transformNodes
-	if remaining < 2 {
+	if remaining < transformNodeVisitCost {
 		return nil, ErrLimit
 	}
 
 	limits := p.options.RetrievalProcessing.XMLLimits
-	limits.MaxNodes = min(limits.MaxNodes, remaining/2)
-	limits.MaxNodeSetNodes = min(limits.MaxNodeSetNodes, remaining/2)
+	limits.MaxNodes = min(limits.MaxNodes, remaining/transformNodeVisitCost)
+	limits.MaxNodeSetNodes = min(limits.MaxNodeSetNodes, remaining/transformNodeVisitCost)
 
 	doc, err := document.Parse(p.ctx, data, limits)
 	if err != nil {
@@ -311,11 +314,11 @@ func (p *parser) retrievalScope(data []byte, resource string) (*scope, error) {
 	}
 	// Account for parsing and indexing the resulting snapshot, including its
 	// expanded namespace/attribute nodes. Cached snapshots keep graph identity.
-	if nodes.Len() > remaining/2 {
+	if nodes.Len() > remaining/transformNodeVisitCost {
 		return nil, ErrLimit
 	}
 
-	p.transformNodes += 2 * nodes.Len()
+	p.transformNodes += transformNodeVisitCost * nodes.Len()
 
 	next, err := p.newScope(doc, resource)
 	if err != nil {

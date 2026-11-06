@@ -21,6 +21,20 @@ import (
 )
 
 const (
+	// Token byte cap selected by default in signature and data-object timestamp verification.
+	defaultTimestampTokenBytes = 4 << 20
+	// Hard ceiling on a caller-selected timestamp token byte limit.
+	maximumTimestampTokenBytes = 16 << 20
+)
+
+const (
+	defaultSignatureTimestamps           = 8
+	maximumEncapsulatedTimestampChildren = 33
+	maximumSignatureCanonicalBytes       = 1 << 20
+	maximumSignatureTimestamps           = 32
+)
+
+const (
 	encodingDER = "http://uri.etsi.org/01903/v1.2.2#DER"
 	encodingBER = "http://uri.etsi.org/01903/v1.2.2#BER"
 )
@@ -135,7 +149,7 @@ func AddSignatureTimestamp(ctx context.Context, doc *document.Document, selected
 		method = c14n.Exclusive
 	}
 
-	imprint, e := canonicalImprint(ctx, selected, method, 1<<20, o.Request.Hash)
+	imprint, e := canonicalImprint(ctx, selected, method, maximumSignatureCanonicalBytes, o.Request.Hash)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -193,7 +207,7 @@ func AttachSignatureTimestamp(ctx context.Context, doc *document.Document, selec
 		return nil, nil, e
 	}
 
-	imprint, e := canonicalImprint(ctx, selected, method, 1<<20, token.UnverifiedInfo().Imprint().Hash)
+	imprint, e := canonicalImprint(ctx, selected, method, maximumSignatureCanonicalBytes, token.UnverifiedInfo().Imprint().Hash)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -216,14 +230,14 @@ func normalizeTimed(o TimedOptions) (TimedOptions, error) {
 
 func normalizeTimedLimits(o TimedOptions) (TimedOptions, error) {
 	if o.MaxTimestamps == 0 {
-		o.MaxTimestamps = 8
+		o.MaxTimestamps = defaultSignatureTimestamps
 	}
 
 	if o.MaxTokenBytes == 0 {
-		o.MaxTokenBytes = 4 << 20
+		o.MaxTokenBytes = defaultTimestampTokenBytes
 	}
 
-	if o.MaxTimestamps < 1 || o.MaxTimestamps > 32 || o.MaxTokenBytes < 1 || o.MaxTokenBytes > 16<<20 {
+	if o.MaxTimestamps < 1 || o.MaxTimestamps > maximumSignatureTimestamps || o.MaxTokenBytes < 1 || o.MaxTokenBytes > maximumTimestampTokenBytes {
 		return o, ErrTimestamp
 	}
 
@@ -231,12 +245,12 @@ func normalizeTimedLimits(o TimedOptions) (TimedOptions, error) {
 }
 
 func qualifying(sig document.Element) (document.Element, error) {
-	o, e := childNamed(sig, ds("Object"))
+	o, e := childNamed(sig, ds(lexicon.DSigElementObject))
 	if e != nil {
 		return document.Element{}, e
 	}
 
-	return childNamed(o, name("QualifyingProperties"))
+	return childNamed(o, name(nameQualifyingProperties))
 }
 
 func unsignedProperties(sig document.Element) (document.Element, error) {
@@ -250,11 +264,11 @@ func unsignedProperties(sig document.Element) (document.Element, error) {
 		return document.Element{}, nil
 	}
 
-	if len(cs) != 2 || cs[1].Name() != name("UnsignedProperties") || optionalID(cs[1]) != nil {
+	if len(cs) != 2 || cs[1].Name() != name(nameUnsignedProperties) || optionalID(cs[1]) != nil {
 		return document.Element{}, ErrProfile
 	}
 
-	f, e := children(cs[1], name("UnsignedSignatureProperties"))
+	f, e := children(cs[1], name(nameUnsignedSignatureProperties))
 	if e != nil || optionalID(f[0]) != nil {
 		return document.Element{}, ErrProfile
 	}
@@ -268,7 +282,7 @@ func optionalID(e document.Element) error {
 		return nil
 	}
 
-	if len(a) != 1 || a[0].Name != (document.Name{Local: "Id"}) || !tree.NCName(a[0].Value) {
+	if len(a) != 1 || a[0].Name != (document.Name{Local: lexicon.SecurityAttrID}) || !tree.NCName(a[0].Value) {
 		return ErrProfile
 	}
 
@@ -323,16 +337,16 @@ func canonicalImprint(ctx context.Context, sig document.Element, method string, 
 // algorithms, as required when generating/augmenting current EN 319 132-1 data.
 // XMLTimeStamp, Include, transform parameters and unknown encodings fail closed.
 func parseTimeStamp(ctx context.Context, e document.Element, maximum int) (string, [][]byte, error) {
-	if optionalID(e) != nil {
+	if optionalID(e) != nil || elementContent(e) != nil {
 		return "", nil, ErrProfile
 	}
 
 	cs := e.Children()
-	if len(cs) < 2 || len(cs) > 33 || cs[0].Name() != ds(lexicon.DSigElementCanonicalizationMethod) || attrs(cs[0], "Algorithm") != nil || len(cs[0].Children()) != 0 || !xmlSpace(cs[0].Text()) {
+	if len(cs) < 2 || len(cs) > maximumEncapsulatedTimestampChildren || cs[0].Name() != ds(lexicon.DSigElementCanonicalizationMethod) || attrs(cs[0], lexicon.SecurityAttrAlgorithm) != nil || len(cs[0].Children()) != 0 || !xmlSpace(cs[0].Text()) {
 		return "", nil, ErrTimestamp
 	}
 
-	method := localAttribute(cs[0], "Algorithm")
+	method := localAttribute(cs[0], lexicon.SecurityAttrAlgorithm)
 	if !timestampCanonicalization(method) {
 		return "", nil, ErrTimestamp
 	}
@@ -340,7 +354,7 @@ func parseTimeStamp(ctx context.Context, e document.Element, maximum int) (strin
 	var tokens [][]byte
 
 	for _, c := range cs[1:] {
-		if c.Name() != name("EncapsulatedTimeStamp") || len(c.Children()) != 0 {
+		if c.Name() != name(nameEncapsulatedTimeStamp) || len(c.Children()) != 0 {
 			return "", nil, ErrTimestamp
 		}
 
@@ -350,11 +364,11 @@ func parseTimeStamp(ctx context.Context, e document.Element, maximum int) (strin
 			}
 
 			switch a.Name.Local {
-			case "Id":
+			case lexicon.SecurityAttrID:
 				if !tree.NCName(a.Value) {
 					return "", nil, ErrProfile
 				}
-			case "Encoding":
+			case lexicon.SecurityAttrEncoding:
 				if a.Value != encodingDER && a.Value != encodingBER {
 					return "", nil, ErrTimestamp
 				}
@@ -396,8 +410,12 @@ func verifySignatureTimestampsMode(ctx context.Context, sig document.Element, o 
 		return nil, ErrTimestamp
 	}
 
+	if err := elementContent(usp); err != nil {
+		return nil, err
+	}
+
 	props := usp.Children()
-	if len(props) == 0 || (!preservation && len(props) > o.MaxTimestamps) || len(props) > 140 {
+	if len(props) == 0 || (!preservation && len(props) > o.MaxTimestamps) || len(props) > maximumPreservationProperties {
 		return nil, ErrTimestamp
 	}
 
@@ -448,8 +466,8 @@ func unsignedDraft(ctx context.Context, doc *document.Document, signature docume
 	_, original := tree.Unwrap(properties)
 	owned := *original
 	owned.Children = append([]*tree.Node(nil), original.Children...)
-	container := xnode("UnsignedProperties")
-	unsignedNode := xnode("UnsignedSignatureProperties")
+	container := xnode(nameUnsignedProperties)
+	unsignedNode := xnode(nameUnsignedSignatureProperties)
 	add(container, unsignedNode)
 	add(&owned, container)
 	draft, err := tree.ReplaceDraft(ctx, doc, original, &owned)
@@ -463,11 +481,11 @@ func appendVerifiedTimestamp(ctx context.Context, doc *document.Document, select
 		return nil, nil, e
 	}
 
-	stamp := xnode("SignatureTimeStamp")
+	stamp := xnode(nameSignatureTimeStamp)
 	canonical := dsnode(lexicon.DSigElementCanonicalizationMethod)
-	attr(canonical, "Algorithm", method)
+	attr(canonical, lexicon.SecurityAttrAlgorithm, method)
 
-	enc := xnode("EncapsulatedTimeStamp")
+	enc := xnode(nameEncapsulatedTimeStamp)
 
 	encoded, e := encodeBase64(ctx, token.Size(), token.WriterTo(ctx))
 	if e != nil {
@@ -498,7 +516,7 @@ func verifySignatureTimestampsModeProps(ctx context.Context, props []tree.Elemen
 			continue
 		}
 
-		if p.Name() != name("SignatureTimeStamp") {
+		if p.Name() != name(nameSignatureTimeStamp) {
 			return fmt.Errorf("%w: unsupported unsigned property %s", ErrProfile, p.Name().Local), true
 		}
 
@@ -517,7 +535,7 @@ func verifySignatureTimestampsModeProps(ctx context.Context, props []tree.Elemen
 				return e, true
 			}
 
-			imprint, e := canonicalImprint(ctx, *sig, method, 1<<20, token.UnverifiedInfo().Imprint().Hash)
+			imprint, e := canonicalImprint(ctx, *sig, method, maximumSignatureCanonicalBytes, token.UnverifiedInfo().Imprint().Hash)
 			if e != nil {
 				return e, true
 			}

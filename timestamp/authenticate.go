@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
+	"fmt"
 	"time"
 
 	"github.com/skarm/xmlsec/cms"
@@ -17,12 +18,19 @@ import (
 // contains NO PKIX, revocation or historical trust result. A zero value is invalid.
 // Only a complete validation workflow may promote this assertion to trusted PoE.
 type AuthenticatedToken struct {
-	token       *Token
+	// token is the cryptographically authenticated token, without a TSA trust
+	// decision.
+	token *Token
+	// certificate retains the exact certificate used for signature verification.
 	certificate []byte
-	hash        crypto.Hash
-	algorithm   string
-	digest      [32]byte
-	valid       bool
+	// hash is the authenticated token signature's digest algorithm.
+	hash crypto.Hash
+	// algorithm is the authenticated signature algorithm OID.
+	algorithm string
+	// digest identifies the exact token encoding by SHA-256.
+	digest [sha256.Size]byte
+	// valid marks successful cryptographic authentication only.
+	valid bool
 }
 
 // Valid reports cryptographic authentication ONLY, never trust or existence.
@@ -56,9 +64,9 @@ func (a *AuthenticatedToken) CertificateDER() []byte {
 }
 
 // TokenSHA256 identifies the exact token encoding, without changing its DER.
-func (a *AuthenticatedToken) TokenSHA256() [32]byte {
+func (a *AuthenticatedToken) TokenSHA256() [sha256.Size]byte {
 	if !a.Valid() {
-		return [32]byte{}
+		return [sha256.Size]byte{}
 	}
 
 	return a.digest
@@ -95,7 +103,7 @@ func (v *Verifier) Authenticate(ctx context.Context, token *Token, want Expectat
 		return nil, err
 	}
 
-	if want.Nonce != nil && (want.Nonce.Sign() <= 0 || want.Nonce.BitLen() > 256) {
+	if want.Nonce != nil && (want.Nonce.Sign() <= 0 || want.Nonce.BitLen() > maximumNonceBits) {
 		return nil, ErrPolicy
 	}
 
@@ -128,7 +136,7 @@ func (v *Verifier) Authenticate(ctx context.Context, token *Token, want Expectat
 		return nil, err
 	}
 
-	var fingerprint [32]byte
+	var fingerprint [sha256.Size]byte
 	copy(fingerprint[:], digest.Sum(nil))
 
 	return &AuthenticatedToken{
@@ -141,6 +149,23 @@ func (v *Verifier) Authenticate(ctx context.Context, token *Token, want Expectat
 	}, nil
 }
 
+// CheckEvidenceLimits checks configured DER collection counts and aggregate bytes,
+// including configured lookup certificates after exact-byte deduplication. Raw
+// inputs are checked before lookup merging. It does not parse or authenticate
+// evidence, inspect Sources or validate historical options. PKI limit and context
+// error causes are retained; an invalid timestamp verifier returns ErrPolicy.
+func (v *Verifier) CheckEvidenceLimits(ctx context.Context, evidence pki.Evidence) error {
+	if v == nil || v.trust == nil {
+		return ErrPolicy
+	}
+
+	if err := v.trust.CheckEvidenceLimits(ctx, evidence); err != nil {
+		return err
+	}
+
+	return v.trust.CheckEvidenceLimits(ctx, v.historicalEvidence(evidence))
+}
+
 // NewHistoricalSession creates a separate operation using this verifier's exact
 // immutable TSA roots, usages and responder policy. It does not validate a token
 // or grant PoE. Configured lookup certificates remain untrusted intermediates.
@@ -149,6 +174,19 @@ func (v *Verifier) NewHistoricalSession(ctx context.Context, options pki.Histori
 		return nil, ErrPolicy
 	}
 
+	// Preserve the underlying PKI request error before checking evidence limits.
+	if ctx == nil || now.IsZero() {
+		return nil, fmt.Errorf("%w: verifier, context and explicit time required", pki.ErrPolicy)
+	}
+
+	if err := v.trust.CheckEvidenceLimits(ctx, evidence); err != nil {
+		return nil, err
+	}
+
+	return v.trust.NewHistoricalSession(ctx, options, now, v.historicalEvidence(evidence))
+}
+
+func (v *Verifier) historicalEvidence(evidence pki.Evidence) pki.Evidence {
 	evidence.Intermediates = append([][]byte(nil), evidence.Intermediates...)
 
 	for _, certificate := range v.certificates {
@@ -166,5 +204,5 @@ func (v *Verifier) NewHistoricalSession(ctx context.Context, options pki.Histori
 		}
 	}
 
-	return v.trust.NewHistoricalSession(ctx, options, now, evidence)
+	return evidence
 }

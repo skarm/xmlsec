@@ -62,6 +62,8 @@ func TestExternalExtensionContextIsNotReused(t *testing.T) {
 			opt.Processing.Extension = scopedExtension{base: engine, blocked: blocked}
 
 			result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), opt)
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if !errors.Is(err, reference.ErrPolicy) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Disallowed {
 				t.Fatalf("cached extension bypassed context: result=%t signature=%s references=%v error=%v", result != nil, report.SignatureValue, report.References, err)
 			}
@@ -114,7 +116,7 @@ func testTransformXMLDSigCase(t *testing.T, tt *struct {
 		t.Fatal(err)
 	}
 
-	opt := xmldsig.SignatureOptions{ExpectedURIs: []string{namePayload}, Processing: reference.DefaultOptions()}
+	opt := xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}, Processing: reference.DefaultOptions()}
 	opt.Processing.Extension = p
 	opt.Processing.AllowedTransforms = append(opt.Processing.AllowedTransforms, tt.tr.Algorithm)
 	input := coreParse(t, `<r><payload ID="payload"><fixed>SIGNED-VALUE</fixed><volatile>old-value</volatile></payload></r>`)
@@ -124,7 +126,7 @@ func testTransformXMLDSigCase(t *testing.T, tt *struct {
 		ts = append(ts, reference.Transform{Algorithm: c14n.Exclusive})
 	}
 
-	template, selected, e := xmldsig.BuildTemplate(ctx, input, input.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: ts}}})
+	template, selected, e := xmldsig.BuildTemplate(ctx, input, input.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: payloadReferenceURI, Transforms: ts}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -185,12 +187,12 @@ func TestV1TransformURIsRequireV1Processor(t *testing.T) {
 				}
 			}
 
-			template, selected, err := xmldsig.BuildTemplate(t.Context(), d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{tr}}}})
+			template, selected, err := xmldsig.BuildTemplate(t.Context(), d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: payloadReferenceURI, Transforms: []reference.Transform{tr}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			options := xmldsig.SignatureOptions{ExpectedURIs: []string{namePayload}, Processing: reference.DefaultOptions()}
+			options := xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}, Processing: reference.DefaultOptions()}
 			options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, algorithm)
 
 			result, err := xmldsig.SignTemplate(t.Context(), template, selected, coreEC(t), xmldsig.TemplateSignOptions{Validation: options})
@@ -214,7 +216,7 @@ func TestTransformBuilderRejectsReservedPrefixRebinding(t *testing.T) {
 
 			doc := coreParse(t, `<root><payload ID="payload">value</payload></root>`)
 
-			template, _, err := xmldsig.BuildTemplate(t.Context(), doc, doc.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{{Algorithm: test.algorithm, XPath: []reference.XPathExpression{parameter}}}}}})
+			template, _, err := xmldsig.BuildTemplate(t.Context(), doc, doc.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: payloadReferenceURI, Transforms: []reference.Transform{{Algorithm: test.algorithm, XPath: []reference.XPathExpression{parameter}}}}}})
 			if template != nil || !errors.Is(err, xmldsig.ErrPolicy) {
 				t.Fatal("reserved transform prefix changed meaning", err)
 			}
@@ -234,7 +236,7 @@ func TestTemplateStylesheetNamespaceImport(t *testing.T) {
 			host := coreParse(t, `<host xmlns="urn:host" xmlns:p="urn:conflict" ID="host"><data ID="data"/></host>`)
 
 			built, selected, err := xmldsig.BuildTemplate(t.Context(), host, host.Root(), xmldsig.SignatureTemplate{
-				SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: nameData, Transforms: []reference.Transform{program}}},
+				SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: dataReferenceURI, Transforms: []reference.Transform{program}}},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -251,7 +253,7 @@ func TestTemplateStylesheetNamespaceImport(t *testing.T) {
 			processing := reference.DefaultOptions()
 			processing.Extension = e
 			processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XSLT)
-			options := xmldsig.SignatureOptions{ExpectedURIs: []string{nameData}, Processing: processing}
+			options := xmldsig.SignatureOptions{ExpectedURIs: []string{dataReferenceURI}, Processing: processing}
 			key := coreEC(t)
 
 			signed, err := xmldsig.SignTemplate(t.Context(), built, selected, key, xmldsig.TemplateSignOptions{Validation: options})

@@ -13,7 +13,19 @@ import (
 	"flag"
 	"io"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/keys"
+)
+
+// Key-generation and export defaults belong to this command. Supported algorithm labels are fixed identities, independent of the selected default.
+const (
+	cliDefaultGeneratedRSABits = 3072
+	cliMaxGeneratedRSABits     = 8192
+	cliRSAGenerationStepBits   = 256
+	cliDefaultExportIterations = 600_000
+	cliDefaultExportAESBits    = 256
+	cliDefaultKeyAlgorithm     = cliAlgorithmP256
+	cliAlgorithmP256           = "p256"
 )
 
 func runKey(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -23,8 +35,8 @@ func runKey(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	exec := registerExecutionFlags(fs)
 	input := fs.String("in", "", "input key/certificate/CRL file")
 	output := fs.String("out", "-", "output path; private material is created with mode 0600")
-	algorithm := fs.String("algorithm", "p256", "generate: rsa, p256, p384, p521, ed25519, aes128, aes192, aes256 or hmac256/384/512")
-	bits := fs.Int("bits", 3072, "RSA modulus bits (2048..8192)")
+	algorithm := fs.String("algorithm", cliDefaultKeyAlgorithm, "generate: rsa, p256, p384, p521, ed25519, aes128, aes192, aes256 or hmac256/384/512")
+	bits := fs.Int("bits", cliDefaultGeneratedRSABits, "RSA modulus bits (2048..8192)")
 	format := fs.String("output-format", namePlain, "private output: plain (PKCS#8), pkcs8 (encrypted) or pkcs12")
 	outputPassword := fs.String("output-password-file", "", "password for encrypted output")
 	pemOutput := fs.Bool("pem", true, "PEM output; false writes DER (PKCS#12 and symmetric keys always use raw bytes)")
@@ -33,9 +45,9 @@ func runKey(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 
 	var extras repeatedFlag
 	fs.Var(&extras, "extra-certificate", "extra PKCS#12 certificate; repeatable")
-	iterations := fs.Int("iterations", 600000, "PBKDF2 iterations for encrypted export")
-	hashName := fs.String("hash", "sha256", "PBKDF2 SHA-2 PRF")
-	encryptionBits := fs.Int("encryption-bits", 256, "encrypted key AES bits: 128, 192 or 256")
+	iterations := fs.Int("iterations", cliDefaultExportIterations, "PBKDF2 iterations for encrypted export")
+	hashName := fs.String("hash", cliDefaultHashName, "PBKDF2 SHA-2 PRF")
+	encryptionBits := fs.Int("encryption-bits", cliDefaultExportAESBits, "encrypted key AES bits: 128, 192 or 256")
 	classic := fs.Bool("classic-mac", false, "use classic SHA-2 PKCS#12 MAC instead of PBMAC1")
 	flags := registerPrivateKeyFlags(fs)
 
@@ -161,12 +173,12 @@ func (c keyCommand) generate() (crypto.Signer, []byte, error) {
 
 	switch c.algorithm {
 	case nameRSA:
-		if c.bits < 2048 || c.bits > 8192 || c.bits%256 != 0 {
+		if c.bits < cliMinRSABits || c.bits > cliMaxGeneratedRSABits || c.bits%cliRSAGenerationStepBits != 0 {
 			return nil, nil, usageError("RSA -bits must be a multiple of 256 in 2048..8192")
 		}
 
 		signer, err = rsa.GenerateKey(rand.Reader, c.bits)
-	case "p256", "p384", "p521":
+	case cliAlgorithmP256, "p384", "p521":
 		curve := elliptic.P256()
 		if c.algorithm == "p384" {
 			curve = elliptic.P384()
@@ -290,7 +302,7 @@ func (c keyCommand) encode(ctx context.Context, signer crypto.Signer) ([]byte, e
 
 		if c.pem {
 			defer clear(raw)
-			return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw}), nil
+			return pem.EncodeToMemory(&pem.Block{Type: lexicon.PEMPrivateKey, Bytes: raw}), nil
 		}
 
 		return raw, nil
@@ -309,7 +321,7 @@ func (c keyCommand) encode(ctx context.Context, signer crypto.Signer) ([]byte, e
 
 	encryption := keys.EncryptionOptions{Iterations: c.iterations, Hash: hash, KeyBits: c.encryptionBits}
 	switch c.format {
-	case namePkcs8:
+	case namePKCS8:
 		raw, err := keys.MarshalEncryptedPrivate(ctx, signer, password, encryption, c.flags.limits())
 		if err != nil {
 			return nil, err
@@ -317,7 +329,7 @@ func (c keyCommand) encode(ctx context.Context, signer crypto.Signer) ([]byte, e
 
 		if c.pem {
 			defer clear(raw)
-			return pem.EncodeToMemory(&pem.Block{Type: "ENCRYPTED PRIVATE KEY", Bytes: raw}), nil
+			return pem.EncodeToMemory(&pem.Block{Type: lexicon.PEMEncryptedPrivateKey, Bytes: raw}), nil
 		}
 
 		return raw, nil
@@ -359,7 +371,7 @@ func exportPublic(ctx context.Context, path string, w io.Writer, public crypto.P
 	}
 
 	if asPEM {
-		raw = pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: raw})
+		raw = pem.EncodeToMemory(&pem.Block{Type: lexicon.PEMPublicKey, Bytes: raw})
 	}
 
 	return writeOutputContext(ctx, path, w, raw)

@@ -79,6 +79,8 @@ func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *str
 	}
 
 	var re *xmldsig.ReferenceError
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result != nil || !errors.Is(err, xmldsig.ErrDigest) || !errors.As(err, &re) || re.Index != tc.FailedReference || report.SignatureValue != xmldsig.Valid {
 		t.Fatal(err, report)
 	}

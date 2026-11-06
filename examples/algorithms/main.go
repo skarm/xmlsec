@@ -17,6 +17,12 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const exampleRSABits = 2048
+
+const hmacKeyBytes = 32
+
+const pssSaltBytes = 24
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -27,7 +33,7 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, exampleRSABits)
 	if err != nil {
 		return err
 	}
@@ -35,7 +41,7 @@ func run() error {
 	message := "this Object, not the entire Signature container, is protected"
 	spec := xmldsig.SignatureTemplate{
 		SignatureMethod:     xmldsig.RSAPSS,
-		SignatureParameters: xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, MGFHash: crypto.SHA384, SaltLength: 24}},
+		SignatureParameters: xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, MGFHash: crypto.SHA384, SaltLength: pssSaltBytes}},
 		References:          []xmldsig.ReferenceTemplate{{URI: "#payload", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}},
 		Objects:             []xmldsig.ObjectTemplate{{ID: "payload", Text: &message}},
 	}
@@ -71,7 +77,7 @@ func run() error {
 	fmt.Printf("RSA-PSS: hash=%v mgf=%v salt=%d references=%d container-covered=%v\n", p.Hash, p.MGFHash, p.SaltLength, len(result.References()), result.CoversElement(signed.Root()))
 
 	// This secret is local to the demo, never printed or written to disk.
-	secret := make([]byte, 32)
+	secret := make([]byte, hmacKeyBytes)
 	if _, err = rand.Read(secret); err != nil {
 		return err
 	}

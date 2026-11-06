@@ -15,16 +15,66 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Profile availability tables use standard function local names, with no
+// namespace-prefix implication. Keep membership/order independent of dispatch.
+const (
+	fnNameInnermost                     = "innermost"
+	fnNameOutermost                     = "outermost"
+	fnNameAnalyzeString                 = "analyze-string"
+	fnNameFormatInteger                 = "format-integer"
+	fnNameFunctionName                  = "function-name"
+	fnNameFunctionArity                 = "function-arity"
+	fnNameFunctionLookup                = "function-lookup"
+	fnNameEnvironmentVariable           = "environment-variable"
+	fnNameAvailableEnvironmentVariables = "available-environment-variables"
+	fnNameURICollection                 = "uri-collection"
+	fnNameSerialize                     = "serialize"
+	fnNameParseXML                      = "parse-xml"
+	fnNameParseXMLFragment              = "parse-xml-fragment"
+	fnNameParseJSON                     = "parse-json"
+	fnNameJSONDoc                       = "json-doc"
+	fnNameJSONToXML                     = "json-to-xml"
+	fnNameXMLToJSON                     = "xml-to-json"
+	fnNameTransform                     = "transform"
+	fnNameDefaultLanguage               = "default-language"
+	fnNameApply                         = "apply"
+	fnNameCollationKey                  = "collation-key"
+	fnNameContainsToken                 = "contains-token"
+	fnNameParseIETFDate                 = "parse-ietf-date"
+	fnNameRandomNumberGenerator         = "random-number-generator"
+	fnNameTokenize                      = "tokenize"
+	fnNameData                          = "data"
+)
+
+// Display labels describe XPath editions, not XML document versions. A negative
+// arity denotes an AST node without a function call; the arities below select
+// signatures introduced by particular language editions rather than limits.
+const (
+	xpathLabel10             = "1.0"
+	xpathLabel20             = "2.0"
+	xpathLabel30             = "3.0"
+	xpathLabel31             = "3.1"
+	unspecifiedFunctionArity = -1
+	profileNullaryArity      = 0
+	profileUnaryArity        = 1
+	profileBinaryArity       = 2
+	regexLiteralFlag         = "q"
+	regexNoncapturingPrefix  = "(?:"
+	profileKeywordIf         = "if"
+	profileKeywordTypeSwitch = "typeswitch"
+	profileKeywordSwitch     = "switch"
+)
+
 // CheckTypeLanguage applies the same version boundaries to standalone types.
 func CheckTypeLanguage(st xdm.SequenceType, version int) error {
 	return walkProfile(reflect.ValueOf(st), func(node any) error {
 		switch node.(type) {
 		case xdm.FunctionTest:
-			if version < 30 {
+			if version < xpathVersion30 {
 				return profileError(lexicon.ErrXPST0003, "function types", version)
 			}
 		case xdm.MapTest, xdm.ArrayTest:
-			if version < 31 {
+			if version < xpathVersion31 {
 				return profileError(lexicon.ErrXPST0003, "map or array types", version)
 			}
 		}
@@ -41,8 +91,8 @@ func CheckStaticNamespaces(namespaces map[string]string) error {
 	for prefix, uri := range namespaces {
 		if prefix == lexicon.PrefixXML && uri != lexicon.NamespaceXML ||
 			prefix != "" && prefix != lexicon.PrefixXML && uri == lexicon.NamespaceXML ||
-			prefix == "xmlns" || uri == lexicon.NamespaceXMLNS {
-			return &xdm.Error{Code: "XQST0070", Message: "invalid reserved namespace binding: " + prefix}
+			prefix == lexicon.PrefixXMLNS || uri == lexicon.NamespaceXMLNS {
+			return &xdm.Error{Code: errCodeXQST0070, Message: "invalid reserved namespace binding: " + prefix}
 		}
 	}
 
@@ -56,7 +106,7 @@ func CheckStandaloneFunctions(expr *Expression, namespaces map[string]string, ex
 	return walkProfile(reflect.ValueOf(expr.astExpr()), func(node any) error {
 		var prefix, name string
 
-		arity := -1
+		arity := unspecifiedFunctionArity
 
 		switch n := node.(type) {
 		case FunctionCall:
@@ -71,12 +121,45 @@ func CheckStandaloneFunctions(expr *Expression, namespaces map[string]string, ex
 	})
 }
 
+// Language pins the grammar and function library to XPath 1.0, 2.0, 3.0 or 3.1.
+// Zero selects the engine default profile.
+func (c Compiler) Language(version int, namespaces map[string]string) Compiler {
+	cfg := compilerCfg{}
+	if c.cfg != nil {
+		cfg = *c.cfg
+	}
+
+	cfg.version, cfg.namespaces = version, maps.Clone(namespaces)
+
+	return Compiler{cfg: &cfg}
+}
+
+// HostFunctions augments the selected library without changing its grammar.
+// The host still validates declarations and arities in its own static context.
+func (c Compiler) HostFunctions(available func(uri, name string, arity int) bool) Compiler {
+	cfg := compilerCfg{}
+	if c.cfg != nil {
+		cfg = *c.cfg
+	}
+
+	cfg.hostFunction = available
+
+	return Compiler{cfg: &cfg}
+}
+
+// BuiltinFunctionAvailable reports the selected language's standard function
+// library, including version-specific arities, for host introspection.
+func BuiltinFunctionAvailable(version int, uri, name string, arity int) bool {
+	return functionVisible(version, uri, name, arity) && IsBuiltinFunctionNS(uri, name) &&
+		(arity < finiteArityFloor || BuiltinFunctionAcceptsArity(uri, name, arity))
+}
+
 func profileError(code, feature string, version int) error {
-	return &xdm.Error{Code: code, Message: feature + " is unavailable in XPath " + map[int]string{10: lexicon.XMLVersion10, 20: "2.0", 30: "3.0", 31: "3.1"}[version]}
+	return &xdm.Error{Code: code, Message: feature + " is unavailable in XPath " + map[int]string{xpathVersion10: xpathLabel10, xpathVersion20: xpathLabel20, xpathVersion30: xpathLabel30, xpathVersion31: xpathLabel31}[version]}
 }
 
 func checkStandaloneCall(version int, prefix, name string, arity int, namespaces map[string]string, extensions []map[string]Function) error {
-	if arity < 0 {
+	if arity < finiteArityFloor {
 		return nil
 	}
 
@@ -112,13 +195,13 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 		}
 	}
 
-	if version == 10 && (prefix != "" || !xpath10FunctionArity(name, arity)) || !StandardFunctionAcceptsArity(uri, name, arity) {
+	if version == xpathVersion10 && (prefix != "" || !xpath10FunctionArity(name, arity)) || !StandardFunctionAcceptsArity(uri, name, arity) {
 		return &xdm.Error{Code: lexicon.ErrXPST0017, Message: "unknown function or arity: " + name}
 	}
 
 	// These functions belonged to the XSLT 2.0 host library before F&O 3.0
 	// added them to standalone XPath. XSLT performs its own host checks.
-	if version == 20 && uri == NSFn {
+	if version == xpathVersion20 && uri == NSFn {
 		switch name {
 		case fnNameUnparsedText, fnNameUnparsedTextAvailable, lexicon.FnFormatNumber, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime:
 			return profileError(lexicon.ErrXPST0017, name+" function", version)
@@ -128,60 +211,27 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 	return nil
 }
 
-// Language pins the grammar and function library to XPath 1.0, 2.0, 3.0 or 3.1.
-// Zero selects the engine default profile.
-func (c Compiler) Language(version int, namespaces map[string]string) Compiler {
-	cfg := compilerCfg{}
-	if c.cfg != nil {
-		cfg = *c.cfg
-	}
-
-	cfg.version, cfg.namespaces = version, maps.Clone(namespaces)
-
-	return Compiler{cfg: &cfg}
-}
-
-// HostFunctions augments the selected library without changing its grammar.
-// The host still validates declarations and arities in its own static context.
-func (c Compiler) HostFunctions(available func(uri, name string, arity int) bool) Compiler {
-	cfg := compilerCfg{}
-	if c.cfg != nil {
-		cfg = *c.cfg
-	}
-
-	cfg.hostFunction = available
-
-	return Compiler{cfg: &cfg}
-}
-
-// BuiltinFunctionAvailable reports the selected language's standard function
-// library, including version-specific arities, for host introspection.
-func BuiltinFunctionAvailable(version int, uri, name string, arity int) bool {
-	return functionVisible(version, uri, name, arity) && IsBuiltinFunctionNS(uri, name) &&
-		(arity < 0 || BuiltinFunctionAcceptsArity(uri, name, arity))
-}
-
 func validateVersionTokens(tokens []Token, version int) error {
-	if version != 10 && version != 20 && version != 30 && version != 31 {
+	if version != xpathVersion10 && version != xpathVersion20 && version != xpathVersion30 && version != xpathVersion31 {
 		return profileError(lexicon.ErrXPST0003, "language version", version)
 	}
 
 	for i, token := range tokens {
-		if version == 10 {
+		if version == xpathVersion10 {
 			if token.Type == TokenNumber && strings.ContainsAny(token.Value, "eE") || token.Type == TokenUnion {
 				return profileError(lexicon.ErrXPST0003, "numeric literal or union keyword", version)
 			}
 
 			if token.Value == nameProcessingInstruction && i+2 < len(tokens) && tokens[i+1].Type == TokenLParen && tokens[i+2].Type != TokenString && tokens[i+2].Type != TokenRParen {
-				return profileError(lexicon.ErrXPST0003, "PI target must be a string literal", 10)
+				return profileError(lexicon.ErrXPST0003, "PI target must be a string literal", xpathVersion10)
 			}
 		}
 
-		if version < 31 && token.Type == TokenArrow {
+		if version < xpathVersion31 && token.Type == TokenArrow {
 			return profileError(lexicon.ErrXPST0003, "arrow operator", version)
 		}
 
-		if version < 30 && token.Type != TokenString && strings.HasPrefix(token.Value, "Q{") {
+		if version < xpathVersion30 && token.Type != TokenString && strings.HasPrefix(token.Value, "Q{") {
 			return profileError(lexicon.ErrXPST0003, "URI-qualified names", version)
 		}
 	}
@@ -238,7 +288,7 @@ func walkProfile(value reflect.Value, visit func(any) error) error {
 }
 
 func validateVersionExpr(ast Expr, version int, namespaces map[string]string, hostFunction func(string, string, int) bool) error {
-	if version == 10 {
+	if version == xpathVersion10 {
 		return validateXPath10Expr(ast)
 	}
 
@@ -249,7 +299,7 @@ func validateVersionExpr(ast Expr, version int, namespaces map[string]string, ho
 
 func lookupXPath30Function(key string) (bool, bool) {
 	switch key {
-	case fnNameHead, nameTail, nameHasChildren, "innermost", "outermost", namePath, "analyze-string", lexicon.FnGenerateID, "format-integer", "function-name", "function-arity", "function-lookup", nameForEach, nameFilter, nameFoldLeft, nameFoldRight, nameForEachPair, "environment-variable", "available-environment-variables", "uri-collection", "serialize", "parse-xml", "parse-xml-fragment", nameUnparsedTextLines:
+	case fnNameHead, nameTail, nameHasChildren, fnNameInnermost, fnNameOutermost, namePath, fnNameAnalyzeString, lexicon.FnGenerateID, fnNameFormatInteger, fnNameFunctionName, fnNameFunctionArity, fnNameFunctionLookup, nameForEach, nameFilter, nameFoldLeft, nameFoldRight, nameForEachPair, fnNameEnvironmentVariable, fnNameAvailableEnvironmentVariables, fnNameURICollection, fnNameSerialize, fnNameParseXML, fnNameParseXMLFragment, nameUnparsedTextLines:
 		return true, true
 	}
 
@@ -262,7 +312,7 @@ func functions30(key string) bool { value, _ := lookupXPath30Function(key); retu
 
 func lookupXPath31Function(key string) (bool, bool) {
 	switch key {
-	case "parse-json", "json-doc", "json-to-xml", "xml-to-json", "transform", "default-language", nameLoadXQueryModule, "apply", "collation-key", "contains-token", "parse-ietf-date", "random-number-generator", nameSort:
+	case fnNameParseJSON, fnNameJSONDoc, fnNameJSONToXML, fnNameXMLToJSON, fnNameTransform, fnNameDefaultLanguage, nameLoadXQueryModule, fnNameApply, fnNameCollationKey, fnNameContainsToken, fnNameParseIETFDate, fnNameRandomNumberGenerator, nameSort:
 		return true, true
 	}
 
@@ -274,19 +324,19 @@ func lookupXPath31Function(key string) (bool, bool) {
 func functions31(key string) bool { value, _ := lookupXPath31Function(key); return value }
 
 func functionVisible(version int, uri, name string, arity int) bool {
-	if version == 0 {
+	if version == xpathVersionDefault {
 		return true
 	}
 
-	if version == 10 {
+	if version == xpathVersion10 {
 		return uri == NSFn && xpath10FunctionArity(name, arity)
 	}
 
-	if (uri == NSMap || uri == NSArray) && version < 31 {
+	if (uri == NSMap || uri == NSArray) && version < xpathVersion31 {
 		return false
 	}
 
-	if uri == NSMath && version < 30 {
+	if uri == NSMath && version < xpathVersion30 {
 		return false
 	}
 
@@ -298,26 +348,26 @@ func functionVisible(version int, uri, name string, arity int) bool {
 		return true
 	}
 
-	if functions31(name) && version < 31 {
+	if functions31(name) && version < xpathVersion31 {
 		return false
 	}
 
-	if functions30(name) && version < 30 {
+	if functions30(name) && version < xpathVersion30 {
 		return false
 	}
 
-	if version < 30 && (name == nameRound && arity == 2 || name == fnNameStringJoin && arity == 1) {
+	if version < xpathVersion30 && (name == nameRound && arity == profileBinaryArity || name == fnNameStringJoin && arity == profileUnaryArity) {
 		return false
 	}
 
-	if version < 30 && arity == 0 {
+	if version < xpathVersion30 && arity == profileNullaryArity {
 		switch name {
-		case "data", fnNameDocumentURI, fnNameNilled, nameNodeName:
+		case fnNameData, fnNameDocumentURI, fnNameNilled, nameNodeName:
 			return false
 		}
 	}
 
-	if version < 31 && (name == "tokenize" && arity == 1 || name == "trace" && arity == 1) {
+	if version < xpathVersion31 && (name == fnNameTokenize && arity == profileUnaryArity || name == fnNameTrace && arity == profileUnaryArity) {
 		return false
 	}
 
@@ -325,21 +375,21 @@ func functionVisible(version int, uri, name string, arity int) bool {
 }
 
 func xsConstructorVisible(version int, name string) bool {
-	if name == lexicon.TypeNumeric && version < 31 {
+	if name == lexicon.TypeNumeric && version < xpathVersion31 {
 		return false
 	}
 
-	return version != 20 || !isBuiltinListLocalName(name) && name != lexicon.TypeError
+	return version != xpathVersion20 || !isBuiltinListLocalName(name) && name != lexicon.TypeError
 }
 
 func checkVersionRegex(ctx context.Context, pattern, flags string) error {
 	ec := getFnContext(ctx)
-	if ec == nil || ec.version != 20 {
+	if ec == nil || ec.version != xpathVersion20 {
 		return nil
 	}
 
-	if strings.Contains(flags, "q") {
-		return &xdm.Error{Code: "FORX0001", Message: "flag q requires XPath 3.0"}
+	if strings.Contains(flags, regexLiteralFlag) {
+		return &xdm.Error{Code: errCodeFORX0001, Message: "flag q requires XPath 3.0"}
 	}
 	// Escaped characters and character classes cannot start a non-capturing group.
 	inClass, escaped := false, false
@@ -362,7 +412,7 @@ func checkVersionRegex(ctx context.Context, pattern, flags string) error {
 			inClass = false
 		}
 
-		if !inClass && r == '(' && strings.HasPrefix(pattern[i:], "(?:") {
+		if !inClass && r == '(' && strings.HasPrefix(pattern[i:], regexNoncapturingPrefix) {
 			return &xdm.Error{Code: lexicon.ErrFORX0002, Message: "non-capturing groups require XPath 3.0"}
 		}
 	}
@@ -377,11 +427,11 @@ func validateProfileNode(node any, version int, namespaces map[string]string, ho
 
 	switch node.(type) {
 	case ConcatExpr, SimpleMapExpr, LetClause, NamedFunctionRef, DynamicFunctionCall, InlineFunctionExpr, PlaceholderExpr, xdm.FunctionTest, xdm.NamespaceNodeTest:
-		if version < 30 {
+		if version < xpathVersion30 {
 			return profileError(lexicon.ErrXPST0003, "XPath 3.0 construct", version)
 		}
 	case MapConstructorExpr, ArrayConstructorExpr, xdm.MapTest, xdm.ArrayTest, LookupExpr, UnaryLookupExpr:
-		if version < 31 {
+		if version < xpathVersion31 {
 			return profileError(lexicon.ErrXPST0003, "maps, arrays or lookup", version)
 		}
 	case TryCatchExpr:
@@ -408,7 +458,7 @@ func validateProfileNode(node any, version int, namespaces map[string]string, ho
 func validateProfileFunction(node any, version int, namespaces map[string]string, hostFunction func(string, string, int) bool) error {
 	var prefix, name string
 
-	arity := -1
+	arity := unspecifiedFunctionArity
 
 	switch n := node.(type) {
 	case FunctionCall:
@@ -417,7 +467,7 @@ func validateProfileFunction(node any, version int, namespaces map[string]string
 		prefix, name, arity = n.Prefix, n.Name, n.Arity
 	}
 
-	if arity >= 0 {
+	if arity >= finiteArityFloor {
 		uri := NSFn
 
 		if prefix != "" {
@@ -448,7 +498,7 @@ func validateFunctionSyntax(node any, version int, namespaces map[string]string)
 
 	switch n := node.(type) {
 	case InlineFunctionExpr:
-		if n.EmptyBody && version < 31 {
+		if n.EmptyBody && version < xpathVersion31 {
 			return profileError(lexicon.ErrXPST0003, "empty inline function body", version)
 		}
 
@@ -473,7 +523,7 @@ func checkInlineParameterNames(params []FunctionParam, namespaces map[string]str
 	for _, param := range params {
 		key := VariableKey(param.Name, namespaces)
 		if _, duplicate := seen[key]; duplicate {
-			return &xdm.Error{Code: "XQST0039", Message: "duplicate inline function parameter: " + param.Name}
+			return &xdm.Error{Code: errCodeXQST0039, Message: "duplicate inline function parameter: " + param.Name}
 		}
 
 		seen[key] = struct{}{}
@@ -484,12 +534,12 @@ func checkInlineParameterNames(params []FunctionParam, namespaces map[string]str
 
 func reservedFunctionName(name string, version int) bool {
 	switch name {
-	case lexicon.KindAttribute, lexicon.KindComment, lexicon.KindDocumentNode, lexicon.KindElement, nameEmptySequence, "if", lexicon.KindItem, lexicon.KindNode, lexicon.KindPI, lexicon.KindSchemaAttribute, lexicon.KindSchemaElement, lexicon.KindText, "typeswitch":
+	case lexicon.KindAttribute, lexicon.KindComment, lexicon.KindDocumentNode, lexicon.KindElement, nameEmptySequence, profileKeywordIf, lexicon.KindItem, lexicon.KindNode, lexicon.KindPI, lexicon.KindSchemaAttribute, lexicon.KindSchemaElement, lexicon.KindText, profileKeywordTypeSwitch:
 		return true
-	case nameFunction, lexicon.KindNamespaceNode, "switch":
-		return version >= 30
-	case "array", "map":
-		return version >= 31
+	case nameFunction, lexicon.KindNamespaceNode, profileKeywordSwitch:
+		return version >= xpathVersion30
+	case keywordArray, keywordMap:
+		return version >= xpathVersion31
 	}
 
 	return false

@@ -1,7 +1,40 @@
 package lexicon
 
-// XSLT element local name constants. These mirror the elem* constants in
-// xslt/stylesheet.go but are exported for use across packages.
+const (
+	// DecimalFormatDecimalSeparator names the "decimal-separator" property shared by XSLT declarations
+	// and host decimal formats.
+	DecimalFormatDecimalSeparator = "decimal-separator"
+	// DecimalFormatDigit names the "digit" property shared by XSLT declarations and host decimal
+	// formats.
+	DecimalFormatDigit = "digit"
+	// DecimalFormatExponentSeparator names the "exponent-separator" property shared by XSLT
+	// declarations and host decimal formats.
+	DecimalFormatExponentSeparator = "exponent-separator"
+	// DecimalFormatGroupingSeparator names the "grouping-separator" property shared by XSLT
+	// declarations and host decimal formats.
+	DecimalFormatGroupingSeparator = "grouping-separator"
+	// DecimalFormatInfinity names the "infinity" property shared by XSLT declarations and host decimal
+	// formats.
+	DecimalFormatInfinity = "infinity"
+	// DecimalFormatMinusSign names the "minus-sign" property shared by XSLT declarations and host
+	// decimal formats.
+	DecimalFormatMinusSign = "minus-sign"
+	// DecimalFormatPatternSeparator names the "pattern-separator" property shared by XSLT declarations
+	// and host decimal formats.
+	DecimalFormatPatternSeparator = "pattern-separator"
+	// DecimalFormatPerMille names the "per-mille" property shared by XSLT declarations and host
+	// decimal formats.
+	DecimalFormatPerMille = "per-mille"
+	// DecimalFormatPercent names the "percent" property shared by XSLT declarations and host decimal
+	// formats.
+	DecimalFormatPercent = "percent"
+	// DecimalFormatZeroDigit names the "zero-digit" property shared by XSLT declarations and host
+	// decimal formats.
+	DecimalFormatZeroDigit = "zero-digit"
+)
+
+// XSLT element local names shared by compilation and language introspection.
+// Consumers must also match NamespaceXSLT.
 const (
 	XSLTElementAccumulator           = "accumulator"
 	XSLTElementAccumulatorRule       = "accumulator-rule"
@@ -87,7 +120,8 @@ const (
 	XSLTElementTransform  = "transform"
 )
 
-// XSLT streamability category constants.
+// Names used in static streamability metadata. A category alone does not assert
+// that a particular program executes with bounded streaming storage.
 const (
 	StreamAbsorbing      = "absorbing"
 	StreamInspection     = "inspection"
@@ -105,11 +139,15 @@ const (
 
 // XSLT output constants.
 const (
+	// OutputDisableEscaping names the XSLT attribute; internal PI markers have separate names.
 	OutputDisableEscaping = "disable-output-escaping"
 	OutputDescending      = "descending"
-	OutputVersion10       = "1.0"
-	OutputRaw             = "raw"
-	NormFullyNormalized   = "FULLY-NORMALIZED"
+	// OutputVersion10 is the serialization version token, distinct from XSLTVersion10.
+	OutputVersion10 = "1.0"
+	// OutputRaw selects delivery of an un-serialized result value.
+	OutputRaw = "raw"
+	// NormFullyNormalized names the fully-normalized request; support is checked by the serializer.
+	NormFullyNormalized = "FULLY-NORMALIZED"
 )
 
 // XSLT XPath function names used in streamability analysis.
@@ -126,3 +164,6 @@ const (
 	XSLTVersion20 = "2.0"
 	XSLTVersion30 = "3.0"
 )
+
+// DecimalFormatNaN names the NaN property in a decimal-format declaration.
+const DecimalFormatNaN = "NaN"

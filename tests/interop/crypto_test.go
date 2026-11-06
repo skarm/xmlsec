@@ -21,7 +21,7 @@ func TestEncryptionPrimitives(t *testing.T) {
 
 	selected(t, "portable")
 	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
+	key := generateKey(t, dir, nameRSASHA256)
 	gcm := filepath.Join(dir, "openssl-gcm")
 	flags, _ := command(t, fixture, true, nil, "pkg-config", "--cflags", "--libs", "openssl")
 	libraryFlags := strings.Fields(string(flags))

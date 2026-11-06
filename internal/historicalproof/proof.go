@@ -6,10 +6,20 @@ package historicalproof
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"slices"
 	"sort"
 	"time"
+)
+
+const (
+	// Selects linear lookup for small snapshots; it does not limit accepted facts.
+	indexedFactsThreshold = 64
+	// Caps supplied facts before sorting and duplicate removal.
+	maximumFacts = 8192
+	// Caps distinct object digests across all supplied facts and roles.
+	maximumObjects = 2048
 )
 
 // ErrProof reports an invalid or over-budget proof set.
@@ -38,24 +48,31 @@ const (
 
 // Fact binds one exact object's SHA-256 to its proven existence upper bound.
 // Source is the exact validating timestamp; zero denotes observation at Now.
-// Kind distinguishes certificate, crl, ocsp, signature, timestamp and digest.
+// Kind distinguishes certificate, crl, ocsp, signature, timestamp, digest and data.
 type Fact struct {
-	Digest [32]byte
-	Source [32]byte
-	At     time.Time
-	Kind   Kind
+	// Digest identifies the exact original object bytes by SHA-256.
+	Digest [sha256.Size]byte
+	// Source identifies the validating timestamp; zero denotes observation at the
+	// set's current time.
+	Source [sha256.Size]byte
+	// At is the proven upper bound on the object's existence time.
+	At time.Time
+	// Kind identifies the object's role without changing its exact-byte identity.
+	Kind Kind
 }
 
 // Set is an immutable, bounded proof snapshot. A zero value is invalid.
 type Set struct {
-	now   time.Time
+	// now is the observation time limiting every retained proof bound.
+	now time.Time
+	// facts owns the validated, bounded proof snapshot.
 	facts []Fact
 }
 
 // New snapshots facts after the format and trust workflows have authenticated
 // their bindings. At most 8192 facts and 2048 distinct objects are retained.
 func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
-	if ctx == nil || now.IsZero() || len(facts) > 8192 {
+	if ctx == nil || now.IsZero() || len(facts) > maximumFacts {
 		return nil, ErrProof
 	}
 
@@ -63,7 +80,7 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 		return nil, err
 	}
 
-	objects := make(map[[32]byte]struct{}, min(len(facts), 2048))
+	objects := make(map[[sha256.Size]byte]struct{}, min(len(facts), maximumObjects))
 
 	owned := make([]Fact, 0, len(facts))
 	for _, fact := range facts {
@@ -71,12 +88,12 @@ func New(ctx context.Context, now time.Time, facts []Fact) (*Set, error) {
 			return nil, err
 		}
 
-		if fact.Digest == ([32]byte{}) || fact.At.IsZero() || fact.At.After(now) || !fact.Kind.Valid() || fact.Source == ([32]byte{}) && !fact.At.Equal(now) {
+		if fact.Digest == ([sha256.Size]byte{}) || fact.At.IsZero() || fact.At.After(now) || !fact.Kind.Valid() || fact.Source == ([sha256.Size]byte{}) && !fact.At.Equal(now) {
 			return nil, ErrProof
 		}
 
 		objects[fact.Digest] = struct{}{}
-		if len(objects) > 2048 {
+		if len(objects) > maximumObjects {
 			return nil, ErrProof
 		}
 
@@ -105,7 +122,7 @@ func (s *Set) Valid() bool { return s != nil && !s.now.IsZero() }
 
 // Now is the explicit present-time observation used by this workflow.
 func (s *Set) Now() time.Time {
-	if !s.Valid() {
+	if s == nil || !s.Valid() {
 		return time.Time{}
 	}
 
@@ -114,7 +131,7 @@ func (s *Set) Now() time.Time {
 
 // Facts returns an owned diagnostic copy, never a mutable authentication store.
 func (s *Set) Facts() []Fact {
-	if !s.Valid() {
+	if s == nil || !s.Valid() {
 		return nil
 	}
 
@@ -122,19 +139,19 @@ func (s *Set) Facts() []Fact {
 }
 
 // Earliest returns the earliest proven existence upper bound of exact bytes.
-func (s *Set) Earliest(digest [32]byte) (time.Time, bool) {
+func (s *Set) Earliest(digest [sha256.Size]byte) (time.Time, bool) {
 	return s.EarliestKind(digest, "")
 }
 
 // EarliestKind also requires the named object role when kind is nonempty.
-func (s *Set) EarliestKind(digest [32]byte, kind Kind) (time.Time, bool) {
+func (s *Set) EarliestKind(digest [sha256.Size]byte, kind Kind) (time.Time, bool) {
 	if !s.Valid() {
 		return time.Time{}, false
 	}
 
 	var earliest time.Time
 	// Small workflow snapshots are cheaper to scan than to binary-search.
-	if len(s.facts) <= 64 {
+	if len(s.facts) <= indexedFactsThreshold {
 		for _, fact := range s.facts {
 			if fact.Digest == digest && (kind == "" || fact.Kind == kind) && (earliest.IsZero() || fact.At.Before(earliest)) {
 				earliest = fact.At
@@ -178,7 +195,7 @@ func (s *Set) EarliestKind(digest [32]byte, kind Kind) (time.Time, bool) {
 }
 
 // HasAtOrBefore applies the inclusive PoE boundary required by time sliding.
-func (s *Set) HasAtOrBefore(digest [32]byte, at time.Time) bool {
+func (s *Set) HasAtOrBefore(digest [sha256.Size]byte, at time.Time) bool {
 	earliest, ok := s.Earliest(digest)
 	return ok && !earliest.After(at)
 }

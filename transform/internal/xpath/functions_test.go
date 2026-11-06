@@ -3,8 +3,11 @@ package xpath //nolint:testpackage // Checks built-in function results on the AS
 import (
 	"errors"
 	"math"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
@@ -245,4 +248,354 @@ func TestFunctionErrorsASTAndVM(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestISOWeekWithinMonthCalendarDates(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, place string
+		want                int
+	}{
+		{"March3_NY", "2025-03-03T12:00:00-05:00", "America/New_York", 1},
+		{"March10_NY", "2025-03-10T12:00:00-04:00", "America/New_York", 2},
+		{"March17_NY", "2025-03-17T12:00:00-04:00", "America/New_York", 3},
+		{"March3_UTC", "2025-03-03T12:00:00-05:00", "UTC", 1},
+		{"March10_UTC", "2025-03-10T12:00:00-04:00", "UTC", 2},
+		{"March17_UTC", "2025-03-17T12:00:00-04:00", "UTC", 3},
+		{"March3_Fixed", "2025-03-03T12:00:00-05:00", "Etc/GMT+4", 1},
+		{"March10_Fixed", "2025-03-10T12:00:00-04:00", "Etc/GMT+4", 2},
+		{"March17_Fixed", "2025-03-17T12:00:00-04:00", "Etc/GMT+4", 3},
+		{"FallOctober27", "2025-10-27T12:00:00-04:00", "America/New_York", 5},
+		{"FallNovember3", "2025-11-03T12:00:00-05:00", "America/New_York", 1},
+		{"FallNovember10", "2025-11-10T12:00:00-05:00", "America/New_York", 2},
+		{"December30", "2024-12-30T12:00:00-05:00", "America/New_York", 1},
+		{"January1", "2025-01-01T12:00:00-05:00", "America/New_York", 1},
+		{"W3CJanuary29", "2013-01-29T12:00:00-05:00", "America/New_York", 5},
+		{"W3CFebruary1", "2013-02-01T12:00:00-05:00", "America/New_York", 5},
+		{"LeapFebruary29", "2024-02-29T12:00:00-05:00", "America/New_York", 5},
+		{"AfterLeapMarch1", "2024-03-01T12:00:00-05:00", "America/New_York", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loc, err := time.LoadLocation(tc.place)
+			if err != nil {
+				t.Fatal(err)
+			}
+			instant, err := time.Parse(time.RFC3339, tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			instant = instant.In(loc)
+			// F&O3.1 numbers the Monday-to-Sunday week by its Thursday's ordinal
+			// within that Thursday's month. This oracle uses civil dates, not elapsed hours.
+			civil := time.Date(instant.Year(), instant.Month(), instant.Day(), 12, 0, 0, 0, time.UTC)
+			weekday := int(civil.Weekday())
+			if weekday == 0 {
+				weekday = 7
+			}
+			thursday := civil.AddDate(0, 0, 4-weekday)
+			if oracle := (thursday.Day()-1)/7 + 1; oracle != tc.want {
+				t.Fatalf("fixture/oracle = %d, want %d", oracle, tc.want)
+			}
+			if got := isoWeekOfMonth(instant); got != tc.want {
+				t.Fatalf("week = %d, want %d (Thursday %s)", got, tc.want, thursday.Format("2006-01-02"))
+			}
+		})
+	}
+}
+
+// TestHTMLDoctypeLegacyFallbackIdentifier covers the private legacy fallback.
+// The public HTML4 prolog does not select this fallback without explicit metadata.
+func TestHTMLDoctypeLegacyFallbackIdentifier(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		opts serializeOptions
+		want string
+	}{
+		{"legacy HTML4 fallback", serializeOptions{htmlVersion: "4.01"}, "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\n"},
+		{"HTML5 control", serializeOptions{htmlVersion: "5"}, "<!DOCTYPE html>\n"},
+		{"explicit identifier control", serializeOptions{htmlVersion: "4.01", doctypeSystem: "urn:custom"}, "<!DOCTYPE html SYSTEM \"urn:custom\">\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := htmlDoctype(tc.opts); got != tc.want {
+				t.Fatalf("got %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUCAMalformedOriginalByteIndex(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, needle string
+		numeric              bool
+		position, length     int
+	}{
+		{"MalformedPrefix", "\xffa", "a", false, 1, 1},
+		{"MalformedMatch", "L\xffR", "\ufffd", false, 1, 1},
+		{"TruncatedPrefix", "\xe2\x82a", "a", false, 2, 1},
+		{"OverlongPrefix", "\xc0\xafa", "a", false, 2, 1},
+		{"SurrogatePrefix", "\xed\xa0\x80a", "a", false, 3, 1},
+		{"ValidReplacement", "\ufffda", "a", false, 3, 1},
+		{"Supplementary", "😀a", "a", false, 4, 1},
+		{"EmptyNeedle", "\xffa", "", false, 0, 0},
+		{"Miss", "\xffa", "x", false, -1, 0},
+		{"NumericSplit", "100", "10", true, -1, 0},
+		{"NumericWhole", "a001b", "001", true, 1, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pos, length := ucaIndexOf(strings.Compare, tc.source, tc.needle, tc.numeric)
+			if pos != tc.position || length != tc.length {
+				t.Fatalf("got(%d,%d); want(%d,%d)", pos, length, tc.position, tc.length)
+			}
+		})
+	}
+}
+
+func TestUCAMalformedOriginalBytePrefixAndSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefixSource, suffixSource, needle string
+		match                                    bool
+		length                                   int
+	}{
+		{"Malformed", "\xffa", "a\xff", "\ufffd", true, 1},
+		{"Truncated", "\xc3a", "a\xc3", "\ufffd", true, 1},
+		{"ValidReplacement", "\ufffda", "a\ufffd", "\ufffd", true, 3},
+		{"Supplementary", "😀a", "a😀", "😀", true, 4},
+		{"EmptyNeedle", "\xffa", "a\xff", "", true, 0},
+		{"Miss", "\xffa", "a\xff", "x", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, length := ucaHasPrefix(strings.Compare, tc.prefixSource, tc.needle, false)
+			if ok != tc.match || length != tc.length {
+				t.Fatalf("prefix got(%t,%d); want(%t,%d)", ok, length, tc.match, tc.length)
+			}
+			ok, length = ucaHasSuffix(strings.Compare, tc.suffixSource, tc.needle, false)
+			if ok != tc.match || length != tc.length {
+				t.Fatalf("suffix got(%t,%d); want(%t,%d)", ok, length, tc.match, tc.length)
+			}
+		})
+	}
+}
+
+func TestUCACandidateComparatorOrderAndMalformedFallback(t *testing.T) {
+	cases := []struct {
+		name, method, source, needle string
+		numeric                      bool
+		want                         [2]int
+		candidates                   []string
+	}{
+		{"IndexLongerFirst", "index", "abc", "zz", false, [2]int{-1, -1}, []string{"", "ab", "abc", "a", "bc", "b", "c"}},
+		{"PrefixLongerFirst", "prefix", "abc", "zz", false, [2]int{0, 0}, []string{"", "ab", "abc", "a"}},
+		{"SuffixLongerFirst", "suffix", "abc", "zz", false, [2]int{0, 0}, []string{"", "bc", "abc", "c"}},
+		{"ShortSourceIndex", "index", "a", "longer", false, [2]int{-1, -1}, []string{"", "a"}},
+		{"ShortSourcePrefix", "prefix", "a", "longer", false, [2]int{0, 0}, []string{"", "a"}},
+		{"EmptySourceIndex", "index", "", "a", false, [2]int{-1, -1}, []string{""}},
+		{"EmptySourcePrefix", "prefix", "", "a", false, [2]int{0, 0}, []string{"", ""}},
+		{"EmptySourceSuffix", "suffix", "", "a", false, [2]int{0, 0}, []string{"", ""}},
+		{"EmptyNeedleIndex", "index", "abc", "", false, [2]int{0, 0}, nil},
+		{"EmptyNeedlePrefix", "prefix", "abc", "", false, [2]int{0, 1}, nil},
+		{"EmptyNeedleSuffix", "suffix", "abc", "", false, [2]int{3, 1}, nil},
+		{"NumericSplitContinues", "index", "100", "10", true, [2]int{-1, -1}, []string{"", "10", "100", "1", "00", "0", "0"}},
+		{"NonNumericAccepts", "index", "100", "10", false, [2]int{0, 2}, []string{"", "10"}},
+		{"MalformedSourceIndex", "index", "\xffa", "a", false, [2]int{1, 2}, []string{"", "\ufffd", "\ufffda", "a"}},
+		{"MalformedSourcePrefix", "prefix", "\xffa", "\ufffd", false, [2]int{1, 1}, []string{"", "\ufffd"}},
+		{"MalformedSourceSuffix", "suffix", "a\xff", "\ufffd", false, [2]int{1, 1}, []string{"", "\ufffd"}},
+		{"MalformedNeedle", "index", "\ufffd", "\xff", false, [2]int{-1, -1}, []string{"", "\ufffd"}},
+		{"ValidReplacement", "index", "\ufffda", "a", false, [2]int{1, 2}, []string{"", "\ufffd", "\ufffda", "a"}},
+		{"Supplementary", "index", "😀a", "a", false, [2]int{1, 2}, []string{"", "😀", "😀a", "a"}},
+		{"CombiningNeedleRuneCount", "prefix", "é", "e\u0301", false, [2]int{0, 0}, []string{"", "é"}},
+	}
+	type comparison struct {
+		candidate, needle string
+		result            int
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var trace []comparison
+			cmp := func(a, b string) int {
+				r := strings.Compare(a, b)
+				trace = append(trace, comparison{a, b, r})
+				return r
+			}
+			var got [2]int
+			switch tc.method {
+			case "index":
+				got[0], got[1] = ucaIndexOfRange(cmp, tc.source, tc.needle, tc.numeric)
+			case "prefix":
+				end, ok := ucaHasPrefixRange(cmp, tc.source, tc.needle, tc.numeric)
+				got[0] = end
+				if ok {
+					got[1] = 1
+				}
+			case "suffix":
+				start, ok := ucaHasSuffixRange(cmp, tc.source, tc.needle, tc.numeric)
+				got[0] = start
+				if ok {
+					got[1] = 1
+				}
+			default:
+				t.Fatal("unknown test method")
+			}
+			var want []comparison
+			// Candidate order is explicit test data; only comparator result comes from
+			// the independent strings.Compare, never from the candidate constructor.
+			for _, candidate := range tc.candidates {
+				want = append(want, comparison{candidate, tc.needle, strings.Compare(candidate, tc.needle)})
+			}
+			if got != tc.want || !reflect.DeepEqual(trace, want) {
+				t.Fatalf("got%v trace%#v; want%v trace%#v", got, trace, tc.want, want)
+			}
+		})
+	}
+}
+
+func TestUCACandidateBoundaryModes(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, needle string
+		wantBoundaries       []int
+		start, end           int
+		wantCandidate        string
+	}{
+		{"ASCII", "abc", "a", []int{}, 1, 2, "b"},
+		{"EmptyASCII", "", "a", []int{}, 0, 0, ""},
+		{"ASCIIWithUnicodeNeedle", "abc", "é", []int{}, 0, 2, "ab"},
+		{"ASCIIControls", "\x00a", "a", []int{}, 0, 1, "\x00"},
+		{"Unicode", "aéz", "a", []int{0, 1, 3, 4}, 1, 2, "é"},
+		{"Combining", "e\u0301z", "é", []int{0, 1, 3, 4}, 0, 2, "e\u0301"},
+		{"ValidReplacement", "\ufffda", "a", []int{0, 3, 4}, 0, 1, "\ufffd"},
+		{"MalformedSourceWidthOne", "\xffa", "a", nil, 0, 1, "\ufffd"},
+		{"MalformedSourceTruncated", "\xe2\x82a", "a", nil, 0, 2, "\ufffd\ufffd"},
+		{"MalformedNeedle", "abc", "\xff", nil, 1, 2, "b"},
+		{"EmptySourceMalformedNeedle", "", "\xff", nil, 0, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runes := []rune(tc.source)
+			boundaries := ucaCandidateBoundaries(tc.source, tc.needle, len(runes))
+			if !reflect.DeepEqual(boundaries, tc.wantBoundaries) {
+				t.Fatalf("boundaries %#v; want %#v", boundaries, tc.wantBoundaries)
+			}
+
+			candidate := ucaCandidateString(tc.source, runes, boundaries, tc.start, tc.end)
+			if candidate != tc.wantCandidate {
+				t.Fatalf("candidate %q; want %q", candidate, tc.wantCandidate)
+			}
+		})
+	}
+}
+
+func TestSerializationCharacterRunsOriginalByteBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, form := range []string{"none", "NFC"} {
+		for _, tc := range []struct {
+			name, source, want string
+			mapping            map[rune]string
+		}{
+			{"one invalid byte", "\xff", "x", map[rune]string{'\uFFFD': "x"}},
+			{"two invalid bytes", "\xff\xfe", "xx", map[rune]string{'\uFFFD': "x"}},
+			{"invalid middle", "A\xffB", "AxB", map[rune]string{'\uFFFD': "x"}},
+			{"delete invalid middle", "A\xffB", "AB", map[rune]string{'\uFFFD': ""}},
+			{"encoded replacement", "\uFFFD", "x", map[rune]string{'\uFFFD': "x"}},
+			{"no map", "\xff", "\xff", nil},
+			{"unrelated map", "\xff", "\xff", map[rune]string{'Q': "y"}},
+			{"valid composition", "A\u030A", "Å", map[rune]string{'\uFFFD': "x"}},
+		} {
+			if form == "none" && tc.name == "valid composition" {
+				tc.want = tc.source
+			}
+			t.Run(form+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				defer func() {
+					if p := recover(); p != nil {
+						t.Errorf("character mapping must not panic for original bytes %x: %v", tc.source, p)
+					}
+				}()
+				opts := serializeOptions{ctx: t.Context(), normalizationForm: form, charMap: tc.mapping}
+				var out strings.Builder
+				emit := func(s string) error { _, err := out.WriteString(s); return err }
+				if err := opts.characterRuns(tc.source, emit, emit); err != nil {
+					t.Fatal(err)
+				}
+				if got := out.String(); got != tc.want {
+					t.Fatalf("actual %q bytes %x; want %q bytes %x", got, got, tc.want, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestSerializationMalformedRunsCallbackErrors(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("character callback stopped")
+	for _, failAt := range []string{"plain", "mapped"} {
+		t.Run(failAt, func(t *testing.T) {
+			t.Parallel()
+			opts := serializeOptions{ctx: t.Context(), charMap: map[rune]string{'\uFFFD': "x"}}
+			var calls []string
+			err := opts.characterRuns("A\xffB", func(s string) error {
+				calls = append(calls, "plain:"+s)
+				if failAt == "plain" {
+					return sentinel
+				}
+				return nil
+			}, func(s string) error { calls = append(calls, "mapped:"+s); return sentinel })
+			want := []string{"plain:A"}
+			if failAt == "mapped" {
+				want = append(want, "mapped:x")
+			}
+			if !errors.Is(err, sentinel) || !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls %q/error %v; want %q/sentinel", calls, err, want)
+			}
+		})
+	}
+}
+
+func TestSerializationJSONRunOriginalByteBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, source, want string }{
+		{"one invalid byte", "\xff", `\uFFFD`},
+		{"two invalid bytes", "\xff\xfe", `\uFFFD\uFFFD`},
+		{"invalid middle", "A\xffB", `A\uFFFDB`},
+		{"encoded replacement", "\uFFFD", `\uFFFD`},
+		{"valid ASCII", "ABC", "ABC"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("JSON escaping must not panic for original bytes %x: %v", tc.source, p)
+				}
+			}()
+			var out strings.Builder
+			if err := writeSerializedJSONRun(t.Context(), &out, tc.source, func(r rune) bool { return r < 128 }); err != nil {
+				t.Fatal(err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("actual %q; want %q", got, tc.want)
+			}
+		})
+	}
+	sentinel := errors.New("JSON destination stopped")
+	for _, failAt := range []int{1, 2} {
+		t.Run(string(rune('0'+failAt)), func(t *testing.T) {
+			t.Parallel()
+			dst := &malformedJSONSentinelWriter{cause: sentinel, failAt: failAt}
+			err := writeSerializedJSONRun(t.Context(), dst, "A\xffB", func(r rune) bool { return r < 128 })
+			if !errors.Is(err, sentinel) || dst.calls != failAt {
+				t.Fatalf("calls %d/error %v; want %d/sentinel", dst.calls, err, failAt)
+			}
+		})
+	}
+}
+
+type malformedJSONSentinelWriter struct {
+	cause         error
+	failAt, calls int
+}
+
+func (w *malformedJSONSentinelWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == w.failAt {
+		return 0, w.cause
+	}
+	return len(p), nil
 }

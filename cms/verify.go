@@ -36,8 +36,9 @@ type VerifyOptions struct {
 	// AllowLegacyESSCertID permits the SHA-1 ESSCertID certificate identifier.
 	// It does not enable SHA-1 CMS signatures.
 	AllowLegacyESSCertID bool
-	// RequireUnrestrictedCertificatePath rejects ESS path/policy restrictions
-	// that this CMS profile cannot apply. Historical trust workflows must set it,
+	// RequireUnrestrictedCertificatePath rejects additional ESS certificate
+	// identifiers that restrict path selection. Advisory ESS policies do not
+	// change the caller's PKIX policy. Historical trust workflows must set it,
 	// just as VerifyWithTrust always rejects such unsupported restrictions.
 	RequireUnrestrictedCertificatePath bool
 }
@@ -45,12 +46,20 @@ type VerifyOptions struct {
 // SignerResult authenticates one caller-selected certificate and signed
 // attributes. It does not establish a certificate path or a trusted signing time.
 type SignerResult struct {
+	// certificate retains the exact DER certificate used to verify this signer.
 	certificate []byte
-	signed      []Attribute
-	bound       bool
-	trust       *pki.Result
-	hash        crypto.Hash
-	algorithm   string
+	// signed contains authenticated signed attributes.
+	signed []Attribute
+	// bound records whether signed ESS attributes bind the exact signer
+	// certificate.
+	bound bool
+	// trust is populated only after the configured PKIX checks succeed.
+	trust *pki.Result
+	// hash is the authenticated digest/signature hash; zero marks an unverified
+	// result.
+	hash crypto.Hash
+	// algorithm is the normalized authenticated signature algorithm OID.
+	algorithm string
 }
 
 // CertificateDER returns an owned copy of the certificate DER.
@@ -74,10 +83,15 @@ func (r SignerResult) SignatureAlgorithmOID() string { return r.algorithm }
 // Result is returned only after every signer and the content have been checked.
 // Accessors return copies; a Result alone makes no claim about PKIX trust.
 type Result struct {
-	content     []byte
+	// content retains authenticated content when verification keeps it in memory.
+	content []byte
+	// contentSize counts authenticated bytes even when detached content is
+	// streamed.
 	contentSize int64
+	// contentType identifies the authenticated CMS content syntax.
 	contentType asn1.ObjectIdentifier
-	signers     []SignerResult
+	// signers contains the successfully verified signer results.
+	signers []SignerResult
 }
 
 // Content returns an owned copy of retained authenticated content. A detached
@@ -266,7 +280,7 @@ func (s *SignedData) verifySigner(ctx context.Context, p parsedSigner, cert *x50
 		}
 
 		state := h.New()
-		_, _ = state.Write([]byte{0x31})
+		_, _ = state.Write([]byte{encodedSetTag})
 
 		writer := &streamio.Writer{Context: ctx, Target: state, Limit: int64(s.limits.MaxBytes), LimitError: ErrPolicy}
 		if err := writeDERPart(writer, p.signedInput[1:]); err != nil {
@@ -307,7 +321,7 @@ func parseVerificationCertificates(ctx context.Context, expected [][]byte) ([]*x
 			return nil, err
 		}
 
-		if len(raw) > 1<<20 || !seen.add(raw) {
+		if len(raw) > maximumCertificateBytes || !seen.add(raw) {
 			return nil, ErrCertificate
 		}
 
@@ -354,19 +368,25 @@ func signerCertificateIndex(ctx context.Context, p parsedSigner, certs []*x509.C
 }
 
 func normalizeSignature(aid pkix.AlgorithmIdentifier, h crypto.Hash) (pkix.AlgorithmIdentifier, error) {
+	const (
+		rsaSHA256Arc = 11
+		rsaSHA384Arc = 12
+		rsaSHA512Arc = 13
+	)
+
 	if aid.Algorithm.Equal(signature.RSA()) {
 		if !signature.NullOrAbsent(aid.Parameters) {
 			return aid, ErrPolicy
 		}
 
-		n := 11
+		n := rsaSHA256Arc
 
 		switch h {
 		case crypto.SHA256:
 		case crypto.SHA384:
-			n = 12
+			n = rsaSHA384Arc
 		case crypto.SHA512:
-			n = 13
+			n = rsaSHA512Arc
 		default:
 			return aid, ErrPolicy
 		}

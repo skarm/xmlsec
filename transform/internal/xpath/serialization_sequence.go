@@ -37,12 +37,14 @@ type serializationItems struct {
 func (s *serializationItems) fail(err error) bool { s.yield(xdm.XMLItem{}, err); return false }
 
 func (s *serializationItems) append(seq xdm.Sequence, depth int) bool {
-	if depth > DepthLimit(s.ctx, 128) {
+	const serializedSequenceItemWork = 1 // one logical item visit
+
+	if depth > DepthLimit(s.ctx, defaultSerializedValueDepth) {
 		return s.fail(ErrBudget)
 	}
 
 	for item := range xdm.SequenceItems(seq) {
-		if err := Charge(s.ctx, 1); err != nil {
+		if err := Charge(s.ctx, serializedSequenceItemWork); err != nil {
 			return s.fail(err)
 		}
 
@@ -65,13 +67,15 @@ func (s *serializationItems) append(seq xdm.Sequence, depth int) bool {
 }
 
 func (s *serializationItems) item(item xdm.Item) bool {
+	const serializedAtomicSeparator = " " // default between adjacent atoms
+
 	if s.previousItem && s.separator != nil && !s.text(*s.separator) {
 		return false
 	}
 
 	switch value := item.(type) {
 	case xdm.AtomicValue:
-		if s.previousAtomic && s.separator == nil && !s.text(" ") {
+		if s.previousAtomic && s.separator == nil && !s.text(serializedAtomicSeparator) {
 			return false
 		}
 
@@ -192,10 +196,12 @@ func (s *serializationItems) flush() bool {
 // tree construction or XHTML prefix/metadata changes. Ordinary XML/HTML writers
 // can consume SerializationItems directly without copying element subtrees.
 func NormalizeSerialization(ctx context.Context, seq xdm.Sequence, separator *string, baseURI string) (*xdm.Document, error) {
+	const serializationCoalesceText = true // Sequence normalization coalesces adjacent text
+
 	doc := xdm.NewDefaultDocument()
 	doc.SetURL(baseURI)
 
-	for item, err := range SerializationItems(ctx, seq, separator, true) {
+	for item, err := range SerializationItems(ctx, seq, separator, serializationCoalesceText) {
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +316,7 @@ func (w *serializationBuffer) charge(size int) error {
 	}
 
 	if w.err == nil {
-		w.err = Charge(w.ctx, 1+size/64)
+		w.err = Charge(w.ctx, serializedRunBaseWork+size/serializedWorkChunkBytes)
 	}
 
 	return w.err
@@ -319,9 +325,16 @@ func (w *serializationBuffer) charge(size int) error {
 // ValidateSerializationDocument enforces the document shape required when a
 // host requests an XML/XHTML DOCTYPE or standalone declaration.
 func ValidateSerializationDocument(ctx context.Context, seq xdm.Sequence, separator *string) error {
+	// Shape validation can keep borrowed text chunks and accepts one root.
+	const (
+		shapeCoalesceText                 = false
+		serializationMaximumDocumentRoots = 1
+		errCodeSEPM0004                   = "SEPM0004"
+	)
+
 	roots := 0
 
-	for item, err := range SerializationItems(ctx, seq, separator, false) {
+	for item, err := range SerializationItems(ctx, seq, separator, shapeCoalesceText) {
 		if err != nil {
 			return err
 		}
@@ -330,8 +343,8 @@ func ValidateSerializationDocument(ctx context.Context, seq xdm.Sequence, separa
 			roots++
 		}
 
-		if roots > 1 || item.Node == nil && item.Text != "" {
-			return &xdm.Error{Code: "SEPM0004", Message: "doctype or standalone requires document-shaped output"}
+		if roots > serializationMaximumDocumentRoots || item.Node == nil && item.Text != "" {
+			return &xdm.Error{Code: errCodeSEPM0004, Message: "doctype or standalone requires document-shaped output"}
 		}
 	}
 

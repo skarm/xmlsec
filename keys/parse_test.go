@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	textENCRYPTEDPRIVATEKEY = "ENCRYPTED PRIVATE KEY"
-	privateKeyPEMType       = "PRIVATE KEY"
+	encryptedPrivateKeyPEMType = "ENCRYPTED PRIVATE KEY"
+	privateKeyPEMType          = "PRIVATE KEY"
 )
 
 type keyFormatCase struct {
@@ -165,6 +165,123 @@ func testPrivateAndPublicFormatsCase(t *testing.T, tc *keyFormatCase, pemEncodin
 	got, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil || !bytes.Equal(got, *public) {
 		t.Fatalf("key aliases input or differs: %v", err)
+	}
+}
+
+func TestPEMNewlineConventions(t *testing.T) {
+	// RFC 7468 sections 2 and 3 permit CRLF, CR and LF between PEM lines.
+	c := testcert.New(t)
+	private, err := x509.MarshalPKCS8PrivateKey(c.LeafKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := x509.MarshalPKIXPublicKey(c.LeafKey.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	password := []byte("newline test password")
+	encrypted, err := keys.MarshalEncryptedPrivate(t.Context(), c.LeafKey, password, keys.EncryptionOptions{Iterations: 1000}, keys.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		label string
+		raw   []byte
+	}{
+		{privateKeyPEMType, private},
+		{"PUBLIC KEY", public},
+		{"CERTIFICATE", c.Leaf.Raw},
+		{"X509 CRL", testcert.CRL(t, c)},
+		{encryptedPrivateKeyPEMType, encrypted},
+	} {
+		for _, newline := range []struct{ name, value string }{
+			{"LF", "\n"}, {"CRLF", "\r\n"}, {"CR", "\r"}, {"mixed", "\n"},
+		} {
+			t.Run(tc.label+"/"+newline.name, func(t *testing.T) {
+				input := bytes.ReplaceAll(pem.EncodeToMemory(&pem.Block{Type: tc.label, Bytes: tc.raw}), []byte("\n"), []byte(newline.value))
+				if newline.name == "mixed" {
+					input = bytes.Replace(input, []byte("\n"), []byte("\r"), 1)
+				}
+				original := bytes.Clone(input)
+				switch tc.label {
+				case privateKeyPEMType:
+					got, err := keys.ParsePrivate(input, keys.Limits{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					encoded, err := x509.MarshalPKCS8PrivateKey(got)
+					if err != nil || !bytes.Equal(encoded, private) {
+						t.Fatal("private key changed", err)
+					}
+				case "PUBLIC KEY":
+					got, err := keys.ParsePublic(input, keys.Limits{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					encoded, err := x509.MarshalPKIXPublicKey(got)
+					if err != nil || !bytes.Equal(encoded, public) {
+						t.Fatal("public key changed", err)
+					}
+				case "CERTIFICATE":
+					got, err := keys.ParseCertificate(input, keys.Limits{})
+					if err != nil || !bytes.Equal(got.Raw, tc.raw) {
+						t.Fatal("certificate changed", err)
+					}
+				case "X509 CRL":
+					got, err := keys.ParseCRL(input, keys.Limits{})
+					if err != nil || !bytes.Equal(got.Raw, tc.raw) {
+						t.Fatal("CRL changed", err)
+					}
+				case encryptedPrivateKeyPEMType:
+					got, err := keys.ParseEncryptedPrivate(t.Context(), input, password, keys.Limits{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					encoded, err := x509.MarshalPKCS8PrivateKey(got)
+					if err != nil || !bytes.Equal(encoded, private) {
+						t.Fatal("decrypted private key changed", err)
+					}
+				}
+				if !bytes.Equal(input, original) {
+					t.Fatal("PEM input changed")
+				}
+			})
+		}
+	}
+}
+
+func TestPEMFramingAcrossNewlines(t *testing.T) {
+	c := testcert.New(t)
+	private, err := x509.MarshalPKCS8PrivateKey(c.LeafKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := base64.StdEncoding.EncodeToString(private)
+	for _, newline := range []struct{ name, value string }{
+		{"LF", "\n"}, {"CRLF", "\r\n"}, {"CR", "\r"},
+	} {
+		t.Run(newline.name, func(t *testing.T) {
+			begin := "-----BEGIN PRIVATE KEY-----"
+			end := "-----END PRIVATE KEY-----"
+			valid := begin + newline.value + body + newline.value + end
+			for _, input := range []string{
+				begin + body + newline.value + end,
+				begin + newline.value + body + end,
+				begin + newline.value + body + newline.value + "-----END PUBLIC KEY-----",
+				"-----begin PRIVATE KEY-----" + newline.value + body + newline.value + end,
+				begin + newline.value + body + "!" + newline.value + end,
+				valid + newline.value + valid,
+				valid + newline.value + "trailing data",
+			} {
+				if got, err := keys.ParsePrivate([]byte(input), keys.Limits{}); got != nil || !errors.Is(err, keys.ErrFormat) {
+					t.Fatalf("malformed PEM accepted: %q: %v", input, err)
+				}
+			}
+			if got, err := keys.ParsePrivate([]byte(valid), keys.Limits{MaxKeyBytes: len(private) - 1}); got != nil || !errors.Is(err, keys.ErrLimit) {
+				t.Fatal("decoded-byte limit not enforced", err)
+			}
+		})
 	}
 }
 
@@ -415,7 +532,7 @@ func TestRejectAmbiguousAndOversizedMaterial(t *testing.T) {
 		nil, append(bytes.Clone(private), 0), append(bytes.Clone(private), private...),
 		append(bytes.Clone(p), p...), append([]byte("preamble"), p...), append(bytes.Clone(p), []byte("trailing")...),
 		pem.EncodeToMemory(&pem.Block{Type: privateKeyPEMType, Bytes: private, Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}}),
-		pem.EncodeToMemory(&pem.Block{Type: textENCRYPTEDPRIVATEKEY, Bytes: private}),
+		pem.EncodeToMemory(&pem.Block{Type: encryptedPrivateKeyPEMType, Bytes: private}),
 		bytes.Repeat([]byte{0}, keys.DefaultLimits().MaxInputBytes+1),
 	} {
 		if key, err := keys.ParsePrivate(bad, keys.Limits{}); key != nil || err == nil {

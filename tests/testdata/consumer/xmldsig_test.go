@@ -546,6 +546,8 @@ func TestReferenceNodeSetWorkingStorage(t *testing.T) {
 			allocated := allocatedDuring(t, func() error {
 				hash := sha256.New()
 				report, err := reference.Write(t.Context(), hash, data, tc.transforms, tc.options)
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if err == nil && (report.Size() != len(tc.want) || !bytes.Equal(hash.Sum(nil), expected[:])) {
 					return errors.New("reference output changed")
 				}

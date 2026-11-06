@@ -15,6 +15,8 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// maxParseDepth caps parser expression/item-type nesting; it is separate from
+// the invocation evaluator recursion policy.
 const maxParseDepth = 200
 
 // Parse parses an XPath 3.1 expression string into an AST.
@@ -527,7 +529,7 @@ func (p *parseOptions) parseArrowTarget() (Expr, string, string, error) {
 			p.lexer.Next() // consume ':'
 
 			localTok := p.lexer.Next()
-			if !isNameLikeToken(localTok.Type) {
+			if localTok.SpaceBefore || !isNameLikeToken(localTok.Type) {
 				return nil, "", "", fmt.Errorf("%w: name after '%s:' in arrow but got %s", ErrExpectedToken, name, localTok)
 			}
 
@@ -833,7 +835,7 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 	case TokenFunction:
 		// nameFunction followed by "(" is an inline function or function test.
 		// Otherwise it's a name test (e.g., child::function or xs:QName(function)).
-		if (p.version == 0 || p.version >= 30) && p.lexer.PeekAt(1).Type == TokenLParen {
+		if (p.version == xpathVersionDefault || p.version >= xpathVersion30) && p.lexer.PeekAt(1).Type == TokenLParen {
 			return p.parseFunctionKeyword()
 		}
 		// Treat as a regular name (name test / path step).
@@ -1229,9 +1231,10 @@ func (p *parseOptions) parseStep() (Step, error) {
 	}
 
 	return Step{
-		Axis:       axis,
-		NodeTest:   nodeTest,
-		Predicates: predicates,
+		Axis:         axis,
+		ExplicitAxis: axisSpecified,
+		NodeTest:     nodeTest,
+		Predicates:   predicates,
 	}, nil
 }
 
@@ -1281,7 +1284,7 @@ func (p *parseOptions) parseNodeTest(_ AxisType) (xdm.NodeTest, error) {
 				return nil, &xdm.Error{Code: errCodeXPST0081, Message: "the xmlns namespace URI cannot be used in name tests"}
 			}
 
-			return xdm.NameTest{URI: uri, Local: local}, nil
+			return xdm.NameTest{URI: uri, Local: local, URIQualified: true}, nil
 		}
 	}
 
@@ -1300,7 +1303,7 @@ func (p *parseOptions) parseNodeTest(_ AxisType) (xdm.NodeTest, error) {
 // Returns (result, true, nil) on success, (nil, false, nil) when name is not a kind test keyword.
 func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 	switch name {
-	case "node":
+	case lexicon.KindNode:
 		p.lexer.Next() // consume '('
 
 		if err := p.expectToken(TokenRParen); err != nil {
@@ -1308,7 +1311,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		}
 
 		return xdm.TypeTest{Kind: xdm.NodeKindNode}, true, nil
-	case "text":
+	case lexicon.KindText:
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
@@ -1316,7 +1319,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		}
 
 		return xdm.TypeTest{Kind: xdm.NodeKindText}, true, nil
-	case "comment":
+	case lexicon.KindComment:
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
@@ -1341,7 +1344,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 
 		test := xdm.PITest{Target: target, HasTarget: hasTarget}
 
-		if p.version != 10 {
+		if p.version != xpathVersion10 {
 			var err error
 
 			test, err = normalizePITest(test)
@@ -1355,13 +1358,13 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		return p.parseElementOrAttributeTest(true)
 	case lexicon.KindAttribute:
 		return p.parseElementOrAttributeTest(false)
-	case "document-node":
+	case lexicon.KindDocumentNode:
 		return p.parseDocumentNodeTest()
 	case lexicon.KindSchemaElement:
 		return p.parseSchemaTest(true)
-	case "schema-attribute":
+	case lexicon.KindSchemaAttribute:
 		return p.parseSchemaTest(false)
-	case "namespace-node":
+	case lexicon.KindNamespaceNode:
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
@@ -1369,7 +1372,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		}
 
 		return xdm.NamespaceNodeTest{}, true, nil
-	case "item":
+	case lexicon.KindItem:
 		p.lexer.Next()
 
 		if err := p.expectToken(TokenRParen); err != nil {
@@ -1382,7 +1385,7 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 	return nil, false, nil
 }
 
-// parseElementOrAttributeTest parses element(name?, type?) or attribute(name?, type?).
+// parseElementOrAttributeTest parses element and attribute kind tests.
 func (p *parseOptions) parseElementOrAttributeTest(isElement bool) (xdm.NodeTest, bool, error) {
 	p.lexer.Next() // consume '('
 
@@ -1395,13 +1398,20 @@ func (p *parseOptions) parseElementOrAttributeTest(isElement bool) (xdm.NodeTest
 			p.lexer.Next()
 
 			name = "*"
-		} else if p.lexer.Peek().Type == TokenName {
+		} else if isNameLikeToken(p.lexer.Peek().Type) {
 			name = p.scanQName()
+		} else {
+			return nil, true, fmt.Errorf("%w: name or '*' in kind test", ErrExpectedToken)
 		}
 
 		if p.lexer.Peek().Type == TokenComma {
 			p.lexer.Next()
+
 			typeName = p.scanQName()
+			if typeName == "" {
+				return nil, true, fmt.Errorf("%w: type name after ',' in kind test", ErrExpectedToken)
+			}
+
 			// element(name, type?) — trailing ? means nillable
 			if isElement && p.lexer.Peek().Type == TokenQMark {
 				p.lexer.Next()
@@ -1529,97 +1539,6 @@ func (p *parseOptions) parsePredicate() (Expr, error) {
 	p.lexer.Next()
 
 	return expr, nil
-}
-
-func isGeneralComp(t TokenType) bool {
-	return t == TokenEquals || t == TokenNotEquals ||
-		t == TokenLess || t == TokenLessEq ||
-		t == TokenGreater || t == TokenGreaterEq
-}
-
-func isValueComp(t TokenType) bool {
-	return t == TokenEq || t == TokenNe ||
-		t == TokenLt || t == TokenLe ||
-		t == TokenGt || t == TokenGe
-}
-
-func isNodeComp(t TokenType) bool {
-	return t == TokenIs || t == TokenNodePre || t == TokenNodeFol
-}
-
-// parseNumberLiteral converts a numeric token value to a LiteralExpr.
-// Per XPath 3.1: no dot and no e/E → xs:integer (*big.Int),
-// dot but no e/E → xs:decimal (*big.Rat),
-// e/E → xs:double (float64).
-func parseNumberLiteral(s string) (LiteralExpr, error) {
-	hasE := strings.ContainsAny(s, "eE")
-
-	hasDot := strings.Contains(s, ".")
-	if !hasDot && !hasE {
-		// Integer literal → *big.Int (arbitrary precision)
-		v, ok := new(big.Int).SetString(s, 10)
-		if !ok {
-			return LiteralExpr{}, fmt.Errorf("%w: invalid integer %q", ErrUnexpectedToken, s)
-		}
-
-		return LiteralExpr{Value: v}, nil
-	}
-
-	if !hasE {
-		// Decimal literal → *big.Rat (exact rational)
-		v, ok := new(big.Rat).SetString(s)
-		if !ok {
-			return LiteralExpr{}, fmt.Errorf("%w: invalid decimal %q", ErrUnexpectedToken, s)
-		}
-
-		return LiteralExpr{Value: v}, nil
-	}
-	// Double literal → float64
-	v, err := parseXPathDouble(s)
-	if err != nil {
-		return LiteralExpr{}, fmt.Errorf("%w: invalid number %q: %w", ErrUnexpectedToken, s, err)
-	}
-
-	return LiteralExpr{Value: v}, nil
-}
-
-// tokenAsNCName returns the NCName string for a token that can be used as an
-// NCName in lookup keys and other non-keyword contexts. Returns "" if the
-// token is not a valid NCName.
-func tokenAsNCName(tok Token) string {
-	switch tok.Type {
-	case TokenName:
-		// Reject URIQualifiedNames (Q{uri}local) — they are not NCNames
-		if strings.HasPrefix(tok.Value, "Q{") {
-			return ""
-		}
-		// Reject prefixed names (prefix:local) — they are QNames, not NCNames
-		if strings.Contains(tok.Value, ":") {
-			return ""
-		}
-
-		return tok.Value
-	case TokenDiv, TokenMod, TokenAnd, TokenOr, TokenReturn, TokenElse, TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe, TokenIdiv, TokenIf, TokenThen, TokenFor, TokenLet, TokenIn, TokenSome, TokenEvery, TokenSatisfies, TokenIs, TokenTo, TokenUnion, TokenIntersect, TokenExcept, TokenInstanceOf, TokenTreatAs, TokenCastableAs, TokenCastAs, TokenAs, TokenOf:
-		return tok.Type.String()
-	}
-
-	return ""
-}
-
-// XPath 2.0 erratum XP.E19 and 3.x kind tests compare normalized PI targets.
-// An explicitly empty or otherwise invalid NCName is XPTY0004, not a syntax
-// error; an absent target continues to match every processing instruction.
-func normalizePITest(test xdm.PITest) (xdm.PITest, error) {
-	if !test.HasTarget {
-		return test, nil
-	}
-
-	test.Target = collapseXMLWhitespace(test.Target)
-	if !xmlchar.IsValidNCName(test.Target) {
-		return test, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "processing-instruction target must be an NCName"}
-	}
-
-	return test, nil
 }
 
 // --- XPath 3.1 Expression Extensions ---
@@ -2082,7 +2001,7 @@ func (p *parseOptions) parseInlineFunctionParams() ([]FunctionParam, error) {
 	seen := make(map[string]struct{}, len(params))
 	for _, param := range params {
 		if _, ok := seen[param.Name]; ok {
-			return nil, &xdm.Error{Code: "XQST0039", Message: fmt.Sprintf("duplicate parameter name $%s in inline function", param.Name)}
+			return nil, &xdm.Error{Code: errCodeXQST0039, Message: fmt.Sprintf("duplicate parameter name $%s in inline function", param.Name)}
 		}
 
 		seen[param.Name] = struct{}{}
@@ -2392,12 +2311,11 @@ func (p *parseOptions) parseFunctionItemType() (xdm.NodeTest, error) {
 		}
 
 		returnType = rt
-	} else if len(paramTypes) > 0 {
-		// Per XPath 3.1 §3.1.5.4: when parameter types are present,
-		// "as SequenceType" is required.
+	} else {
+		// TypedFunctionTest requires a return type at every arity.
 		return nil, &xdm.Error{
 			Code:    lexicon.ErrXPST0003,
-			Message: "function type with parameter types requires 'as ReturnType'",
+			Message: "function type requires 'as ReturnType'",
 		}
 	}
 
@@ -2512,7 +2430,7 @@ func (p *parseOptions) parseSingleType() (AtomicTypeName, bool, error) {
 // scanQName scans a possibly-prefixed QName (prefix:local) from the token stream.
 func (p *parseOptions) scanQName() string {
 	tok := p.lexer.Peek()
-	if tok.Type != TokenName {
+	if !isNameLikeToken(tok.Type) {
 		return ""
 	}
 
@@ -2571,12 +2489,12 @@ func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 		// element(), attribute(), document-node(), schema-element(),
 		// schema-attribute(), namespace-node() are steps
 		switch tok.Value {
-		case "node", "text", "comment", nameProcessingInstruction,
-			lexicon.KindElement, "attribute", "document-node", lexicon.KindSchemaElement,
-			"schema-attribute":
+		case lexicon.KindNode, lexicon.KindText, lexicon.KindComment, nameProcessingInstruction,
+			lexicon.KindElement, lexicon.KindAttribute, lexicon.KindDocumentNode, lexicon.KindSchemaElement,
+			lexicon.KindSchemaAttribute:
 			return true
-		case "namespace-node":
-			return p.version == 0 || p.version >= 30
+		case lexicon.KindNamespaceNode:
+			return p.version == xpathVersionDefault || p.version >= xpathVersion30
 		}
 
 		return false // function call
@@ -2625,6 +2543,97 @@ func (p *parseOptions) looksLikeStepOffset(offset int) bool {
 func (p *parseOptions) joinedQNameAt(offset int) bool {
 	colon := p.lexer.PeekAt(offset)
 	return colon.Type == TokenColon && !colon.SpaceBefore && !p.lexer.PeekAt(offset+1).SpaceBefore
+}
+
+func isGeneralComp(t TokenType) bool {
+	return t == TokenEquals || t == TokenNotEquals ||
+		t == TokenLess || t == TokenLessEq ||
+		t == TokenGreater || t == TokenGreaterEq
+}
+
+func isValueComp(t TokenType) bool {
+	return t == TokenEq || t == TokenNe ||
+		t == TokenLt || t == TokenLe ||
+		t == TokenGt || t == TokenGe
+}
+
+func isNodeComp(t TokenType) bool {
+	return t == TokenIs || t == TokenNodePre || t == TokenNodeFol
+}
+
+// parseNumberLiteral converts a numeric token value to a LiteralExpr.
+// Per XPath 3.1: no dot and no e/E → xs:integer (*big.Int),
+// dot but no e/E → xs:decimal (*big.Rat),
+// e/E → xs:double (float64).
+func parseNumberLiteral(s string) (LiteralExpr, error) {
+	hasE := strings.ContainsAny(s, "eE")
+
+	hasDot := strings.Contains(s, ".")
+	if !hasDot && !hasE {
+		// Integer literal → *big.Int (arbitrary precision)
+		v, ok := new(big.Int).SetString(s, 10)
+		if !ok {
+			return LiteralExpr{}, fmt.Errorf("%w: invalid integer %q", ErrUnexpectedToken, s)
+		}
+
+		return LiteralExpr{Value: v}, nil
+	}
+
+	if !hasE {
+		// Decimal literal → *big.Rat (exact rational)
+		v, ok := new(big.Rat).SetString(s)
+		if !ok {
+			return LiteralExpr{}, fmt.Errorf("%w: invalid decimal %q", ErrUnexpectedToken, s)
+		}
+
+		return LiteralExpr{Value: v}, nil
+	}
+	// Double literal → float64
+	v, err := parseXPathDouble(s)
+	if err != nil {
+		return LiteralExpr{}, fmt.Errorf("%w: invalid number %q: %w", ErrUnexpectedToken, s, err)
+	}
+
+	return LiteralExpr{Value: v}, nil
+}
+
+// tokenAsNCName returns the NCName string for a token that can be used as an
+// NCName in lookup keys and other non-keyword contexts. Returns "" if the
+// token is not a valid NCName.
+func tokenAsNCName(tok Token) string {
+	switch tok.Type {
+	case TokenName:
+		// Reject URIQualifiedNames (Q{uri}local) — they are not NCNames
+		if strings.HasPrefix(tok.Value, "Q{") {
+			return ""
+		}
+		// Reject prefixed names (prefix:local) — they are QNames, not NCNames
+		if strings.Contains(tok.Value, ":") {
+			return ""
+		}
+
+		return tok.Value
+	case TokenDiv, TokenMod, TokenAnd, TokenOr, TokenReturn, TokenElse, TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe, TokenIdiv, TokenIf, TokenThen, TokenFor, TokenLet, TokenIn, TokenSome, TokenEvery, TokenSatisfies, TokenIs, TokenTo, TokenUnion, TokenIntersect, TokenExcept, TokenInstanceOf, TokenTreatAs, TokenCastableAs, TokenCastAs, TokenAs, TokenOf:
+		return tok.Type.String()
+	}
+
+	return ""
+}
+
+// XPath 2.0 erratum XP.E19 and 3.x kind tests compare normalized PI targets.
+// An explicitly empty or otherwise invalid NCName is XPTY0004, not a syntax
+// error; an absent target continues to match every processing instruction.
+func normalizePITest(test xdm.PITest) (xdm.PITest, error) {
+	if !test.HasTarget {
+		return test, nil
+	}
+
+	test.Target = collapseXMLWhitespace(test.Target)
+	if !xmlchar.IsValidNCName(test.Target) {
+		return test, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "processing-instruction target must be an NCName"}
+	}
+
+	return test, nil
 }
 
 // isKeywordToken returns true if the token type is an XPath keyword

@@ -22,6 +22,27 @@ import (
 	"github.com/skarm/xmlsec/resource"
 )
 
+const (
+	defaultGraphBytes     = 32 << 20
+	defaultGraphDepth     = 8
+	defaultGraphNodes     = 8192
+	defaultGraphResources = 8
+	defaultMasterKeyBytes = 32
+	// Bounds cipher-resource URI spellings before validation and explicit resolver authorization.
+	maximumCipherURIBytes     = 4096
+	maximumGraphAllowedURIs   = 64
+	maximumGraphBindings      = 64
+	maximumGraphBytes         = 128 << 20
+	maximumGraphDepth         = 32
+	maximumGraphIDRules       = 28
+	maximumGraphKeyAlgorithms = 32
+	maximumGraphKeyURIs       = 64
+	maximumGraphNodes         = 100000
+	maximumGraphResources     = 64
+	maximumGraphSecretBytes   = 1024
+	maximumGraphTextBytes     = 1024
+)
+
 var errGraphKeyUnavailable = errors.New("no configured key for this graph path")
 
 // KeyGraphKey binds application-owned key material to an exact name and algorithm.
@@ -144,30 +165,48 @@ type graphDocument struct {
 func (n graphNode) element() document.Element { return tree.Wrap(n.document.doc, n.node) }
 
 type keyGraph struct {
-	ctx        context.Context
-	options    KeyGraphOptions
-	profile    profile
-	limits     KeyGraphLimits
-	bindings   map[graphBinding]KeyGraphKey
-	methods    map[string]struct{}
-	allowed    map[string]struct{}
-	documents  map[string]*graphDocument
-	ordered    []*graphDocument
+	// ctx supplies cancellation for graph construction and key resolution.
+	ctx context.Context
+	// options retains the snapshotted application key and resource policy.
+	options KeyGraphOptions
+	// profile retains normalized data-encryption algorithm policy.
+	profile profile
+	// limits retains normalized graph resource bounds.
+	limits KeyGraphLimits
+	// bindings indexes explicitly trusted keys by name and algorithm.
+	bindings map[graphBinding]KeyGraphKey
+	// methods contains permitted key-management algorithm URIs.
+	methods map[string]struct{}
+	// allowed contains exact external key resource URIs authorized by policy.
+	allowed map[string]struct{}
+	// documents caches immutable key documents by resource URI.
+	documents map[string]*graphDocument
+	// ordered preserves document discovery order.
+	ordered []*graphDocument
+	// standalone retains separately supplied encrypted-key nodes.
 	standalone []graphNode
-	active     map[graphPlanID]struct{}
-	plans      map[graphPlanID]*graphKeyPlan
-	baseURI    *url.URL
-	remaining  KeyGraphLimits
+	// active tracks the current resolution stack to reject key-reference cycles.
+	active map[graphPlanID]struct{}
+	// plans caches completed key-resolution plans by their full identity.
+	plans map[graphPlanID]*graphKeyPlan
+	// baseURI optionally enables trusted relative resource URI resolution.
+	baseURI *url.URL
+	// remaining shares cumulative work budgets across the complete graph operation.
+	remaining KeyGraphLimits
 }
 
 func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOptions) (*keyGraph, *graphDocument, error) {
+	if options.Data.KeyTransportAlgorithm != "" {
+		return nil, nil, ErrPolicy
+	}
+
 	p, err := normalize(ctx, options.Data)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	limits, err := normalizeGraphLimits(options.Limits)
-	if err != nil || len(options.Keys) > 64 || len(options.KeyAlgorithms) > 32 || len(options.KeyURIs) > 64 || len(options.IDRules) > 28 {
+	if err != nil || len(options.Keys) > maximumGraphBindings || len(options.KeyAlgorithms) > maximumGraphKeyAlgorithms || len(options.KeyURIs) > maximumGraphKeyURIs || len(options.IDRules) > maximumGraphIDRules {
 		return nil, nil, ErrPolicy
 	}
 
@@ -203,7 +242,7 @@ func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOp
 	}
 
 	if options.MasterKeyBytes == 0 {
-		options.MasterKeyBytes = 32
+		options.MasterKeyBytes = defaultMasterKeyBytes
 	}
 
 	if !sessionKeySize(options.MasterKeyBytes) {
@@ -235,6 +274,9 @@ func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOp
 }
 
 func (g *keyGraph) configure() error {
+	// Derive one output octet only to validate configured KDF parameters.
+	const concatKDFValidationOutputBits = 8
+
 	seen := make(map[graphBinding]struct{})
 
 	for _, binding := range g.options.Keys {
@@ -260,7 +302,7 @@ func (g *keyGraph) configure() error {
 
 	for _, binding := range g.options.Keys {
 		identity := graphBinding{binding.Name, binding.Algorithm}
-		if len(binding.Name) > 1024 || !utf8.ValidString(binding.Name) || binding.Algorithm == "" {
+		if len(binding.Name) > maximumKeyNameBytes || !utf8.ValidString(binding.Name) || binding.Algorithm == "" {
 			return ErrPolicy
 		}
 
@@ -294,7 +336,7 @@ func (g *keyGraph) configure() error {
 			return err
 		}
 
-		probe, err := DeriveConcatKey(g.ctx, []byte{1}, 8, *g.options.ConcatKDF)
+		probe, err := DeriveConcatKey(g.ctx, []byte{1}, concatKDFValidationOutputBits, *g.options.ConcatKDF)
 		clear(probe)
 
 		if err != nil {
@@ -311,7 +353,7 @@ func (g *keyGraph) configureExternal() error {
 		return nil
 	}
 
-	if nilcheck.IsNil(external.Resolver) || len(external.AllowedURIs) > 64 || external.BaseURI != "" && !validCipherURI(external.BaseURI) {
+	if nilcheck.IsNil(external.Resolver) || len(external.AllowedURIs) > maximumGraphAllowedURIs || external.BaseURI != "" && !validCipherURI(external.BaseURI) {
 		return ErrPolicy
 	}
 
@@ -363,7 +405,7 @@ func (g *keyGraph) validateBinding(binding KeyGraphKey) error {
 	}
 
 	if binding.Algorithm == ConcatKDF {
-		if len(binding.Secret) > 1024 {
+		if len(binding.Secret) > maximumGraphSecretBytes {
 			return ErrPolicy
 		}
 
@@ -439,7 +481,7 @@ func (g *keyGraph) addDocument(doc *document.Document, uri string) (*graphDocume
 			}
 		}
 
-		if node.Name == elementName(Namespace, "EncryptedKey") || node.Name == elementName(Namespace11, "DerivedKey") {
+		if node.Name == elementName(Namespace, nameEncryptedKey) || node.Name == elementName(Namespace11, nameDerivedKey) {
 			d.keys = append(d.keys, graphNode{d, node})
 		}
 
@@ -557,7 +599,7 @@ func (g *keyGraph) localTarget(doc *graphDocument, uri string) (graphNode, error
 }
 
 func (g *keyGraph) chargeAttribute(attribute tree.Attribute) error {
-	if g.baseURI != nil && attribute.Name == (document.Name{Space: document.XMLNamespace, Local: "base"}) {
+	if g.baseURI != nil && attribute.Name == (document.Name{Space: document.XMLNamespace, Local: lexicon.AttrBase}) {
 		if !validGraphReference(attribute.Value) || uriref.Validate(attribute.Value) != nil || strings.Contains(attribute.Value, "#") {
 			return ErrFormat
 		}
@@ -573,22 +615,22 @@ func (g *keyGraph) chargeAttribute(attribute tree.Attribute) error {
 
 func normalizeGraphLimits(limits KeyGraphLimits) (KeyGraphLimits, error) {
 	if limits.MaxDepth == 0 {
-		limits.MaxDepth = 8
+		limits.MaxDepth = defaultGraphDepth
 	}
 
 	if limits.MaxNodes == 0 {
-		limits.MaxNodes = 8192
+		limits.MaxNodes = defaultGraphNodes
 	}
 
 	if limits.MaxBytes == 0 {
-		limits.MaxBytes = 32 << 20
+		limits.MaxBytes = defaultGraphBytes
 	}
 
 	if limits.MaxResources == 0 {
-		limits.MaxResources = 8
+		limits.MaxResources = defaultGraphResources
 	}
 
-	if limits.MaxDepth < 1 || limits.MaxDepth > 32 || limits.MaxNodes < 1 || limits.MaxNodes > 100000 || limits.MaxBytes < 1 || limits.MaxBytes > 128<<20 || limits.MaxResources < 1 || limits.MaxResources > 64 {
+	if limits.MaxDepth < 1 || limits.MaxDepth > maximumGraphDepth || limits.MaxNodes < 1 || limits.MaxNodes > maximumGraphNodes || limits.MaxBytes < 1 || limits.MaxBytes > maximumGraphBytes || limits.MaxResources < 1 || limits.MaxResources > maximumGraphResources {
 		return KeyGraphLimits{}, ErrPolicy
 	}
 
@@ -598,11 +640,13 @@ func normalizeGraphLimits(limits KeyGraphLimits) (KeyGraphLimits, error) {
 func graphWrappingKeyBytes(algorithm string) int {
 	switch algorithm {
 	case AES128KeyWrap:
-		return 16
-	case AES192KeyWrap, TripleDESKeyWrap:
-		return 24
+		return aes128KeyBytes
+	case AES192KeyWrap:
+		return aes192KeyBytes
+	case TripleDESKeyWrap:
+		return tripleDESKeyBytes
 	case AES256KeyWrap:
-		return 32
+		return aes256KeyBytes
 	}
 
 	return 0
@@ -617,18 +661,18 @@ func graphLimitError() error { return errors.Join(ErrPolicy, document.ErrLimit) 
 func graphIDRules(extra []reference.IDAttributeRule) []reference.IDAttributeRule {
 	rules := make([]reference.IDAttributeRule, 0, 2+len(extra))
 	rules = append(rules, reference.IDAttributeRule{
-		Attribute: document.Name{Local: "Id"}, Elements: []document.Name{
-			elementName(Namespace, "EncryptedData"), elementName(Namespace, "EncryptedKey"), elementName(Namespace11, "DerivedKey"),
-			elementName(Namespace, "EncryptionProperties"), elementName(Namespace, "EncryptionProperty"), elementName(SignatureNamespace, lexicon.DSigElementKeyInfo),
-			elementName(Namespace, "OriginatorKeyInfo"), elementName(Namespace, "RecipientKeyInfo"),
+		Attribute: document.Name{Local: lexicon.SecurityAttrID}, Elements: []document.Name{
+			elementName(Namespace, nameEncryptedData), elementName(Namespace, nameEncryptedKey), elementName(Namespace11, nameDerivedKey),
+			elementName(Namespace, nameEncryptionProperties), elementName(Namespace, nameEncryptionProperty), elementName(SignatureNamespace, lexicon.DSigElementKeyInfo),
+			elementName(Namespace, nameOriginatorKeyInfo), elementName(Namespace, nameRecipientKeyInfo),
 		},
-	}, reference.IDAttributeRule{Attribute: document.Name{Space: document.XMLNamespace, Local: "id"}})
+	}, reference.IDAttributeRule{Attribute: document.Name{Space: document.XMLNamespace, Local: lexicon.AttrID}})
 
 	return append(rules, extra...)
 }
 
 func validGraphReference(value string) bool {
-	if len(value) > 4096 || !utf8.ValidString(value) || strings.Contains(value, "\\") {
+	if len(value) > maximumCipherURIBytes || !utf8.ValidString(value) || strings.Contains(value, "\\") {
 		return false
 	}
 
@@ -647,7 +691,7 @@ func graphNameText(element document.Element) (string, error) {
 	}
 
 	text := element.Text()
-	if len(text) > 1024 {
+	if len(text) > maximumGraphTextBytes {
 		return "", graphLimitError()
 	}
 

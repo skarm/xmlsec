@@ -314,15 +314,29 @@ func TestQuantifierGrammarAndEscapedBraces(t *testing.T) {
 
 func TestPerlSpecificSyntaxAndEscapedLookalikes(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{`\b`, `\B`, `\A`, `\Z`, `\z`, `\x41`, `\u0041`, `\U00000041`, `(?i)a`, `(?=a)`, `(?!a)`, `(?<=a)b`, `(?<name>a)`, `(?>a)`} {
+	for _, source := range []string{`\b`, `\B`, `\A`, `\Z`, `\z`, `\x41`, `\u0041`, `\U00000041`, `(?i)a`, `(?=a)`, `(?!a)`, `(?<=a)b`, `(?<name>a)`, `(?>a)`, `[a](?=b)`, `[a-[b]](?=c)`, `\[(?=a)`, `[\\](?=a)`, `[\]](?=a)`} {
 		if err := xpathregex.RejectPerlSpecific(source); err == nil {
 			t.Errorf("Perl syntax accepted: %q", source)
 		}
 	}
-	for _, source := range []string{`(?:a)`, `\\b`, `\(\?`, `\p{Lu}`, `plain`} {
+	for _, source := range []string{`(?:a)`, `\\b`, `\(\?`, `\p{Lu}`, `plain`, `[(?]`, `[(?=]`, `[(?-[?]]`, `[\](?]`} {
 		if err := xpathregex.RejectPerlSpecific(source); err != nil {
 			t.Errorf("XPath syntax rejected: %q: %v", source, err)
 		}
+	}
+}
+
+func TestCharacterClassGroupLookalikesRemainLiteral(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ source, yes, no string }{
+		{`[(?]`, "(", "a"},
+		{`[(?=]`, "=", "a"},
+		{`[(?-[?]]`, "(", "?"},
+		{`[\](?]`, "]", "a"},
+	} {
+		compiled := compileXPathPattern(t, "^(?:"+test.source+")$", false, false)
+		assertRegexMatch(t, compiled, test.yes, true)
+		assertRegexMatch(t, compiled, test.no, false)
 	}
 }
 

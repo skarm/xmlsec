@@ -18,6 +18,31 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+// SignedInfo begins with CanonicalizationMethod and SignatureMethod, followed
+// by at least one Reference. All signature entry points use this same shape.
+const (
+	signedInfoHeaderChildren  = 2
+	signedInfoMinimumChildren = 3
+)
+
+const (
+	stageKey                 = "key"
+	stageManifests           = "manifests"
+	stageReferences          = "references"
+	stageSignatureValue      = "signature-value"
+	stageSignedInfo          = "signed-info"
+	defaultMaxSignatures     = 16
+	initialIDElementCapacity = 9
+	// Caps transforms parsed from one reference independently of execution policy defaults.
+	maximumReferenceTransforms = 64
+	maximumSignatures          = 64
+)
+
+const (
+	nameSignatureProperties = "SignatureProperties"
+	nameSignatureProperty   = "SignatureProperty"
+)
+
 // SignatureOptions verifies an explicitly selected signature. Same-document
 // references are enabled; external resources and recursive Manifest checks require
 // opt-in. Zero options do not require root coverage. Applications should set
@@ -58,13 +83,79 @@ type SignatureOptions struct {
 // and XAdES requirements remain separate. The result has no Root convenience
 // method because core verification does not imply root coverage.
 type SignatureResult struct {
-	doc         *document.Document
-	signature   document.Element
-	algorithm   string
+	// doc retains the exact immutable document snapshot that was checked.
+	doc *document.Document
+	// signature identifies the accepted Signature element in doc.
+	signature document.Element
+	// algorithm is the authenticated SignatureMethod URI.
+	algorithm string
+	// fingerprint identifies the verified key's SubjectPublicKeyInfo by SHA-256.
 	fingerprint string
-	parameters  SignatureParameters
-	references  []ReferenceResult
-	manifests   []ManifestResult
+	// parameters retains authenticated signature algorithm parameters.
+	parameters SignatureParameters
+	// references contains verified direct SignedInfo references.
+	references []ReferenceResult
+	// manifests contains results from explicitly requested Manifest traversal.
+	manifests []ManifestResult
+}
+
+// CheckStatus records a diagnostic outcome. It grants no partial trust in returned
+// data.
+type CheckStatus string
+
+const (
+	// NotChecked indicates that a check was not performed.
+	NotChecked CheckStatus = "not-checked"
+	// Valid indicates a successful check.
+	Valid CheckStatus = "valid"
+	// Invalid indicates invalid data or a failed check.
+	Invalid CheckStatus = "invalid"
+	// Unsupported indicates an unsupported feature.
+	Unsupported CheckStatus = "unsupported"
+	// Disallowed indicates a policy rejection.
+	Disallowed CheckStatus = "disallowed"
+	// Indeterminate indicates that validation cannot establish the required result.
+	Indeterminate CheckStatus = "indeterminate"
+)
+
+// ReferenceReport records one reference digest outcome and its completed transform
+// steps.
+type ReferenceReport struct {
+	// Index is the zero-based reference position within its SignedInfo or Manifest.
+	Index int `json:"index"`
+	// URI preserves the signed reference URI spelling.
+	URI string `json:"uri"`
+	// ResourceURI is the authorized resolver URI; URI preserves signed spelling.
+	ResourceURI string `json:"resource_uri,omitempty"`
+	// Status records the reference digest check outcome.
+	Status CheckStatus `json:"status"`
+	// Stage identifies the failed reference processing stage, when present.
+	Stage string `json:"stage,omitempty"`
+	// Error describes the reference failure, or is empty on success.
+	Error string `json:"error,omitempty"`
+	// Steps records completed transforms and implicit conversions.
+	Steps []reference.Step `json:"steps,omitempty"`
+}
+
+// VerificationReport contains signature, reference and Manifest diagnostics. Check the
+// returned error before accepting any result.
+type VerificationReport struct {
+	// ManifestValidation records the requested Manifest validation outcome.
+	ManifestValidation CheckStatus `json:"manifest_validation"`
+	// Manifests contains diagnostics for traversed Manifests in recursive mode.
+	Manifests []ManifestReport `json:"manifests,omitempty"`
+	// Status records the overall signature verification outcome.
+	Status CheckStatus `json:"status"`
+	// SignatureValue records the cryptographic signature check outcome.
+	SignatureValue CheckStatus `json:"signature_value"`
+	// SignatureMethod is the declared XMLDSig signature algorithm URI.
+	SignatureMethod string `json:"signature_method,omitempty"`
+	// References contains direct SignedInfo reference diagnostics in document order.
+	References []ReferenceReport `json:"references,omitempty"`
+	// FailureStage identifies the stage at which verification failed, when present.
+	FailureStage string `json:"failure_stage,omitempty"`
+	// Error describes the verification failure, or is empty on success.
+	Error string `json:"error,omitempty"`
 }
 
 // VerifySignature validates ONLY the explicitly selected signature with the
@@ -156,6 +247,23 @@ func (r *SignatureResult) CoversElement(e document.Element) bool {
 	return false
 }
 
+// Signatures lists UNTRUSTED handles in document order, including nested ones.
+// Neither this enumeration nor selecting a handle establishes trust.
+func Signatures(doc *document.Document) []document.Element {
+	if doc == nil || !doc.Root().Valid() {
+		return nil
+	}
+
+	found := findSignatures(doc)
+
+	out := make([]document.Element, len(found))
+	for i, n := range found {
+		out[i] = tree.Wrap(doc, n)
+	}
+
+	return out
+}
+
 func failureStatus(err error) CheckStatus {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -181,10 +289,10 @@ func coreOptions(doc *document.Document, opt SignatureOptions) (SignatureOptions
 	}
 
 	if opt.MaxSignatures == 0 {
-		opt.MaxSignatures = 16
+		opt.MaxSignatures = defaultMaxSignatures
 	}
 
-	if opt.MaxSignatures < 1 || opt.MaxSignatures > 64 {
+	if opt.MaxSignatures < 1 || opt.MaxSignatures > maximumSignatures {
 		return opt, p, fmt.Errorf("%w: signature count limit", ErrPolicy)
 	}
 
@@ -218,19 +326,19 @@ func coreOptions(doc *document.Document, opt SignatureOptions) (SignatureOptions
 }
 
 func coreIDRules(opt SignatureOptions) []reference.IDAttributeRule {
-	names := make([]document.Name, 0, 9)
-	for _, local := range []string{lexicon.DSigElementSignature, lexicon.DSigElementSignedInfo, lexicon.DSigElementSignatureValue, lexicon.DSigElementReference, lexicon.DSigElementKeyInfo, "Object", "Manifest", "SignatureProperties", "SignatureProperty"} {
+	names := make([]document.Name, 0, initialIDElementCapacity)
+	for _, local := range []string{lexicon.DSigElementSignature, lexicon.DSigElementSignedInfo, lexicon.DSigElementSignatureValue, lexicon.DSigElementReference, lexicon.DSigElementKeyInfo, lexicon.DSigElementObject, nameManifest, nameSignatureProperties, nameSignatureProperty} {
 		names = append(names, document.Name{Space: Namespace, Local: local})
 	}
 
-	rules := []reference.IDAttributeRule{{Attribute: opt.IDAttribute}, {Attribute: document.Name{Local: "Id"}, Elements: names}}
+	rules := []reference.IDAttributeRule{{Attribute: opt.IDAttribute}, {Attribute: document.Name{Local: lexicon.SecurityAttrID}, Elements: names}}
 	rules = append(rules, keyinfo.DefaultIDRules()...)
 
 	return append(rules, opt.AdditionalIDRules...)
 }
 
 func signatureParts(sig *tree.Node) (si, sv *tree.Node, err error) {
-	children, err := structure(sig, lexicon.DSigElementSignature, "Id")
+	children, err := structure(sig, lexicon.DSigElementSignature, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -241,7 +349,7 @@ func signatureParts(sig *tree.Node) (si, sv *tree.Node, err error) {
 
 	rest := children[2:]
 	if len(rest) > 0 && isDS(rest[0], lexicon.DSigElementKeyInfo) {
-		if err := attributes(rest[0], "Id"); err != nil {
+		if err := attributes(rest[0], lexicon.SecurityAttrID); err != nil {
 			return nil, nil, err
 		}
 
@@ -249,11 +357,11 @@ func signatureParts(sig *tree.Node) (si, sv *tree.Node, err error) {
 	}
 
 	for _, object := range rest {
-		if !isDS(object, "Object") {
+		if !isDS(object, lexicon.DSigElementObject) {
 			return nil, nil, fmt.Errorf("%w: expected Object after SignatureValue/KeyInfo", ErrStructure)
 		}
 
-		if err := attributes(object, "Id", "MimeType", "Encoding"); err != nil {
+		if err := attributes(object, lexicon.SecurityAttrID, lexicon.SecurityAttrMimeType, lexicon.SecurityAttrEncoding); err != nil {
 			return nil, nil, err
 		}
 		// Object content is arbitrary XML. No XAdES/Manifest interpretation here.
@@ -294,12 +402,12 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 		return nil, err
 	}
 
-	signed, err := structure(si, lexicon.DSigElementSignedInfo, "Id")
+	signed, err := structure(si, lexicon.DSigElementSignedInfo, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(signed) < 3 || len(signed)-2 > p.MaxReferences || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
+	if len(signed) < signedInfoMinimumChildren || len(signed)-signedInfoHeaderChildren > p.MaxReferences || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
 		return nil, fmt.Errorf("%w: SignedInfo children/reference count", ErrStructure)
 	}
 
@@ -325,16 +433,16 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 	report.SignatureMethod = plan.method
 
 	if template {
-		err = emptyValue(sv, lexicon.DSigElementSignatureValue, "Id")
+		err = emptyValue(sv, lexicon.DSigElementSignatureValue, lexicon.SecurityAttrID)
 	} else {
-		plan.value, err = base64Value(ctx, sv, lexicon.DSigElementSignatureValue, 2048, "Id")
+		plan.value, err = base64Value(ctx, sv, lexicon.DSigElementSignatureValue, maximumSignatureBytes, lexicon.SecurityAttrID)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	if err := plan.prepareReferences(ctx, signed[2:], opt, template, report); err != nil {
+	if err := plan.prepareReferences(ctx, signed[signedInfoHeaderChildren:], opt, template, report); err != nil {
 		return nil, err
 	}
 
@@ -362,7 +470,7 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 
 func verifySignatureDetailed(ctx context.Context, doc *document.Document, selected document.Element, credential signatureCredential, opt SignatureOptions) (result *SignatureResult, report *VerificationReport, resultErr error) {
 	report = &VerificationReport{Status: NotChecked, SignatureValue: NotChecked, ManifestValidation: NotChecked}
-	stage := "structure"
+	stage := stageStructure
 
 	defer func() {
 		if resultErr != nil {
@@ -377,21 +485,21 @@ func verifySignatureDetailed(ctx context.Context, doc *document.Document, select
 		return nil, report, err
 	}
 
-	stage = "key"
+	stage = stageKey
 
 	if err := credential.validate(plan.spec, plan.policy); err != nil {
 		return nil, report, err
 	}
 
 	budget := newCoreBudget(plan)
-	stage = "signed-info"
+	stage = stageSignedInfo
 
 	canonical, err := credential.prepareInput(ctx, plan.spec, func(dst io.Writer) error { return budget.signedInfo(ctx, dst, doc, plan) })
 	if err != nil {
 		return nil, report, err
 	}
 
-	stage = "signature-value"
+	stage = stageSignatureValue
 
 	if err := ctx.Err(); err != nil {
 		return nil, report, err
@@ -403,17 +511,17 @@ func verifySignatureDetailed(ctx context.Context, doc *document.Document, select
 
 	report.SignatureValue = Valid
 	result = &SignatureResult{doc: doc, signature: selected, algorithm: plan.method, parameters: plan.spec.parameters()}
-	stage = "references"
+	stage = stageReferences
 
 	if err := plan.graph.verify(ctx, doc, plan, budget, result, report); err != nil {
 		if _, ok := errors.AsType[*ManifestReferenceError](err); ok {
-			stage = "manifests"
+			stage = stageManifests
 		}
 
 		return nil, report, err
 	}
 
-	stage = "coverage"
+	stage = stageCoverage
 
 	for _, e := range opt.RequiredElements {
 		if !result.CoversElement(e) {
@@ -451,7 +559,7 @@ func finalizeVerificationReport(report *VerificationReport, stage string, err er
 	report.FailureStage = stage
 	report.Error = err.Error()
 
-	if stage == "signature-value" {
+	if stage == stageSignatureValue {
 		report.SignatureValue = status
 	}
 
@@ -491,82 +599,6 @@ func recordReferenceFailure(references []ReferenceReport, re *ReferenceError, st
 	r.Error = re.Err.Error()
 }
 
-// CheckStatus records a diagnostic outcome. It grants no partial trust in returned
-// data.
-type CheckStatus string
-
-const (
-	// NotChecked indicates that a check was not performed.
-	NotChecked CheckStatus = "not-checked"
-	// Valid indicates a successful check.
-	Valid CheckStatus = "valid"
-	// Invalid indicates invalid data or a failed check.
-	Invalid CheckStatus = "invalid"
-	// Unsupported indicates an unsupported feature.
-	Unsupported CheckStatus = "unsupported"
-	// Disallowed indicates a policy rejection.
-	Disallowed CheckStatus = "disallowed"
-	// Indeterminate indicates that validation cannot establish the required result.
-	Indeterminate CheckStatus = "indeterminate"
-)
-
-// ReferenceReport records one reference digest outcome and its completed transform
-// steps.
-type ReferenceReport struct {
-	// Index is the zero-based reference position within its SignedInfo or Manifest.
-	Index int `json:"index"`
-	// URI preserves the signed reference URI spelling.
-	URI string `json:"uri"`
-	// ResourceURI is the authorized resolver URI; URI preserves signed spelling.
-	ResourceURI string `json:"resource_uri,omitempty"`
-	// Status records the reference digest check outcome.
-	Status CheckStatus `json:"status"`
-	// Stage identifies the failed reference processing stage, when present.
-	Stage string `json:"stage,omitempty"`
-	// Error describes the reference failure, or is empty on success.
-	Error string `json:"error,omitempty"`
-	// Steps records completed transforms and implicit conversions.
-	Steps []reference.Step `json:"steps,omitempty"`
-}
-
-// VerificationReport contains signature, reference and Manifest diagnostics. Check the
-// returned error before accepting any result.
-type VerificationReport struct {
-	// ManifestValidation records the requested Manifest validation outcome.
-	ManifestValidation CheckStatus `json:"manifest_validation"`
-	// Manifests contains diagnostics for traversed Manifests in recursive mode.
-	Manifests []ManifestReport `json:"manifests,omitempty"`
-	// Status records the overall signature verification outcome.
-	Status CheckStatus `json:"status"`
-	// SignatureValue records the cryptographic signature check outcome.
-	SignatureValue CheckStatus `json:"signature_value"`
-	// SignatureMethod is the declared XMLDSig signature algorithm URI.
-	SignatureMethod string `json:"signature_method,omitempty"`
-	// References contains direct SignedInfo reference diagnostics in document order.
-	References []ReferenceReport `json:"references,omitempty"`
-	// FailureStage identifies the stage at which verification failed, when present.
-	FailureStage string `json:"failure_stage,omitempty"`
-	// Error describes the verification failure, or is empty on success.
-	Error string `json:"error,omitempty"`
-}
-
-// Signatures lists UNTRUSTED handles in document order, including nested ones.
-// Neither this enumeration nor selecting a handle establishes trust.
-func Signatures(doc *document.Document) []document.Element {
-	if doc == nil || !doc.Root().Valid() {
-		return nil
-	}
-
-	found := findSignatures(doc)
-
-	out := make([]document.Element, len(found))
-	for i, n := range found {
-		out[i] = tree.Wrap(doc, n)
-	}
-
-	return out
-}
-
 type coreReference struct {
 	uri        string
 	typeURI    string
@@ -595,7 +627,7 @@ type corePlan struct {
 func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node, opt SignatureOptions, template bool, report *VerificationReport) error {
 	report.References = make([]ReferenceReport, len(nodes))
 	for i, n := range nodes {
-		uri, _ := getAttr(n, document.Name{Local: "URI"})
+		uri, _ := getAttr(n, document.Name{Local: lexicon.SecurityAttrURI})
 		report.References[i] = ReferenceReport{Index: i, URI: uri, Status: NotChecked}
 	}
 
@@ -607,7 +639,7 @@ func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node,
 	for i, n := range nodes {
 		ref, err := parseCoreReference(ctx, n, plan.policy, plan.processing, template)
 		if err != nil {
-			return &ReferenceError{i, ref.uri, "structure", err}
+			return &ReferenceError{i, report.References[i].URI, stageStructure, err}
 		}
 
 		if opt.ExpectedURIs != nil {
@@ -631,17 +663,17 @@ func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node,
 func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt reference.Options, template bool) (coreReference, error) {
 	var ref coreReference
 
-	children, err := structure(n, lexicon.DSigElementReference, "URI", "Id", "Type")
+	children, err := structure(n, lexicon.DSigElementReference, lexicon.SecurityAttrURI, lexicon.SecurityAttrID, lexicon.SecurityAttrType)
 	if err != nil {
 		return ref, err
 	}
 
-	ref.uri, err = requiredAttribute(n, "URI")
+	ref.uri, err = requiredAttribute(n, lexicon.SecurityAttrURI)
 	if err != nil {
 		return ref, err
 	}
 
-	ref.typeURI, _ = getAttr(n, document.Name{Local: "Type"})
+	ref.typeURI, _ = getAttr(n, document.Name{Local: lexicon.SecurityAttrType})
 
 	if len(children) > 0 && isDS(children[0], lexicon.DSigElementTransforms) {
 		ref.transforms, err = parseCoreTransforms(ctx, children[0], opt)
@@ -693,7 +725,7 @@ func parseCoreTransforms(ctx context.Context, n *tree.Node, opt reference.Option
 		return nil, err
 	}
 
-	if len(ts) == 0 || len(ts) > 64 {
+	if len(ts) == 0 || len(ts) > maximumReferenceTransforms {
 		return nil, fmt.Errorf("%w: Transforms count", ErrStructure)
 	}
 
@@ -716,7 +748,7 @@ func parseCoreTransform(ctx context.Context, tr *tree.Node, opt reference.Option
 }
 
 func parseTransform(ctx context.Context, tr *tree.Node, doc *document.Document) (reference.Transform, error) {
-	algorithm, err := requiredAttribute(tr, "Algorithm")
+	algorithm, err := requiredAttribute(tr, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return reference.Transform{}, err
 	}

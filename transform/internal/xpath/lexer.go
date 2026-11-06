@@ -29,6 +29,20 @@ type lexer struct {
 	version  int
 }
 
+// SplitUnion returns the outer union operands, using XPath's lexical rules.
+// Parentheses enclosing an entire union are stripped, as required by XSLT's
+// default-priority rules. Other expressions retain their original source.
+func SplitUnion(input string, version int) ([]string, error) {
+	return splitUnion(input, version, false)
+}
+
+// SplitPatternUnion retains the narrower XSLT 1.0/2.0 pattern grammar:
+// only a top-level pipe separates alternatives, and grouping parentheses
+// and explicit non-pattern axes remain forbidden outside predicates.
+func SplitPatternUnion(input string, version int) ([]string, error) {
+	return splitUnion(input, version, version == xpathVersion10 || version == xpathVersion20)
+}
+
 // newLexer creates a lexer and tokenizes the entire input.
 func newLexer(input string) (*lexer, error) {
 	return newVersionLexer(input, 0)
@@ -176,8 +190,8 @@ func (l *lexer) scanToken() error {
 
 func (l *lexer) scanParenthesisOrComment() error {
 	if l.pos+1 < len(l.input) && l.input[l.pos+1] == ':' {
-		if l.version == 10 {
-			return profileError(lexicon.ErrXPST0003, "comments", 10)
+		if l.version == xpathVersion10 {
+			return profileError(lexicon.ErrXPST0003, "comments", xpathVersion10)
 		}
 
 		return l.skipComment()
@@ -365,8 +379,8 @@ func (l *lexer) scanString() (string, error) {
 		if l.input[l.pos] == quote {
 			// XPath 3.1: doubled quote is an escape ('' → ', "" → ")
 			if l.pos+1 < len(l.input) && l.input[l.pos+1] == quote {
-				if l.version == 10 {
-					return "", profileError(lexicon.ErrXPST0003, "doubled quote escape", 10)
+				if l.version == xpathVersion10 {
+					return "", profileError(lexicon.ErrXPST0003, "doubled quote escape", xpathVersion10)
 				}
 
 				l.pos += 2
@@ -502,7 +516,7 @@ func (l *lexer) scanURIQualifiedName(wildcard bool) (string, error) {
 	l.pos++ // '}'
 
 	if uri == lexicon.NamespaceXMLNS {
-		return "", &xdm.Error{Code: "XQST0070", Message: "the xmlns namespace URI cannot be used in an EQName"}
+		return "", &xdm.Error{Code: errCodeXQST0070, Message: "the xmlns namespace URI cannot be used in an EQName"}
 	}
 
 	local := l.scanNCName()
@@ -580,22 +594,8 @@ type sourceSpan struct {
 	end   int
 }
 
-// SplitUnion returns the outer union operands, using XPath's lexical rules.
-// Parentheses enclosing an entire union are stripped, as required by XSLT's
-// default-priority rules. Other expressions retain their original source.
-func SplitUnion(input string, version int) ([]string, error) {
-	return splitUnion(input, version, false)
-}
-
-// SplitPatternUnion retains the narrower XSLT 1.0/2.0 pattern grammar:
-// only a top-level pipe separates alternatives, and grouping parentheses
-// and explicit non-pattern axes remain forbidden outside predicates.
-func SplitPatternUnion(input string, version int) ([]string, error) {
-	return splitUnion(input, version, version == 10 || version == 20)
-}
-
 func splitUnion(input string, version int, legacyPattern bool) ([]string, error) {
-	if !legacyPattern && !strings.Contains(input, "|") && !strings.Contains(input, "union") {
+	if !legacyPattern && !strings.Contains(input, "|") && !strings.Contains(input, nameUnion) {
 		return []string{input}, nil
 	}
 
@@ -698,13 +698,21 @@ func unionTokenBounds(tokens []Token) (int, int) {
 }
 
 func estimateTokenCapacity(input string) int {
-	if len(input) < 8 {
-		return 8
+	// Short sources get a fixed token reservation; larger sources use a capped
+	// estimate. These are allocation hints, not source or token acceptance limits.
+	const (
+		shortSourceThresholdBytes     = 8
+		shortSourceTokenCapacity      = 8
+		maximumEstimatedTokenCapacity = 256
+	)
+
+	if len(input) < shortSourceThresholdBytes {
+		return shortSourceTokenCapacity
 	}
 
 	// Comments and whitespace can dominate the source without producing tokens.
 	// Grow for actual tokens rather than reserving a source-sized token array.
-	return min(len(input)/2+1, 256)
+	return min(len(input)/2+1, maximumEstimatedTokenCapacity)
 }
 
 func singleRuneToken(r rune) (TokenType, bool) {

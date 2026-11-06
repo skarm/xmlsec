@@ -15,6 +15,11 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Exact diagnostic identifiers shared by these XSLT checks; naming a code does not change its selected error path or message.
+const (
+	errCodeXTDE1500 = "XTDE1500"
+)
+
 // paramDocPresence records every explicitly supplied canonical parameter,
 // including false booleans, empty strings/lists and an empty character map.
 type paramDocPresence map[string]struct{}
@@ -33,7 +38,7 @@ func (ec *execContext) CheckRead(ctx context.Context, uri string) error {
 		return err
 	}
 
-	if ec.stylesheet.processorLanguage() < 30 {
+	if ec.stylesheet.processorLanguage() < processorXSLT30 {
 		return nil
 	}
 
@@ -48,20 +53,24 @@ func (ec *execContext) CheckRead(ctx context.Context, uri string) error {
 
 	if key == ec.canonicalPrimaryURI {
 		if ec.primaryClaimedImplicitly {
-			return dynamicError("XTDE1500", "resource %q is both read and written", key)
+			return dynamicError(errCodeXTDE1500, "resource %q is both read and written", key)
 		}
 
 		key = ""
 	}
 
 	if _, written := ec.usedResultURIs[key]; written {
-		return dynamicError("XTDE1500", "resource %q is both read and written", uri)
+		return dynamicError(errCodeXTDE1500, "resource %q is both read and written", uri)
 	}
 
 	return nil
 }
 
 func (ec *execContext) RecordRead(ctx context.Context, uri string) error {
+	const (
+		readURIAccountingBytes = 32
+	)
+
 	if uri == "" {
 		return ctx.Err()
 	}
@@ -74,7 +83,7 @@ func (ec *execContext) RecordRead(ctx context.Context, uri string) error {
 		return err
 	}
 
-	if ec.stylesheet.processorLanguage() < 30 {
+	if ec.stylesheet.processorLanguage() < processorXSLT30 {
 		return nil
 	}
 
@@ -87,7 +96,7 @@ func (ec *execContext) RecordRead(ctx context.Context, uri string) error {
 		return nil
 	}
 
-	if err := xpath.ChargeString(ctx, len(key)+32); err != nil {
+	if err := xpath.ChargeString(ctx, len(key)+readURIAccountingBytes); err != nil {
 		return err
 	}
 
@@ -148,15 +157,20 @@ func (ec *execContext) getParamDocPresence(inst *resultDocumentInst) paramDocPre
 // the result of executing the body.
 func (ec *execContext) execDocument(ctx context.Context, inst *documentInst) error {
 	tmpDoc := xdm.NewDefaultDocument()
+	tmpDoc.SetProperties(tmpDoc.Properties() | xdm.DocInternal)
+	tmpDoc.SetURL(ec.effectiveStaticBaseURI())
 	frame := &outputFrame{doc: tmpDoc, current: tmpDoc}
 
+	savedResultDoc := ec.resultDoc
+	ec.resultDoc = tmpDoc
 	ec.outputStack = append(ec.outputStack, frame)
-	if err := ec.executeSequenceConstructor(ctx, inst.Body); err != nil {
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+	err := ec.executeSequenceConstructor(ctx, inst.Body)
+	ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+	ec.resultDoc = savedResultDoc
+
+	if err != nil {
 		return err
 	}
-
-	ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
 
 	// Apply type validation (xsl:document type="...").
 	if inst.TypeName != "" {
@@ -510,7 +524,7 @@ func (ec *execContext) checkResourceWrite(uri string) error {
 		return ec.resourceOwner.checkResourceWrite(uri)
 	}
 
-	if ec.stylesheet.processorLanguage() < 30 {
+	if ec.stylesheet.processorLanguage() < processorXSLT30 {
 		return nil
 	}
 
@@ -519,7 +533,7 @@ func (ec *execContext) checkResourceWrite(uri string) error {
 	}
 
 	if _, read := ec.readResourceURIs[resourceURIKey(uri)]; read {
-		return dynamicError("XTDE1500", "resource %q is both read and written", uri)
+		return dynamicError(errCodeXTDE1500, "resource %q is both read and written", uri)
 	}
 
 	return nil
@@ -687,7 +701,7 @@ func (ec *execContext) validatePrimaryResultItems(items xdm.Sequence, method str
 func (ec *execContext) execPrimaryItemDocument(ctx context.Context, inst *resultDocumentInst, effectiveMethod string, itemSep *string, primaryOverrides *OutputDef) error {
 	tmpDoc := xdm.NewDefaultDocument()
 
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
+	tmpRoot, err := tmpDoc.CreateElement(temporaryOutputWrapper)
 	if err != nil {
 		return err
 	}
@@ -920,7 +934,7 @@ func (ec *execContext) evalBoolSerializationAVT(ctx context.Context, a *avt, par
 	b, ok := parseXSLTBoolean(v, ec.stylesheet.processorLanguage())
 	if !ok {
 		code := lexicon.ErrSEPM0016
-		if ec.stylesheet.processorLanguage() == 20 {
+		if ec.stylesheet.processorLanguage() == processorXSLT20 {
 			code = errCodeXTDE0030
 		}
 
@@ -937,17 +951,17 @@ func (ec *execContext) evalStandaloneSerializationAVT(ctx context.Context, attri
 		return "", err
 	}
 
-	value = strings.Trim(value, " \t\r\n")
-	if ec.stylesheet.processorLanguage() == 20 && value != lexicon.ValueOmit {
-		if _, valid := parseXSLTBoolean(value, 20); !valid {
+	value = strings.Trim(value, lexicon.XMLWhitespace)
+	if ec.stylesheet.processorLanguage() == processorXSLT20 && value != lexicon.ValueOmit {
+		if _, valid := parseXSLTBoolean(value, processorXSLT20); !valid {
 			return "", dynamicError(errCodeXTDE0030, "%q is not a valid XSLT 2.0 value for xsl:result-document/@standalone", value)
 		}
 	}
 
 	switch value {
-	case lexicon.ValueTrue, "1":
+	case lexicon.ValueTrue, booleanDigitTrue:
 		return lexicon.ValueYes, nil
-	case lexicon.ValueFalse, "0":
+	case lexicon.ValueFalse, booleanDigitFalse:
 		return lexicon.ValueNo, nil
 	default:
 		return value, nil

@@ -156,19 +156,50 @@ func TestKeyInfoURIContextPolicy(t *testing.T) {
 	}
 
 	// Complete fragment identities reach the resolver, also for binary keys.
-	der := cert(t, key)
+	d := cert(t, key)
 	options.External.Resolver = resolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
 		if uri != allowed {
 			t.Fatal("fragment was discarded", uri)
 		}
 
-		return io.NopCloser(bytes.NewReader(der)), nil
+		return io.NopCloser(bytes.NewReader(d)), nil
 	})
 	doc = parseXML(t, wrap(`<ds:RetrievalMethod URI="key.xml#selected" Type="`+keyinfo.RawX509Certificate+`"/>`))
 
 	result, err = keyinfo.Parse(t.Context(), doc, doc.Root(), options)
 	if err != nil || len(result.Candidates()) != 1 || result.Candidates()[0].ResourceURI() != allowed {
 		t.Fatal("raw-certificate URI context", err)
+	}
+}
+
+func TestFragmentURIValidationBeforeResolver(t *testing.T) {
+	for _, uri := range []string{"#%", "#%0", "#%zz", "#target key", "#target#key", `#target\key`, "#%FF", "#xpointer(id(target))"} {
+		for _, representation := range []string{"KeyInfoReference", "RetrievalMethod"} {
+			for _, explicit := range []bool{false, true} {
+				t.Run(representation+"/"+strconv.FormatBool(explicit)+"/"+uri, func(t *testing.T) {
+					later := `<k:KeyInfoReference URI="` + uri + `"/>`
+					if representation == "RetrievalMethod" {
+						later = `<ds:RetrievalMethod URI="` + uri + `"/>`
+					}
+
+					calls := 0
+					options := keyinfo.Options{}
+					if explicit {
+						options = retrievalOptions(nil)
+					}
+
+					options.External = &keyinfo.ExternalResources{AllowedURIs: []string{uriUrnKey}, Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+						calls++
+						return io.NopCloser(strings.NewReader(wrap(`<ds:KeyName>remote</ds:KeyName>`))), nil
+					})}
+					requireErr(t, wrap(`<k:KeyInfoReference URI="urn:key"/>`+later), options, keyinfo.ErrInput)
+
+					if calls != 0 {
+						t.Fatal("resolver preceded malformed fragment preflight", calls)
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -214,17 +245,6 @@ func TestRetrievalTypesAndPreflight(t *testing.T) {
 	if calls != 0 {
 		t.Fatal("resource fetched before transform preflight")
 	}
-}
-
-func mustSPKI(t testing.TB, k any) []byte {
-	t.Helper()
-
-	b, e := x509.MarshalPKIXPublicKey(k)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return b
 }
 
 func TestDirectCRLRetainedWithoutTrust(t *testing.T) {
@@ -377,18 +397,6 @@ func TestRetrievalTransformChains(t *testing.T) {
 			t.Fatal("containing signature context was lost", err)
 		}
 	})
-}
-
-func retrievalOptions(programs []reference.Transform) keyinfo.Options {
-	processing := reference.DefaultOptions()
-
-	for _, program := range programs {
-		if reference.IsExtension(program.Algorithm) {
-			processing.AllowedTransforms = append(processing.AllowedTransforms, program.Algorithm)
-		}
-	}
-
-	return keyinfo.Options{RetrievalProcessing: &processing}
 }
 
 func TestRetrievalApprovedPrograms(t *testing.T) {
@@ -653,22 +661,6 @@ func TestRetrievalTransformReaderFailures(t *testing.T) {
 	}
 }
 
-type retrievalCloseFailure struct {
-	source *reader
-	err    error
-}
-
-func (r *retrievalCloseFailure) Read(dst []byte) (int, error) { return r.source.Read(dst) }
-func (r *retrievalCloseFailure) Close() error                 { _ = r.source.Close(); return r.err }
-
-func distinguishedAVA(oid asn1.ObjectIdentifier, tag int, text string) []byte {
-	return der.Seq(der.OID(oid), der.Wrap(0, tag, false, []byte(text)))
-}
-
-func distinguishedCN(tag int, text string) []byte {
-	return der.Seq(der.Set(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, tag, text)))
-}
-
 func TestDistinguishedNameStringPreparation(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -880,4 +872,43 @@ func TestCRLConfiguredBlobBudget(t *testing.T) {
 	if err != nil || result == nil || !bytes.Equal(result.X509Groups()[0].CRLsDER()[0], raw) {
 		t.Fatal("configured larger CRL cap narrowed", err)
 	}
+}
+
+func mustSPKI(t testing.TB, k any) []byte {
+	t.Helper()
+
+	b, e := x509.MarshalPKIXPublicKey(k)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return b
+}
+
+func retrievalOptions(programs []reference.Transform) keyinfo.Options {
+	processing := reference.DefaultOptions()
+
+	for _, program := range programs {
+		if reference.IsExtension(program.Algorithm) {
+			processing.AllowedTransforms = append(processing.AllowedTransforms, program.Algorithm)
+		}
+	}
+
+	return keyinfo.Options{RetrievalProcessing: &processing}
+}
+
+type retrievalCloseFailure struct {
+	source *reader
+	err    error
+}
+
+func (r *retrievalCloseFailure) Read(dst []byte) (int, error) { return r.source.Read(dst) }
+func (r *retrievalCloseFailure) Close() error                 { _ = r.source.Close(); return r.err }
+
+func distinguishedAVA(oid asn1.ObjectIdentifier, tag int, text string) []byte {
+	return der.Seq(der.OID(oid), der.Wrap(0, tag, false, []byte(text)))
+}
+
+func distinguishedCN(tag int, text string) []byte {
+	return der.Seq(der.Set(distinguishedAVA(asn1.ObjectIdentifier{2, 5, 4, 3}, tag, text)))
 }

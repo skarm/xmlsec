@@ -36,7 +36,11 @@ type answer struct {
 	Data  []byte   `json:"data,omitempty"`
 	Keys  [][]byte `json:"keys,omitempty"`
 	Valid bool     `json:"valid,omitempty"`
-	Error string   `json:"error,omitempty"`
+}
+
+type reply struct {
+	answer
+	Error string `json:"error,omitempty"`
 }
 
 func main() {
@@ -49,7 +53,11 @@ func main() {
 			return
 		}
 
-		a, e := run(t)
+		a := reply{}
+
+		var e error
+
+		a.answer, e = run(t)
 		if e != nil {
 			a.Error = e.Error()
 		}

@@ -15,6 +15,17 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+const (
+	cancellationInterval = 4096
+	// Identifies Unicode CGJ while detecting extra joiners inserted by the underlying stream-safe
+	// normalizer.
+	combiningGraphemeJoiner      = "\u034f"
+	normalizationReadBufferBytes = 4096
+	// Target byte size for batching complete normalization segments; a combining segment can exceed
+	// it.
+	segmentChunkBytes = 4096
+)
+
 // Form selects a Unicode normalization form.
 type Form norm.Form
 
@@ -46,7 +57,7 @@ func (f Form) EachBytes(ctx context.Context, s string, emit func([]byte) error) 
 	var iterator norm.Iter
 
 	return f.segments(ctx, s, func(source string) error {
-		if len(source) > 4096+utf8.UTFMax {
+		if len(source) > segmentChunkBytes+utf8.UTFMax {
 			result, err := f.longSegment(ctx, source)
 			if err != nil {
 				return err
@@ -59,10 +70,10 @@ func (f Form) EachBytes(ctx context.Context, s string, emit func([]byte) error) 
 
 		joiners := 0
 		for !iterator.Done() {
-			joiners += bytes.Count(iterator.Next(), []byte("\u034f"))
+			joiners += bytes.Count(iterator.Next(), []byte(combiningGraphemeJoiner))
 		}
 
-		if joiners != strings.Count(source, "\u034f") {
+		if joiners != strings.Count(source, combiningGraphemeJoiner) {
 			result, err := f.longSegment(ctx, source)
 			if err != nil {
 				return err
@@ -137,7 +148,7 @@ func (f Form) segments(ctx context.Context, s string, emit func(string) error) e
 
 		end := len(s)
 		for at := 0; at < len(s); {
-			if at >= 4096 && f.PropertiesString(s[at:]).BoundaryBefore() {
+			if at >= segmentChunkBytes && f.PropertiesString(s[at:]).BoundaryBefore() {
 				end = at
 				break
 			}
@@ -145,7 +156,7 @@ func (f Form) segments(ctx context.Context, s string, emit func(string) error) e
 			_, size := utf8.DecodeRuneInString(s[at:])
 
 			at += size
-			if at%4096 < utf8.UTFMax {
+			if at%cancellationInterval < utf8.UTFMax {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
@@ -163,12 +174,12 @@ func (f Form) segments(ctx context.Context, s string, emit func(string) error) e
 }
 
 func (f Form) segment(ctx context.Context, s string) (string, error) {
-	if len(s) > 4096+utf8.UTFMax {
+	if len(s) > segmentChunkBytes+utf8.UTFMax {
 		return f.longSegment(ctx, s)
 	}
 
 	result := norm.Form(f).String(s)
-	if strings.Count(result, "\u034f") == strings.Count(s, "\u034f") {
+	if strings.Count(result, combiningGraphemeJoiner) == strings.Count(s, combiningGraphemeJoiner) {
 		return result, ctx.Err()
 	}
 
@@ -191,7 +202,7 @@ func (f Form) longSegment(ctx context.Context, s string) (string, error) {
 	out.Grow(len(s))
 
 	for at, c := range chars {
-		if at%4096 == 0 {
+		if at%cancellationInterval == 0 {
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
@@ -221,7 +232,7 @@ func (f Form) longSegmentBytes(ctx context.Context, s []byte) ([]byte, error) {
 	out := make([]byte, 0, len(s))
 
 	for at, c := range chars {
-		if at%4096 == 0 {
+		if at%cancellationInterval == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -234,15 +245,17 @@ func (f Form) longSegmentBytes(ctx context.Context, s []byte) ([]byte, error) {
 }
 
 func (f Form) normalizedCharacters(ctx context.Context, size int, input iter.Seq2[int, rune]) ([]character, error) {
+	const initialCharacterCapacityDivisor = 2
+
 	decomposition := norm.NFD
 	if f == NFKC || f == NFKD {
 		decomposition = norm.NFKD
 	}
 
-	chars := make([]character, 0, size/2)
+	chars := make([]character, 0, size/initialCharacterCapacityDivisor)
 
 	for at, r := range input {
-		if at%4096 < utf8.UTFMax {
+		if at%cancellationInterval < utf8.UTFMax {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -271,12 +284,12 @@ func (f Form) normalizedCharacters(ctx context.Context, size int, input iter.Seq
 }
 
 func (f Form) segmentBytes(ctx context.Context, s []byte) ([]byte, error) {
-	if len(s) > 4096+utf8.UTFMax {
+	if len(s) > segmentChunkBytes+utf8.UTFMax {
 		return f.longSegmentBytes(ctx, s)
 	}
 
 	result := norm.Form(f).Bytes(s)
-	if bytes.Count(result, []byte("\u034f")) == bytes.Count(s, []byte("\u034f")) {
+	if bytes.Count(result, []byte(combiningGraphemeJoiner)) == bytes.Count(s, []byte(combiningGraphemeJoiner)) {
 		return result, ctx.Err()
 	}
 
@@ -293,7 +306,7 @@ func (f Form) byteSegments(ctx context.Context, s []byte) iter.Seq2[[]byte, erro
 
 			end := len(s)
 			for at := 0; at < len(s); {
-				if at >= 4096 && norm.Form(f).Properties(s[at:]).BoundaryBefore() {
+				if at >= segmentChunkBytes && norm.Form(f).Properties(s[at:]).BoundaryBefore() {
 					end = at
 					break
 				}
@@ -301,7 +314,7 @@ func (f Form) byteSegments(ctx context.Context, s []byte) iter.Seq2[[]byte, erro
 				_, size := utf8.DecodeRune(s[at:])
 
 				at += size
-				if at%4096 < utf8.UTFMax {
+				if at%cancellationInterval < utf8.UTFMax {
 					if err := ctx.Err(); err != nil {
 						yield(nil, err)
 						return
@@ -316,123 +329,6 @@ func (f Form) byteSegments(ctx context.Context, s []byte) iter.Seq2[[]byte, erro
 			s = s[end:]
 		}
 	}
-}
-
-// reorder uses stable counting sort on each non-starter run: long adversarial
-// combining sequences must not turn canonical ordering into quadratic work.
-func reorder(ctx context.Context, chars []character) error {
-	var scratch []character
-
-	for at := 0; at < len(chars); {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if chars[at].class == 0 {
-			at++
-			continue
-		}
-
-		end := at + 1
-		ordered := true
-
-		for end < len(chars) && chars[end].class != 0 {
-			if end%4096 == 0 {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-			}
-
-			ordered = ordered && chars[end-1].class <= chars[end].class
-			end++
-		}
-
-		if !ordered {
-			if cap(scratch) < end-at {
-				scratch = make([]character, end-at)
-			} else {
-				scratch = scratch[:end-at]
-			}
-
-			if err := sortRun(ctx, chars[at:end], scratch); err != nil {
-				return err
-			}
-		}
-
-		at = end
-	}
-
-	return nil
-}
-
-func sortRun(ctx context.Context, chars, scratch []character) error {
-	var counts [256]int
-	for i, c := range chars {
-		counts[c.class]++
-
-		if i%4096 == 0 {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
-	}
-
-	offset := 0
-	for i, count := range counts {
-		counts[i] = offset
-		offset += count
-	}
-
-	for i, c := range chars {
-		scratch[counts[c.class]] = c
-		counts[c.class]++
-
-		if i%4096 == 0 {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
-	}
-
-	copy(chars, scratch)
-
-	return ctx.Err()
-}
-
-func compose(ctx context.Context, chars []character) ([]character, error) {
-	out := chars[:0]
-	starter, previous := -1, uint8(0)
-
-	for at, c := range chars {
-		if at%4096 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-
-		if starter >= 0 && (previous < c.class || previous == 0) {
-			var pair [utf8.UTFMax * 2]byte
-
-			n := utf8.EncodeRune(pair[:], out[starter].value)
-			n += utf8.EncodeRune(pair[n:], c.value)
-			combined := norm.NFC.Bytes(pair[:n])
-
-			r, size := utf8.DecodeRune(combined)
-			if size == len(combined) {
-				out[starter].value = r
-				continue
-			}
-		}
-
-		if c.class == 0 {
-			starter = len(out)
-		}
-
-		out = append(out, c)
-		previous = c.class
-	}
-
-	return out, nil
 }
 
 // Writer preserves incomplete UTF-8 and the last normalization segment across
@@ -465,7 +361,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 				return i, w.err
 			}
 
-			nextCheck = i + 4096
+			nextCheck = i + cancellationInterval
 		}
 
 		// Every ASCII scalar has BoundaryBefore in all four forms. Batch it
@@ -497,7 +393,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 			return i, w.err
 		}
 
-		if norm.Form(w.form).Properties(w.tail[:w.tailSize]).BoundaryBefore() && len(w.pending) >= 4096 {
+		if norm.Form(w.form).Properties(w.tail[:w.tailSize]).BoundaryBefore() && len(w.pending) >= segmentChunkBytes {
 			if w.err = w.flush(); w.err != nil {
 				return i, w.err
 			}
@@ -512,7 +408,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 
 // WriteString feeds bounded chunks without copying the complete source string.
 func (w *Writer) WriteString(s string) (int, error) {
-	var buffer [4096]byte
+	var buffer [normalizationReadBufferBytes]byte
 
 	written := 0
 
@@ -552,14 +448,14 @@ func (w *Writer) Close() error {
 }
 
 func (w *Writer) writeASCII(p []byte) (int, error) {
-	if len(w.pending) >= 4096 {
+	if len(w.pending) >= segmentChunkBytes {
 		if err := w.flush(); err != nil {
-			return 1, err
+			return 0, err
 		}
 	}
 
 	end := 1
-	limit := min(len(p), 4096-len(w.pending))
+	limit := min(len(p), segmentChunkBytes-len(w.pending))
 
 	for end < limit && p[end] < utf8.RuneSelf {
 		end++
@@ -571,6 +467,10 @@ func (w *Writer) writeASCII(p []byte) (int, error) {
 }
 
 func (w *Writer) flush() error {
+	// Retain at most this many scratch bytes between completed segments. This
+	// is a reuse threshold, not a bound on an accepted normalization segment.
+	const maximumRetainedPendingBytes = 8192
+
 	if err := w.ctx.Err(); err != nil {
 		return err
 	}
@@ -581,9 +481,9 @@ func (w *Writer) flush() error {
 
 	var result []byte
 
-	if len(w.pending) <= 4096+utf8.UTFMax {
+	if len(w.pending) <= segmentChunkBytes+utf8.UTFMax {
 		w.normalized = norm.Form(w.form).Append(w.normalized[:0], w.pending...)
-		if bytes.Count(w.normalized, []byte("\u034f")) == bytes.Count(w.pending, []byte("\u034f")) {
+		if bytes.Count(w.normalized, []byte(combiningGraphemeJoiner)) == bytes.Count(w.pending, []byte(combiningGraphemeJoiner)) {
 			result = w.normalized
 		}
 	}
@@ -606,7 +506,7 @@ func (w *Writer) flush() error {
 		err = io.ErrShortWrite
 	}
 
-	if cap(w.pending) > 8192 {
+	if cap(w.pending) > maximumRetainedPendingBytes {
 		w.pending = nil
 	} else {
 		w.pending = w.pending[:0]
@@ -657,7 +557,7 @@ func IsNormal(ctx context.Context, f Form, s []byte) (bool, error) {
 			return false, err
 		}
 
-		if len(part) > 4096 || !norm.Form(f).IsNormal(part) {
+		if len(part) > segmentChunkBytes || !norm.Form(f).IsNormal(part) {
 			result, err := f.segmentBytes(ctx, part)
 			if err != nil {
 				return false, err
@@ -670,4 +570,123 @@ func IsNormal(ctx context.Context, f Form, s []byte) (bool, error) {
 	}
 
 	return true, ctx.Err()
+}
+
+// reorder uses stable counting sort on each non-starter run: long adversarial
+// combining sequences must not turn canonical ordering into quadratic work.
+func reorder(ctx context.Context, chars []character) error {
+	var scratch []character
+
+	for at := 0; at < len(chars); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if chars[at].class == 0 {
+			at++
+			continue
+		}
+
+		end := at + 1
+		ordered := true
+
+		for end < len(chars) && chars[end].class != 0 {
+			if end%cancellationInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+
+			ordered = ordered && chars[end-1].class <= chars[end].class
+			end++
+		}
+
+		if !ordered {
+			if cap(scratch) < end-at {
+				scratch = make([]character, end-at)
+			} else {
+				scratch = scratch[:end-at]
+			}
+
+			if err := sortRun(ctx, chars[at:end], scratch); err != nil {
+				return err
+			}
+		}
+
+		at = end
+	}
+
+	return nil
+}
+
+func sortRun(ctx context.Context, chars, scratch []character) error {
+	const combiningClassCount = 256 // All values of the uint8 canonical combining class.
+
+	var counts [combiningClassCount]int
+	for i, c := range chars {
+		counts[c.class]++
+
+		if i%cancellationInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+	}
+
+	offset := 0
+	for i, count := range counts {
+		counts[i] = offset
+		offset += count
+	}
+
+	for i, c := range chars {
+		scratch[counts[c.class]] = c
+		counts[c.class]++
+
+		if i%cancellationInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+	}
+
+	copy(chars, scratch)
+
+	return ctx.Err()
+}
+
+func compose(ctx context.Context, chars []character) ([]character, error) {
+	out := chars[:0]
+	starter, previous := -1, uint8(0)
+
+	for at, c := range chars {
+		if at%cancellationInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+
+		if starter >= 0 && (previous < c.class || previous == 0) {
+			var pair [utf8.UTFMax * 2]byte
+
+			n := utf8.EncodeRune(pair[:], out[starter].value)
+			n += utf8.EncodeRune(pair[n:], c.value)
+			combined := norm.NFC.Bytes(pair[:n])
+
+			r, size := utf8.DecodeRune(combined)
+			if size == len(combined) {
+				out[starter].value = r
+				continue
+			}
+		}
+
+		if c.class == 0 {
+			starter = len(out)
+		}
+
+		out = append(out, c)
+		previous = c.class
+	}
+
+	return out, nil
 }

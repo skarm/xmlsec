@@ -82,6 +82,9 @@ func (LocationPath) exprNode() {}
 type Step struct {
 	// Axis selects the navigation axis for this step.
 	Axis AxisType
+	// ExplicitAxis records a written axis:: or @ specifier. It is false for
+	// default axes, synthetic // steps, and abbreviated . or .. steps.
+	ExplicitAxis bool
 	// NodeTest filters nodes reached through Axis.
 	NodeTest xdm.NodeTest
 	// Predicates applies filters in source order.

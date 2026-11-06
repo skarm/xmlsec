@@ -33,6 +33,17 @@ func (o ParseOptions) ParseText(ctx context.Context, text string) (*Document, er
 		return o.parseDTDText(ctx, text)
 	}
 
+	if o.AllowDTD {
+		parser, err := newDocumentReader(ctx, strings.NewReader(text), o.Limits, true, false, o.AllowRelativeNamespaces)
+		if err != nil {
+			return nil, err
+		}
+
+		parser.compatibleVersions = true
+
+		return finishXMLParse(ctx, &parser)
+	}
+
 	return parseXMLReader(ctx, strings.NewReader(text), o.Limits, true, false, o.AllowRelativeNamespaces)
 }
 

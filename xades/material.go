@@ -10,11 +10,24 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509crl"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/xmldsig"
+)
+
+const (
+	nameCRLValues                = "CRLValues"
+	nameOCSPValues               = "OCSPValues"
+	maximumMaterialBytes         = 16 << 20
+	maximumMaterialCRLs          = 64
+	maximumMaterialCertificates  = 64
+	maximumMaterialGroupEntries  = 64
+	maximumMaterialLexicalBytes  = 6 << 20
+	maximumMaterialOCSPResponses = 64
+	maximumMaterialValueBytes    = 4 << 20
 )
 
 // Namespace141 is the XAdES 1.4.1 namespace URI.
@@ -90,7 +103,7 @@ func (v *Validator) EmbedValidationMaterial(ctx context.Context, doc *document.D
 	for _, n := range original {
 		un.Children = append(un.Children, n)
 
-		if n.Kind != tree.ElementNode || n.Name != name("SignatureTimeStamp") {
+		if n.Kind != tree.ElementNode || n.Name != name(nameSignatureTimeStamp) {
 			continue
 		}
 
@@ -108,7 +121,7 @@ func (v *Validator) EmbedValidationMaterial(ctx context.Context, doc *document.D
 			return nil, nil, ErrLevel
 		}
 
-		td := node141("TimeStampValidationData")
+		td := node141(nameTimeStampValidationData)
 		if err := appendValidationMaterial(ctx, td, tm); err != nil {
 			return nil, nil, err
 		}
@@ -141,11 +154,11 @@ func (v *Validator) canEmbedMaterial(ctx context.Context) bool {
 }
 
 func node141(local string) *tree.Node {
-	return &tree.Node{Kind: tree.ElementNode, Name: name141(local), Prefix: "xades141", NS: []tree.Namespace{{Prefix: "xades141", URI: Namespace141}}}
+	return &tree.Node{Kind: tree.ElementNode, Name: name141(local), Prefix: prefixXAdES141, NS: []tree.Namespace{{Prefix: prefixXAdES141, URI: Namespace141}}}
 }
 
 func knownPreservation(n document.Name) bool {
-	return n == name("CertificateValues") || n == name("RevocationValues") || n == name141("TimeStampValidationData") || n == name141("ArchiveTimeStamp")
+	return n == name(nameCertificateValues) || n == name(nameRevocationValues) || n == name141(nameTimeStampValidationData) || n == name141(nameArchiveTimeStamp)
 }
 
 func hasPreservation(sig document.Element) (bool, error) {
@@ -168,8 +181,8 @@ func makeCertificateValues(ctx context.Context, entries [][]byte) (*tree.Node, e
 		return nil, nil
 	}
 
-	n := xnode("CertificateValues")
-	n.NS = []tree.Namespace{{Prefix: nameXades, URI: Namespace}}
+	n := xnode(nameCertificateValues)
+	n.NS = []tree.Namespace{{Prefix: prefixXAdES, URI: Namespace}}
 
 	for _, b := range entries {
 		encoded, err := encodeBase64(ctx, len(b), bytes.NewBuffer(b))
@@ -177,7 +190,7 @@ func makeCertificateValues(ctx context.Context, entries [][]byte) (*tree.Node, e
 			return nil, err
 		}
 
-		c := xnode("EncapsulatedX509Certificate")
+		c := xnode(nameEncapsulatedX509Certificate)
 		text(c, encoded)
 		add(n, c)
 	}
@@ -190,17 +203,17 @@ func makeRevocationValues(ctx context.Context, e pki.Evidence) (*tree.Node, erro
 		return nil, nil
 	}
 
-	n := xnode("RevocationValues")
-	n.NS = []tree.Namespace{{Prefix: nameXades, URI: Namespace}}
+	n := xnode(nameRevocationValues)
+	n.NS = []tree.Namespace{{Prefix: prefixXAdES, URI: Namespace}}
 
 	for i, entries := range [][][]byte{e.CRLs, e.OCSPResponses} {
 		if len(entries) == 0 {
 			continue
 		}
 
-		group, local := "CRLValues", "EncapsulatedCRLValue"
+		group, local := nameCRLValues, nameEncapsulatedCRLValue
 		if i == 1 {
-			group, local = "OCSPValues", "EncapsulatedOCSPValue"
+			group, local = nameOCSPValues, nameEncapsulatedOCSPValue
 		}
 
 		g := xnode(group)
@@ -308,7 +321,7 @@ func subtractDER(in [][]byte, omit ...[]byte) [][]byte {
 }
 
 func checkRawMaterial(ctx context.Context, m ValidationMaterial) error {
-	if len(m.Certificates) > 64 || len(m.CRLs) > 64 || len(m.OCSPResponses) > 64 {
+	if len(m.Certificates) > maximumMaterialCertificates || len(m.CRLs) > maximumMaterialCRLs || len(m.OCSPResponses) > maximumMaterialOCSPResponses {
 		return ErrProfile
 	}
 
@@ -323,7 +336,7 @@ func checkRawMaterial(ctx context.Context, m ValidationMaterial) error {
 			}
 
 			total += len(b)
-			if len(b) == 0 || len(b) > 4<<20 || total > 16<<20 {
+			if len(b) == 0 || len(b) > maximumMaterialValueBytes || total > maximumMaterialBytes {
 				return ErrProfile
 			}
 
@@ -366,7 +379,7 @@ func parsePreservation(ctx context.Context, sig document.Element, maxArchives in
 	}
 
 	entries := u.Children()
-	if len(entries) > 140 {
+	if len(entries) > maximumPreservationProperties {
 		return p, ErrProfile
 	}
 
@@ -395,20 +408,28 @@ func parsePreservation(ctx context.Context, sig document.Element, maxArchives in
 }
 
 func validateEmbeddedOCSP(b []byte) error {
+	// A successful OCSPResponse carries status and responseBytes; the latter
+	// contains a response-type OID and its encoded response octets.
+	const (
+		ocspResponseFields      = 2
+		ocspResponseBytesFields = 2
+		ocspSuccessfulStatus    = 0
+	)
+
 	// XAdES uses the entire DER OCSPResponse (ETSI 5.4.3), unlike
 	// CMS revocation formats that sometimes carry BasicOCSPResponse.
-	v, e := der.Read(b, 4<<20)
+	v, e := der.Read(b, maximumMaterialValueBytes)
 	if e != nil {
 		return ErrProfile
 	}
 
-	f, e := der.Sequence(v, 2, 2)
+	f, e := der.Sequence(v, ocspResponseFields, ocspResponseFields)
 	if e != nil {
 		return ErrProfile
 	}
 
 	var status asn1.Enumerated
-	if der.Decode(f[0], &status) != nil || status != 0 {
+	if der.Decode(f[0], &status) != nil || status != ocspSuccessfulStatus {
 		return ErrProfile
 	}
 
@@ -417,16 +438,16 @@ func validateEmbeddedOCSP(b []byte) error {
 		return ErrProfile
 	}
 
-	parts, e := der.Sequence(body, 2, 2)
+	parts, e := der.Sequence(body, ocspResponseBytesFields, ocspResponseBytesFields)
 	if e != nil || !der.OIDEqual(parts[0], asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 1}) {
 		return ErrProfile
 	}
 
-	if !der.Is(parts[1], 0, asn1.TagOctetString, false) {
+	if !der.Is(parts[1], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		return ErrProfile
 	}
 
-	if _, e = der.Read(parts[1].Bytes, 4<<20); e != nil {
+	if _, e = der.Read(parts[1].Bytes, maximumMaterialValueBytes); e != nil {
 		return ErrProfile
 	}
 
@@ -445,6 +466,15 @@ type preservationParser struct {
 }
 
 func (r *preservationParser) accept(x document.Element) error {
+	// Ordered unsigned-property phases permit timestamps before validation
+	// material, then certificates, revocation values and finally archives.
+	const (
+		preservationPhaseTimestamps   = 0
+		preservationPhaseCertificates = 1
+		preservationPhaseRevocation   = 2
+		preservationPhaseArchives     = 3
+	)
+
 	if err := r.ctx.Err(); err != nil {
 		return err
 	}
@@ -452,14 +482,14 @@ func (r *preservationParser) accept(x document.Element) error {
 	var e error
 
 	switch x.Name() {
-	case name("SignatureTimeStamp"):
-		if r.phase != 0 {
+	case name(nameSignatureTimeStamp):
+		if r.phase != preservationPhaseTimestamps {
 			return ErrProfile
 		}
 
 		r.haveTimestamp = true
-	case name141("TimeStampValidationData"):
-		if r.previous != name("SignatureTimeStamp") && r.previous != name141("ArchiveTimeStamp") {
+	case name141(nameTimeStampValidationData):
+		if r.previous != name(nameSignatureTimeStamp) && r.previous != name141(nameArchiveTimeStamp) {
 			return ErrProfile
 		}
 
@@ -471,36 +501,36 @@ func (r *preservationParser) accept(x document.Element) error {
 		r.value.tsa.Certificates = appendUnique(r.value.tsa.Certificates, m.Certificates...)
 		r.value.tsa.CRLs = appendUnique(r.value.tsa.CRLs, m.CRLs...)
 		r.value.tsa.OCSPResponses = appendUnique(r.value.tsa.OCSPResponses, m.OCSPResponses...)
-	case name("CertificateValues"):
-		if r.haveCV || r.phase > 1 {
+	case name(nameCertificateValues):
+		if r.haveCV || r.phase > preservationPhaseCertificates {
 			return ErrProfile
 		}
 
-		r.phase = 1
+		r.phase = preservationPhaseCertificates
 		r.haveCV = true
 
 		r.value.signer.Certificates, e = parseCertificateValues(r.ctx, x)
 		if e != nil {
 			return e
 		}
-	case name("RevocationValues"):
-		if r.haveRV || r.phase > 2 {
+	case name(nameRevocationValues):
+		if r.haveRV || r.phase > preservationPhaseRevocation {
 			return ErrProfile
 		}
 
-		r.phase = 2
+		r.phase = preservationPhaseRevocation
 		r.haveRV = true
 
 		r.value.signer.CRLs, r.value.signer.OCSPResponses, e = parseRevocationValues(r.ctx, x)
 		if e != nil {
 			return e
 		}
-	case name141("ArchiveTimeStamp"):
+	case name141(nameArchiveTimeStamp):
 		if !r.haveRV || !r.haveCV || len(r.value.archives) >= r.maxArchives {
 			return ErrProfile
 		}
 
-		r.phase = 3
+		r.phase = preservationPhaseArchives
 
 		r.value.archives = append(r.value.archives, x)
 	default:
@@ -518,29 +548,29 @@ func encapsulatedBytes(ctx context.Context, e document.Element) ([]byte, error) 
 	}
 
 	for _, a := range e.Attributes() {
-		if a.Name == (document.Name{Local: "Id"}) && tree.NCName(a.Value) {
+		if a.Name == (document.Name{Local: lexicon.SecurityAttrID}) && tree.NCName(a.Value) {
 			continue
 		}
 
-		if a.Name == (document.Name{Local: "Encoding"}) && a.Value == encodingDER {
+		if a.Name == (document.Name{Local: lexicon.SecurityAttrEncoding}) && a.Value == encodingDER {
 			continue
 		}
 
 		return nil, ErrProfile
 	}
 
-	return decodeElementBase64(ctx, e, 6<<20, 4<<20)
+	return decodeElementBase64(ctx, e, maximumMaterialLexicalBytes, maximumMaterialValueBytes)
 }
 
 func parseCertificateValues(ctx context.Context, e document.Element) ([][]byte, error) {
-	if elementContent(e) != nil || e.Name() != name("CertificateValues") || optionalID(e) != nil || len(e.Children()) < 1 || len(e.Children()) > 64 {
+	if elementContent(e) != nil || e.Name() != name(nameCertificateValues) || optionalID(e) != nil || len(e.Children()) < 1 || len(e.Children()) > maximumMaterialCertificates {
 		return nil, ErrProfile
 	}
 
 	var out [][]byte
 
 	for _, c := range e.Children() {
-		if c.Name() != name("EncapsulatedX509Certificate") {
+		if c.Name() != name(nameEncapsulatedX509Certificate) {
 			return nil, ErrProfile
 		}
 
@@ -556,7 +586,7 @@ func parseCertificateValues(ctx context.Context, e document.Element) ([][]byte, 
 }
 
 func parseRevocationValues(ctx context.Context, e document.Element) ([][]byte, [][]byte, error) {
-	if elementContent(e) != nil || e.Name() != name("RevocationValues") || optionalID(e) != nil {
+	if elementContent(e) != nil || e.Name() != name(nameRevocationValues) || optionalID(e) != nil {
 		return nil, nil, ErrProfile
 	}
 
@@ -575,17 +605,17 @@ func parseRevocationValues(ctx context.Context, e document.Element) ([][]byte, [
 		local := ""
 
 		switch g.Name() {
-		case name("CRLValues"):
+		case name(nameCRLValues):
 			kind = 0
-			local = "EncapsulatedCRLValue"
-		case name("OCSPValues"):
+			local = nameEncapsulatedCRLValue
+		case name(nameOCSPValues):
 			kind = 1
-			local = "EncapsulatedOCSPValue"
+			local = nameEncapsulatedOCSPValue
 		default:
 			return nil, nil, ErrProfile
 		}
 
-		if kind <= last || attrs(g) != nil || len(g.Children()) < 1 || len(g.Children()) > 64 {
+		if kind <= last || attrs(g) != nil || elementContent(g) != nil || len(g.Children()) < 1 || len(g.Children()) > maximumMaterialGroupEntries {
 			return nil, nil, ErrProfile
 		}
 
@@ -615,7 +645,7 @@ func parseRevocationValues(ctx context.Context, e document.Element) ([][]byte, [
 func parseTSVD(ctx context.Context, e document.Element) (ValidationMaterial, error) {
 	var m ValidationMaterial
 	// Direct incorporation immediately after its timestamp: URI is not used.
-	if elementContent(e) != nil || e.Name() != name141("TimeStampValidationData") || optionalID(e) != nil || len(e.Children()) < 1 || len(e.Children()) > 2 {
+	if elementContent(e) != nil || e.Name() != name141(nameTimeStampValidationData) || optionalID(e) != nil || len(e.Children()) < 1 || len(e.Children()) > 2 {
 		return m, ErrProfile
 	}
 
@@ -623,7 +653,7 @@ func parseTSVD(ctx context.Context, e document.Element) (ValidationMaterial, err
 
 	for _, c := range e.Children() {
 		switch c.Name() {
-		case name("CertificateValues"):
+		case name(nameCertificateValues):
 			if last >= 0 {
 				return m, ErrProfile
 			}
@@ -636,7 +666,7 @@ func parseTSVD(ctx context.Context, e document.Element) (ValidationMaterial, err
 			}
 
 			m.Certificates = a
-		case name("RevocationValues"):
+		case name(nameRevocationValues):
 			if last >= 1 {
 				return m, ErrProfile
 			}
@@ -684,7 +714,7 @@ func (c *timestampMaterialCursor) certificates(ctx context.Context, children []d
 	var tsaCerts [][]byte
 
 	for _, enc := range children {
-		if enc.Name() != name("EncapsulatedTimeStamp") {
+		if enc.Name() != name(nameEncapsulatedTimeStamp) {
 			continue
 		}
 

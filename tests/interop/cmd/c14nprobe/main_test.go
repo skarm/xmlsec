@@ -33,15 +33,21 @@ func TestCanonicalRequestSelection(t *testing.T) {
 			test.request.Algorithm = c14n.Exclusive
 			result, err := process(test.request)
 			if test.invalid {
+				// Failure assertions inspect the probe's diagnostic payload.
+				//noinspection GoDfaErrorMayBeNotNil
 				if err == nil || len(result.Canonical) != 0 {
 					t.Fatalf("invalid input produced data: %+v %v", result, err)
 				}
 				return
 			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
 			if len(result.Nodes) != 0 {
 				t.Fatal("description was computed without being requested")
 			}
-			if err != nil || string(result.Canonical) != test.want {
+			if string(result.Canonical) != test.want {
 				t.Fatalf("canonical=%q error=%v want=%q", result.Canonical, err, test.want)
 			}
 		})
@@ -69,12 +75,14 @@ func TestSelectorAxesAndDescriptionOwnership(t *testing.T) {
 	} {
 		node, err := resolve(doc, test.selection)
 		if test.invalid {
-			if err == nil || node.Valid() {
+			if err == nil || node != (document.Node{}) {
 				t.Fatalf("invalid selector accepted: %+v %v", test.selection, err)
 			}
 			continue
 		}
-		if err != nil || node.Value() != test.want {
+		if err != nil {
+			t.Fatal(err)
+		} else if node.Value() != test.want {
 			t.Fatalf("selector %+v value=%q error=%v", test.selection, node.Value(), err)
 		}
 	}
@@ -95,6 +103,8 @@ func TestSelectorAxesAndDescriptionOwnership(t *testing.T) {
 		t.Fatalf("missing described axes: %+v", result.Nodes)
 	}
 	failed, err := process(request{XML: `<r/>`, Describe: true, Subtree: []int{2}, Algorithm: c14n.Exclusive})
+	// Failure assertions inspect the probe's diagnostic payload.
+	//noinspection GoDfaErrorMayBeNotNil
 	if err == nil || len(failed.Nodes) < 2 || len(failed.Canonical) != 0 {
 		t.Fatalf("selection error lost its diagnostic description: %+v %v", failed, err)
 	}

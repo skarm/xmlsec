@@ -18,6 +18,11 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	maximumAllowedURIs       = 1024
+	resourceDigestChunkBytes = 32 << 10
+)
+
 // ExternalReferences authorizes external octets for the general Signature API.
 // It supplies an adapter rather than enabling implicit network access. URI spelling
 // is exact unless BaseURI enables relative resolution. KeyInfo discovery uses
@@ -51,15 +56,25 @@ type ExternalReferences struct {
 }
 
 type resourceSession struct {
-	source             Resolver
-	allowed            map[string]struct{}
-	cache              map[[32]byte]ReferenceResult
-	fingerprints       map[string][]byte
-	limits             ResourceLimits
-	remaining          int
-	captureManifests   bool
+	// source is the application-owned external resolver.
+	source Resolver
+	// allowed contains the exact external URIs authorized by policy.
+	allowed map[string]struct{}
+	// cache reuses results only for matching reference-processing fingerprints.
+	cache map[[sha256.Size]byte]ReferenceResult
+	// fingerprints binds each fetched URI to its original raw-resource digest.
+	fingerprints map[string][]byte
+	// limits retains normalized per-resource and aggregate bounds.
+	limits ResourceLimits
+	// remaining is the aggregate raw external-resource byte budget still available.
+	remaining int
+	// captureManifests enables retaining original resource bytes for Manifest
+	// traversal.
+	captureManifests bool
+	// captureTransformed enables retaining transformed Manifest input.
 	captureTransformed bool
-	baseURI            *url.URL
+	// baseURI optionally enables trusted relative URI resolution.
+	baseURI *url.URL
 }
 
 func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
@@ -67,7 +82,7 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 		return nil, nil
 	}
 
-	if nilcheck.IsNil(opt.Resolver) || len(opt.AllowedURIs) == 0 || len(opt.AllowedURIs) > 1024 {
+	if nilcheck.IsNil(opt.Resolver) || len(opt.AllowedURIs) == 0 || len(opt.AllowedURIs) > maximumAllowedURIs {
 		return nil, fmt.Errorf("%w: external resolver and explicit bounded URI allowlist required", ErrPolicy)
 	}
 
@@ -76,7 +91,7 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 		return nil, err
 	}
 
-	s := &resourceSession{source: opt.Resolver, allowed: make(map[string]struct{}), cache: make(map[[32]byte]ReferenceResult), fingerprints: make(map[string][]byte), limits: limits, remaining: limits.MaxTotalResourceBytes}
+	s := &resourceSession{source: opt.Resolver, allowed: make(map[string]struct{}), cache: make(map[[sha256.Size]byte]ReferenceResult), fingerprints: make(map[string][]byte), limits: limits, remaining: limits.MaxTotalResourceBytes}
 
 	s.baseURI, err = resourceBaseURI(opt.BaseURI)
 	if err != nil {
@@ -89,7 +104,11 @@ func newResourceSession(opt *ExternalReferences) (*resourceSession, error) {
 		}
 
 		if s.baseURI != nil {
-			parsed, _ := url.Parse(uri) // validated above
+			parsed, err := url.Parse(uri)
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid external URI: %w", ErrPolicy, err)
+			}
+
 			if !parsed.IsAbs() {
 				return nil, fmt.Errorf("%w: resolved absolute URI allowlist required with BaseURI", ErrPolicy)
 			}
@@ -248,7 +267,9 @@ func cacheableExternalTransforms(transforms []reference.Transform) bool {
 // Keep only a fixed-size cache key, without Base64/JSON copies of stylesheets.
 // Length-delimited source bytes preserve exact transform identity; application
 // allowlist fingerprints remain the separate public ProgramFingerprint format.
-func referenceCacheKey(ctx context.Context, ref coreReference) ([32]byte, error) {
+func referenceCacheKey(ctx context.Context, ref coreReference) ([sha256.Size]byte, error) {
+	const stylesheetLengthFieldBytes = 8 // big-endian Uint64 framing before bytes
+
 	metadata := append([]reference.Transform(nil), ref.transforms...)
 	for i := range metadata {
 		metadata[i].Stylesheet = nil
@@ -261,29 +282,29 @@ func referenceCacheKey(ctx context.Context, ref coreReference) ([32]byte, error)
 		Transforms []reference.Transform
 	}{ref.uri, ref.method, ref.typeURI, metadata})
 	if err != nil {
-		return [32]byte{}, err
+		return [sha256.Size]byte{}, err
 	}
 
 	hash := sha256.New()
 	_, _ = hash.Write(encoded)
 
-	var length [8]byte
+	var length [stylesheetLengthFieldBytes]byte
 	for _, tr := range ref.transforms {
 		binary.BigEndian.PutUint64(length[:], uint64(len(tr.Stylesheet)))
 		_, _ = hash.Write(length[:])
 
 		for data := tr.Stylesheet; len(data) != 0; {
 			if err := ctx.Err(); err != nil {
-				return [32]byte{}, err
+				return [sha256.Size]byte{}, err
 			}
 
-			size := min(len(data), 32<<10)
+			size := min(len(data), resourceDigestChunkBytes)
 			_, _ = hash.Write(data[:size])
 			data = data[size:]
 		}
 	}
 
-	var result [32]byte
+	var result [sha256.Size]byte
 	hash.Sum(result[:0])
 
 	return result, ctx.Err()

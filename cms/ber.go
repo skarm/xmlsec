@@ -3,6 +3,7 @@ package cms
 import (
 	"bytes"
 	"context"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,19 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
+)
+
+// Complete ASN.1 identifier octets shared by CMS wrapper normalization and
+// streamed output; class and constructed bits are included.
+const (
+	encodedSequenceTag = 0x30
+	encodedSetTag      = 0x31
+	encodedContext0Tag = 0xa0
+)
+
+const (
+	maximumBERDepth = 33
+	maximumBERNodes = 100000
 )
 
 // ParseBER accepts the selected BER forms documented by [ParseBERReader].
@@ -74,7 +88,7 @@ func ParseBERReader(ctx context.Context, src io.Reader, l Limits) (*SignedData, 
 
 // parseBER borrows input only during normalization; the result owns its DER.
 func parseBER(ctx context.Context, input []byte, l Limits) (*SignedData, error) {
-	root, err := ber.Read(ctx, input, ber.Limits{MaxBytes: l.MaxBytes, MaxDepth: 33, MaxNodes: 100000})
+	root, err := ber.Read(ctx, input, ber.Limits{MaxBytes: l.MaxBytes, MaxDepth: maximumBERDepth, MaxNodes: maximumBERNodes})
 	if err != nil {
 		return nil, cmsBERError(err)
 	}
@@ -93,22 +107,22 @@ func parseBER(ctx context.Context, input []byte, l Limits) (*SignedData, error) 
 }
 
 func normalizeCMSBER(ctx context.Context, root ber.Value, limits Limits) ([]byte, error) {
-	if root.Tag != 0x30 || len(root.Children) != 2 {
+	if root.Tag != encodedSequenceTag || len(root.Children) != contentInfoFields {
 		return nil, ErrSyntax
 	}
 
 	explicit := root.Children[1]
-	if explicit.Tag != 0xa0 || len(explicit.Children) != 1 {
+	if explicit.Tag != encodedContext0Tag || len(explicit.Children) != 1 {
 		return nil, ErrSyntax
 	}
 
 	sd := explicit.Children[0]
-	if sd.Tag != 0x30 || len(sd.Children) < 4 || len(sd.Children) > 6 {
+	if sd.Tag != encodedSequenceTag || len(sd.Children) < signedDataMinimumFields || len(sd.Children) > signedDataMaximumFields {
 		return nil, ErrSyntax
 	}
 
 	ec := sd.Children[2]
-	if ec.Tag != 0x30 || len(ec.Children) < 1 || len(ec.Children) > 2 {
+	if ec.Tag != encodedSequenceTag || len(ec.Children) < encapsulatedContentMinimumFields || len(ec.Children) > encapsulatedContentMaximumFields {
 		return nil, ErrSyntax
 	}
 
@@ -121,9 +135,9 @@ func normalizeCMSBER(ctx context.Context, root ber.Value, limits Limits) ([]byte
 
 	var octetHeader, contentHeader []byte
 
-	if len(ec.Children) == 2 {
+	if len(ec.Children) == encapsulatedContentMaximumFields {
 		content := ec.Children[1]
-		if content.Tag != 0xa0 || len(content.Children) != 1 {
+		if content.Tag != encodedContext0Tag || len(content.Children) != 1 {
 			return nil, ErrSyntax
 		}
 
@@ -136,12 +150,12 @@ func normalizeCMSBER(ctx context.Context, root ber.Value, limits Limits) ([]byte
 			return nil, cmsBERError(err)
 		}
 
-		octetHeader = der.Header(4, contentSize)
-		contentHeader = der.Header(0xa0, len(octetHeader)+contentSize)
+		octetHeader = der.Header(asn1.TagOctetString, contentSize)
+		contentHeader = der.Header(encodedContext0Tag, len(octetHeader)+contentSize)
 		encapSize += len(contentHeader) + len(octetHeader) + contentSize
 	}
 
-	encapHeader := der.Header(0x30, encapSize)
+	encapHeader := der.Header(encodedSequenceTag, encapSize)
 	signedSize := len(encapHeader) + encapSize
 
 	for i, field := range sd.Children {
@@ -150,11 +164,11 @@ func normalizeCMSBER(ctx context.Context, root ber.Value, limits Limits) ([]byte
 		}
 	}
 
-	signedHeader := der.Header(0x30, signedSize)
-	explicitHeader := der.Header(0xa0, len(signedHeader)+signedSize)
+	signedHeader := der.Header(encodedSequenceTag, signedSize)
+	explicitHeader := der.Header(encodedContext0Tag, len(signedHeader)+signedSize)
 	rootSize := len(root.Children[0].Full) + len(explicitHeader) + len(signedHeader) + signedSize
 
-	rootHeader := der.Header(0x30, rootSize)
+	rootHeader := der.Header(encodedSequenceTag, rootSize)
 	if len(rootHeader)+rootSize > limits.MaxBytes {
 		return nil, ErrPolicy
 	}
@@ -179,7 +193,7 @@ func normalizeCMSBER(ctx context.Context, root ber.Value, limits Limits) ([]byte
 		output.Write(encapHeader)
 		output.Write(ec.Children[0].Full)
 
-		if len(ec.Children) == 2 {
+		if len(ec.Children) == encapsulatedContentMaximumFields {
 			output.Write(contentHeader)
 			output.Write(octetHeader)
 

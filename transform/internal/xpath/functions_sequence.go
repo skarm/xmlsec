@@ -15,44 +15,62 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// XPath sequence positions are one-based; backing Sequence.Get indices remain
+// zero-based. These comparisons clamp the requested insertion/removal position.
+const sequenceFirstPosition = 1
+
 func lookupFunctionsSequence(name string) (*builtinFunc, bool) {
+	// These fn: local names and the static-only extension flag retain dispatch policy.
+	const (
+		fnNameInsertBefore          = "insert-before"
+		fnNameSubsequence           = "subsequence"
+		fnNameUnordered             = "unordered"
+		fnNameZeroOrOne             = "zero-or-one"
+		fnNameOneOrMore             = "one-or-more"
+		fnNameExactlyOne            = "exactly-one"
+		fnNameDeepEqual             = "deep-equal"
+		fnNameIndexOf               = "index-of"
+		fnNameFlatten               = "flatten"
+		staticOnlySequenceExtension = true
+	)
+
 	switch name {
-	case "empty":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnEmpty}, true
-	case "exists":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnExists}, true
+	case fnNameEmpty:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnEmpty}, true
+	case fnNameExists:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnExists}, true
 	case fnNameHead:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnHead}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnHead}, true
 	case nameTail:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnTail}, true
-	case "insert-before":
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnInsertBefore}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnTail}, true
+	case fnNameInsertBefore:
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnInsertBefore}, true
 	case nameRemove:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnRemove}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnRemove}, true
 	case nameReverse:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnReverse}, true
-	case "subsequence":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnSubsequence}, true
-	case "unordered":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnUnordered}, true
-	case "zero-or-one":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnZeroOrOne}, true
-	case "one-or-more":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnOneOrMore}, true
-	case "exactly-one":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnExactlyOne}, true
-	case "deep-equal":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnDeepEqual}, true
-	case "index-of":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnIndexOf}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnReverse}, true
+	case fnNameSubsequence:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnSubsequence}, true
+	case fnNameUnordered:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnUnordered}, true
+	case fnNameZeroOrOne:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnZeroOrOne}, true
+	case fnNameOneOrMore:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnOneOrMore}, true
+	case fnNameExactlyOne:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnExactlyOne}, true
+	case fnNameDeepEqual:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnDeepEqual}, true
+	case fnNameIndexOf:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnIndexOf}, true
 	case lexicon.FnLast:
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnLast}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnLast}, true
 	case lexicon.FnPosition:
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnPosition}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnPosition}, true
 	case nameSort:
-		return &builtinFunc{name: name, min: 1, max: 3, fn: fnSort}, true
-	case "flatten":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnFlatten, extension: true}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityThree, fn: fnSort}, true
+	case fnNameFlatten:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnFlatten, extension: staticOnlySequenceExtension}, true
 	}
 
 	return nil, false
@@ -105,7 +123,7 @@ func fnInsertBefore(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 	pos := 0
 	if posVal > int64(n) {
 		pos = n
-	} else if posVal > 1 {
+	} else if posVal > sequenceFirstPosition {
 		pos = int(posVal) - 1
 	}
 
@@ -136,7 +154,7 @@ func fnRemove(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	target := args[0]
 	n := xdm.SequenceLen(target)
 
-	if posVal < 1 || posVal > int64(n) {
+	if posVal < sequenceFirstPosition || posVal > int64(n) {
 		return target, nil
 	}
 
@@ -236,7 +254,7 @@ func roundSubsequenceArgument(arg xdm.Sequence, compat bool, role string) (float
 			return 0, err
 		}
 
-		return roundHalfUpFloat(value.ToFloat64(), 0), nil
+		return roundHalfUpFloat(value.ToFloat64(), positionRoundPrecision), nil
 	}
 
 	switch xdm.SequenceLen(arg) {
@@ -264,7 +282,7 @@ func roundSubsequenceArgument(arg xdm.Sequence, compat bool, role string) (float
 		return 0, subsequenceArgumentError(role, "must be numeric")
 	}
 
-	return roundHalfUpFloat(value.ToFloat64(), 0), nil
+	return roundHalfUpFloat(value.ToFloat64(), positionRoundPrecision), nil
 }
 
 func subsequenceArgumentError(role, problem string) error {
@@ -272,7 +290,7 @@ func subsequenceArgumentError(role, problem string) error {
 }
 
 func subsequenceLength(args []xdm.Sequence, compat bool) (float64, bool, error) {
-	if len(args) <= 2 {
+	if len(args) <= builtinArityTwo {
 		return 0, false, nil
 	}
 
@@ -311,24 +329,30 @@ func fnUnordered(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 }
 
 func fnZeroOrOne(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xdm.SequenceLen(args[0]) > 1 {
-		return nil, &xdm.Error{Code: "FORG0003", Message: fmt.Sprintf("zero-or-one() called with sequence of length %d", xdm.SequenceLen(args[0]))}
+	const errCodeFORG0003 = "FORG0003" // standard error category for this function contract
+
+	if xdm.SequenceLen(args[0]) > singletonFunctionArgument {
+		return nil, &xdm.Error{Code: errCodeFORG0003, Message: fmt.Sprintf("zero-or-one() called with sequence of length %d", xdm.SequenceLen(args[0]))}
 	}
 
 	return args[0], nil
 }
 
 func fnOneOrMore(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const errCodeFORG0004 = "FORG0004" // standard error category for this function contract
+
 	if xdm.SequenceLen(args[0]) == 0 {
-		return nil, &xdm.Error{Code: "FORG0004", Message: "one-or-more() called with empty sequence"}
+		return nil, &xdm.Error{Code: errCodeFORG0004, Message: "one-or-more() called with empty sequence"}
 	}
 
 	return args[0], nil
 }
 
 func fnExactlyOne(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xdm.SequenceLen(args[0]) != 1 {
-		return nil, &xdm.Error{Code: "FORG0005", Message: fmt.Sprintf("exactly-one() called with sequence of length %d", xdm.SequenceLen(args[0]))}
+	const errCodeFORG0005 = "FORG0005" // standard error category for this function contract
+
+	if xdm.SequenceLen(args[0]) != singletonFunctionArgument {
+		return nil, &xdm.Error{Code: errCodeFORG0005, Message: fmt.Sprintf("exactly-one() called with sequence of length %d", xdm.SequenceLen(args[0]))}
 	}
 
 	return args[0], nil
@@ -351,8 +375,10 @@ func (opts deepEqualOptions) stringsEqual(a, b string) bool {
 }
 
 func (opts deepEqualOptions) descend() (deepEqualOptions, error) {
+	const defaultDeepEqualDepth = 128 // fallback nesting cap when no invocation depth is supplied
+
 	opts.depth++
-	if opts.depth > DepthLimit(opts.ctx, 128) {
+	if opts.depth > DepthLimit(opts.ctx, defaultDeepEqualDepth) {
 		return opts, ErrRecursionLimit
 	}
 
@@ -402,12 +428,14 @@ func deepEqualSequence(a, b xdm.Sequence, opts deepEqualOptions) (bool, error) {
 }
 
 func deepEqualItem(a, b xdm.Item, opts deepEqualOptions) (bool, error) {
+	const errCodeFOTY0015 = "FOTY0015" // standard error category for this function contract
+
 	if _, function := a.(xdm.FunctionItem); function {
-		return false, &xdm.Error{Code: "FOTY0015", Message: "deep-equal: cannot compare function items"}
+		return false, &xdm.Error{Code: errCodeFOTY0015, Message: "deep-equal: cannot compare function items"}
 	}
 
 	if _, function := b.(xdm.FunctionItem); function {
-		return false, &xdm.Error{Code: "FOTY0015", Message: "deep-equal: cannot compare function items"}
+		return false, &xdm.Error{Code: errCodeFOTY0015, Message: "deep-equal: cannot compare function items"}
 	}
 
 	switch av := a.(type) {
@@ -701,13 +729,13 @@ func fnIndexOf(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, err
 	}
 
-	if len(searchAtoms) != 1 {
+	if len(searchAtoms) != singletonFunctionArgument {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "index-of: search value must be exactly one atomic item"}
 	}
 
 	search := searchAtoms[0]
 	// Explicit 3rd arg with empty sequence is a type error (xs:string, not xs:string?)
-	if len(args) > 2 && xdm.SequenceLen(args[2]) == 0 {
+	if len(args) > builtinArityTwo && xdm.SequenceLen(args[2]) == 0 {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "collation argument must not be empty"}
 	}
 	// Resolve collation: explicit 3rd arg, or default collation
@@ -851,7 +879,7 @@ func sortCollation(ctx context.Context, args []xdm.Sequence) (*collationImpl, er
 }
 
 func sortKeyFunction(args []xdm.Sequence) (*xdm.FunctionItem, error) {
-	if len(args) < 3 || xdm.SequenceLen(args[2]) == 0 {
+	if len(args) < builtinArityThree || xdm.SequenceLen(args[2]) == 0 {
 		return nil, nil
 	}
 

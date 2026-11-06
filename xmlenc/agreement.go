@@ -19,6 +19,24 @@ import (
 )
 
 const (
+	// Bounds logical key-name metadata before UTF-8 validation or graph matching, in bytes.
+	maximumKeyNameBytes       = 1024
+	p256CoordinateBytes       = 32
+	p384CoordinateBytes       = 48
+	p521CoordinateBytes       = 66
+	uncompressedECPointPrefix = 4
+	// Algorithm-qualified key-agreement parameters checked against caller policy. Compare the expected
+	// XML Encryption namespace when matching it.
+	nameAgreementMethod = "AgreementMethod"
+	// Peer public-key material for a key-agreement step. Compare the expected XML Encryption namespace
+	// when matching it.
+	nameOriginatorKeyInfo = "OriginatorKeyInfo"
+	// Recipient-side key information accompanying a key agreement. Compare the expected XML Encryption
+	// namespace when matching it.
+	nameRecipientKeyInfo = "RecipientKeyInfo"
+)
+
+const (
 	// ECDHES is XML Encryption 1.1 ephemeral-static elliptic-curve agreement.
 	ECDHES = Namespace11 + "ECDH-ES"
 	// SignatureNamespace11 identifies the ECKeyValue vocabulary.
@@ -57,16 +75,6 @@ type ECDHRecipient interface {
 	ECDH(*ecdh.PublicKey) ([]byte, error)
 }
 
-// AdaptContextECDHRecipient adapts an explicit contextual provider. XML decrypt
-// passes the invocation context; calling the adapter directly uses Background.
-func AdaptContextECDHRecipient(provider ContextECDHRecipient) (ECDHRecipient, error) {
-	if nilcheck.IsNil(provider) {
-		return nil, ErrPolicy
-	}
-
-	return &contextECDHAdapter{provider}, nil
-}
-
 // ContextECDHRecipient accepts the caller's cancellation and deadline context for
 // key agreement. Its returned secret follows ECDHRecipient's ownership and
 // full-width encoding contract.
@@ -77,27 +85,14 @@ type ContextECDHRecipient interface {
 	ECDH(context.Context, *ecdh.PublicKey) ([]byte, error)
 }
 
-type contextECDHAdapter struct{ ContextECDHRecipient }
+// AdaptContextECDHRecipient adapts an explicit contextual provider. XML decrypt
+// passes the invocation context; calling the adapter directly uses Background.
+func AdaptContextECDHRecipient(provider ContextECDHRecipient) (ECDHRecipient, error) {
+	if nilcheck.IsNil(provider) {
+		return nil, ErrPolicy
+	}
 
-func (a *contextECDHAdapter) ECDH(peer *ecdh.PublicKey) ([]byte, error) {
-	return a.ContextECDHRecipient.ECDH(context.Background(), peer)
-}
-
-func (a *contextECDHAdapter) agreement(ctx context.Context, peer *ecdh.PublicKey) ([]byte, error) {
-	return a.ContextECDHRecipient.ECDH(ctx, peer)
-}
-
-type contextualAgreement interface {
-	agreement(context.Context, *ecdh.PublicKey) ([]byte, error)
-}
-
-type agreementParameters struct {
-	options     ECDHOptions
-	kdf         ConcatKDFParameters
-	curve       ecdh.Curve
-	curveURI    string
-	secretBytes int
-	kekBytes    int
+	return &contextECDHAdapter{provider}, nil
 }
 
 // EncryptBytesWithECDH uses an explicit static ECDH recipient and AES key wrap.
@@ -204,8 +199,31 @@ func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selecte
 	return decryptContent(ctx, doc, node, p)
 }
 
+type contextECDHAdapter struct{ ContextECDHRecipient }
+
+func (a *contextECDHAdapter) ECDH(peer *ecdh.PublicKey) ([]byte, error) {
+	return a.ContextECDHRecipient.ECDH(context.Background(), peer)
+}
+
+func (a *contextECDHAdapter) agreement(ctx context.Context, peer *ecdh.PublicKey) ([]byte, error) {
+	return a.ContextECDHRecipient.ECDH(ctx, peer)
+}
+
+type contextualAgreement interface {
+	agreement(context.Context, *ecdh.PublicKey) ([]byte, error)
+}
+
+type agreementParameters struct {
+	options     ECDHOptions
+	kdf         ConcatKDFParameters
+	curve       ecdh.Curve
+	curveURI    string
+	secretBytes int
+	kekBytes    int
+}
+
 func agreementProfile(ctx context.Context, recipient *ecdh.PublicKey, options ECDHOptions) (profile, agreementParameters, error) {
-	if options.Data.OAEP != nil {
+	if options.Data.OAEP != nil || options.Data.KeyTransportAlgorithm != "" {
 		return profile{}, agreementParameters{}, ErrPolicy
 	}
 
@@ -235,11 +253,11 @@ func agreementProfile(ctx context.Context, recipient *ecdh.PublicKey, options EC
 
 	switch options.KeyAlgorithm {
 	case AES128KeyWrap:
-		kekBytes = 16
+		kekBytes = aes128KeyBytes
 	case AES192KeyWrap:
-		kekBytes = 24
+		kekBytes = aes192KeyBytes
 	case AES256KeyWrap:
-		kekBytes = 32
+		kekBytes = aes256KeyBytes
 	default:
 		return profile{}, agreementParameters{}, ErrPolicy
 	}
@@ -266,7 +284,7 @@ func agreementProfile(ctx context.Context, recipient *ecdh.PublicKey, options EC
 		}
 	}
 	// Check the complete KDF policy before obtaining a private operation.
-	probe, err := DeriveConcatKey(ctx, []byte{1}, kekBytes*8, kdf)
+	probe, err := DeriveConcatKey(ctx, []byte{1}, kekBytes*keyOctetBits, kdf)
 	clear(probe)
 
 	if err != nil {
@@ -279,23 +297,23 @@ func agreementProfile(ctx context.Context, recipient *ecdh.PublicKey, options EC
 func agreementCurve(curve ecdh.Curve) (ecdh.Curve, string, int) {
 	switch curve {
 	case ecdh.P256():
-		return curve, lexicon.CurveP256, 32
+		return curve, lexicon.CurveP256, p256CoordinateBytes
 	case ecdh.P384():
-		return curve, lexicon.CurveP384, 48
+		return curve, lexicon.CurveP384, p384CoordinateBytes
 	case ecdh.P521():
-		return curve, lexicon.CurveP521, 66
+		return curve, lexicon.CurveP521, p521CoordinateBytes
 	default:
 		return nil, "", 0
 	}
 }
 
 func agreementKeyName(name string) bool {
-	if len(name) > 1024 || !utf8.ValidString(name) || strings.TrimSpace(name) != name {
+	if len(name) > maximumKeyNameBytes || !utf8.ValidString(name) || strings.TrimSpace(name) != name {
 		return false
 	}
 
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f || r == 0xfffe || r == 0xffff {
+		if r < minimumKeyNameRune || r == keyNameDeleteRune || r == keyNameNoncharacterFFFE || r == keyNameNoncharacterFFFF {
 			return false
 		}
 	}
@@ -320,7 +338,7 @@ func ecdhEncryptProfile(ctx context.Context, recipient *ecdh.PublicKey, options 
 	}
 	defer clear(secret)
 
-	kek, err := DeriveConcatKey(ctx, secret, parameters.kekBytes*8, parameters.kdf)
+	kek, err := DeriveConcatKey(ctx, secret, parameters.kekBytes*keyOctetBits, parameters.kdf)
 	if err != nil {
 		return profile{}, err
 	}
@@ -356,7 +374,7 @@ func ecdhDecryptProfile(ctx context.Context, recipient ECDHRecipient, options EC
 }
 
 func ecdhDecryptKeyTransport(ctx context.Context, recipient ECDHRecipient, options ECDHOptions, keyBytes int) (keyTransport, error) {
-	if keyBytes != 16 && keyBytes != 24 && keyBytes != 32 {
+	if keyBytes != aes128KeyBytes && keyBytes != aes192KeyBytes && keyBytes != aes256KeyBytes {
 		return keyTransport{}, ErrPolicy
 	}
 
@@ -374,7 +392,7 @@ func ecdhDecryptKeyTransport(ctx context.Context, recipient ECDHRecipient, optio
 	var originator *ecdh.PublicKey
 
 	transport := keyTransport{
-		algorithm: parameters.options.KeyAlgorithm, wrappedBytes: keyBytes + 8, keyBits: parameters.kekBytes * 8,
+		algorithm: parameters.options.KeyAlgorithm, wrappedBytes: keyBytes + keyWrapBlockBytes, keyBits: parameters.kekBytes * keyOctetBits,
 		checkKeyInfo: func(ctx context.Context, info document.Element) error {
 			var err error
 
@@ -410,7 +428,7 @@ func ecdhDecryptKeyTransport(ctx context.Context, recipient ECDHRecipient, optio
 				return nil, ErrDecrypt
 			}
 
-			kek, err := DeriveConcatKey(ctx, secret, parameters.kekBytes*8, parameters.kdf)
+			kek, err := DeriveConcatKey(ctx, secret, parameters.kekBytes*keyOctetBits, parameters.kdf)
 			if err != nil {
 				return nil, err
 			}
@@ -434,19 +452,19 @@ func encodeAgreement(ctx context.Context, originator, recipient *ecdh.PublicKey,
 		return nil, err
 	}
 
-	info := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
-	method := encryptedElement("AgreementMethod")
-	setAttribute(method, "Algorithm", ECDHES)
+	info := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
+	method := encryptedElement(nameAgreementMethod)
+	setAttribute(method, lexicon.SecurityAttrAlgorithm, ECDHES)
 	appendChild(method, kdf)
 
-	sender := encryptedElement("OriginatorKeyInfo")
+	sender := encryptedElement(nameOriginatorKeyInfo)
 	appendChild(sender, agreementKeyValue(originator, p.curveURI))
 	appendChild(method, sender)
 
-	receiver := encryptedElement("RecipientKeyInfo")
+	receiver := encryptedElement(nameRecipientKeyInfo)
 
 	if p.options.RecipientKeyName != "" {
-		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
+		name := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: p.options.RecipientKeyName})
 		appendChild(receiver, name)
 	}
@@ -459,13 +477,13 @@ func encodeAgreement(ctx context.Context, originator, recipient *ecdh.PublicKey,
 }
 
 func agreementKeyValue(public *ecdh.PublicKey, uri string) *tree.Node {
-	value := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyValue)
-	ec := newElement(SignatureNamespace11, "dsig11", "ECKeyValue")
-	ec.NS = []tree.Namespace{{Prefix: "dsig11", URI: SignatureNamespace11}}
-	curve := newElement(SignatureNamespace11, "dsig11", "NamedCurve")
-	setAttribute(curve, "URI", uri)
+	value := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyValue)
+	ec := newElement(SignatureNamespace11, lexicon.PrefixDSig11, lexicon.DSigElementECKeyValue)
+	ec.NS = []tree.Namespace{{Prefix: lexicon.PrefixDSig11, URI: SignatureNamespace11}}
+	curve := newElement(SignatureNamespace11, lexicon.PrefixDSig11, lexicon.DSigElementNamedCurve)
+	setAttribute(curve, lexicon.SecurityAttrURI, uri)
 
-	point := newElement(SignatureNamespace11, "dsig11", "PublicKey")
+	point := newElement(SignatureNamespace11, lexicon.PrefixDSig11, lexicon.DSigElementPublicKey)
 	appendChild(point, &tree.Node{Kind: tree.TextNode, Data: base64.StdEncoding.EncodeToString(public.Bytes())})
 	appendChild(ec, curve)
 	appendChild(ec, point)
@@ -475,7 +493,13 @@ func agreementKeyValue(public *ecdh.PublicKey, uri string) *tree.Node {
 }
 
 func decodeAgreement(ctx context.Context, info document.Element, recipient *ecdh.PublicKey, p agreementParameters) (*ecdh.PublicKey, error) {
-	children, err := childElements(info, elementName(Namespace, "AgreementMethod"))
+	// KeyDerivationMethod and OriginatorKeyInfo are required; RecipientKeyInfo is optional.
+	const (
+		agreementRequiredChildren = 2
+		agreementMaximumChildren  = 3
+	)
+
+	children, err := childElements(info, elementName(Namespace, nameAgreementMethod))
 	if err != nil || info.Name() != elementName(SignatureNamespace, lexicon.DSigElementKeyInfo) || !exactAttributes(info) {
 		return nil, ErrFormat
 	}
@@ -486,13 +510,13 @@ func decodeAgreement(ctx context.Context, info document.Element, recipient *ecdh
 	}
 
 	children = method.Children()
-	if len(children) < 2 || len(children) > 3 {
+	if len(children) < agreementRequiredChildren || len(children) > agreementMaximumChildren {
 		return nil, ErrFormat
 	}
 
-	names := []document.Name{elementName(Namespace11, "KeyDerivationMethod"), elementName(Namespace, "OriginatorKeyInfo")}
-	if len(children) == 3 {
-		names = append(names, elementName(Namespace, "RecipientKeyInfo"))
+	names := []document.Name{elementName(Namespace11, nameKeyDerivationMethod), elementName(Namespace, nameOriginatorKeyInfo)}
+	if len(children) == agreementMaximumChildren {
+		names = append(names, elementName(Namespace, nameRecipientKeyInfo))
 	}
 
 	children, err = childElements(method, names...)
@@ -514,7 +538,7 @@ func decodeAgreement(ctx context.Context, info document.Element, recipient *ecdh
 		return nil, err
 	}
 
-	if len(children) == 3 {
+	if len(children) == agreementMaximumChildren {
 		if err := checkAgreementRecipient(ctx, children[2], recipient, p); err != nil {
 			return nil, err
 		}
@@ -582,13 +606,13 @@ func decodeAgreementKey(ctx context.Context, info document.Element, p agreementP
 }
 
 func decodeAgreementKeyValue(ctx context.Context, value document.Element, p agreementParameters) (*ecdh.PublicKey, error) {
-	ec, err := childElements(value, elementName(SignatureNamespace11, "ECKeyValue"))
+	ec, err := childElements(value, elementName(SignatureNamespace11, lexicon.DSigElementECKeyValue))
 	if err != nil || !exactAttributes(value) || !exactAttributes(ec[0]) {
 		return nil, ErrFormat
 	}
 
-	fields, err := childElements(ec[0], elementName(SignatureNamespace11, "NamedCurve"), elementName(SignatureNamespace11, "PublicKey"))
-	if err != nil || !exactAttributes(fields[0], "URI") || attributeValue(fields[0], "URI") != p.curveURI || len(fields[0].Children()) != 0 || !xmlSpace(fields[0].Text()) || !exactAttributes(fields[1]) || len(fields[1].Children()) != 0 {
+	fields, err := childElements(ec[0], elementName(SignatureNamespace11, lexicon.DSigElementNamedCurve), elementName(SignatureNamespace11, lexicon.DSigElementPublicKey))
+	if err != nil || !exactAttributes(fields[0], lexicon.SecurityAttrURI) || attributeValue(fields[0], lexicon.SecurityAttrURI) != p.curveURI || len(fields[0].Children()) != 0 || !xmlSpace(fields[0].Text()) || !exactAttributes(fields[1]) || len(fields[1].Children()) != 0 {
 		return nil, ErrFormat
 	}
 
@@ -597,7 +621,7 @@ func decodeAgreementKeyValue(ctx context.Context, value document.Element, p agre
 		return nil, err
 	}
 
-	if len(encoded) != 1+2*p.secretBytes || encoded[0] != 4 {
+	if len(encoded) != 1+2*p.secretBytes || encoded[0] != uncompressedECPointPrefix {
 		return nil, ErrFormat
 	}
 

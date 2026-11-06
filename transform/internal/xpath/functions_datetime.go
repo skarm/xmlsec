@@ -12,64 +12,100 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Date/time function local names are separate from XSD type names. These
+// namespace dispatch values preserve the exact case required by F&O.
+const (
+	fnNameYearFromDateTime         = "year-from-dateTime"
+	fnNameMonthFromDateTime        = "month-from-dateTime"
+	fnNameDayFromDateTime          = "day-from-dateTime"
+	fnNameHoursFromDateTime        = "hours-from-dateTime"
+	fnNameMinutesFromDateTime      = "minutes-from-dateTime"
+	fnNameSecondsFromDateTime      = "seconds-from-dateTime"
+	fnNameTimezoneFromDateTime     = "timezone-from-dateTime"
+	fnNameYearFromDate             = "year-from-date"
+	fnNameMonthFromDate            = "month-from-date"
+	fnNameDayFromDate              = "day-from-date"
+	fnNameTimezoneFromDate         = "timezone-from-date"
+	fnNameHoursFromTime            = "hours-from-time"
+	fnNameMinutesFromTime          = "minutes-from-time"
+	fnNameSecondsFromTime          = "seconds-from-time"
+	fnNameTimezoneFromTime         = "timezone-from-time"
+	fnNameYearsFromDuration        = "years-from-duration"
+	fnNameMonthsFromDuration       = "months-from-duration"
+	fnNameDaysFromDuration         = "days-from-duration"
+	fnNameHoursFromDuration        = "hours-from-duration"
+	fnNameMinutesFromDuration      = "minutes-from-duration"
+	fnNameSecondsFromDuration      = "seconds-from-duration"
+	fnNameAdjustDateTimeToTimezone = "adjust-dateTime-to-timezone"
+	fnNameAdjustDateToTimezone     = "adjust-date-to-timezone"
+	fnNameAdjustTimeToTimezone     = "adjust-time-to-timezone"
+)
+
+// The timezone ceiling is fourteen hours expressed in seconds. DurationToRat's
+// false useMonths selector requests exact seconds rather than calendar months.
+const (
+	timezoneMaximumOffsetSeconds = maximumTimezoneHours * calendarSecondsPerHour
+	durationSecondsComponent     = false
+)
+
 func lookupFunctionsDatetime(name string) (*builtinFunc, bool) {
 	switch name {
 	case lexicon.TypeDateTime:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnDateTime}, true
-	case "year-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnYearFromDateTime}, true
-	case "month-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMonthFromDateTime}, true
-	case "day-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnDayFromDateTime}, true
-	case "hours-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnHoursFromDateTime}, true
-	case "minutes-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMinutesFromDateTime}, true
-	case "seconds-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnSecondsFromDateTime}, true
-	case "timezone-from-dateTime":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnTimezoneFromDateTime}, true
-	case "year-from-date":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnYearFromDate}, true
-	case "month-from-date":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMonthFromDate}, true
-	case "day-from-date":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnDayFromDate}, true
-	case "timezone-from-date":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnTimezoneFromDate}, true
-	case "hours-from-time":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnHoursFromTime}, true
-	case "minutes-from-time":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMinutesFromTime}, true
-	case "seconds-from-time":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnSecondsFromTime}, true
-	case "timezone-from-time":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnTimezoneFromTime}, true
-	case "years-from-duration":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnYearsFromDuration}, true
-	case "months-from-duration":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMonthsFromDuration}, true
-	case "days-from-duration":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnDaysFromDuration}, true
-	case "hours-from-duration":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnHoursFromDuration}, true
-	case "minutes-from-duration":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMinutesFromDuration}, true
-	case "seconds-from-duration":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnSecondsFromDuration}, true
-	case "adjust-dateTime-to-timezone":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnAdjustDateTimeToTimezone}, true
-	case "adjust-date-to-timezone":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnAdjustDateToTimezone}, true
-	case "adjust-time-to-timezone":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnAdjustTimeToTimezone}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnDateTime}, true
+	case fnNameYearFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnYearFromDateTime}, true
+	case fnNameMonthFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMonthFromDateTime}, true
+	case fnNameDayFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnDayFromDateTime}, true
+	case fnNameHoursFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnHoursFromDateTime}, true
+	case fnNameMinutesFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMinutesFromDateTime}, true
+	case fnNameSecondsFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnSecondsFromDateTime}, true
+	case fnNameTimezoneFromDateTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnTimezoneFromDateTime}, true
+	case fnNameYearFromDate:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnYearFromDate}, true
+	case fnNameMonthFromDate:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMonthFromDate}, true
+	case fnNameDayFromDate:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnDayFromDate}, true
+	case fnNameTimezoneFromDate:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnTimezoneFromDate}, true
+	case fnNameHoursFromTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnHoursFromTime}, true
+	case fnNameMinutesFromTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMinutesFromTime}, true
+	case fnNameSecondsFromTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnSecondsFromTime}, true
+	case fnNameTimezoneFromTime:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnTimezoneFromTime}, true
+	case fnNameYearsFromDuration:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnYearsFromDuration}, true
+	case fnNameMonthsFromDuration:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMonthsFromDuration}, true
+	case fnNameDaysFromDuration:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnDaysFromDuration}, true
+	case fnNameHoursFromDuration:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnHoursFromDuration}, true
+	case fnNameMinutesFromDuration:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMinutesFromDuration}, true
+	case fnNameSecondsFromDuration:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnSecondsFromDuration}, true
+	case fnNameAdjustDateTimeToTimezone:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnAdjustDateTimeToTimezone}, true
+	case fnNameAdjustDateToTimezone:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnAdjustDateToTimezone}, true
+	case fnNameAdjustTimeToTimezone:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnAdjustTimeToTimezone}, true
 	case fnNameFormatDateTime:
-		return &builtinFunc{name: name, min: 2, max: 5, arities: []int{2, 5}, fn: fnFormatDateTime}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityFive, arities: []int{builtinArityTwo, builtinArityFive}, fn: fnFormatDateTime}, true
 	case fnNameFormatDate:
-		return &builtinFunc{name: name, min: 2, max: 5, arities: []int{2, 5}, fn: fnFormatDate}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityFive, arities: []int{builtinArityTwo, builtinArityFive}, fn: fnFormatDate}, true
 	case fnNameFormatTime:
-		return &builtinFunc{name: name, min: 2, max: 5, arities: []int{2, 5}, fn: fnFormatTime}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityFive, arities: []int{builtinArityTwo, builtinArityFive}, fn: fnFormatTime}, true
 	}
 
 	return nil, false
@@ -213,7 +249,7 @@ func fnDateTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 		_, toff := t.Zone()
 		if doff != toff {
-			return nil, &xdm.Error{Code: "FORG0008", Message: "date and time timezone values are not equal"}
+			return nil, &xdm.Error{Code: errCodeFORG0008, Message: "date and time timezone values are not equal"}
 		}
 
 		loc = d.Location()
@@ -310,8 +346,8 @@ func fnSecondsFromDateTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence
 	return xdm.SingleDecimal(secondsToRat(t)), nil
 }
 
-func fnTimezoneFromDateTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return timezoneFromTemporal(args[0], xdm.TypeDateTime)
+func fnTimezoneFromDateTime(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return timezoneFromTemporal(ctx, args[0], xdm.TypeDateTime)
 }
 
 // --- date accessors ---
@@ -355,8 +391,8 @@ func fnDayFromDate(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	return xdm.SingleInteger(int64(t.Day())), nil
 }
 
-func fnTimezoneFromDate(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return timezoneFromTemporal(args[0], xdm.TypeDate)
+func fnTimezoneFromDate(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return timezoneFromTemporal(ctx, args[0], xdm.TypeDate)
 }
 
 // --- time accessors ---
@@ -406,17 +442,17 @@ func fnSecondsFromTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence, er
 func secondsToRat(t time.Time) *big.Rat {
 	r := new(big.Rat).SetInt64(int64(t.Second()))
 	if ns := t.Nanosecond(); ns != 0 {
-		r.Add(r, new(big.Rat).SetFrac(big.NewInt(int64(ns)), big.NewInt(1_000_000_000)))
+		r.Add(r, new(big.Rat).SetFrac(big.NewInt(int64(ns)), big.NewInt(nanosecondsPerSecond)))
 	}
 
 	return r
 }
 
-func fnTimezoneFromTime(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return timezoneFromTemporal(args[0], xdm.TypeTime)
+func fnTimezoneFromTime(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	return timezoneFromTemporal(ctx, args[0], xdm.TypeTime)
 }
 
-func timezoneFromTemporal(arg xdm.Sequence, typeName string) (xdm.Sequence, error) {
+func timezoneFromTemporal(ctx context.Context, arg xdm.Sequence, typeName string) (xdm.Sequence, error) {
 	t, ok, err := extractTime(arg, typeName)
 	if err != nil {
 		return nil, err
@@ -441,7 +477,7 @@ func timezoneFromTemporal(arg xdm.Sequence, typeName string) (xdm.Sequence, erro
 	// path is exact by construction (sign lives in Negative).
 	d := xdm.Duration{Seconds: float64(absOffset), SecRat: big.NewRat(int64(absOffset), 1), Negative: neg}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDayTimeDuration, Value: d}), nil
+	return boundedDurationResult(ctx, xdm.AtomicValue{TypeName: xdm.TypeDayTimeDuration, Value: d})
 }
 
 // --- duration accessors ---
@@ -456,7 +492,7 @@ func fnYearsFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence, 
 		return nil, nil
 	}
 
-	years := d.Months / 12
+	years := d.Months / calendarMonthsPerYear
 	if d.Negative {
 		years = -years
 	}
@@ -474,7 +510,7 @@ func fnMonthsFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence,
 		return nil, nil
 	}
 
-	months := d.Months % 12
+	months := d.Months % calendarMonthsPerYear
 	if d.Negative {
 		months = -months
 	}
@@ -487,7 +523,7 @@ func fnMonthsFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence,
 // components stay correct even for fractions arbitrarily close to a whole
 // second (where the float64 Seconds field would round up).
 func dayTimeWholeSeconds(d xdm.Duration) *big.Int {
-	total := xdm.DurationToRat(d, false)
+	total := xdm.DurationToRat(d, durationSecondsComponent)
 
 	abs := total
 	if abs.Sign() < 0 {
@@ -507,7 +543,7 @@ func fnDaysFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence, e
 		return nil, nil
 	}
 
-	days := new(big.Int).Quo(dayTimeWholeSeconds(d), big.NewInt(86400))
+	days := new(big.Int).Quo(dayTimeWholeSeconds(d), big.NewInt(calendarSecondsPerDay))
 	if d.Negative {
 		days.Neg(days)
 	}
@@ -526,9 +562,9 @@ func fnHoursFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence, 
 		return nil, nil
 	}
 
-	withinDay := new(big.Int).Rem(dayTimeWholeSeconds(d), big.NewInt(86400))
+	withinDay := new(big.Int).Rem(dayTimeWholeSeconds(d), big.NewInt(calendarSecondsPerDay))
 
-	hours := new(big.Int).Quo(withinDay, big.NewInt(3600))
+	hours := new(big.Int).Quo(withinDay, big.NewInt(calendarSecondsPerHour))
 	if d.Negative {
 		hours.Neg(hours)
 	}
@@ -546,9 +582,9 @@ func fnMinutesFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence
 		return nil, nil
 	}
 
-	withinHour := new(big.Int).Rem(dayTimeWholeSeconds(d), big.NewInt(3600))
+	withinHour := new(big.Int).Rem(dayTimeWholeSeconds(d), big.NewInt(calendarSecondsPerHour))
 
-	minutes := new(big.Int).Quo(withinHour, big.NewInt(60))
+	minutes := new(big.Int).Quo(withinHour, big.NewInt(calendarSecondsPerMinute))
 	if d.Negative {
 		minutes.Neg(minutes)
 	}
@@ -567,7 +603,7 @@ func fnSecondsFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence
 	}
 	// seconds-from-duration returns an xs:decimal: the exact total seconds mod 60.
 	// durationToRat is SecRat-aware, so the fractional part is preserved exactly.
-	total := xdm.DurationToRat(d, false)
+	total := xdm.DurationToRat(d, durationSecondsComponent)
 
 	abs := total
 	if abs.Sign() < 0 {
@@ -576,7 +612,7 @@ func fnSecondsFromDuration(_ context.Context, args []xdm.Sequence) (xdm.Sequence
 
 	whole := new(big.Int).Quo(abs.Num(), abs.Denom())
 	frac := new(big.Rat).Sub(abs, new(big.Rat).SetInt(whole))
-	secsInt := new(big.Int).Rem(whole, big.NewInt(60))
+	secsInt := new(big.Int).Rem(whole, big.NewInt(calendarSecondsPerMinute))
 	result := new(big.Rat).SetInt(secsInt)
 	result.Add(result, frac)
 
@@ -664,18 +700,18 @@ func validateTimezoneOffset(d xdm.Duration) error {
 	// Use the exact SecRat-aware total-seconds rational. An offset whose seconds
 	// underflow float64 (e.g. PT0.<many zeros>1S) is still exactly nonzero here,
 	// so it is not silently accepted as UTC.
-	abs := xdm.DurationToRat(d, false)
+	abs := xdm.DurationToRat(d, durationSecondsComponent)
 	if abs.Sign() < 0 {
 		abs = new(big.Rat).Neg(abs)
 	}
 
-	if abs.Cmp(big.NewRat(50400, 1)) > 0 { // 14 * 3600
-		return &xdm.Error{Code: "FODT0003", Message: "timezone offset out of range (-PT14H to PT14H)"}
+	if abs.Cmp(big.NewRat(timezoneMaximumOffsetSeconds, 1)) > 0 { // 14 * 3600
+		return &xdm.Error{Code: errCodeFODT0003, Message: "timezone offset out of range (-PT14H to PT14H)"}
 	}
 	// Whole number of minutes: the exact seconds rational must be divisible by 60.
-	rem := new(big.Rat).Quo(abs, big.NewRat(60, 1))
+	rem := new(big.Rat).Quo(abs, big.NewRat(calendarSecondsPerMinute, 1))
 	if !rem.IsInt() {
-		return &xdm.Error{Code: "FODT0003", Message: "timezone offset must be a whole number of minutes"}
+		return &xdm.Error{Code: errCodeFODT0003, Message: "timezone offset must be a whole number of minutes"}
 	}
 
 	return nil
@@ -685,7 +721,7 @@ func durationToLocation(d xdm.Duration) *time.Location {
 	// Bounded by validateTimezoneOffset (|offset| <= 50400, whole minutes), so the
 	// exact seconds magnitude fits an int. Read it from the SecRat-aware rational
 	// so a sub-float64 offset is not flattened to zero.
-	abs := xdm.DurationToRat(d, false)
+	abs := xdm.DurationToRat(d, durationSecondsComponent)
 	if abs.Sign() < 0 {
 		abs = new(big.Rat).Neg(abs)
 	}

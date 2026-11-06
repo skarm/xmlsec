@@ -1,5 +1,9 @@
 package xpath
 
+import "github.com/skarm/xmlsec/internal/lexicon"
+
+// Package-shared spellings support function dispatch, grammar keywords,
+// formatting labels and diagnostics. Their established case remains significant.
 const (
 	fnNameStringJoin            = "string-join"
 	fnNameFormatDate            = "format-date"
@@ -15,10 +19,10 @@ const (
 	nameEmptySequence                         = "empty-sequence"
 	nameFunction                              = "function"
 	nameISO                                   = "ISO"
-	nameNFC                                   = "NFC"
-	nameNFD                                   = "NFD"
-	nameNFKC                                  = "NFKC"
-	nameNFKD                                  = "NFKD"
+	nameNFC                                   = lexicon.NormalizationFormNFC
+	nameNFD                                   = lexicon.NormalizationFormNFD
+	nameNFKC                                  = lexicon.NormalizationFormNFKC
+	nameNFKD                                  = lexicon.NormalizationFormNFKD
 	nameAcht                                  = "acht"
 	nameAnd                                   = "and"
 	textArrayIndexOutOfRange                  = "array index out of range"
@@ -60,7 +64,7 @@ const (
 	nameThen                                  = "then"
 	nameTreat                                 = "treat"
 	nameUnion                                 = "union"
-	nameUpper2                                = "upper"
+	nameUpperCase                             = "upper"
 	nameUseLast                               = "use-last"
 	textXMLToJSONInvalidChildNode             = "xml-to-json: invalid child node"
 	textXsDurationCannotBeUsedInArithmetic    = "xs:duration cannot be used in arithmetic"

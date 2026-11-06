@@ -105,7 +105,7 @@ func TestReturnedXSLTFunctionIdentityAndBudget(t *testing.T) {
 		for range 2 {
 			result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: created.Primary()}})
 			if outputLimit == 128 {
-				if !errors.Is(err, transform.ErrLimit) || result.Len() != 0 {
+				if !errors.Is(err, transform.ErrLimit) || result != (transform.Sequence{}) {
 					t.Fatal("function bypassed caller output budget", err)
 				}
 

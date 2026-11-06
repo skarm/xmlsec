@@ -42,6 +42,9 @@ func TestNextIndependentFixtures(t *testing.T) {
 	if e = json.Unmarshal(raw, &wire); e != nil {
 		t.Fatal(e)
 	}
+	if len(wire.Cases) != 34 {
+		t.Fatalf("independent fixture count = %d, want 34", len(wire.Cases))
+	}
 
 	for _, tc := range wire.Cases {
 		t.Run(tc.Name, func(t *testing.T) { testNextIndependentFixturesCase(t, dir, tc) })

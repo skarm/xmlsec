@@ -11,6 +11,17 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
+// Zero namespace/node-set fields select the same defaults used by DefaultLimits. maximumDepth is the hard recursion ceiling rather than a caller default.
+const (
+	defaultMaxBytes        = 8 << 20
+	defaultMaxDepth        = 128
+	defaultMaxNodes        = 100_000
+	defaultMaxAttributes   = 128
+	defaultMaxNamespaces   = 256
+	defaultMaxNodeSetNodes = 250_000
+	maximumDepth           = 512
+)
+
 const (
 	// XMLNamespace is the predefined XML namespace URI.
 	XMLNamespace = lexicon.NamespaceXML
@@ -18,7 +29,7 @@ const (
 	XMLNSNamespace = lexicon.NamespaceXMLNS
 )
 
-const xmlSpaceName = "space"
+const xmlSpaceName = lexicon.AttrSpace
 
 var (
 	// ErrMalformed reports malformed XML.
@@ -50,8 +61,10 @@ type Attribute struct {
 
 // Namespace is one lexical namespace declaration.
 type Namespace struct {
+	// Prefix is the declared prefix; empty declares the default namespace.
 	Prefix string
-	URI    string
+	// URI is the bound namespace URI; empty represents an undeclaration.
+	URI string
 }
 
 // Kind identifies an XML or XPath node kind.
@@ -78,15 +91,24 @@ const (
 
 // Node is mutable only inside this module. Public Documents never expose it.
 type Node struct {
+	// Kind selects the XML or XPath node representation.
 	Kind       Kind
 	SourceLine uint32 // 1-based start-tag line; zero when unavailable
-	Name       Name
-	Prefix     string
-	Attrs      []Attribute
-	NS         []Namespace
-	Data       string
-	Parent     *Node
-	Children   []*Node
+	// Name is the expanded name for named nodes.
+	Name Name
+	// Prefix retains the lexical prefix used in the source or draft.
+	Prefix string
+	// Attrs contains non-namespace attributes in stored order.
+	Attrs []Attribute
+	// NS contains local namespace declarations, not the complete in-scope bindings.
+	NS []Namespace
+	// Data holds text, comment or processing-instruction content.
+	Data string
+	// Parent links to the containing node; the document node has no parent.
+	Parent *Node
+	// Children contains child nodes in document order.
+	Children []*Node
+	// textBuffer accumulates adjacent text during private draft construction.
 	textBuffer *strings.Builder
 }
 
@@ -103,11 +125,13 @@ func Root(d *Document) *Node {
 // MaxNodes and MaxAttributesPerElement must be positive. Use DefaultLimits
 // for a complete policy.
 type Limits struct {
-	// MaxBytes bounds XML input bytes before and after decoding.
+	// MaxBytes bounds XML input bytes before and after decoding. Nonvalidating
+	// DTD processing also uses it for aggregate entity input and expansion work.
 	MaxBytes int
-	// MaxDepth bounds element nesting and cannot exceed 512.
+	// MaxDepth bounds element nesting and DTD entity recursion; it cannot exceed 512.
 	MaxDepth int
-	// MaxNodes bounds parsed content nodes, excluding expanded namespace and attribute axes.
+	// MaxNodes bounds parsed content nodes, excluding expanded namespace and
+	// attribute axes. It also bounds DTD declarations in nonvalidating mode.
 	MaxNodes int
 	// MaxAttributesPerElement bounds attributes and namespace declarations on each start tag.
 	MaxAttributesPerElement int
@@ -120,7 +144,7 @@ type Limits struct {
 
 // DefaultLimits returns a fresh value; there is no mutable global policy.
 func DefaultLimits() Limits {
-	return Limits{MaxBytes: 8 << 20, MaxDepth: 128, MaxNodes: 100_000, MaxAttributesPerElement: 128, MaxInScopeNamespaces: 256, MaxNodeSetNodes: 250_000}
+	return Limits{MaxBytes: defaultMaxBytes, MaxDepth: defaultMaxDepth, MaxNodes: defaultMaxNodes, MaxAttributesPerElement: defaultMaxAttributes, MaxInScopeNamespaces: defaultMaxNamespaces, MaxNodeSetNodes: defaultMaxNodeSetNodes}
 }
 
 // Policy returns the snapshot resource policy.
@@ -136,7 +160,7 @@ func (l Limits) Validate() error {
 		return fmt.Errorf("%w: negative namespace/node-set budget", ErrLimit)
 	}
 	// The recursive canonicalizer must never be handed an unbounded tree.
-	if l.MaxDepth > 512 {
+	if l.MaxDepth > maximumDepth {
 		return fmt.Errorf("%w: MaxDepth must be <= 512", ErrLimit)
 	}
 
@@ -145,7 +169,7 @@ func (l Limits) Validate() error {
 
 func (l Limits) namespaceLimit() int {
 	if l.MaxInScopeNamespaces == 0 {
-		return 256
+		return defaultMaxNamespaces
 	}
 
 	return l.MaxInScopeNamespaces
@@ -153,7 +177,7 @@ func (l Limits) namespaceLimit() int {
 
 func (l Limits) nodeSetLimit() int {
 	if l.MaxNodeSetNodes == 0 {
-		return 250_000
+		return defaultMaxNodeSetNodes
 	}
 
 	return l.MaxNodeSetNodes
@@ -182,6 +206,8 @@ type UnparsedEntity struct {
 	PublicID string
 	// BaseURI is the retrieval base used to resolve the system identifier.
 	BaseURI string
+	// Notation names the notation associated with this unparsed entity.
+	Notation string
 }
 
 // Document is an immutable, namespace-aware XML 1.0 snapshot.
@@ -194,9 +220,13 @@ type Document struct {
 	limits           Limits
 	inputBytes       int
 	unparsedEntities map[string]UnparsedEntity
+	dtdInfo          *DocumentType
 	nodeBases        map[*Node]string
 	dtdTypes         map[dtdAttributeKey]DTDAttributeType
 	views            sync.Map
+	contextual       bool
+	contextSource    *Document
+	contextAnchor    *Node
 }
 
 // Unwrap returns the private snapshot and node represented by an immutable handle.
@@ -227,7 +257,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		return nil, err
 	}
 
-	out := &Document{limits: d.limits, inputBytes: d.inputBytes, unparsedEntities: d.unparsedEntities, children: make([]*Node, len(d.children))}
+	out := &Document{limits: d.limits, inputBytes: d.inputBytes, unparsedEntities: d.unparsedEntities, dtdInfo: d.dtdInfo, children: make([]*Node, len(d.children))}
 
 	var cp func(*Node, *Node) (*Node, error)
 
@@ -281,6 +311,13 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		if c.Kind == ElementNode {
 			out.root = c
 		}
+	}
+
+	if d.contextual && out.root != nil {
+		out.contextual = true
+		out.root.Parent = d.root.Parent
+		out.contextSource = d.contextSource
+		out.contextAnchor = d.contextAnchor
 	}
 
 	if err := ctx.Err(); err != nil {

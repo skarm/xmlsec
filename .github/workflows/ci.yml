@@ -76,11 +76,11 @@ jobs:
         run: make examples
   interop:
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Run full interoperability checks in Docker
+      - name: Run required external checks and Shibboleth/OpenAM/GSA SOAP servers
         run: make interop-docker

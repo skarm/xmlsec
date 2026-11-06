@@ -27,66 +27,6 @@ import (
 	"github.com/skarm/xmlsec/keys"
 )
 
-func pkcs12FormOID(last int) asn1.ObjectIdentifier {
-	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, last}
-}
-
-func pkcs12FormData(input []byte) []byte {
-	return der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}), der.Ctx(0, der.Octets(input)))
-}
-
-func pkcs12FormIndefinite(tag byte, parts ...[]byte) []byte {
-	return append(append([]byte{tag, 0x80}, bytes.Join(parts, nil)...), 0, 0)
-}
-
-// Build the MAC with the independent standard-library PBKDF2 implementation.
-// The authenticated octets deliberately need not be a canonical DER encoding.
-func pkcs12FormPFX(t *testing.T, authenticated, macInput []byte, outerBER bool) []byte {
-	t.Helper()
-	salt := []byte("published form test salt")
-	key, err := pbkdf2.Key(sha256.New, "forms password", salt, 1000, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clear(key)
-	mac := hmac.New(sha256.New, key)
-	mac.Write(macInput)
-	prf := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 9}), []byte{5, 0})
-	kdf := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 12}), der.Seq(der.Octets(salt), der.Int(1000), der.Int(32), prf))
-	algorithm := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 14}), der.Seq(kdf, prf))
-	macData := der.Seq(der.Seq(algorithm, der.Octets(mac.Sum(nil))), der.Octets(nil))
-	if outerBER {
-		mid := len(authenticated) / 2
-		octets := pkcs12FormIndefinite(0x24, der.Octets(authenticated[:mid]), pkcs12FormIndefinite(0x24, der.Octets(authenticated[mid:])))
-		info := pkcs12FormIndefinite(0x30, der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}), pkcs12FormIndefinite(0xa0, octets))
-		return pkcs12FormIndefinite(0x30, der.Int(3), info, macData)
-	}
-	return der.Seq(der.Int(3), pkcs12FormData(authenticated), macData)
-}
-
-func pkcs12FormBags(t *testing.T, key crypto.Signer, certificate *x509.Certificate, encrypted bool) []byte {
-	t.Helper()
-	private, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { clear(private) }()
-	bagType := 1
-	if encrypted {
-		clear(private)
-		private, err = keys.MarshalEncryptedPrivate(t.Context(), key, []byte("forms password"), protection(crypto.SHA256, 256), keys.Limits{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		bagType = 2
-	}
-	id := sha256.Sum256(certificate.Raw)
-	attributes := der.Set(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21}), der.Set(der.Octets(id[:]))))
-	keyBag := der.Seq(der.OID(pkcs12FormOID(bagType)), der.Ctx(0, private), attributes)
-	certBag := der.Seq(der.OID(pkcs12FormOID(3)), der.Ctx(0, der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}), der.Ctx(0, der.Octets(certificate.Raw)))), attributes)
-	return bytes.Join([][]byte{keyBag, certBag}, nil)
-}
-
 func TestPKCS12ExplicitIdentitiesAndSelection(t *testing.T) {
 	t.Parallel()
 
@@ -331,7 +271,7 @@ func checkEncryptedPrivateKeyCase(t *testing.T, ctx context.Context, key crypto.
 	for _, pemInput := range []bool{false, true} {
 		input := bytes.Clone(raw)
 		if pemInput {
-			input = pem.EncodeToMemory(&pem.Block{Type: textENCRYPTEDPRIVATEKEY, Bytes: input})
+			input = pem.EncodeToMemory(&pem.Block{Type: encryptedPrivateKeyPEMType, Bytes: input})
 		}
 
 		before := bytes.Clone(input)
@@ -760,6 +700,97 @@ func TestLargePKCS12ResourceLimits(t *testing.T) {
 	}
 }
 
+func FuzzPasswordContainers(f *testing.F) {
+	c := testcert.New(f)
+	ctx := f.Context()
+	password := []byte("public test password")
+	options := protection(crypto.SHA256, 256)
+
+	a, err := keys.MarshalEncryptedPrivate(ctx, c.LeafKey, password, options, keys.Limits{})
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	b, err := keys.MarshalPKCS12(ctx, keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}, password, keys.PKCS12Options{Encryption: options}, keys.Limits{})
+	if err != nil {
+		f.Fatal(err)
+	}
+
+	for _, raw := range [][]byte{a, b, pem.EncodeToMemory(&pem.Block{Type: encryptedPrivateKeyPEMType, Bytes: a})} {
+		f.Add(raw, password)
+	}
+
+	f.Fuzz(func(t *testing.T, raw, password []byte) {
+		if len(raw) > 64<<10 || len(password) > 128 {
+			return
+		}
+
+		limits := keys.Limits{MaxIterations: 1000, MaxKDFWork: 3000}
+		_, _ = keys.ParseEncryptedPrivate(ctx, raw, password, limits)
+		_, _ = keys.ParsePKCS12(ctx, raw, password, limits)
+	})
+}
+
+func pkcs12FormOID(last int) asn1.ObjectIdentifier {
+	return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, last}
+}
+
+func pkcs12FormData(input []byte) []byte {
+	return der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}), der.Ctx(0, der.Octets(input)))
+}
+
+func pkcs12FormIndefinite(tag byte, parts ...[]byte) []byte {
+	return append(append([]byte{tag, 0x80}, bytes.Join(parts, nil)...), 0, 0)
+}
+
+// Build the MAC with the independent standard-library PBKDF2 implementation.
+// The authenticated octets deliberately need not be a canonical DER encoding.
+func pkcs12FormPFX(t *testing.T, authenticated, macInput []byte, outerBER bool) []byte {
+	t.Helper()
+	salt := []byte("published form test salt")
+	key, err := pbkdf2.Key(sha256.New, "forms password", salt, 1000, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(key)
+	mac := hmac.New(sha256.New, key)
+	mac.Write(macInput)
+	prf := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 9}), []byte{5, 0})
+	kdf := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 12}), der.Seq(der.Octets(salt), der.Int(1000), der.Int(32), prf))
+	algorithm := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 14}), der.Seq(kdf, prf))
+	macData := der.Seq(der.Seq(algorithm, der.Octets(mac.Sum(nil))), der.Octets(nil))
+	if outerBER {
+		mid := len(authenticated) / 2
+		octets := pkcs12FormIndefinite(0x24, der.Octets(authenticated[:mid]), pkcs12FormIndefinite(0x24, der.Octets(authenticated[mid:])))
+		info := pkcs12FormIndefinite(0x30, der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}), pkcs12FormIndefinite(0xa0, octets))
+		return pkcs12FormIndefinite(0x30, der.Int(3), info, macData)
+	}
+	return der.Seq(der.Int(3), pkcs12FormData(authenticated), macData)
+}
+
+func pkcs12FormBags(t *testing.T, key crypto.Signer, certificate *x509.Certificate, encrypted bool) []byte {
+	t.Helper()
+	private, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { clear(private) }()
+	bagType := 1
+	if encrypted {
+		clear(private)
+		private, err = keys.MarshalEncryptedPrivate(t.Context(), key, []byte("forms password"), protection(crypto.SHA256, 256), keys.Limits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bagType = 2
+	}
+	id := sha256.Sum256(certificate.Raw)
+	attributes := der.Set(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21}), der.Set(der.Octets(id[:]))))
+	keyBag := der.Seq(der.OID(pkcs12FormOID(bagType)), der.Ctx(0, private), attributes)
+	certBag := der.Seq(der.OID(pkcs12FormOID(3)), der.Ctx(0, der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}), der.Ctx(0, der.Octets(certificate.Raw)))), attributes)
+	return bytes.Join([][]byte{keyBag, certBag}, nil)
+}
+
 func protection(hash crypto.Hash, bits int) keys.EncryptionOptions {
 	return keys.EncryptionOptions{Hash: hash, KeyBits: bits, Iterations: 1000}
 }
@@ -812,35 +843,4 @@ func rejectPrivate(t *testing.T, raw []byte) {
 	if key, err := keys.ParsePrivate(raw, keys.Limits{}); key != nil || !errors.Is(err, keys.ErrFormat) {
 		t.Fatalf("invalid private-key structure accepted: key=%v, error=%v", key != nil, err)
 	}
-}
-
-func FuzzPasswordContainers(f *testing.F) {
-	c := testcert.New(f)
-	ctx := f.Context()
-	password := []byte("public test password")
-	options := protection(crypto.SHA256, 256)
-
-	a, err := keys.MarshalEncryptedPrivate(ctx, c.LeafKey, password, options, keys.Limits{})
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	b, err := keys.MarshalPKCS12(ctx, keys.PKCS12Identity{PrivateKey: c.LeafKey, Certificate: c.Leaf}, password, keys.PKCS12Options{Encryption: options}, keys.Limits{})
-	if err != nil {
-		f.Fatal(err)
-	}
-
-	for _, raw := range [][]byte{a, b, pem.EncodeToMemory(&pem.Block{Type: textENCRYPTEDPRIVATEKEY, Bytes: a})} {
-		f.Add(raw, password)
-	}
-
-	f.Fuzz(func(t *testing.T, raw, password []byte) {
-		if len(raw) > 64<<10 || len(password) > 128 {
-			return
-		}
-
-		limits := keys.Limits{MaxIterations: 1000, MaxKDFWork: 3000}
-		_, _ = keys.ParseEncryptedPrivate(ctx, raw, password, limits)
-		_, _ = keys.ParsePKCS12(ctx, raw, password, limits)
-	})
 }

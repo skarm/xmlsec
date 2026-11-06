@@ -12,11 +12,35 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	maxTransportKeyInfoBytes = 64 << 10
+	profileMarkupBytes       = 8192
+	// Extra lexical byte allowance for whitespace around a bounded Base64 CipherValue.
+	cipherValueWhitespaceBytes = 4096
+	maximumWrappedRSAKeyBytes  = 2048
+	// Container selecting one CipherValue or CipherReference representation. Compare the expected XML
+	// Encryption namespace when matching it.
+	nameCipherData = "CipherData"
+	// Base64 ciphertext whose decoded size is checked against the byte budget. Compare the expected
+	// XML Encryption namespace when matching it.
+	nameCipherValue = "CipherValue"
+	// Encrypted element/content wrapper; Type controls plaintext interpretation. Compare the expected
+	// XML Encryption namespace when matching it.
+	nameEncryptedData = "EncryptedData"
+	// On-wire cipher or key-transport declaration matched to configured algorithms. Compare the
+	// expected XML Encryption namespace when matching it.
+	nameEncryptionMethod = "EncryptionMethod"
+	// Suggested prefix for generated XML Encryption 1.0 elements; identity comes from Namespace.
+	prefixXEnc = "xenc"
+)
+
 func newElement(namespace, prefix, local string) *tree.Node {
 	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: namespace, Local: local}, Prefix: prefix}
 }
 
-func encryptedElement(local string) *tree.Node { return newElement(Namespace, "xenc", local) }
+func encryptedElement(local string) *tree.Node {
+	return newElement(Namespace, prefixXEnc, local)
+}
 
 func appendChild(parent, child *tree.Node) {
 	parent.Children = append(parent.Children, child)
@@ -33,8 +57,8 @@ func encodeCipherData(ctx context.Context, ciphertext []byte) (*tree.Node, error
 		return nil, err
 	}
 
-	data := encryptedElement("CipherData")
-	value := encryptedElement("CipherValue")
+	data := encryptedElement(nameCipherData)
+	value := encryptedElement(nameCipherValue)
 	appendChild(value, &tree.Node{Kind: tree.TextNode, Data: encoded})
 	appendChild(data, value)
 
@@ -42,17 +66,17 @@ func encodeCipherData(ctx context.Context, ciphertext []byte) (*tree.Node, error
 }
 
 func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, typ string) (*document.Document, error) {
-	root := encryptedElement("EncryptedData")
+	root := encryptedElement(nameEncryptedData)
 
-	method := encryptedElement("EncryptionMethod")
-	setAttribute(method, "Algorithm", p.options.DataAlgorithm)
+	method := encryptedElement(nameEncryptionMethod)
+	setAttribute(method, lexicon.SecurityAttrAlgorithm, p.options.DataAlgorithm)
 	appendChild(root, method)
 
 	if p.direct == nil {
-		keyInfo := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
-		encryptedKey := encryptedElement("EncryptedKey")
-		keyMethod := encryptedElement("EncryptionMethod")
-		setAttribute(keyMethod, "Algorithm", p.transport.algorithm)
+		keyInfo := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
+		encryptedKey := encryptedElement(nameEncryptedKey)
+		keyMethod := encryptedElement(nameEncryptionMethod)
+		setAttribute(keyMethod, lexicon.SecurityAttrAlgorithm, p.transport.algorithm)
 
 		if rsaOAEPAlgorithm(p.transport.algorithm) {
 			encodeOAEP(keyMethod, p.transport.oaep)
@@ -73,8 +97,8 @@ func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, ty
 		appendChild(keyInfo, encryptedKey)
 		appendChild(root, keyInfo)
 	} else if p.keyName != "" {
-		keyInfo := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
-		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
+		keyInfo := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
+		name := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: p.keyName})
 		appendChild(keyInfo, name)
 		appendChild(root, keyInfo)
@@ -82,9 +106,9 @@ func encodeProfile(ctx context.Context, wrapped, encrypted []byte, p profile, ty
 
 	limits := document.DefaultLimits()
 
-	limits.MaxBytes = base64.StdEncoding.EncodedLen(p.options.MaxPlaintextBytes+p.data.overhead()) + 8192
+	limits.MaxBytes = base64.StdEncoding.EncodedLen(p.options.MaxPlaintextBytes+p.data.overhead()) + profileMarkupBytes
 	if p.transport.keyInfo != nil {
-		size, err := tree.WriteXMLFragment(ctx, io.Discard, []*tree.Node{p.transport.keyInfo}, 64<<10)
+		size, err := tree.WriteXMLFragment(ctx, io.Discard, []*tree.Node{p.transport.keyInfo}, maxTransportKeyInfoBytes)
 		if err != nil {
 			return nil, errors.Join(ErrPolicy, err)
 		}
@@ -194,12 +218,12 @@ func childElements(element document.Element, names ...document.Name) ([]document
 }
 
 func matchesMethod(element document.Element, algorithm string, empty bool) bool {
-	return exactAttributes(element, "Algorithm") && attributeValue(element, "Algorithm") == algorithm &&
+	return exactAttributes(element, lexicon.SecurityAttrAlgorithm) && attributeValue(element, lexicon.SecurityAttrAlgorithm) == algorithm &&
 		(!empty || (len(element.Children()) == 0 && xmlSpace(element.Text())))
 }
 
 func decodeCipherValue(ctx context.Context, element document.Element, maxBytes int) ([]byte, error) {
-	children, err := childElements(element, elementName(Namespace, "CipherValue"))
+	children, err := childElements(element, elementName(Namespace, nameCipherValue))
 	if err != nil || !exactAttributes(element) || !exactAttributes(children[0]) || len(children[0].Children()) != 0 {
 		return nil, ErrFormat
 	}
@@ -210,7 +234,7 @@ func decodeCipherValue(ctx context.Context, element document.Element, maxBytes i
 func decodeBase64Text(ctx context.Context, element document.Element, maxBytes int) ([]byte, error) {
 	_, node := tree.Unwrap(element)
 
-	value, err := tree.DecodeBase64(ctx, node, base64.StdEncoding.EncodedLen(maxBytes)+4096, maxBytes)
+	value, err := tree.DecodeBase64(ctx, node, base64.StdEncoding.EncodedLen(maxBytes)+cipherValueWhitespaceBytes, maxBytes)
 	if errors.Is(err, tree.ErrLimit) {
 		return nil, errors.Join(ErrPolicy, err)
 	}
@@ -223,7 +247,7 @@ func decodeBase64Text(ctx context.Context, element document.Element, maxBytes in
 }
 
 func decodeProfile(ctx context.Context, doc *document.Document, typ string, p profile) ([]byte, []byte, error) {
-	if doc == nil || doc.Root().Name() != elementName(Namespace, "EncryptedData") {
+	if doc == nil || doc.Root().Name() != elementName(Namespace, nameEncryptedData) {
 		return nil, nil, ErrFormat
 	}
 
@@ -232,7 +256,7 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 		if !exactAttributes(root) {
 			return nil, nil, ErrFormat
 		}
-	} else if !exactAttributes(root, "Type") || attributeValue(root, "Type") != typ {
+	} else if !exactAttributes(root, lexicon.SecurityAttrType) || attributeValue(root, lexicon.SecurityAttrType) != typ {
 		return nil, nil, ErrFormat
 	}
 
@@ -240,26 +264,26 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 		return decodeDirectProfile(ctx, root, p)
 	}
 
-	children, err := childElements(root, elementName(Namespace, "EncryptionMethod"), elementName(SignatureNamespace, lexicon.DSigElementKeyInfo), elementName(Namespace, "CipherData"))
+	children, err := childElements(root, elementName(Namespace, nameEncryptionMethod), elementName(SignatureNamespace, lexicon.DSigElementKeyInfo), elementName(Namespace, nameCipherData))
 	if err != nil {
 		return nil, nil, ErrFormat
 	}
 
-	if err := checkEncryptionMethod(ctx, children[0], p.options.DataAlgorithm, p.keyBytes*8, false); err != nil {
+	if err := checkEncryptionMethod(ctx, children[0], p.options.DataAlgorithm, p.keyBytes*keyOctetBits, false); err != nil {
 		return nil, nil, err
 	}
 
-	keyInfo, err := childElements(children[1], elementName(Namespace, "EncryptedKey"))
+	keyInfo, err := childElements(children[1], elementName(Namespace, nameEncryptedKey))
 	if err != nil || !exactAttributes(children[1]) {
 		return nil, nil, ErrFormat
 	}
 
-	keyNames := []document.Name{elementName(Namespace, "EncryptionMethod")}
+	keyNames := []document.Name{elementName(Namespace, nameEncryptionMethod)}
 	if p.transport.checkKeyInfo != nil {
 		keyNames = append(keyNames, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo))
 	}
 
-	keyNames = append(keyNames, elementName(Namespace, "CipherData"))
+	keyNames = append(keyNames, elementName(Namespace, nameCipherData))
 
 	key, err := childElements(keyInfo[0], keyNames...)
 	if err != nil || !exactAttributes(keyInfo[0]) {
@@ -287,7 +311,7 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 	}
 	// At most a 16384-bit RSA ciphertext. Key Wrap additionally requires the
 	// exact session-key length plus eight bytes before any unwrap operations.
-	wrapped, err := decodeCipherValue(ctx, key[cipherIndex], 2048)
+	wrapped, err := decodeCipherValue(ctx, key[cipherIndex], maximumWrappedRSAKeyBytes)
 	if err != nil {
 		return nil, nil, err
 	}

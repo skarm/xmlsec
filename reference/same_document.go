@@ -12,19 +12,55 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	defaultIDAttribute    = "ID"
+	xpointerIDPrefix      = "xpointer(id("
+	xpointerWholeDocument = "xpointer(/)"
+	maximumIDRuleElements = 64
+	maximumIDRules        = 32
+)
+
 // SameDocumentResolver indexes explicitly typed IDs in one immutable snapshot.
 // IDs must be unique NCNames. Resolve supports concurrent calls; it performs no
 // schema-based typing or XPath evaluation.
 type SameDocumentResolver struct {
+	// doc is the immutable document in which references are resolved.
 	doc *document.Document
+	// ids indexes unique IDs accepted under the configured attribute rules.
 	ids map[string]document.Element
+}
+
+// IDAttributeRule treats an exact attribute name as an ID on selected element
+// names. Empty Elements applies the rule to every element. Repeating a rule for
+// the same attribute is allowed; two distinct ID attributes on one element are
+// rejected even if their values agree. ID typing does not use local-name guesses,
+// automatic xml:id recognition, schemas or DTD declarations.
+type IDAttributeRule struct {
+	// Attribute is the exact expanded name of the attribute to treat as an ID.
+	Attribute document.Name
+	// Elements restricts the rule to exact expanded names. Empty applies it to all elements.
+	Elements []document.Name
+}
+
+// Resolved retains an immutable same-document target and its comment-selection rules.
+type Resolved struct {
+	// data is the resolved representation before transforms.
+	data Data
+	// target identifies an element target, when the URI selects one.
+	target document.Element
+	// uri retains the original same-document reference.
+	uri string
+	// whole records whether the reference selects the document.
+	whole bool
+	// comments records whether the selected URI form retains comment nodes.
+	comments bool
 }
 
 // NewSameDocumentResolver indexes the explicit application ID attribute and rejects
 // duplicate identifiers.
 func NewSameDocumentResolver(ctx context.Context, doc *document.Document, idAttribute document.Name) (*SameDocumentResolver, error) {
 	if idAttribute == (document.Name{}) {
-		idAttribute.Local = "ID"
+		idAttribute.Local = defaultIDAttribute
 	}
 
 	return NewSameDocumentResolverWithRules(ctx, doc, []IDAttributeRule{{Attribute: idAttribute}})
@@ -43,7 +79,7 @@ func NewSameDocumentResolverWithRules(ctx context.Context, doc *document.Documen
 		return nil, err
 	}
 
-	if len(rules) > 32 {
+	if len(rules) > maximumIDRules {
 		return nil, fmt.Errorf("%w: too many ID rules", ErrPolicy)
 	}
 
@@ -71,8 +107,15 @@ func (r *SameDocumentResolver) Target(ctx context.Context, uri string) (document
 	return m.target, m.whole, nil
 }
 
-// Resolve selects the authorized same-document target and applies URI-specific comment rules.
+// Resolve selects a same-document target and applies URI-specific comment rules.
+// It accepts URI="", #ID, #xpointer(/), #xpointer(id('ID')) and the double-quoted
+// id form. Fragment percent escapes are decoded once. Other XPointer expressions,
+// whitespace variants and external URIs are rejected.
 func (r *SameDocumentResolver) Resolve(ctx context.Context, uri string) (Resolved, error) {
+	if r == nil {
+		return Resolved{}, ErrInput
+	}
+
 	result, err := r.identify(ctx, uri)
 	if err != nil {
 		return Resolved{}, err
@@ -101,10 +144,11 @@ func (r *SameDocumentResolver) Resolve(ctx context.Context, uri string) (Resolve
 	return result, nil
 }
 
-// Resolve implements URI="", #ID, #xpointer(/), #xpointer(id('ID')) and the
-// double-quoted id form. Percent escapes are decoded ONCE in the fragment.
-// Other XPointer expressions, whitespace variants and external URIs fail closed.
+// identify finds the same-document target and URI-specific comment rules
+// without constructing a node set.
 func (r *SameDocumentResolver) identify(ctx context.Context, uri string) (Resolved, error) {
+	const minimumQuotedIDBytes = 3 // opening quote, nonempty NCName, closing quote
+
 	if ctx == nil || r == nil || r.doc == nil {
 		return Resolved{}, ErrInput
 	}
@@ -128,12 +172,12 @@ func (r *SameDocumentResolver) identify(ctx context.Context, uri string) (Resolv
 		switch {
 		case tree.NCName(fragment):
 			id = fragment
-		case fragment == "xpointer(/)":
+		case fragment == xpointerWholeDocument:
 			result.whole = true
 			result.comments = true
-		case strings.HasPrefix(fragment, "xpointer(id(") && strings.HasSuffix(fragment, "))"):
-			value := fragment[len("xpointer(id(") : len(fragment)-2]
-			if len(value) < 3 || value[0] != '\'' && value[0] != '"' || value[len(value)-1] != value[0] || !tree.NCName(value[1:len(value)-1]) {
+		case strings.HasPrefix(fragment, xpointerIDPrefix) && strings.HasSuffix(fragment, "))"):
+			value := fragment[len(xpointerIDPrefix) : len(fragment)-2]
+			if len(value) < minimumQuotedIDBytes || value[0] != '\'' && value[0] != '"' || value[len(value)-1] != value[0] || !tree.NCName(value[1:len(value)-1]) {
 				return Resolved{}, fmt.Errorf("%w: XPointer id form", ErrUnsupported)
 			}
 
@@ -198,9 +242,24 @@ func (r *SameDocumentResolver) indexIDNodes(ctx context.Context, n *tree.Node, r
 	return nil
 }
 
+// Data returns the immutable resolved transform input.
+func (r Resolved) Data() Data { return r.data }
+
+// Target is invalid for a whole-document reference (document node != root element).
+func (r Resolved) Target() document.Element { return r.target }
+
+// URI returns the reference URI.
+func (r Resolved) URI() string { return r.uri }
+
+// WholeDocument returns whether the URI selects the entire document.
+func (r Resolved) WholeDocument() bool { return r.whole }
+
+// RetainsComments returns whether URI resolution retains comment nodes.
+func (r Resolved) RetainsComments() bool { return r.comments }
+
 func validateSameDocumentRules(rules []IDAttributeRule) error {
 	for _, rule := range rules {
-		if !tree.NCName(rule.Attribute.Local) || rule.Attribute.Space == tree.XMLNSNamespace || len(rule.Elements) > 64 {
+		if !tree.NCName(rule.Attribute.Local) || rule.Attribute.Space == tree.XMLNSNamespace || len(rule.Elements) > maximumIDRuleElements {
 			return fmt.Errorf("%w: ID rule", ErrPolicy)
 		}
 
@@ -231,39 +290,3 @@ func matchesIDRule(rules []IDAttributeRule, a, e document.Name) bool {
 
 	return false
 }
-
-// IDAttributeRule treats an exact attribute name as an ID on selected element
-// names. Empty Elements applies the rule to every element. Repeating a rule for
-// the same attribute is allowed; two distinct ID attributes on one element are
-// rejected even if their values agree. ID typing does not use local-name guesses,
-// automatic xml:id recognition, schemas or DTD declarations.
-type IDAttributeRule struct {
-	// Attribute is the exact expanded name of the attribute to treat as an ID.
-	Attribute document.Name
-	// Elements restricts the rule to exact expanded names. Empty applies it to all elements.
-	Elements []document.Name
-}
-
-// Resolved retains an immutable same-document target and its comment-selection rules.
-type Resolved struct {
-	data     Data
-	target   document.Element
-	uri      string
-	whole    bool
-	comments bool
-}
-
-// Data returns the immutable resolved transform input.
-func (r Resolved) Data() Data { return r.data }
-
-// Target is invalid for a whole-document reference (document node != root element).
-func (r Resolved) Target() document.Element { return r.target }
-
-// URI returns the reference URI.
-func (r Resolved) URI() string { return r.uri }
-
-// WholeDocument returns whether the URI selects the entire document.
-func (r Resolved) WholeDocument() bool { return r.whole }
-
-// RetainsComments returns whether URI resolution retains comment nodes.
-func (r Resolved) RetainsComments() bool { return r.comments }

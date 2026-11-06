@@ -31,6 +31,14 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const outputFileMode = 0o600
+
+const (
+	probeDefaultHashBits  = 256
+	probeDefaultTime      = "2026-10-08T12:00:00Z"
+	probeDefaultTSAPolicy = "1.2.3.4.1"
+)
+
 func main() {
 	mode := flag.String("mode", "", "operation")
 	input := flag.String("in", "", "input")
@@ -44,11 +52,11 @@ func main() {
 	req := flag.String("request", "", "request")
 	det := flag.Bool("detached", false, "detached CMS")
 	pss := flag.Bool("pss", false, "RSA-PSS")
-	hash := flag.Int("hash", 256, "hash bits")
-	at := flag.String("at", "2026-10-08T12:00:00Z", "time")
-	status := flag.String("status", "good", "OCSP status")
+	hash := flag.Int("hash", probeDefaultHashBits, "hash bits")
+	at := flag.String("at", probeDefaultTime, "time")
+	status := flag.String("status", string(pki.OCSPGood), "OCSP status")
 	nonceHex := flag.String("nonce", "", "nonce hex")
-	policyText := flag.String("policy", "1.2.3.4.1", "TSA policy")
+	policyText := flag.String("policy", probeDefaultTSAPolicy, "TSA policy")
 	alg := flag.String("alg", c14n.Exclusive, "archive canonicalization")
 	token := flag.String("token", "", "archive token CMS")
 
@@ -136,6 +144,12 @@ func main() {
 		must(err)
 
 		method := xmldsig.ECDSASHA256
+
+		if key == nil {
+			must(errors.New("private key is required"))
+			return
+		}
+
 		if _, ok := key.Public().(*rsa.PublicKey); ok {
 			method = xmldsig.RSASHA256
 		}
@@ -216,7 +230,7 @@ func main() {
 	must(e)
 
 	if *out != "" {
-		must(os.WriteFile(*out, output, 0o600))
+		must(os.WriteFile(*out, output, outputFileMode))
 	}
 
 	fmt.Println("OK", *mode)

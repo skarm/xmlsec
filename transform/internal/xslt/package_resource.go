@@ -8,6 +8,11 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Absent package-version selects lexical package version 1; it is independent of the stylesheet language version.
+const (
+	defaultPackageVersion = "1"
+)
+
 type (
 	packageStackKey struct{}
 	packageIdentity struct {
@@ -17,6 +22,10 @@ type (
 )
 
 func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, error) {
+	const (
+		packageDependencyDepthFallback = 128
+	)
+
 	root := doc.DocumentElement()
 	if root == nil || root.URI() != lexicon.NamespaceXSLT || root.LocalName() != namePackage {
 		return ctx, nil
@@ -24,7 +33,7 @@ func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, erro
 
 	version, present := root.GetAttribute(namePackageVersion)
 	if !present {
-		version = "1"
+		version = defaultPackageVersion
 	}
 
 	parsed := ParsePackageVersion(version)
@@ -35,13 +44,13 @@ func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, erro
 	identity := packageIdentity{name: getAttr(root, xslAttrName), version: parsed}
 
 	stack, _ := ctx.Value(packageStackKey{}).([]packageIdentity)
-	if len(stack) >= xpath.DepthLimit(ctx, 128) {
+	if len(stack) >= xpath.DepthLimit(ctx, packageDependencyDepthFallback) {
 		return nil, xpath.ErrBudget
 	}
 
 	for _, parent := range stack {
 		if parent.name == identity.name && parent.version.Compare(parsed) == 0 {
-			return nil, staticError("XTSE3005", "cyclic package dependency %q", identity.name)
+			return nil, staticError(errCodeXTSE3005, "cyclic package dependency %q", identity.name)
 		}
 	}
 
@@ -55,22 +64,26 @@ func enterPackage(ctx context.Context, doc *xdm.Document) (context.Context, erro
 }
 
 func checkResolvedPackage(doc *xdm.Document, name, version string) error {
+	const (
+		shadowAttrPackageVersion = "_package-version"
+	)
+
 	root := doc.DocumentElement()
 	if root == nil || root.URI() != lexicon.NamespaceXSLT || root.LocalName() != namePackage {
 		return staticError(errCodeXTSE3000, "resolved package does not match %q", name)
 	}
 
-	if _, shadow := root.GetAttribute("_name"); !shadow && getAttr(root, xslAttrName) != name {
+	if _, shadow := root.GetAttribute(shadowAttrName); !shadow && getAttr(root, xslAttrName) != name {
 		return staticError(errCodeXTSE3000, "resolved package does not match %q", name)
 	}
 
-	if _, shadow := root.GetAttribute("_package-version"); shadow {
+	if _, shadow := root.GetAttribute(shadowAttrPackageVersion); shadow {
 		return nil
 	}
 
 	actual := getAttr(root, namePackageVersion)
 	if actual == "" {
-		actual = "1"
+		actual = defaultPackageVersion
 	}
 
 	if !ParseVersionConstraint(version).Matches(ParsePackageVersion(actual)) {

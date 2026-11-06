@@ -11,12 +11,38 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+// x509CertificateVersion3 is represented by 3 in crypto/x509's parsed view,
+// unlike its zero-based ASN.1 INTEGER encoding.
+const x509CertificateVersion3 = 3
+
+const (
+	// Authenticated CRL status label for an entry that removes an earlier revocation.
+	assertedRemoveFromCRL = "remove-from-crl"
+	// Authenticated evidence status label used when evaluating revocation history.
+	assertedRevoked        = "revoked"
+	completeCRLScopePrefix = "complete/"
+	deltaCRLScopePrefix    = "delta/"
+	defaultCRLMaxAge       = 24 * time.Hour
+	defaultCRLSignerDepth  = 10
+	// Caps name-constraint work passed to certificate path verification.
+	maxNameConstraintComparisons = 100000
+	maximumCRLMaxAge             = 30 * 24 * time.Hour
+	// X.509 reason-code value that removes an entry from a delta CRL.
+	reasonRemoveFromCRL = 8
+)
+
+const (
+	oidCRLDistributionPoints = "2.5.29.31"
 )
 
 // CRLOptions controls the offline CRL algorithm. Zero enables supplied deltas.
 // A FreshestCRL advertisement then requires a current applicable supplied delta;
 // no resource is fetched. NextUpdate is always an exclusive upper boundary.
 type CRLOptions struct {
+	// signerDepth bounds recursive CRL signer path processing after normalization.
 	signerDepth int
 	// DisableDeltaCRLs selects RFC5280's use-deltas=false input explicitly.
 	DisableDeltaCRLs bool
@@ -26,14 +52,14 @@ type CRLOptions struct {
 
 func normalizeCRLOptions(o CRLOptions) (CRLOptions, error) {
 	if o.signerDepth == 0 {
-		o.signerDepth = 10
+		o.signerDepth = defaultCRLSignerDepth
 	}
 
 	if o.MaxAge == 0 {
-		o.MaxAge = 24 * time.Hour
+		o.MaxAge = defaultCRLMaxAge
 	}
 
-	if o.MaxAge <= 0 || o.MaxAge > 30*24*time.Hour {
+	if o.MaxAge <= 0 || o.MaxAge > maximumCRLMaxAge {
 		return o, ErrPolicy
 	}
 
@@ -43,8 +69,8 @@ func normalizeCRLOptions(o CRLOptions) (CRLOptions, error) {
 type (
 	crlWorkBudget        struct{ checks int }
 	crlAuthenticationKey struct {
-		anchor [32]byte
-		leaf   [32]byte
+		anchor [sha256.Size]byte
+		leaf   [sha256.Size]byte
 	}
 )
 
@@ -219,7 +245,7 @@ func (a *crlAuthentication) authorizedSigner(ctx context.Context, list *parsedCR
 	}
 
 	list.work.checks++
-	if list.work.checks > 4096 {
+	if list.work.checks > maxSignatureVerifications {
 		return false, fmt.Errorf("%w: %w: CRL signature work limit", ErrPolicy, ErrLimit)
 	}
 
@@ -238,7 +264,7 @@ func (a *crlAuthentication) authorizedSigner(ctx context.Context, list *parsedCR
 		Intermediates:             a.intermediates,
 		CurrentTime:               a.at,
 		KeyUsages:                 []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-		MaxConstraintComparisions: 100000,
+		MaxConstraintComparisions: maxNameConstraintComparisons,
 	})
 
 	return err == nil && validCRLSignerPaths(paths, a.anchor, a.maximumDepth), ctx.Err()
@@ -247,7 +273,7 @@ func (a *crlAuthentication) authorizedSigner(ctx context.Context, list *parsedCR
 func crlCandidates(chain []*x509.Certificate, lists []*parsedCRL) ([]*x509.Certificate, error) {
 	candidates := append([]*x509.Certificate(nil), chain...)
 
-	seen := make(map[[32]byte]struct{})
+	seen := make(map[[sha256.Size]byte]struct{})
 	for _, cert := range candidates {
 		seen[sha256.Sum256(cert.Raw)] = struct{}{}
 	}
@@ -285,7 +311,7 @@ func (l *parsedCRL) signerMatches(ctx context.Context, signer *x509.Certificate)
 		return false, nil
 	}
 
-	if signer.Version == 3 && signer.KeyUsage&x509.KeyUsageCRLSign == 0 || signer.KeyUsage != 0 && signer.KeyUsage&x509.KeyUsageCRLSign == 0 {
+	if signer.Version == x509CertificateVersion3 && signer.KeyUsage&x509.KeyUsageCRLSign == 0 || signer.KeyUsage != 0 && signer.KeyUsage&x509.KeyUsageCRLSign == 0 {
 		return false, nil
 	}
 
@@ -341,9 +367,9 @@ func checkCRLSequence(group []*authenticatedCRL) error {
 			continue
 		}
 
-		kind := "complete/"
+		kind := completeCRLScopePrefix
 		if list.base != nil {
-			kind = "delta/"
+			kind = deltaCRLScopePrefix
 		}
 
 		key := kind + list.number.String()
@@ -379,7 +405,7 @@ func certificateCRLPoints(ctx context.Context, cert *x509.Certificate) ([]crlDis
 	freshest := false
 
 	for _, ext := range cert.Extensions {
-		if ext.Id.String() == "2.5.29.31" {
+		if ext.Id.String() == oidCRLDistributionPoints {
 			var err error
 
 			points, err = parseCRLDistributionPoints(ctx, ext.Value)
@@ -388,7 +414,7 @@ func certificateCRLPoints(ctx context.Context, cert *x509.Certificate) ([]crlDis
 			}
 		}
 
-		if ext.Id.String() == "2.5.29.46" {
+		if ext.Id.String() == oidFreshestCRL {
 			if ext.Critical {
 				return nil, false, ErrEvidence
 			}
@@ -413,12 +439,12 @@ func certificateCRLPoints(ctx context.Context, cert *x509.Certificate) ([]crlDis
 
 func applicableCRLScope(ctx context.Context, cert *x509.Certificate, list *parsedCRL, point crlDistributionPoint) (crlReasonMask, error) {
 	scope := list.scope
-	if scope.onlyAttribute || scope.onlyUser && cert.IsCA || scope.onlyCA && !cert.IsCA || (scope.onlyUser || scope.onlyCA) && cert.Version < 3 {
+	if scope.onlyAttribute || scope.onlyUser && cert.IsCA || scope.onlyCA && !cert.IsCA || (scope.onlyUser || scope.onlyCA) && cert.Version < x509CertificateVersion3 {
 		return 0, nil
 	}
 
 	if len(point.issuer) > 0 {
-		if !scope.indirect || !intersectCRLNames(point.issuer, []crlGeneralName{{tag: 4, value: list.issuer, key: list.issuerKey}}) {
+		if !scope.indirect || !intersectCRLNames(point.issuer, []crlGeneralName{{tag: lexicon.GeneralNameDirectory, value: list.issuer, key: list.issuerKey}}) {
 			return 0, nil
 		}
 	} else if certIssuer, err := canonicalNameKey(ctx, cert.RawIssuer); err != nil {
@@ -457,7 +483,7 @@ func findCRLEntry(ctx context.Context, list *parsedCRL, cert *x509.Certificate) 
 	}
 
 	for index := range list.entries {
-		if index&255 == 0 {
+		if index&revocationCancellationMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -480,7 +506,7 @@ func viewCRLEntry(ctx context.Context, view completeCRLView, cert *x509.Certific
 		}
 
 		if entry != nil {
-			if entry.reason == 8 {
+			if entry.reason == reasonRemoveFromCRL {
 				return nil, nil
 			}
 
@@ -510,13 +536,13 @@ func recordCRLAssertion(ctx context.Context, auth *authenticatedCRL, cert, issue
 	}
 
 	if entry != nil {
-		item.status = "revoked"
+		item.status = assertedRevoked
 		item.revoked = entry.revoked
 		item.invalidity = entry.invalidity
 
 		item.reason = entry.reason
-		if entry.reason == 8 {
-			item.status = "remove-from-crl"
+		if entry.reason == reasonRemoveFromCRL {
+			item.status = assertedRemoveFromCRL
 		}
 	}
 
@@ -688,7 +714,7 @@ func certificateIssuerNames(ctx context.Context, cert *x509.Certificate) ([]crlG
 			continue
 		}
 
-		value, err := der.Read(extension.Value, 1<<20)
+		value, err := der.Read(extension.Value, maxCRLExtensionBytes)
 		if err != nil {
 			return nil, ErrEvidence
 		}

@@ -35,6 +35,9 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 	if e := json.Unmarshal(read("manifest.json"), &cases); e != nil {
 		t.Fatal(e)
 	}
+	if len(cases) != 16 {
+		t.Fatalf("independent SAML fixture count = %d, want 16", len(cases))
+	}
 
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {

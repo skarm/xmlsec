@@ -10,23 +10,6 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-func parseNodeDocument(t *testing.T, source string) *xdm.Document {
-	t.Helper()
-	d, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d
-}
-
-func assertAxisNodes(t *testing.T, axis xdm.AxisType, from xdm.Node, want ...xdm.Node) {
-	t.Helper()
-	got, err := xdm.TraverseAxis(t.Context(), axis, from, 100)
-	if err != nil || !slices.Equal(got, want) {
-		t.Fatalf("%s from %T: %v,%v; want %v", axis, from, got, err, want)
-	}
-}
-
 func TestNodeAxesPreserveForwardAndReverseOrder(t *testing.T) {
 	t.Parallel()
 
@@ -147,22 +130,6 @@ func TestNodeAxesNamespaceShadowingUndeclarationAndIdentity(t *testing.T) {
 	if !xdm.SameNode(a, equivalent) || xdm.SameNode(a, b) || xdm.SameNode(x, y) || !xdm.SameNode(x, x) || xdm.SameNode(a, nil) {
 		t.Fatal("namespace identity collapsed distinct owners or detached roots")
 	}
-}
-
-type cancelAfterErrChecks struct {
-	context.Context
-	cancel    context.CancelFunc
-	checks    int
-	remaining int
-}
-
-func (c *cancelAfterErrChecks) Err() error {
-	c.checks++
-	c.remaining--
-	if c.remaining == 0 {
-		c.cancel()
-	}
-	return c.Context.Err()
 }
 
 func TestNodeAxesLimitsAppendBudgetAndCancellation(t *testing.T) {
@@ -418,4 +385,37 @@ func TestNodePublicationAndReferenceRoundTripPreserveIdentity(t *testing.T) {
 	if got, err := xdm.FromDocument(ctx, doc.Snapshot()); got != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("cached view bypassed cancellation", got, err)
 	}
+}
+
+func parseNodeDocument(t *testing.T, source string) *xdm.Document {
+	t.Helper()
+	d, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func assertAxisNodes(t *testing.T, axis xdm.AxisType, from xdm.Node, want ...xdm.Node) {
+	t.Helper()
+	got, err := xdm.TraverseAxis(t.Context(), axis, from, 100)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("%s from %T: %v,%v; want %v", axis, from, got, err, want)
+	}
+}
+
+type cancelAfterErrChecks struct {
+	context.Context
+	cancel    context.CancelFunc
+	checks    int
+	remaining int
+}
+
+func (c *cancelAfterErrChecks) Err() error {
+	c.checks++
+	c.remaining--
+	if c.remaining == 0 {
+		c.cancel()
+	}
+	return c.Context.Err()
 }

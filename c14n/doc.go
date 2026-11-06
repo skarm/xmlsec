@@ -14,10 +14,11 @@
 // fragment rather than a well-formed document. Inclusive algorithms apply their
 // respective inherited xml:* and xml:base rules to omitted ancestors.
 // Input is the parsed node model supplied by document, including its line-end
-// and attribute normalization. The DTD-free parser does not provide declared
-// entity replacement or DTD default attributes; the C14N writer does not add
-// this preprocessing. Those input-model limits are distinct from the byte
-// canonicalization rules and do not establish full XML processor conformance.
+// and attribute normalization. The default DTD-free parser does not expand
+// declared entities or supply DTD defaults; [document.ParseOptions] can enable
+// that preprocessing before canonicalization. The writer does not perform DTD
+// processing itself and rejects relative namespace names accepted by that mode.
+// These contracts do not establish full XML processor conformance.
 //
 // # Algorithms and output
 //

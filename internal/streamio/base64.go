@@ -20,6 +20,8 @@ type base64PaddingReader struct {
 }
 
 func (r *base64PaddingReader) Read(dst []byte) (int, error) {
+	const maximumBase64Padding = 2
+
 	n, err := r.source.Read(dst)
 	if n < 0 || n > len(dst) {
 		return 0, errors.Join(io.ErrShortBuffer, err)
@@ -32,14 +34,14 @@ func (r *base64PaddingReader) Read(dst []byte) (int, error) {
 			continue
 		}
 
-		if c == '=' {
+		if c == byte(base64.StdPadding) {
 			r.padding++
 		} else if r.padding != 0 {
 			invalid = i
 			break
 		}
 
-		if r.padding > 2 {
+		if r.padding > maximumBase64Padding {
 			invalid = i
 			break
 		}

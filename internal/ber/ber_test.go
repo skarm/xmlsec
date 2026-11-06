@@ -95,3 +95,39 @@ func TestMalformedAndCancelled(t *testing.T) {
 		t.Fatal("non-octet length:", err)
 	}
 }
+
+func TestEndOfContentsReservedTag(t *testing.T) {
+	limits := ber.Limits{MaxBytes: 100, MaxDepth: 8, MaxNodes: 32}
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"constructed tag zero", []byte{0x20, 0}},
+		{"constructed tag zero with contents", []byte{0x20, 2, 4, 0}},
+		{"constructed tag zero indefinite", []byte{0x20, 0x80, 0, 0}},
+		{"constructed tag zero in definite sequence", []byte{0x30, 2, 0x20, 0}},
+		{"constructed tag zero in indefinite sequence", []byte{0x30, 0x80, 0x20, 0, 0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ber.Read(t.Context(), tc.raw, limits); !errors.Is(err, ber.ErrSyntax) {
+				t.Fatalf("Read(%x) = %v, want ErrSyntax", tc.raw, err)
+			}
+		})
+	}
+
+	// Tag zero is valid in other classes. Only universal tag zero is reserved
+	// for the primitive 00 00 terminator of an indefinite-length encoding.
+	for _, raw := range [][]byte{
+		{0x40, 0},
+		{0x60, 0},
+		{0x80, 0},
+		{0xa0, 0},
+		{0xc0, 0},
+		{0xe0, 0},
+		{0x30, 0x80, 4, 0, 0, 0},
+	} {
+		if _, err := ber.Read(t.Context(), raw, limits); err != nil {
+			t.Fatalf("valid tag/terminator %x: %v", raw, err)
+		}
+	}
+}

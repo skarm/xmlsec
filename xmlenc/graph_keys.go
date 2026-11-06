@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/aes"
+	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy only.
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
@@ -12,13 +13,38 @@ import (
 	"errors"
 	"strings"
 
-	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy only.
-
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
-
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+)
+
+const (
+	// Unqualified recipient label resolved through caller-supplied graph bindings.
+	attrRecipient = "Recipient"
+	// Logical name carried with an encrypted key for graph resolution. Compare the expected XML
+	// Encryption namespace when matching it.
+	nameCarriedKeyName = "CarriedKeyName"
+	// Reference-list entry targeting encrypted application data. Compare the expected XML Encryption
+	// namespace when matching it.
+	nameDataReference = "DataReference"
+	// XML Encryption 1.1 derived-key node in the explicit key graph. Compare the expected XML
+	// Encryption namespace when matching it.
+	nameDerivedKey = "DerivedKey"
+	// Logical name associated with a derived key. Compare the expected XML Encryption namespace when
+	// matching it.
+	nameDerivedKeyName = "DerivedKeyName"
+	// Wrapped-key node resolved under the configured key-graph policy. Compare the expected XML
+	// Encryption namespace when matching it.
+	nameEncryptedKey = "EncryptedKey"
+	// One metadata record within EncryptionProperties. Compare the expected XML Encryption namespace
+	// when matching it.
+	nameEncryptionProperty = "EncryptionProperty"
+	// Reference-list entry linking to another encrypted key. Compare the expected XML Encryption
+	// namespace when matching it.
+	nameKeyReference = "KeyReference"
+	// Targets associated with one EncryptedKey. Compare the expected XML Encryption namespace when
+	// matching it.
+	nameReferenceList = "ReferenceList"
 )
 
 type graphPlanID struct {
@@ -54,19 +80,30 @@ type graphEncryptedFields struct {
 }
 
 func graphEncrypted(node graphNode) (graphEncryptedFields, error) {
+	// These positions match values below. EncryptedData ends at optional
+	// EncryptionProperties; only EncryptedKey may carry the final two fields.
+	const (
+		encryptionMethodPosition     = 0
+		keyInfoPosition              = 1
+		cipherDataPosition           = 2
+		encryptionPropertiesPosition = 3
+		referenceListPosition        = 4
+		carriedKeyNamePosition       = 5
+	)
+
 	var fields graphEncryptedFields
 
 	element := node.element()
 
-	key := element.Name() == elementName(Namespace, "EncryptedKey")
-	if !key && element.Name() != elementName(Namespace, "EncryptedData") || !graphAttributes(element, "Id", "Type", "MimeType", "Encoding", "Recipient") || !key && graphHasAttribute(element, "Recipient") {
+	key := element.Name() == elementName(Namespace, nameEncryptedKey)
+	if !key && element.Name() != elementName(Namespace, nameEncryptedData) || !graphAttributes(element, lexicon.SecurityAttrID, lexicon.SecurityAttrType, lexicon.SecurityAttrMimeType, lexicon.SecurityAttrEncoding, attrRecipient) || !key && graphHasAttribute(element, attrRecipient) {
 		return fields, ErrFormat
 	}
 
 	positions := map[document.Name]int{
-		elementName(Namespace, "EncryptionMethod"): 0, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo): 1,
-		elementName(Namespace, "CipherData"): 2, elementName(Namespace, "EncryptionProperties"): 3,
-		elementName(Namespace, "ReferenceList"): 4, elementName(Namespace, "CarriedKeyName"): 5,
+		elementName(Namespace, nameEncryptionMethod): encryptionMethodPosition, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo): keyInfoPosition,
+		elementName(Namespace, nameCipherData): cipherDataPosition, elementName(Namespace, nameEncryptionProperties): encryptionPropertiesPosition,
+		elementName(Namespace, nameReferenceList): referenceListPosition, elementName(Namespace, nameCarriedKeyName): carriedKeyNamePosition,
 	}
 	values := []*document.Element{&fields.method, &fields.keyInfo, &fields.cipherData, &fields.properties, &fields.references, &fields.carried}
 	previous := -1
@@ -79,7 +116,7 @@ func graphEncrypted(node graphNode) (graphEncryptedFields, error) {
 
 	for _, child := range element.Children() {
 		position, known := positions[child.Name()]
-		if !known || position <= previous || !key && position > 3 {
+		if !known || position <= previous || !key && position > encryptionPropertiesPosition {
 			return fields, ErrFormat
 		}
 
@@ -113,7 +150,7 @@ func graphEncrypted(node graphNode) (graphEncryptedFields, error) {
 }
 
 func checkGraphProperties(properties document.Element) error {
-	if !graphAttributes(properties, "Id") || len(properties.Children()) == 0 {
+	if !graphAttributes(properties, lexicon.SecurityAttrID) || len(properties.Children()) == 0 {
 		return ErrFormat
 	}
 
@@ -125,13 +162,13 @@ func checkGraphProperties(properties document.Element) error {
 	}
 
 	for _, property := range properties.Children() {
-		if property.Name() != elementName(Namespace, "EncryptionProperty") || len(property.Children()) == 0 {
+		if property.Name() != elementName(Namespace, nameEncryptionProperty) || len(property.Children()) == 0 {
 			return ErrFormat
 		}
 
 		_, node := tree.Unwrap(property)
 		for _, attribute := range node.Attrs {
-			if attribute.Name.Space != document.XMLNamespace && attribute.Name != (document.Name{Local: "Id"}) && attribute.Name != (document.Name{Local: "Target"}) {
+			if attribute.Name.Space != document.XMLNamespace && attribute.Name != (document.Name{Local: lexicon.SecurityAttrID}) && attribute.Name != (document.Name{Local: lexicon.SecurityAttrTarget}) {
 				return ErrFormat
 			}
 		}
@@ -160,7 +197,7 @@ func graphReferences(list document.Element) ([]document.Element, error) {
 
 	children := list.Children()
 	for _, child := range children {
-		if child.Name() != elementName(Namespace, "DataReference") && child.Name() != elementName(Namespace, "KeyReference") || !exactAttributes(child, "URI") || !validGraphReference(attributeValue(child, "URI")) {
+		if child.Name() != elementName(Namespace, nameDataReference) && child.Name() != elementName(Namespace, nameKeyReference) || !exactAttributes(child, lexicon.SecurityAttrURI) || !validGraphReference(attributeValue(child, lexicon.SecurityAttrURI)) {
 			return nil, ErrFormat
 		}
 
@@ -189,9 +226,9 @@ func (g *keyGraph) namedMaterial(name, algorithm string, size int) (*graphKeyPla
 }
 
 func (g *keyGraph) keyName(node graphNode) (string, bool, error) {
-	name := elementName(Namespace, "CarriedKeyName")
-	if node.node.Name == elementName(Namespace11, "DerivedKey") {
-		name = elementName(Namespace11, "DerivedKeyName")
+	name := elementName(Namespace, nameCarriedKeyName)
+	if node.node.Name == elementName(Namespace11, nameDerivedKey) {
+		name = elementName(Namespace11, nameDerivedKeyName)
 	}
 
 	for _, child := range node.element().Children() {
@@ -239,6 +276,8 @@ func (g *keyGraph) consumerKey(node graphNode, info document.Element, algorithm 
 
 func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*graphKeyPlan, error) {
 	identity := graphPlanID{node.document, node.node, consumer, size}
+	// A plan still being built is a cycle. Completed plans may be shared, so
+	// check the active path separately from the reusable plan cache below.
 	if _, exists := g.active[identity]; exists {
 		return nil, ErrFormat
 	}
@@ -262,9 +301,9 @@ func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*g
 		plan *graphKeyPlan
 		err  error
 	)
-	if node.node.Name == elementName(Namespace11, "DerivedKey") {
+	if node.node.Name == elementName(Namespace11, nameDerivedKey) {
 		plan, err = g.derivedPlan(node, size, depth)
-	} else if node.node.Name == elementName(Namespace, "EncryptedKey") {
+	} else if node.node.Name == elementName(Namespace, nameEncryptedKey) {
 		plan, err = g.encryptedPlan(node, consumer, size, depth)
 	} else {
 		return nil, ErrFormat
@@ -342,7 +381,7 @@ func (g *keyGraph) wrappedEncryptedPlan(node graphNode, fields graphEncryptedFie
 	}
 
 	if fields.method.Valid() {
-		if err := checkEncryptionMethod(g.ctx, fields.method, algorithm, kekBytes*8, false); err != nil {
+		if err := checkEncryptionMethod(g.ctx, fields.method, algorithm, kekBytes*keyOctetBits, false); err != nil {
 			return nil, err
 		}
 	}
@@ -352,9 +391,9 @@ func (g *keyGraph) wrappedEncryptedPlan(node graphNode, fields graphEncryptedFie
 		return nil, err
 	}
 
-	maximum := size + 8
+	maximum := size + keyWrapBlockBytes
 	if algorithm == TripleDESKeyWrap {
-		maximum = 40
+		maximum = tripleDESWrappedKeyBytes
 	}
 
 	cipher, err := g.cipherPlan(node.document, fields.cipherData, maximum)
@@ -367,7 +406,7 @@ func (g *keyGraph) wrappedEncryptedPlan(node graphNode, fields graphEncryptedFie
 
 func (g *keyGraph) encryptionAlgorithm(fields graphEncryptedFields) (string, error) {
 	if fields.method.Valid() {
-		algorithm := attributeValue(fields.method, "Algorithm")
+		algorithm := attributeValue(fields.method, lexicon.SecurityAttrAlgorithm)
 		if _, exists := g.methods[algorithm]; !exists || algorithm == ConcatKDF {
 			return "", ErrPolicy
 		}
@@ -442,7 +481,7 @@ func (g *keyGraph) rsaMaterial(info document.Element, algorithm string) (KeyGrap
 	names := []string{""}
 
 	if info.Valid() {
-		if !graphAttributes(info, "Id") || len(info.Children()) == 0 || !graphStructuralText(info) {
+		if !graphAttributes(info, lexicon.SecurityAttrID) || len(info.Children()) == 0 || !graphStructuralText(info) {
 			return KeyGraphKey{}, ErrFormat
 		}
 
@@ -493,13 +532,22 @@ func (g *keyGraph) rsaMaterial(info document.Element, algorithm string) (KeyGrap
 }
 
 func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, error) {
-	if _, exists := g.methods[ConcatKDF]; g.options.ConcatKDF == nil || !exists || !sessionKeySize(size) || !graphAttributes(node.element(), "Id", "Type", "Recipient") {
+	// DerivedKey grammar positions select derivation parameters and
+	// distinguish the derived-key label from the master-key lookup label.
+	const (
+		derivationMethodPosition     = 0
+		derivedReferenceListPosition = 1
+		derivedKeyNamePosition       = 2
+		masterKeyNamePosition        = 3
+	)
+
+	if _, exists := g.methods[ConcatKDF]; g.options.ConcatKDF == nil || !exists || !sessionKeySize(size) || !graphAttributes(node.element(), lexicon.SecurityAttrID, lexicon.SecurityAttrType, attrRecipient) {
 		return nil, ErrPolicy
 	}
 
 	method, master := document.Element{}, ""
 	position := -1
-	positions := map[document.Name]int{elementName(Namespace11, "KeyDerivationMethod"): 0, elementName(Namespace, "ReferenceList"): 1, elementName(Namespace11, "DerivedKeyName"): 2, elementName(Namespace11, "MasterKeyName"): 3}
+	positions := map[document.Name]int{elementName(Namespace11, nameKeyDerivationMethod): derivationMethodPosition, elementName(Namespace, nameReferenceList): derivedReferenceListPosition, elementName(Namespace11, nameDerivedKeyName): derivedKeyNamePosition, elementName(Namespace11, nameMasterKeyName): masterKeyNamePosition}
 
 	for _, raw := range node.node.Children {
 		if raw.Kind == tree.TextNode && !xmlSpace(raw.Data) {
@@ -515,19 +563,19 @@ func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, 
 
 		position = index
 		switch index {
-		case 0:
+		case derivationMethodPosition:
 			method = child
-		case 1:
+		case derivedReferenceListPosition:
 			if _, err := graphReferences(child); err != nil {
 				return nil, err
 			}
-		case 2, 3:
+		case derivedKeyNamePosition, masterKeyNamePosition:
 			name, err := graphNameText(child)
 			if err != nil {
 				return nil, err
 			}
 
-			if index == 3 {
+			if index == masterKeyNamePosition {
 				master = name
 			}
 		}
@@ -543,8 +591,8 @@ func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, 
 
 	key, err := g.namedMaterial(master, ConcatKDF, 0)
 	if errors.Is(err, errGraphKeyUnavailable) {
-		info := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
-		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
+		info := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
+		name := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: master})
 		appendChild(info, name)
 		key, err = g.consumerKey(node, tree.Wrap(node.document.doc, info), ConcatKDF, g.options.MasterKeyBytes, depth+1)
@@ -623,7 +671,7 @@ func (g *keyGraph) runKey(plan *graphKeyPlan) ([]byte, error) {
 	case plan.algorithm == "":
 		value = input
 	case plan.algorithm == ConcatKDF:
-		value, err = DeriveConcatKey(g.ctx, input, plan.keyBytes*8, *plan.kdf)
+		value, err = DeriveConcatKey(g.ctx, input, plan.keyBytes*keyOctetBits, *plan.kdf)
 	case rsaOAEPAlgorithm(plan.algorithm):
 		parameters := &rsa.OAEPOptions{Hash: plan.oaep.Hash, MGFHash: plan.oaep.MGFHash, Label: bytes.Clone(plan.oaep.Label)}
 		if provider, ok := plan.provider.(contextualDecrypter); ok {
@@ -672,11 +720,11 @@ func (g *keyGraph) runKey(plan *graphKeyPlan) ([]byte, error) {
 }
 
 func (g *keyGraph) retrievedKey(doc *graphDocument, method document.Element) (graphNode, error) {
-	if !graphAttributes(method, "URI", "Type") || len(method.Children()) != 0 || !xmlSpace(method.Text()) {
+	if !graphAttributes(method, lexicon.SecurityAttrURI, lexicon.SecurityAttrType) || len(method.Children()) != 0 || !xmlSpace(method.Text()) {
 		return graphNode{}, ErrFormat
 	}
 
-	uri, exists := method.Attribute(document.Name{Local: "URI"})
+	uri, exists := method.Attribute(document.Name{Local: lexicon.SecurityAttrURI})
 	if !exists {
 		uri = ""
 	}
@@ -687,7 +735,7 @@ func (g *keyGraph) retrievedKey(doc *graphDocument, method document.Element) (gr
 	}
 
 	typ := graphRetrievalType(target.node.Name)
-	if typ == "" || attributeValue(method, "Type") != "" && attributeValue(method, "Type") != typ {
+	if typ == "" || attributeValue(method, lexicon.SecurityAttrType) != "" && attributeValue(method, lexicon.SecurityAttrType) != typ {
 		return graphNode{}, ErrFormat
 	}
 
@@ -698,7 +746,7 @@ func (g *keyGraph) referenceListMatches(key, target graphNode) (bool, error) {
 	var list document.Element
 
 	for _, child := range key.element().Children() {
-		if child.Name() == elementName(Namespace, "ReferenceList") {
+		if child.Name() == elementName(Namespace, nameReferenceList) {
 			if list.Valid() {
 				return false, ErrFormat
 			}
@@ -716,9 +764,9 @@ func (g *keyGraph) referenceListMatches(key, target graphNode) (bool, error) {
 		return false, err
 	}
 
-	wanted := elementName(Namespace, "DataReference")
+	wanted := elementName(Namespace, nameDataReference)
 	if graphRetrievalType(target.node.Name) != "" {
-		wanted = elementName(Namespace, "KeyReference")
+		wanted = elementName(Namespace, nameKeyReference)
 	}
 
 	for _, ref := range refs {
@@ -730,7 +778,7 @@ func (g *keyGraph) referenceListMatches(key, target graphNode) (bool, error) {
 			continue
 		}
 
-		matched, err := g.referenceMatches(key.document, ref, target, attributeValue(ref, "URI"))
+		matched, err := g.referenceMatches(key.document, ref, target, attributeValue(ref, lexicon.SecurityAttrURI))
 		if err != nil {
 			return false, err
 		}
@@ -805,7 +853,7 @@ func (b *graphSources) keyInfo(info document.Element) error {
 		return b.add(g.namedMaterial("", b.algorithm, b.size))
 	}
 
-	if !graphAttributes(info, "Id") || len(info.Children()) == 0 || !graphStructuralText(info) {
+	if !graphAttributes(info, lexicon.SecurityAttrID) || len(info.Children()) == 0 || !graphStructuralText(info) {
 		return ErrFormat
 	}
 
@@ -820,12 +868,12 @@ func (b *graphSources) keyInfo(info document.Element) error {
 			if err := b.named(name); err != nil {
 				return err
 			}
-		case elementName(Namespace, "EncryptedKey"), elementName(Namespace11, "DerivedKey"):
+		case elementName(Namespace, nameEncryptedKey), elementName(Namespace11, nameDerivedKey):
 			_, raw := tree.Unwrap(child)
 			if err := b.add(g.keyPlan(graphNode{b.target.document, raw}, b.algorithm, b.size, b.depth+1)); err != nil {
 				return err
 			}
-		case elementName(SignatureNamespace, "RetrievalMethod"):
+		case elementName(SignatureNamespace, lexicon.DSigElementRetrievalMethod):
 			candidate, err := g.retrievedKey(b.target.document, child)
 			if err != nil {
 				return err
@@ -901,12 +949,12 @@ func (b *graphSources) references() error {
 }
 
 func graphRetrievalType(name document.Name) string {
-	if name == elementName(Namespace, "EncryptedKey") {
-		return Namespace + "EncryptedKey"
+	if name == elementName(Namespace, nameEncryptedKey) {
+		return Namespace + nameEncryptedKey
 	}
 
-	if name == elementName(Namespace11, "DerivedKey") {
-		return Namespace11 + "DerivedKey"
+	if name == elementName(Namespace11, nameDerivedKey) {
+		return Namespace11 + nameDerivedKey
 	}
 
 	return ""

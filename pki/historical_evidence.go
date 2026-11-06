@@ -14,8 +14,18 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/evidence"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/x509name"
+)
+
+const (
+	evidenceAuthorityDelegated = "delegated"
+	evidenceAuthorityIssuer    = "issuer"
+	evidenceAuthorityLocal     = "local"
+	// Caps repeated certificate/evidence signature checks within a bounded verification workflow.
+	maxSignatureVerifications         = 4096
+	maximumHistoricalEvidenceDERBytes = 64 << 20
 )
 
 type historicalClaim struct {
@@ -29,6 +39,66 @@ type historicalClaim struct {
 	algorithm         x509.SignatureAlgorithm
 	needsSignerStatus bool
 	dependency        bool
+}
+
+// SignerChainDER returns owned original certificates used to authenticate an
+// historical assertion. A locally pinned authority can have only its own scoped
+// certificate here; SignerAuthority distinguishes that explicit trust model.
+func (e *VerifiedEvidence) SignerChainDER() [][]byte {
+	if e == nil || !e.authenticated {
+		return nil
+	}
+
+	raw := make([][]byte, len(e.signerChain))
+	for index, source := range e.signerChain {
+		raw[index] = bytes.Clone(source)
+	}
+
+	return raw
+}
+
+// SignerAuthority returns issuer, delegated or locally configured historical
+// authorization; it is not a proof-of-existence or freshness indication.
+func (e *VerifiedEvidence) SignerAuthority() string {
+	if e == nil || !e.authenticated {
+		return ""
+	}
+
+	return e.signerAuthority
+}
+
+// InspectOCSPCertificates returns owned copies of certificates actually embedded
+// in one bounded OCSP response. They are untrusted input, not authenticated
+// signer paths or proof of existence. It shares the response syntax decoder and
+// its eight-certificate/64-status limits; the input cannot exceed64MiB.
+func InspectOCSPCertificates(ctx context.Context, raw []byte) ([][]byte, error) {
+	if ctx == nil {
+		return nil, ErrPolicy
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(raw) > maximumHistoricalEvidenceDERBytes {
+		return nil, fmt.Errorf("%w: %w: OCSP inspection bytes", ErrPolicy, ErrLimit)
+	}
+
+	parsed, err := parseOCSP(raw, maximumHistoricalEvidenceDERBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	certificates := make([][]byte, len(parsed.certs))
+	for index, certificate := range parsed.certs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		certificates[index] = bytes.Clone(certificate.Raw)
+	}
+
+	return certificates, ctx.Err()
 }
 
 func (c historicalClaim) retainsStatus(expired time.Time) bool {
@@ -197,7 +267,7 @@ func (s *HistoricalSession) authenticateCRL(ctx context.Context, path *Historica
 		}
 
 		s.signatureWork++
-		if s.signatureWork > 4096 {
+		if s.signatureWork > maxSignatureVerifications {
 			return nil, fmt.Errorf("%w: %w: historical signature work", ErrPolicy, ErrLimit)
 		}
 
@@ -223,9 +293,9 @@ func (s *HistoricalSession) authenticateCRL(ctx context.Context, path *Historica
 		historical.historicalCoverage = coverage
 		historical.signerChain = historicalChainBytes(signerPath)
 
-		historical.signerAuthority = "issuer"
+		historical.signerAuthority = evidenceAuthorityIssuer
 		if !bytes.Equal(candidate.Raw, issuer.Raw) {
-			historical.signerAuthority = "delegated"
+			historical.signerAuthority = evidenceAuthorityDelegated
 		}
 
 		return &historicalClaim{fact: &historical, target: target, issuer: issuer, signer: candidate, signerPath: signerPath, crl: list, needsSignerStatus: !bytes.Equal(candidate.Raw, issuer.Raw)}, nil
@@ -313,7 +383,7 @@ func (s *HistoricalSession) authenticateOCSPCandidate(ctx context.Context, path 
 	}
 
 	s.signatureWork++
-	if s.signatureWork > 4096 {
+	if s.signatureWork > maxSignatureVerifications {
 		return nil, fmt.Errorf("%w: %w: historical signature work", ErrPolicy, ErrLimit)
 	}
 
@@ -350,12 +420,12 @@ func (s *HistoricalSession) authenticateOCSPCandidate(ctx context.Context, path 
 	fact.historicalCoverage = allCRLReasons
 	fact.signerChain = historicalChainBytes(signerPath)
 
-	fact.signerAuthority = "issuer"
+	fact.signerAuthority = evidenceAuthorityIssuer
 	if local {
-		fact.signerAuthority = "local"
+		fact.signerAuthority = evidenceAuthorityLocal
 		fact.signerChain = [][]byte{candidate.Raw}
 	} else if !bytes.Equal(candidate.Raw, issuer.Raw) {
-		fact.signerAuthority = "delegated"
+		fact.signerAuthority = evidenceAuthorityDelegated
 	}
 
 	return &historicalClaim{fact: fact, target: target, issuer: issuer, signer: candidate, signerPath: signerPath, ocsp: entry, algorithm: historicalAlgorithm(parsed.alg), needsSignerStatus: !local && !noCheck && !bytes.Equal(candidate.Raw, issuer.Raw)}, nil
@@ -399,7 +469,7 @@ func historicalResponderAuthority(ctx context.Context, responder, issuer *x509.C
 			continue
 		}
 
-		if extension.Critical || !bytes.Equal(extension.Value, []byte{5, 0}) {
+		if extension.Critical || !bytes.Equal(extension.Value, []byte{asn1.TagNull, 0}) {
 			return false, false, nil
 		}
 
@@ -422,66 +492,6 @@ func historicalChainBytes(path *HistoricalPath) [][]byte {
 	return raw
 }
 
-// SignerChainDER returns owned original certificates used to authenticate an
-// historical assertion. A locally pinned authority can have only its own scoped
-// certificate here; SignerAuthority distinguishes that explicit trust model.
-func (e *VerifiedEvidence) SignerChainDER() [][]byte {
-	if e == nil || !e.authenticated {
-		return nil
-	}
-
-	raw := make([][]byte, len(e.signerChain))
-	for index, source := range e.signerChain {
-		raw[index] = bytes.Clone(source)
-	}
-
-	return raw
-}
-
-// SignerAuthority returns issuer, delegated or locally configured historical
-// authorization; it is not a proof-of-existence or freshness indication.
-func (e *VerifiedEvidence) SignerAuthority() string {
-	if e == nil || !e.authenticated {
-		return ""
-	}
-
-	return e.signerAuthority
-}
-
-// InspectOCSPCertificates returns owned copies of certificates actually embedded
-// in one bounded OCSP response. They are untrusted input, not authenticated
-// signer paths or proof of existence. It shares the response syntax decoder and
-// its eight-certificate/64-status limits; the input cannot exceed64MiB.
-func InspectOCSPCertificates(ctx context.Context, raw []byte) ([][]byte, error) {
-	if ctx == nil {
-		return nil, ErrPolicy
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(raw) > 64<<20 {
-		return nil, fmt.Errorf("%w: %w: OCSP inspection bytes", ErrPolicy, ErrLimit)
-	}
-
-	parsed, err := parseOCSP(raw, 64<<20)
-	if err != nil {
-		return nil, err
-	}
-
-	certificates := make([][]byte, len(parsed.certs))
-	for index, certificate := range parsed.certs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		certificates[index] = bytes.Clone(certificate.Raw)
-	}
-
-	return certificates, ctx.Err()
-}
-
 func historicalAlgorithm(algorithm pkix.AlgorithmIdentifier) x509.SignatureAlgorithm {
 	hash, mode, err := signature.Details(algorithm)
 	if err != nil {
@@ -493,7 +503,7 @@ func historicalAlgorithm(algorithm pkix.AlgorithmIdentifier) x509.SignatureAlgor
 	}
 
 	switch mode {
-	case "rsa":
+	case lexicon.SignatureFamilyRSA:
 		switch hash {
 		case crypto.SHA256:
 			return x509.SHA256WithRSA
@@ -502,7 +512,7 @@ func historicalAlgorithm(algorithm pkix.AlgorithmIdentifier) x509.SignatureAlgor
 		case crypto.SHA512:
 			return x509.SHA512WithRSA
 		}
-	case "pss":
+	case lexicon.SignatureFamilyRSAPSS:
 		switch hash {
 		case crypto.SHA256:
 			return x509.SHA256WithRSAPSS
@@ -511,7 +521,7 @@ func historicalAlgorithm(algorithm pkix.AlgorithmIdentifier) x509.SignatureAlgor
 		case crypto.SHA512:
 			return x509.SHA512WithRSAPSS
 		}
-	case "ecdsa":
+	case lexicon.SignatureFamilyECDSA:
 		switch hash {
 		case crypto.SHA256:
 			return x509.ECDSAWithSHA256

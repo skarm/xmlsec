@@ -34,52 +34,52 @@ func XSLT10ElementAttributes(name string) (string, bool) {
 
 func lookupXSLT10Attribute(key string) (string, bool) {
 	switch key {
-	case nameStylesheet, fnNameTransform:
-		return "version id extension-element-prefixes exclude-result-prefixes", true
+	case nameStylesheet, lexicon.XSLTElementTransform:
+		return xslAttrVersion + " " + lexicon.AttrID + " " + nameExtensionElementPrefixes + " " + nameExcludeResultPrefixes, true
 	case nameImport, nameInclude:
 		return lexicon.AttrHref, true
-	case nameFallback, "apply-imports", "choose", "otherwise", "comment":
+	case nameFallback, lexicon.XSLTElementApplyImports, lexicon.XSLTElementChoose, lexicon.XSLTElementOtherwise, lexicon.XSLTElementComment:
 		return "", true
 	case nameTemplate:
-		return "match name priority mode", true
+		return lexicon.AttrMatch + " " + xslAttrName + " " + namePriority + " " + lexicon.AttrMode, true
 	case nameOutput:
-		return "method version encoding omit-xml-declaration standalone doctype-public doctype-system cdata-section-elements indent media-type", true
+		return lexicon.SerializationMethod + " " + lexicon.SerializationVersion + " " + lexicon.SerializationEncoding + " " + lexicon.SerializationOmitXMLDeclaration + " " + lexicon.SerializationStandalone + " " + lexicon.SerializationDoctypePublic + " " + lexicon.SerializationDoctypeSystem + " " + lexicon.SerializationCDATASectionElements + " " + lexicon.SerializationIndent + " " + lexicon.SerializationMediaType, true
 	case nameStripSpace, namePreserveSpace:
 		return nameElements, true
-	case nameKey2:
-		return "name match use", true
-	case "decimal-format":
-		return "name decimal-separator grouping-separator infinity minus-sign NaN percent per-mille zero-digit digit pattern-separator", true
-	case "namespace-alias":
-		return "stylesheet-prefix result-prefix", true
+	case keyLocalName:
+		return xslAttrName + " " + lexicon.AttrMatch + " " + lexicon.AttrUse, true
+	case lexicon.XSLTElementDecimalFormat:
+		return xslAttrName + " " + nameDecimalSeparator + " " + nameGroupingSeparator + " " + nameInfinity + " " + nameMinusSign + " " + lexicon.DecimalFormatNaN + " " + namePercent + " " + namePerMille + " " + nameZeroDigit + " " + nameDigit + " " + namePatternSeparator, true
+	case lexicon.XSLTElementNamespaceAlias:
+		return nameStylesheetPrefix + " " + nameResultPrefix, true
 	case nameAttributeSet:
-		return "name use-attribute-sets", true
-	case nameVariable, nameParam, "with-param":
+		return xslAttrName + " " + nameUseAttributeSets, true
+	case nameVariable, nameParam, lexicon.XSLTElementWithParam:
 		return textNameSelect, true
-	case "apply-templates":
-		return "select mode", true
-	case "call-template", "processing-instruction":
+	case lexicon.XSLTElementApplyTemplates:
+		return xslAttrSelect + " " + lexicon.AttrMode, true
+	case lexicon.XSLTElementCallTemplate, lexicon.XSLTElementProcessingInstruction:
 		return xslAttrName, true
-	case "for-each", "copy-of":
+	case lexicon.XSLTElementForEach, lexicon.XSLTElementCopyOf:
 		return xslAttrSelect, true
 	case nameSort:
-		return "select lang data-type order case-order", true
-	case "if", "when":
+		return xslAttrSelect + " " + lexicon.AttrLang + " " + nameDataType + " " + nameOrder + " " + nameCaseOrder, true
+	case lexicon.XSLTElementIf, lexicon.XSLTElementWhen:
 		return lexicon.AttrTest, true
-	case "value-of":
-		return "select disable-output-escaping", true
+	case lexicon.XSLTElementValueOf:
+		return xslAttrSelect + " " + nameDisableOutputEscaping, true
 	case lexicon.MethodText:
 		return nameDisableOutputEscaping, true
-	case "copy":
+	case lexicon.XSLTElementCopy:
 		return nameUseAttributeSets, true
-	case "element":
-		return "name namespace use-attribute-sets", true
-	case "attribute":
-		return "name namespace", true
+	case lexicon.XSLTElementElement:
+		return xslAttrName + " " + nameNamespace + " " + nameUseAttributeSets, true
+	case lexicon.XSLTElementAttribute:
+		return xslAttrName + " " + nameNamespace, true
 	case lexicon.TypeNumber:
-		return "level count from value format lang letter-value grouping-separator grouping-size", true
-	case "message":
-		return "terminate", true
+		return nameLevel + " " + lexicon.AttrCount + " " + lexicon.AttrFrom + " " + lexicon.AttrValue + " " + nameFormat + " " + lexicon.AttrLang + " " + nameLetterValue + " " + nameGroupingSeparator + " " + nameGroupingSize, true
+	case lexicon.XSLTElementMessage:
+		return nameTerminate, true
 	}
 
 	var zero string
@@ -94,14 +94,14 @@ func forwards10(e *xdm.Element) bool {
 		if elem, ok := n.(*xdm.Element); ok {
 			version := ""
 			if elem.URI() != lexicon.NamespaceXSLT {
-				version, _ = elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
-			} else if elem.LocalName() == nameStylesheet || elem.LocalName() == fnNameTransform {
-				version = getAttr(elem, lexicon.SerializationVersion)
+				version, _ = elem.GetAttributeNS(xslAttrVersion, lexicon.NamespaceXSLT)
+			} else if elem.LocalName() == nameStylesheet || elem.LocalName() == lexicon.XSLTElementTransform {
+				version = getAttr(elem, xslAttrVersion)
 			}
 
 			if version != "" {
-				v, err := strconv.ParseFloat(version, 64)
-				return err == nil && v > 1
+				v, err := strconv.ParseFloat(version, float64ParseBits)
+				return err == nil && v > xsltMajorVersion1
 			}
 		}
 	}
@@ -120,9 +120,9 @@ func ignoredOptional10(e *xdm.Element, a *xdm.Attribute) bool {
 	def := elementXSLTDef(e.LocalName()).attrs[a.LocalName()]
 	// Only these closed enumerations are AVTs in 1.0. In particular,
 	// xsl:message/@terminate became an AVT in a later language version.
-	avt10 := e.LocalName() == nameSort && contains10Word("order case-order", a.LocalName()) || e.LocalName() == lexicon.TypeNumber && a.LocalName() == nameLetterValue
+	avt10 := e.LocalName() == nameSort && contains10Word(nameOrder+" "+nameCaseOrder, a.LocalName()) || e.LocalName() == lexicon.TypeNumber && a.LocalName() == nameLetterValue
 	if e.LocalName() == nameOutput && a.LocalName() == lexicon.SerializationStandalone {
-		def.values = []string{lexicon.ValueYes, "no"}
+		def.values = []string{lexicon.ValueYes, lexicon.ValueNo}
 	}
 
 	if e.LocalName() == nameOutput && a.LocalName() == lexicon.SerializationMethod && !strings.Contains(a.Value(), ":") {
@@ -149,13 +149,13 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 	root := doc.DocumentElement()
 
 	ignored := unknownAttribute20
-	if processor >= 30 {
+	if processor >= processorXSLT30 {
 		ignored = func(elem *xdm.Element, attr *xdm.Attribute) bool {
-			return elem.URI() == lexicon.NamespaceXSLT && attr.URI() == "" && strings.HasPrefix(attr.LocalName(), "_")
+			return elem.URI() == lexicon.NamespaceXSLT && attr.URI() == "" && strings.HasPrefix(attr.LocalName(), shadowAttributePrefix)
 		}
 	}
 
-	if processor == 10 {
+	if processor == processorXSLT10 {
 		if err := validateModuleRoot10(root); err != nil {
 			return nil, err
 		}
@@ -165,20 +165,20 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 
 	needed, err := inspectModulePreparation(ctx, root, false, func(elem *xdm.Element, attr *xdm.Attribute) bool {
 		conditional := attr.LocalName() == xslAttrUseWhen && (elem.URI() == lexicon.NamespaceXSLT && attr.URI() == "" || elem.URI() != lexicon.NamespaceXSLT && attr.URI() == lexicon.NamespaceXSLT)
-		return ignored(elem, attr) || processor >= 20 && conditional
+		return ignored(elem, attr) || processor >= processorXSLT20 && conditional
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	if root.URI() != lexicon.NamespaceXSLT {
-		if _, simplified := root.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT); simplified {
+		if _, simplified := root.GetAttributeNS(xslAttrVersion, lexicon.NamespaceXSLT); simplified {
 			prepared, err := expandSimplifiedModule(ctx, doc, root)
 			if err != nil {
 				return nil, err
 			}
 
-			if processor < 30 {
+			if processor < processorXSLT30 {
 				filterModuleAttributes(prepared.DocumentElement(), ignored)
 			}
 
@@ -206,7 +206,7 @@ func prepareModule(ctx context.Context, doc *xdm.Document, processor int) (*xdm.
 
 	prepared.SetURL(doc.URL())
 
-	if processor < 30 {
+	if processor < processorXSLT30 {
 		filterModuleAttributes(prepared.DocumentElement(), ignored)
 	}
 
@@ -224,7 +224,7 @@ func unknownAttribute10(elem *xdm.Element, attr *xdm.Attribute) bool {
 		return attr.URI() == "" && !contains10Word(xslt10Attributes(elem.LocalName()), attr.LocalName())
 	}
 
-	return attr.URI() == lexicon.NamespaceXSLT && !contains10Word("version extension-element-prefixes exclude-result-prefixes use-attribute-sets", attr.LocalName())
+	return attr.URI() == lexicon.NamespaceXSLT && !contains10Word(xslAttrVersion+" "+nameExtensionElementPrefixes+" "+nameExcludeResultPrefixes+" "+nameUseAttributeSets, attr.LocalName())
 }
 
 func inspectModulePreparation(ctx context.Context, elem *xdm.Element, needed bool, ignored func(*xdm.Element, *xdm.Attribute) bool) (bool, error) {
@@ -371,7 +371,7 @@ func stylesheetWhitespaceParent(parent *tree.Node) bool {
 	}
 
 	switch parent.Name.Local {
-	case lexicon.XSLTElementAccumulator, lexicon.XSLTElementAnalyzeString, lexicon.XSLTElementApplyImports, lexicon.XSLTElementApplyTemplates, lexicon.XSLTElementAttributeSet, lexicon.XSLTElementCallTemplate, lexicon.XSLTElementCharacterMap, lexicon.XSLTElementChoose, lexicon.XSLTElementEvaluate, lexicon.XSLTElementFork, lexicon.XSLTElementMerge, lexicon.XSLTElementMergeSource, lexicon.XSLTElementMode, lexicon.XSLTElementNextIteration, lexicon.XSLTElementNextMatch, lexicon.XSLTElementOverride, lexicon.XSLTElementPackage, nameStylesheet, fnNameTransform, lexicon.XSLTElementUsePackage:
+	case lexicon.XSLTElementAccumulator, lexicon.XSLTElementAnalyzeString, lexicon.XSLTElementApplyImports, lexicon.XSLTElementApplyTemplates, lexicon.XSLTElementAttributeSet, lexicon.XSLTElementCallTemplate, lexicon.XSLTElementCharacterMap, lexicon.XSLTElementChoose, lexicon.XSLTElementEvaluate, lexicon.XSLTElementFork, lexicon.XSLTElementMerge, lexicon.XSLTElementMergeSource, lexicon.XSLTElementMode, lexicon.XSLTElementNextIteration, lexicon.XSLTElementNextMatch, lexicon.XSLTElementOverride, lexicon.XSLTElementPackage, nameStylesheet, lexicon.XSLTElementTransform, lexicon.XSLTElementUsePackage:
 		return true
 	}
 
@@ -399,25 +399,25 @@ func (c *compiler) sourceModule(doc *xdm.Document) *xdm.Document {
 }
 
 func (c *compiler) checkFragment10(doc *xdm.Document, fragment string) error {
-	if fragment == "" || c.stylesheet.processorLanguage() != 10 {
+	if fragment == "" || c.stylesheet.processorLanguage() != processorXSLT10 {
 		return nil
 	}
 
 	root := findElementByID(c.sourceModule(doc), fragment)
 	if root == nil {
-		return staticError("XTSE0010", "no embedded stylesheet with id=%q", fragment)
+		return staticError(errCodeXTSE0010, "no embedded stylesheet with id=%q", fragment)
 	}
 
 	return checkLanguage10(root)
 }
 
 func (c *compiler) forwardsCompatible(version string) bool {
-	comparison, valid := compareLanguageVersion(version, c.stylesheet.processorLanguage()/10)
+	comparison, valid := compareLanguageVersion(version, c.stylesheet.processorLanguage()/processorVersionScale)
 	return valid && comparison > 0
 }
 
 func checkLanguage10(root *xdm.Element) error {
-	return checkElementLanguage10(root, root, 1)
+	return checkElementLanguage10(root, root, xsltMajorVersion1)
 }
 
 func checkElementLanguage10(root, elem *xdm.Element, inherited float64) error {
@@ -446,17 +446,17 @@ func checkElementLanguage10(root, elem *xdm.Element, inherited float64) error {
 func elementLanguageVersion10(root, elem *xdm.Element, inherited float64) (float64, error) {
 	effective := inherited
 
-	if version, ok := elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT); ok {
-		n, err := strconv.ParseFloat(version, 64)
+	if version, ok := elem.GetAttributeNS(xslAttrVersion, lexicon.NamespaceXSLT); ok {
+		n, err := strconv.ParseFloat(version, float64ParseBits)
 		if err != nil || !(n > 0) || math.IsInf(n, 0) {
-			return 0, staticError("XTSE0110", "invalid XSLT version")
+			return 0, staticError(errCodeXTSE0110, "invalid XSLT version")
 		}
 
 		effective = n
 	}
 
 	if elem == root && elem.URI() == lexicon.NamespaceXSLT {
-		effective, _ = strconv.ParseFloat(getAttr(root, lexicon.SerializationVersion), 64)
+		effective, _ = strconv.ParseFloat(getAttr(root, xslAttrVersion), float64ParseBits)
 	}
 
 	return effective, nil
@@ -464,8 +464,8 @@ func elementLanguageVersion10(root, elem *xdm.Element, inherited float64) (float
 
 func checkXSLTElement10(elem *xdm.Element, effective float64) error {
 	allowed, known := lookupXSLT10Attribute(elem.LocalName())
-	if !known && effective <= 1 {
-		return staticError("XTSE0010", "xsl:%s is unavailable in XSLT 1.0", elem.LocalName())
+	if !known && effective <= xsltMajorVersion1 {
+		return staticError(errCodeXTSE0010, "xsl:%s is unavailable in XSLT 1.0", elem.LocalName())
 	}
 
 	for _, attr := range elem.Attributes() {
@@ -474,11 +474,11 @@ func checkXSLTElement10(elem *xdm.Element, effective float64) error {
 		}
 
 		if attr.URI() == lexicon.NamespaceXSLT {
-			return staticError("XTSE0090", "XSLT attributes on XSLT elements")
+			return staticError(errCodeXTSE0090, "XSLT attributes on XSLT elements")
 		}
 
-		if attr.URI() == "" && effective <= 1 && !contains10Word(allowed, attr.LocalName()) {
-			return staticError("XTSE0090", "%s on xsl:%s is unavailable in XSLT 1.0", attr.LocalName(), elem.LocalName())
+		if attr.URI() == "" && effective <= xsltMajorVersion1 && !contains10Word(allowed, attr.LocalName()) {
+			return staticError(errCodeXTSE0090, "%s on xsl:%s is unavailable in XSLT 1.0", attr.LocalName(), elem.LocalName())
 		}
 	}
 
@@ -487,8 +487,8 @@ func checkXSLTElement10(elem *xdm.Element, effective float64) error {
 
 func checkLiteralResultAttributes10(elem *xdm.Element, effective float64) error {
 	for _, attr := range elem.Attributes() {
-		if attr.URI() == lexicon.NamespaceXSLT && effective <= 1 && !contains10Word("version extension-element-prefixes exclude-result-prefixes use-attribute-sets", attr.LocalName()) {
-			return staticError("XTSE0090", "unknown XSLT 1.0 literal-result attribute %s", attr.LocalName())
+		if attr.URI() == lexicon.NamespaceXSLT && effective <= xsltMajorVersion1 && !contains10Word(xslAttrVersion+" "+nameExtensionElementPrefixes+" "+nameExcludeResultPrefixes+" "+nameUseAttributeSets, attr.LocalName()) {
+			return staticError(errCodeXTSE0090, "unknown XSLT 1.0 literal-result attribute %s", attr.LocalName())
 		}
 	}
 
@@ -507,15 +507,15 @@ func contains10Word(words, word string) bool {
 
 func lookupXSLT10FunctionArity(key string) ([2]int, bool) {
 	switch key {
-	case "current":
+	case fnNameCurrent:
 		return [2]int{0, 0}, true
 	case fnNameDocument:
 		return [2]int{1, 2}, true
-	case nameKey2:
+	case keyLocalName:
 		return [2]int{2, 2}, true
 	case lexicon.FnFormatNumber:
 		return [2]int{2, 3}, true
-	case lexicon.FnGenerateID, nameUnparsedEntityURI, funcSystemProperty, "element-available", "function-available":
+	case lexicon.FnGenerateID, nameUnparsedEntityURI, funcSystemProperty, fnNameElementAvailable, fnNameFunctionAvailable:
 		return [2]int{1, 1}, true
 	}
 
@@ -541,7 +541,7 @@ func (f function10) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 		if err := prepareDocumentArguments10(ctx, args); err != nil {
 			return nil, err
 		}
-	case nameKey2:
+	case keyLocalName:
 		if err := prepareKeyArguments10(ctx, args); err != nil {
 			return nil, err
 		}
@@ -553,7 +553,7 @@ func (f function10) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 		if err := prepareFormatNumberArguments10(ctx, args); err != nil {
 			return nil, err
 		}
-	case funcSystemProperty, "element-available", "function-available", nameUnparsedEntityURI:
+	case funcSystemProperty, fnNameElementAvailable, fnNameFunctionAvailable, nameUnparsedEntityURI:
 		if err := convertStringArgument10(ctx, args, 0); err != nil {
 			return nil, err
 		}
@@ -670,7 +670,7 @@ func checkPattern10(ast xpath.Expr) error {
 	case xpath.LocationPath:
 		for _, step := range e.Steps {
 			if step.Axis != xpath.AxisChild && step.Axis != xpath.AxisAttribute && step.Axis != xpath.AxisDescendantOrSelf {
-				return staticError("XTSE0340", "invalid XSLT 1.0 pattern axis")
+				return staticError(errCodeXTSE0340, "invalid XSLT 1.0 pattern axis")
 			}
 		}
 
@@ -689,31 +689,31 @@ func checkPattern10(ast xpath.Expr) error {
 		return nil
 	}
 
-	return staticError("XTSE0340", "invalid XSLT 1.0 match pattern")
+	return staticError(errCodeXTSE0340, "invalid XSLT 1.0 match pattern")
 }
 
 func checkFunctionPattern10(e xpath.FunctionCall) error {
-	if e.Prefix != "" || e.Name != "id" && e.Name != nameKey2 {
-		return staticError("XTSE0340", "invalid XSLT 1.0 match pattern")
+	if e.Prefix != "" || e.Name != fnNameID && e.Name != keyLocalName {
+		return staticError(errCodeXTSE0340, "invalid XSLT 1.0 match pattern")
 	}
 
 	want := 1
-	if e.Name == nameKey2 {
+	if e.Name == keyLocalName {
 		want = 2
 	}
 
 	if len(e.Args) != want {
-		return staticError("XTSE0340", "invalid XSLT 1.0 match pattern")
+		return staticError(errCodeXTSE0340, "invalid XSLT 1.0 match pattern")
 	}
 
 	for _, arg := range e.Args {
 		v, ok := arg.(xpath.LiteralExpr)
 		if !ok {
-			return staticError("XTSE0340", "id/key patterns require string literals")
+			return staticError(errCodeXTSE0340, "id/key patterns require string literals")
 		}
 
 		if _, ok := v.Value.(string); !ok {
-			return staticError("XTSE0340", "id/key patterns require string literals")
+			return staticError(errCodeXTSE0340, "id/key patterns require string literals")
 		}
 	}
 
@@ -721,7 +721,9 @@ func checkFunctionPattern10(e xpath.FunctionCall) error {
 }
 
 func finalizeOutput10(s *Stylesheet) {
-	if s.processorLanguage() != 10 {
+	const legacyHTMLDefaultVersion = "4.0"
+
+	if s.processorLanguage() != processorXSLT10 {
 		return
 	}
 
@@ -730,9 +732,9 @@ func finalizeOutput10(s *Stylesheet) {
 	}
 
 	for _, out := range s.outputs {
-		out.languageVersion = 10
+		out.languageVersion = processorXSLT10
 		if out.HTMLVersion == "" {
-			out.HTMLVersion = "4.0"
+			out.HTMLVersion = legacyHTMLDefaultVersion
 		}
 	}
 }
@@ -740,7 +742,7 @@ func finalizeOutput10(s *Stylesheet) {
 // validateModuleRoot10 leaves embedded modules for validation after their
 // fragment root is selected, while checking ordinary and simplified modules now.
 func validateModuleRoot10(root *xdm.Element) error {
-	_, simplified := root.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
+	_, simplified := root.GetAttributeNS(xslAttrVersion, lexicon.NamespaceXSLT)
 	if root.URI() == lexicon.NamespaceXSLT || simplified {
 		return checkLanguage10(root)
 	}

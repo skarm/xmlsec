@@ -30,6 +30,14 @@ import (
 )
 
 const (
+	fixtureFileMode         = 0o600
+	fixtureDirectoryMode    = 0o700
+	fixtureReadOnlyFileMode = 0o400
+)
+
+const externalCommandTimeout = 2 * time.Minute
+
+const (
 	ds    = "http://www.w3.org/2000/09/xmldsig#"
 	more  = "http://www.w3.org/2001/04/xmldsig-more#"
 	exc   = "http://www.w3.org/2001/10/xml-exc-c14n#"
@@ -43,7 +51,7 @@ func canonicalizations() []string {
 	return []string{exc, exc + "WithComments", c10, c10 + "#WithComments", c11, c11 + "#WithComments"}
 }
 
-func digests() []string { return []string{enc + nameSha256, more + "sha384", enc + "sha512"} }
+func digests() []string { return []string{enc + nameSHA256, more + "sha384", enc + "sha512"} }
 
 func javaExports() []string {
 	return []string{"--add-exports=java.xml.crypto/com.sun.org.apache.xml.internal.security=ALL-UNNAMED", "--add-exports=java.xml.crypto/com.sun.org.apache.xml.internal.security.c14n=ALL-UNNAMED"}
@@ -65,7 +73,7 @@ func selected(t *testing.T, suite string) {
 func command(t *testing.T, fixture *interopFixture, success bool, input []byte, name string, args ...string) ([]byte, []byte) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), externalCommandTimeout)
 	defer cancel()
 
 	c := exec.CommandContext(ctx, name, args...)
@@ -99,7 +107,7 @@ func command(t *testing.T, fixture *interopFixture, success bool, input []byte, 
 func write(t *testing.T, path string, data []byte) string {
 	t.Helper()
 
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(path, data, fixtureFileMode); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,7 +209,7 @@ func compileJava(t *testing.T, fixture *interopFixture) {
 	}
 
 	args := append(append([]string{}, javaExports()...), "-d", fixture.work)
-	for _, name := range []string{"DetachedOracle", "CoreOracle", "TransformOracle", "ManifestOracle", "C14NOracle"} {
+	for _, name := range []string{"DetachedOracle", "CoreOracle", "TransformOracle", "ManifestOracle", "C14NOracle", "ECPProofOracle"} {
 		args = append(args, filepath.Join(fixture.root, "tests/interop/testdata", name+".java"))
 	}
 
@@ -255,13 +263,13 @@ func generateKey(t *testing.T, dir, name string) testKey {
 
 	method := more + name
 	switch name {
-	case nameRsaSha256, nameRsaSha384, nameRsaSha512:
+	case nameRSASHA256, nameRSASHA384, nameRSASHA512:
 		signer, err = rsa.GenerateKey(rand.Reader, 2048)
-	case nameEcdsaSha256:
+	case nameECDSASHA256:
 		signer, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	case nameEcdsaSha384:
+	case nameECDSASHA384:
 		signer, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	case nameEcdsaSha512:
+	case nameECDSASHA512:
 		signer, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	case nameEd25519:
 		_, signer, err = ed25519.GenerateKey(rand.Reader)
@@ -291,7 +299,7 @@ func generateKey(t *testing.T, dir, name string) testKey {
 		name: name, method: method, signer: signer, cert: cert,
 		private:     testutil.WritePrivateKey(t, dir, name+".key.pem", signer),
 		public:      testutil.WritePublicKey(t, dir, name+".pub.pem", signer.Public()),
-		certificate: write(t, filepath.Join(dir, name+".cert.pem"), pem.EncodeToMemory(&pem.Block{Type: nameCERTIFICATE, Bytes: certDER})),
+		certificate: write(t, filepath.Join(dir, name+".cert.pem"), pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: certDER})),
 	}
 }
 

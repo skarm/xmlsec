@@ -1483,6 +1483,611 @@ func TestSuiteSourceOptions(t *testing.T) {
 	}
 }
 
+func TestQT3ResidualCauses(t *testing.T) {
+	configureLanguageTest(t, false)
+	directory, err := filepath.EvalSymlinks(residualRequired(t, "XMLSEC_QT3_DIR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	residualRequired(t, "SAXON_CLASSPATH")
+	residualRequired(t, "SAXON20_CLASSPATH")
+	residualRequired(t, "SERIALIZATION_SCHEMA_DIR")
+	proofs := make([]qtResidualProof, 0, len(qtResidualCases()))
+	t.Cleanup(func() {
+		if file := os.Getenv("XMLSEC_QT3_PROOF_REPORT"); file != "" {
+			data, err := json.MarshalIndent(proofs, "", "  ")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.WriteFile(file, append(data, '\n'), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	for _, test := range qtResidualCases() {
+		t.Run(test.name, func(t *testing.T) {
+			item := loadPinnedResidualCase(t, directory, suiteQT3, test.file, test.name)
+			options := suiteOptions{kind: suiteQT3, directory: directory, version: test.version, xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default"}
+			original := evaluateResidualCase(t, options, item)
+			data, err := os.ReadFile(filepath.Join(directory, test.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(data)
+			// The configured case budget covers evaluation and its original
+			// publisher assertion; retain the typed cause from either phase.
+			resourceCause := errors.Join(original.executionError(), original.AssertionError)
+			proof := qtResidualProof{Name: test.name, File: test.file, Version: test.version, Category: test.category, XSDVersion: suiteXSDVersionName(options), CaseTimeout: options.timeout.String(), LimitsProfile: options.limitsProfile, SourceSHA256: hex.EncodeToString(digest[:]), OriginalLimit: errors.Is(resourceCause, transform.ErrLimit), OriginalError: fmt.Sprint(original.executionError()), OriginalAssertion: fmt.Sprint(original.AssertionError)}
+			proof.OriginalDeadline = errors.Is(resourceCause, context.DeadlineExceeded)
+			defer func() { proofs = append(proofs, proof) }()
+			switch test.category {
+			case "limit":
+				if !proof.OriginalLimit && !proof.OriginalDeadline {
+					t.Fatal("original cause is neither a typed implementation limit nor the configured deadline", original.executionError())
+				}
+				qtResidualLimitControls(t, options, item, &proof)
+			case "format":
+				qtResidualFormatControls(t, options, item, original, &proof)
+			case "calendar-month-week":
+				qtResidualMonthWeekControls(t, options, item, original, &proof)
+			case "serialize":
+				qtResidualSerializationControls(t, options, item, original, &proof)
+			case "transform43":
+				qtResidualTransform43Controls(t, original, &proof)
+			}
+		})
+	}
+}
+
+func residualSaxonQuery(t *testing.T, expression, source string) string {
+	t.Helper()
+	classpath := residualRequired(t, "SAXON_CLASSPATH")
+	binary, err := exec.LookPath("java")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	queryFile := filepath.Join(t.TempDir(), "proof.xq")
+	// Inputs are XPath expressions. XQuery resolves entity references inside
+	// string literals; quote ampersands once so Saxon sees the same strings.
+	if err := os.WriteFile(queryFile, []byte(strings.ReplaceAll(expression, "&", "&amp;")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	arguments := []string{"-cp", classpath, "net.sf.saxon.Query", "-q:" + queryFile, "!method=text", "!omit-xml-declaration=yes"}
+	if source != "" {
+		arguments = append(arguments, "-s:"+source)
+	}
+	command := exec.CommandContext(ctx, binary, arguments...)
+	var diagnostic bytes.Buffer
+	command.Stderr = &diagnostic
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("independent query: %s: %v", diagnostic.String(), err)
+	}
+	return string(output)
+}
+
+func residualSaxon20Expression(t *testing.T, expression string) string {
+	t.Helper()
+	classpath := residualRequired(t, "SAXON20_CLASSPATH")
+	binary, err := exec.LookPath("java")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	file := filepath.Join(directory, "proof.xsl")
+	var escaped strings.Builder
+	if err := xml.EscapeText(&escaped, []byte(expression)); err != nil {
+		t.Fatal(err)
+	}
+	source := `<xsl:stylesheet version="2.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema"><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="` + escaped.String() + `"/></xsl:template></xsl:stylesheet>`
+	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+file, "-it:start")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("independent old-edition transform: %s: %v", output, err)
+	}
+	return string(output)
+}
+
+func residualControl(t *testing.T, proof *qtResidualProof, environment *preparedSuiteEnvironment, version, name, expression, want, obligation string) {
+	t.Helper()
+	value, err := residualXPath(t, environment, version, expression)
+	actual := residualSequenceText(t, value)
+	if err != nil {
+		actual = residualErrorCode(err)
+	}
+	if actual != want {
+		t.Fatal(name, "native", actual, err, "want", want)
+	}
+	oracleExpression := `try { (` + expression + `) } catch * { local-name-from-QName($err:code) }`
+	independent := residualSaxonQuery(t, oracleExpression, "")
+	if independent != want {
+		t.Fatal(name, "independent", independent, "want", want)
+	}
+	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: name, Expression: expression, Native: actual, Independent: independent, Obligation: obligation})
+}
+
+func qtResidualLimitControls(t *testing.T, options suiteOptions, item suiteCase, proof *qtResidualProof) {
+	t.Helper()
+	options.limitsProfile = suiteLanguage
+	options.timeout = 30 * time.Second
+	environment, err := prepareSuiteEnvironment(t.Context(), options, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Name == "ForExpr013" {
+		control := evaluateResidualCase(t, options, item)
+		if control.executionError() != nil || control.AssertionError != nil {
+			t.Fatal("raised bounded profile did not reproduce publisher value", control.executionError(), control.AssertionError)
+		}
+		evaluation := control.Evaluation
+		expression := "count((" + requiredSuiteChild(t, item.node, "test").Text + "))"
+		want := strconv.Itoa(evaluation.sequence.Len())
+		oracle := residualSaxonQuery(t, expression, filepath.Join(options.directory, "prod", "ForClause", "fsx.xml"))
+		if oracle != want {
+			t.Fatal(oracle, want)
+		}
+		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same source and publisher assertion; explicit language profile and 30s case deadline", Expression: expression, Native: want, Independent: oracle, Obligation: "XPath20 2.3.1 implementation limits; exact unmodified publisher input/output"})
+		return
+	}
+	if proof.Name == "fn-transform-27" {
+		qtResidualTransform27Controls(t, options, item, environment, proof)
+		return
+	}
+	expression, want := "", ""
+	switch proof.Name {
+	case "cbcl-codepoints-to-string-005":
+		expression, want = `string-length(codepoints-to-string(65536 to 65539))`, "4"
+	case "cbcl-count-001":
+		expression, want = `count(1 to 1000)`, "1000"
+	case "cbcl-matches-004":
+		expression, want = `matches('aaa','a{4}')`, "false"
+	case "cbcl-subsequence-010":
+		expression, want = `count(subsequence(1 to 1000,-5,4))`, "0"
+	case "cbcl-subsequence-011":
+		expression, want = `count(subsequence(1 to 1000,-5))`, "1000"
+	case "cbcl-subsequence-012":
+		expression, want = `count(subsequence(1 to 1000,748))`, "253"
+	case "cbcl-subsequence-013":
+		expression, want = `count(subsequence(1 to 1000,747))`, "254"
+	case "cbcl-subsequence-014":
+		expression, want = `subsequence(2147483647 to 2147483651,1,5)`, "2147483647 2147483648 2147483649 2147483650 2147483651"
+	case "environment-variable-012":
+		expression, want = strings.ReplaceAll(requiredSuiteChild(t, item.node, "test").Text, "1024 * 1024", "1000"), "true"
+	case "fold-left-020", "fold-right-013":
+		expression, want = strings.ReplaceAll(requiredSuiteChild(t, item.node, "test").Text, "1000000", "1000"), "1000"
+	case "map-for-each-014", "map-keys-014":
+		expression, want = `let $result := (`+strings.ReplaceAll(requiredSuiteChild(t, item.node, "test").Text, "500000", "1000")+`) return count($result)=1000 and $result=1 and $result=1000`, "true"
+	case "map-remove-012":
+		expression, want = `let $result := (`+strings.NewReplacer("500000", "1000", "123456", "456").Replace(requiredSuiteChild(t, item.node, "test").Text)+`) return map:size($result)=999 and map:contains($result,1) and map:contains($result,1000) and not(map:contains($result,456))`, "true"
+	default:
+		t.Fatal("missing case-specific limit control", proof.Name)
+	}
+	residualControl(t, proof, environment, options.version, "bounded same-operator control", expression, want, "XPath implementation-limit permission; the operator succeeds with independently verified bounded operands")
+	if proof.Name == "cbcl-codepoints-to-string-005" {
+		residualControl(t, proof, environment, options.version, "semantic invalid scalar remains FOCH0001", `codepoints-to-string(1114112)`, "FOCH0001", "FO 5.2.1 invalid Unicode codepoint error independent of range materialization")
+	}
+	if proof.Name == "cbcl-matches-004" {
+		residualControl(t, proof, environment, options.version, "actual invalid regex remains FORX0002", `matches('aaa','a{')`, "FORX0002", "FO matches invalid grammar differs from valid enormous quantifier implementation cap")
+	}
+}
+
+func requiredSuiteChild(t *testing.T, node *suiteNode, name string) *suiteNode {
+	t.Helper()
+	child := node.child(name)
+	if child == nil {
+		t.Fatalf("required fixture element %q missing", name)
+	}
+	return child
+}
+
+func qtResidualTransform27Controls(t *testing.T, options suiteOptions, item suiteCase, environment *preparedSuiteEnvironment, proof *qtResidualProof) {
+	t.Helper()
+	original := evaluateSuiteCase(t.Context(), options, item, environment)
+	if original.err != nil || residualSequenceText(t, original.sequence) != "true" {
+		t.Fatal("raised original case", original.err, residualSequenceText(t, original.sequence))
+	}
+	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "original expression with raised bounded profile and fixed host clock", Native: "true", Obligation: "FO31 16.3.2 cache option has no effect on transformation result; repeated results may be identical"})
+	bounded := strings.NewReplacer("-100000", "-100", "+100000", "+100").Replace(requiredSuiteChild(t, item.node, "test").Text)
+	for _, cache := range []string{"false()", "true()"} {
+		expression := strings.ReplaceAll(bounded, `"cache":false()`, `"cache":`+cache)
+		value, err := residualXPath(t, environment, suiteVersion31, expression)
+		if err != nil || residualSequenceText(t, value) != "true" {
+			t.Fatal(cache, value, err)
+		}
+		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "fixed host clock, cache hint " + cache, Expression: expression, Native: "true", Obligation: "FO31 16.3.2 cache is an efficiency hint, not a promise of unequal current-dateTime values"})
+	}
+	residualControl(t, proof, environment, suiteVersion31, "current-dateTime is stable within one dynamic context", `current-dateTime() eq current-dateTime()`, "true", "FO31 15.3 same dynamic current-dateTime; host controls the supplied instant")
+	// A fresh public invocation can receive another explicit host clock. This
+	// isolates clock input from stylesheet caching without sleeping or wall time.
+	clockExpression := `transform(map{'stylesheet-text':"<xsl:stylesheet version='3.0' xmlns:xsl='http://www.w3.org/1999/XSL/Transform'><xsl:variable name='t' static='yes' select='current-dateTime()'/><xsl:template name='start'><xsl:value-of select='$t'/></xsl:template></xsl:stylesheet>",'initial-template':xs:QName('start'),'cache':false()})?output/string()`
+	for _, instant := range []string{"2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"} {
+		environment.currentTime, _ = time.Parse(time.RFC3339, instant)
+		value, err := residualXPath(t, environment, suiteVersion31, clockExpression)
+		if err != nil || residualSequenceText(t, value) != instant {
+			t.Fatal(value, err, instant)
+		}
+		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "explicit independent host clock " + instant, Expression: clockExpression, Native: instant, Obligation: "Configured per-invocation clock, not the cache hint, determines static current-dateTime here"})
+	}
+}
+
+func residualInlineBindings(t *testing.T, expression string, environment *preparedSuiteEnvironment) string {
+	t.Helper()
+	for name, value := range environment.variables {
+		if name.Space != "" {
+			t.Fatal("proof needs an explicit namespace binding", name)
+		}
+		item, err := value.Single()
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, err := item.Text()
+		if err != nil {
+			t.Fatal(err)
+		}
+		expression = strings.ReplaceAll(expression, "$"+name.Local, "xs:"+item.Type().Local+"('"+strings.ReplaceAll(text, "'", "''")+"')")
+	}
+	return expression
+}
+
+func qtResidualFormatControls(t *testing.T, options suiteOptions, item suiteCase, original residualCaseResult, proof *qtResidualProof) {
+	t.Helper()
+	if original.executionError() != nil || original.AssertionError == nil {
+		t.Fatal("expected original publisher value mismatch", original.executionError(), original.AssertionError)
+	}
+	old := map[string]string{"format-dateTime-002g": "9:15:06.5", "format-dateTime-002h": "9:15:06.5", "format-dateTime-002i": "9:15:06.46", "format-dateTime-003m": "9:15:06.5", "format-dateTime-003n": "9:15:06.5", "format-dateTime-003p": "9:15:06.46", "format-dateTime-013s": "46", "format-dateTime-013u": "46", "millisecs-018": "12", "millisecs-022": "00"}[proof.Name]
+	if residualSequenceText(t, original.Evaluation.sequence) != old {
+		t.Fatal("old-edition algorithm changed", original.Evaluation.sequence, old)
+	}
+	expression := residualInlineBindings(t, requiredSuiteChild(t, item.node, "test").Text, original.Environment)
+	oracle := residualSaxon20Expression(t, expression)
+	if oracle != old {
+		t.Fatal("published old-formatting algorithm disagreement", oracle, old)
+	}
+	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same literal date/picture under pre-3.1 formatting", Expression: expression, Native: old, Independent: oracle, Obligation: "FO30 9.8.4.1 old rounding/width precedence; FO31 9.8.4.5 truncation is a later algorithm"})
+	options.version = suiteVersion31
+	modern := evaluateResidualCase(t, options, item)
+	if modern.executionError() != nil || modern.AssertionError != nil {
+		t.Fatal("same pinned fixture must match its later-edition expectation", modern.executionError(), modern.AssertionError)
+	}
+	want := residualSequenceText(t, modern.Evaluation.sequence)
+	oracle = residualSaxonQuery(t, expression, "")
+	if oracle != want {
+		t.Fatal("modern oracle", oracle, want)
+	}
+	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same publisher input/assertion under processor 3.1", Expression: expression, Native: want, Independent: oracle, Obligation: "FO31 9.8.4.5 explicit fractional-second/width algorithm; publisher modifications in 2016 reference bugs 29749/29788"})
+}
+
+func qtResidualTransform43Controls(t *testing.T, original residualCaseResult, proof *qtResidualProof) {
+	t.Helper()
+	if original.executionError() != nil || !strings.Contains(fmt.Sprint(original.AssertionError), "FODC0006") {
+		t.Fatal("expected assertion's document parse error", original.executionError(), original.AssertionError)
+	}
+	assertions := requiredSuiteChild(t, original.Evaluation.item.node.child(suiteResultVariable), "all-of").Children
+	if len(assertions) != 4 {
+		t.Fatal("publisher assertion inventory changed")
+	}
+	for index := range 3 {
+		if err := checkSuiteAssertion(t.Context(), original.Evaluation, assertions[index]); err != nil {
+			t.Fatal(index, err)
+		}
+	}
+	value, err := original.Evaluation.sequence.Single()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := value.Keys()
+	if err != nil || len(keys) != 4 {
+		t.Fatal(keys, err)
+	}
+	principal := ""
+	for _, key := range keys {
+		name, err := key.Text()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(name, "/output.html") {
+			part, found := value.Lookup(key)
+			if !found {
+				t.Fatal(name)
+			}
+			principal = residualSequenceText(t, part)
+		}
+	}
+	if principal == "" {
+		t.Fatal("missing principal serialization")
+	}
+	environment := original.Environment
+	literal := "'" + strings.ReplaceAll(principal, "'", "''") + "'"
+	residualControl(t, proof, environment, suiteVersion31, "principal is a valid empty external parsed entity", `count(parse-xml-fragment(`+literal+`)/node())`, "0", "SER31 5 XML external parsed entity; empty principal need not be a well-formed XML document")
+	residualControl(t, proof, environment, suiteVersion31, "the same principal is not an XML document", `parse-xml(`+literal+`)`, "FODC0006", "FO31 14.7.1 parse-xml requires a document element")
+	residualControl(t, proof, environment, suiteVersion31, "quantifier error binding visited first", `boolean(some $s in ('','<h1>Header for section 2</h1>') satisfies parse-xml($s)//h1='Header for section 2')`, "FODC0006", "XPath31 3.13 permits a satisfies error before the true witness; boolean does not catch errors")
+	residualControl(t, proof, environment, suiteVersion31, "quantifier witness visited first", `some $s in ('<h1>Header for section 2</h1>','') satisfies parse-xml($s)//h1='Header for section 2'`, "true", "XPath31 3.13 true witness is an allowed outcome; map keys have implementation-dependent order")
+	filtered, err := environment.query(t.Context(), `some $key in map:keys($result)[contains(.,'section')] satisfies parse-xml($result?($key))//h1='Header for section 2'`, transform.Bindings{{Local: "result"}: original.Evaluation.sequence})
+	if err != nil || residualSequenceText(t, filtered) != "true" {
+		t.Fatal("secondary map entry was lost", filtered, err)
+	}
+	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "unchanged result map contains the required secondary document", Native: "true; first three exact catalog assertions also pass", Obligation: "FO31 16.3.2 serialized result map preserves secondary results; no reordering or publisher assertion rewrite"})
+}
+
+func qtResidualSerializationControls(t *testing.T, options suiteOptions, item suiteCase, original residualCaseResult, proof *qtResidualProof) {
+	t.Helper()
+	if original.AssertionError == nil {
+		t.Fatal("the original catalog assertion unexpectedly passed")
+	}
+	for _, version := range []string{suiteVersion30, suiteVersion31} {
+		options.version = version
+		value := evaluateResidualCase(t, options, item)
+		want := ""
+		if version == suiteVersion30 {
+			want = "SEPM0017"
+		} else if proof.Name == "serialize-xml-025b" {
+			want = "SEPM0019"
+		}
+		code := residualErrorCode(value.executionError())
+		if code != want || want == "" && value.executionError() != nil {
+			t.Fatal("edition-specific extraction", version, value.executionError(), want)
+		}
+		actual := code
+		if want == "" {
+			actual = residualSequenceText(t, value.Evaluation.sequence)
+			if !strings.Contains(actual, "atomic") {
+				t.Fatal("source document was not serialized", actual)
+			}
+		}
+		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same source and parameter document under " + version, Native: actual, Obligation: "SER30 3.1 assesses the whole parameter document; SER31 3.1 first selects known standard parameter children; duplicate QNames have their own SEPM0019 rule"})
+	}
+	parameterFile := ""
+	for _, source := range item.node.child("environment").children("source") {
+		if source.attr("role") == "$params" {
+			_, parameterFile, _ = readSuiteReferencedFile(options.directory, item.base, source)
+		}
+	}
+	if parameterFile == "" {
+		t.Fatal("publisher parameter resource missing")
+	}
+	for _, edition := range []struct {
+		version  string
+		checksum string
+	}{
+		{"30", "1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953"},
+		{"31", "256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0"},
+	} {
+		schema := filepath.Join(residualRequired(t, "SERIALIZATION_SCHEMA_DIR"), "ser"+edition.version+".xsd")
+		data, err := os.ReadFile(schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != edition.checksum {
+			t.Fatal("published schema pin changed", schema)
+		}
+		parts := []string{}
+		if edition.version == "30" {
+			raw, err := os.ReadFile(parameterFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts = append(parts, string(raw))
+		} else {
+			declared, _, err := decodeSuiteNode(data, schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			names := []string{}
+			for _, element := range declared.children("element") {
+				if name := element.attr("name"); name != "" && name != "serialization-parameters" {
+					names = append(names, "'"+name+"'")
+				}
+			}
+			if len(names) < 20 {
+				t.Fatal("published serialization declaration inventory", len(names))
+			}
+			// Selection names come from the independent published XSD, rather
+			// than the engine's parameter registry. Saxon performs the projection.
+			expression := `serialize(array{for $p in doc('` + suiteFileURI(parameterFile) + `')/*/*[namespace-uri()='http://www.w3.org/2010/xslt-xquery-serialization'][local-name()=(` + strings.Join(names, ",") + `)] return serialize($p,map{'method':'xml','omit-xml-declaration':true()})},map{'method':'json'})`
+			selected := residualSaxonQuery(t, expression, "")
+			if err := json.Unmarshal([]byte(selected), &parts); err != nil {
+				t.Fatal("independent projection result", selected, err)
+			}
+		}
+		valid := true
+		for _, part := range parts {
+			binary, err := exec.LookPath("xmllint")
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := exec.CommandContext(t.Context(), binary, "--nonet", "--noout", "--schema", schema, "-")
+			command.Stdin = strings.NewReader(part)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 3 {
+					t.Fatalf("published XSD validator: %s: %v; selected part %q", output, err, part)
+				}
+				valid = false
+			}
+		}
+		want := edition.version == "31"
+		if valid != want {
+			t.Fatal("published schema assessment", edition.version, valid, want)
+		}
+		t.Log("P3_ORACLE published-schema")
+		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "published SER" + edition.version + " schema after prescribed extraction", Native: strconv.FormatBool(valid), Independent: fmt.Sprintf("xmllint validity=%t; selected parts=%d; schema SHA256=%s", valid, len(parts), edition.checksum), Obligation: "Published SER30/31 3.1 parameter-document extraction and associated XSD; no extension schema declarations supplied"})
+	}
+	if proof.Name == "serialize-xml-025b" {
+		data, err := os.ReadFile(parameterFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expression := `let $p:=parse-xml('` + strings.ReplaceAll(string(data), "'", "''") + `')/*/* return count($p)=2 and node-name($p[1]) eq node-name($p[2])`
+		residualControl(t, proof, original.Environment, suiteVersion31, "duplicate foreign QName exists independently of schema validity", expression, "true", "SER31 3.1 duplicate parameter QName SEPM0019; SER30 also has a simultaneous whole-document SEPM0017")
+	}
+}
+
+// The original publisher case is always executed before changing its selected
+// processor. The second run retains the same fixture, parameters and assertion.
+type xsltResidualEditionCase struct {
+	name    string
+	file    string
+	version string
+	code    string
+}
+
+func xsltResidualEditionCases() []xsltResidualEditionCase {
+	return []xsltResidualEditionCase{
+		{"backwards-046", "tests/misc/backwards/_backwards-test-set.xml", "2.0", "XTSE0080"},
+		{"character-map-026", "tests/decl/character-map/_character-map-test-set.xml", "2.0", "XTSE0020"},
+		{"character-map-901", "tests/decl/character-map/_character-map-test-set.xml", "2.0", "XTSE0080"},
+		{"choose-0202", "tests/insn/choose/_choose-test-set.xml", "2.0", "XTSE0080"},
+		{"collations-0128", "tests/misc/collations/_collations-test-set.xml", "2.0", "XTSE0010"},
+		{"collection-005", "tests/fn/collection/_collection-test-set.xml", "2.0", "XTSE0010"},
+		{"doe-0409", "tests/attr/disable-output-escaping/_disable-output-escaping-test-set.xml", "2.0", "XTSE0080"},
+		{"error-0600a", "tests/misc/error/_error-test-set.xml", "3.0", "XTTE0590"},
+		{"error-0720a", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
+		{"error-0720b", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
+		{"error-0720c", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
+		{"error-0720d", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
+		{"error-1370a", "tests/misc/error/_error-test-set.xml", "3.0", "XPDY0002"},
+		{"error-1380a", "tests/misc/error/_error-test-set.xml", "3.0", "XPDY0002"},
+		{"for-each-group-084", "tests/insn/for-each-group/_for-each-group-test-set.xml", "2.0", "XPST0003"},
+		{"for-each-group-091", "tests/insn/for-each-group/_for-each-group-test-set.xml", "2.0", "XTSE0080"},
+		{"function-0302", "tests/decl/function/_function-test-set.xml", "2.0", "XPST0003"},
+		{"function-1902", "tests/decl/function/_function-test-set.xml", "2.0", "XTSE0090"},
+		{"id-041", "tests/fn/id/_id-test-set.xml", "2.0", "XPST0003"},
+		{"match-248", "tests/attr/match/_match-test-set.xml", "2.0", "XPST0003"},
+		{"match-254", "tests/attr/match/_match-test-set.xml", "2.0", "XPST0003"},
+		{"namespace-0912", "tests/type/namespace/_namespace-test-set.xml", "2.0", "XTTE0570"},
+		{"number-1004", "tests/insn/number/_number-test-set.xml", "2.0", "XTSE0010"},
+		{"output-0725", "tests/decl/output/_output-test-set.xml", "2.0", "XTSE0090"},
+		{"output-0726", "tests/decl/output/_output-test-set.xml", "2.0", "XTSE0090"},
+		{"result-document-0286", "tests/insn/result-document/_result-document-test-set.xml", "2.0", "XTSE0020"},
+		{"result-document-0287", "tests/insn/result-document/_result-document-test-set.xml", "2.0", "XTSE0020"},
+		{"result-document-1006", "tests/insn/result-document/_result-document-test-set.xml", "2.0", "XPST0017"},
+		{"sequence-0132", "tests/insn/sequence/_sequence-test-set.xml", "2.0", "XTSE0010"},
+		{"system-property-022", "tests/fn/system-property/_system-property-test-set.xml", "2.0", "XTSE0010"},
+		{"variable-4802", "tests/decl/variable/_variable-test-set.xml", "2.0", ""},
+	}
+}
+
+func evaluateXSLTResidualVariant(t *testing.T, options suiteOptions, item suiteCase) residualCaseResult {
+	t.Helper()
+	// Some source fixtures declare a 2.0-only dependency while containing
+	// 3.0 syntax. This explicit controlled run bypasses applicability alone;
+	// it retains the pinned stylesheet and the complete publisher assertion.
+	environment, err := prepareSuiteEnvironment(t.Context(), options, item)
+	if err != nil {
+		return residualCaseResult{PrepareError: err}
+	}
+	evaluation := evaluateSuiteCase(t.Context(), options, item, environment)
+	return residualCaseResult{
+		Evaluation: evaluation, Environment: environment,
+		AssertionError: checkSuiteAssertion(t.Context(), evaluation, item.node.child(suiteResultVariable)),
+	}
+}
+
+func TestXSLTResidualCauses(t *testing.T) {
+	configureLanguageTest(t, false)
+	configured := os.Getenv("XMLSEC_XSLT_DIR")
+	if configured == "" {
+		configured = residualRequired(t, "XMLSEC_XSLT30_DIR")
+	}
+	directory, err := filepath.EvalSymlinks(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runXSLTResidualCompetingErrors(t, directory)
+	runXSLTResidualLimits(t, directory)
+	runXSLTResidualCalendarMonthWeek(t, directory)
+	runXSLTResidualMetadataControls(t, directory)
+	runXSLTResidualSingleCorrections(t, directory)
+	runXSLTResidualRegexEditions(t, directory)
+	runXSLTResidualExplicitResources(t, directory)
+	runXSLTResidualSerialization(t, directory)
+	runXSLTResidualWhitespace(t, directory)
+	runXSLTResidualWarnings(t, directory)
+	runXSLTResidualOptionalLibraries(t, directory)
+	runXSLTResidualPackageCorrections(t, directory)
+	runXSLTResidualTypeProfiles(t, directory)
+	runXSLTResidualPriming(t, directory)
+	runXSLTResidualEvaluateLibrary(t, directory)
+	runXSLTResidualJSONTyping(t, directory)
+	runXSLTResidualNumberProfiles(t, directory)
+	runXSLTResidualNamedOutput(t, directory)
+	for _, test := range xsltResidualEditionCases() {
+		t.Run(test.name, func(t *testing.T) {
+			item := loadPinnedResidualCase(t, directory, suiteXSLT, test.file, test.name)
+			options := suiteOptions{
+				kind: suiteXSLT, directory: directory, version: test.version,
+				xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default",
+			}
+			t.Run("original", func(t *testing.T) {
+				original := evaluateResidualCase(t, options, item)
+				if original.AssertionError == nil {
+					t.Fatal("the unchanged publisher assertion no longer reproduces the residual")
+				}
+				if got := residualErrorCode(original.executionError()); got != test.code {
+					t.Fatal("typed original error", got, original.executionError(), test.code)
+				}
+				if test.name == "variable-4802" {
+					value, err := original.Evaluation.assertionValue(t.Context(), `exists(//out[. = '{.}'])`, nil)
+					if err != nil || residualSequenceText(t, value) != suiteTrue {
+						t.Fatal("2.0 must preserve the unexpanded text-template literal", value, err)
+					}
+				}
+			})
+			t.Run("matching-edition", func(t *testing.T) {
+				var controlled residualCaseResult
+				switch test.name {
+				case "function-0302":
+					controlled = evaluateXSLTResidualSourceVariant(t, options, item, `$zls || 'value-of'`, `concat($zls, 'value-of')`)
+				case "function-1902":
+					controlled = evaluateXSLTResidualSourceVariant(t, options, item, ` expand-text="yes"`, "")
+				default:
+					options.version = suiteVersion30
+					if test.version == suiteVersion30 {
+						options.version = suiteVersion20
+					}
+					controlled = evaluateXSLTResidualVariant(t, options, item)
+				}
+				if controlled.PrepareError != nil || controlled.AssertionError != nil {
+					if test.name == "function-1902" && controlled.Evaluation != nil {
+						names, _ := controlled.Evaluation.assertionValue(t.Context(), `string-join(//incorrectly-available-function/concat(@name,'#',@arity),',')`, nil)
+						t.Log("functions available after grammar-only correction", residualSequenceText(t, names))
+					}
+					t.Fatal("matching selected edition must satisfy the unchanged assertion", controlled.executionError(), controlled.AssertionError)
+				}
+			})
+		})
+	}
+	t.Run("collection-006", func(t *testing.T) {
+		item := loadPinnedResidualCase(t, directory, suiteXSLT, "tests/fn/collection/_collection-test-set.xml", "collection-006")
+		options := suiteOptions{
+			kind: suiteXSLT, directory: directory, version: suiteVersion30,
+			xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default",
+		}
+		t.Run("original-30", func(t *testing.T) {
+			result := evaluateResidualCase(t, options, item)
+			if result.executionError() != nil || result.AssertionError != nil {
+				t.Fatal("fixed package-local collection views must pass the exact original", result.executionError(), result.AssertionError)
+			}
+		})
+		t.Run("original-20", func(t *testing.T) {
+			options.version = suiteVersion20
+			result := evaluateResidualCase(t, options, item)
+			if result.AssertionError == nil || residualErrorCode(result.executionError()) != "XTSE0080" {
+				t.Fatal("XSLT20 reserves the XSLT namespace even when a source 3.0 module names its initial template", result.executionError(), result.AssertionError)
+			}
+		})
+		runXSLTResidualCollectionEdition(t, options, item)
+	})
+}
+
 // residualCaseResult retains typed errors; a report's explanatory string alone
 // cannot establish that a failure was caused by a configured resource limit.
 type residualCaseResult struct {
@@ -1919,6 +2524,7 @@ func qtResidualCases() []struct {
 		version  string
 		category string
 	}{
+		{"format-date-011", "fn/format-date.xml", "3.1", "calendar-month-week"},
 		{"ForExpr013", "prod/ForClause.xml", "2.0", "limit"},
 		{"cbcl-codepoints-to-string-005", "fn/codepoints-to-string.xml", "2.0", "limit"},
 		{"cbcl-count-001", "fn/count.xml", "2.0", "limit"},
@@ -1954,599 +2560,6 @@ func qtResidualCases() []struct {
 		{"serialize-xml-025b", "fn/serialize.xml", "3.0", "serialize"},
 		{"serialize-xml-026b", "fn/serialize.xml", "3.0", "serialize"},
 	}
-}
-
-func TestQT3ResidualCauses(t *testing.T) {
-	configureLanguageTest(t, false)
-	directory, err := filepath.EvalSymlinks(residualRequired(t, "XMLSEC_QT3_DIR"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	residualRequired(t, "SAXON_CLASSPATH")
-	residualRequired(t, "SAXON20_CLASSPATH")
-	residualRequired(t, "SERIALIZATION_SCHEMA_DIR")
-	proofs := make([]qtResidualProof, 0, len(qtResidualCases()))
-	t.Cleanup(func() {
-		if file := os.Getenv("XMLSEC_QT3_PROOF_REPORT"); file != "" {
-			data, err := json.MarshalIndent(proofs, "", "  ")
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if err := os.WriteFile(file, append(data, '\n'), 0o600); err != nil {
-				t.Error(err)
-			}
-		}
-	})
-	for _, test := range qtResidualCases() {
-		t.Run(test.name, func(t *testing.T) {
-			item := loadPinnedResidualCase(t, directory, suiteQT3, test.file, test.name)
-			options := suiteOptions{kind: suiteQT3, directory: directory, version: test.version, xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default"}
-			original := evaluateResidualCase(t, options, item)
-			data, err := os.ReadFile(filepath.Join(directory, test.file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			digest := sha256.Sum256(data)
-			// The configured case budget covers evaluation and its original
-			// publisher assertion; retain the typed cause from either phase.
-			resourceCause := errors.Join(original.executionError(), original.AssertionError)
-			proof := qtResidualProof{Name: test.name, File: test.file, Version: test.version, Category: test.category, XSDVersion: suiteXSDVersionName(options), CaseTimeout: options.timeout.String(), LimitsProfile: options.limitsProfile, SourceSHA256: hex.EncodeToString(digest[:]), OriginalLimit: errors.Is(resourceCause, transform.ErrLimit), OriginalError: fmt.Sprint(original.executionError()), OriginalAssertion: fmt.Sprint(original.AssertionError)}
-			proof.OriginalDeadline = errors.Is(resourceCause, context.DeadlineExceeded)
-			defer func() { proofs = append(proofs, proof) }()
-			switch test.category {
-			case "limit":
-				if !proof.OriginalLimit && !proof.OriginalDeadline {
-					t.Fatal("original cause is neither a typed implementation limit nor the configured deadline", original.executionError())
-				}
-				qtResidualLimitControls(t, options, item, &proof)
-			case "format":
-				qtResidualFormatControls(t, options, item, original, &proof)
-			case "serialize":
-				qtResidualSerializationControls(t, options, item, original, &proof)
-			case "transform43":
-				qtResidualTransform43Controls(t, original, &proof)
-			}
-		})
-	}
-}
-
-func residualSaxonQuery(t *testing.T, expression, source string) string {
-	t.Helper()
-	classpath := residualRequired(t, "SAXON_CLASSPATH")
-	binary, err := exec.LookPath("java")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
-	queryFile := filepath.Join(t.TempDir(), "proof.xq")
-	// Inputs are XPath expressions. XQuery resolves entity references inside
-	// string literals; quote ampersands once so Saxon sees the same strings.
-	if err := os.WriteFile(queryFile, []byte(strings.ReplaceAll(expression, "&", "&amp;")), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	arguments := []string{"-cp", classpath, "net.sf.saxon.Query", "-q:" + queryFile, "!method=text", "!omit-xml-declaration=yes"}
-	if source != "" {
-		arguments = append(arguments, "-s:"+source)
-	}
-	command := exec.CommandContext(ctx, binary, arguments...)
-	var diagnostic bytes.Buffer
-	command.Stderr = &diagnostic
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("independent query: %s: %v", diagnostic.String(), err)
-	}
-	return string(output)
-}
-
-func residualSaxon20Expression(t *testing.T, expression string) string {
-	t.Helper()
-	classpath := residualRequired(t, "SAXON20_CLASSPATH")
-	binary, err := exec.LookPath("java")
-	if err != nil {
-		t.Fatal(err)
-	}
-	directory := t.TempDir()
-	file := filepath.Join(directory, "proof.xsl")
-	var escaped strings.Builder
-	if err := xml.EscapeText(&escaped, []byte(expression)); err != nil {
-		t.Fatal(err)
-	}
-	source := `<xsl:stylesheet version="2.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema"><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="` + escaped.String() + `"/></xsl:template></xsl:stylesheet>`
-	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+file, "-it:start")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("independent old-edition transform: %s: %v", output, err)
-	}
-	return string(output)
-}
-
-func residualControl(t *testing.T, proof *qtResidualProof, environment *preparedSuiteEnvironment, version, name, expression, want, obligation string) {
-	t.Helper()
-	value, err := residualXPath(t, environment, version, expression)
-	actual := residualSequenceText(t, value)
-	if err != nil {
-		actual = residualErrorCode(err)
-	}
-	if actual != want {
-		t.Fatal(name, "native", actual, err, "want", want)
-	}
-	oracleExpression := `try { (` + expression + `) } catch * { local-name-from-QName($err:code) }`
-	independent := residualSaxonQuery(t, oracleExpression, "")
-	if independent != want {
-		t.Fatal(name, "independent", independent, "want", want)
-	}
-	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: name, Expression: expression, Native: actual, Independent: independent, Obligation: obligation})
-}
-
-func qtResidualLimitControls(t *testing.T, options suiteOptions, item suiteCase, proof *qtResidualProof) {
-	t.Helper()
-	options.limitsProfile = suiteLanguage
-	options.timeout = 30 * time.Second
-	environment, err := prepareSuiteEnvironment(t.Context(), options, item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if proof.Name == "ForExpr013" {
-		control := evaluateResidualCase(t, options, item)
-		if control.executionError() != nil || control.AssertionError != nil {
-			t.Fatal("raised bounded profile did not reproduce publisher value", control.executionError(), control.AssertionError)
-		}
-		evaluation := control.Evaluation
-		expression := "count((" + item.node.child("test").Text + "))"
-		want := strconv.Itoa(evaluation.sequence.Len())
-		oracle := residualSaxonQuery(t, expression, filepath.Join(options.directory, "prod", "ForClause", "fsx.xml"))
-		if oracle != want {
-			t.Fatal(oracle, want)
-		}
-		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same source and publisher assertion; explicit language profile and 30s case deadline", Expression: expression, Native: want, Independent: oracle, Obligation: "XPath20 2.3.1 implementation limits; exact unmodified publisher input/output"})
-		return
-	}
-	if proof.Name == "fn-transform-27" {
-		qtResidualTransform27Controls(t, options, item, environment, proof)
-		return
-	}
-	expression, want := "", ""
-	switch proof.Name {
-	case "cbcl-codepoints-to-string-005":
-		expression, want = `string-length(codepoints-to-string(65536 to 65539))`, "4"
-	case "cbcl-count-001":
-		expression, want = `count(1 to 1000)`, "1000"
-	case "cbcl-matches-004":
-		expression, want = `matches('aaa','a{4}')`, "false"
-	case "cbcl-subsequence-010":
-		expression, want = `count(subsequence(1 to 1000,-5,4))`, "0"
-	case "cbcl-subsequence-011":
-		expression, want = `count(subsequence(1 to 1000,-5))`, "1000"
-	case "cbcl-subsequence-012":
-		expression, want = `count(subsequence(1 to 1000,748))`, "253"
-	case "cbcl-subsequence-013":
-		expression, want = `count(subsequence(1 to 1000,747))`, "254"
-	case "cbcl-subsequence-014":
-		expression, want = `subsequence(2147483647 to 2147483651,1,5)`, "2147483647 2147483648 2147483649 2147483650 2147483651"
-	case "environment-variable-012":
-		expression, want = strings.ReplaceAll(item.node.child("test").Text, "1024 * 1024", "1000"), "true"
-	case "fold-left-020", "fold-right-013":
-		expression, want = strings.ReplaceAll(item.node.child("test").Text, "1000000", "1000"), "1000"
-	case "map-for-each-014", "map-keys-014":
-		expression, want = `let $result := (`+strings.ReplaceAll(item.node.child("test").Text, "500000", "1000")+`) return count($result)=1000 and $result=1 and $result=1000`, "true"
-	case "map-remove-012":
-		expression, want = `let $result := (`+strings.NewReplacer("500000", "1000", "123456", "456").Replace(item.node.child("test").Text)+`) return map:size($result)=999 and map:contains($result,1) and map:contains($result,1000) and not(map:contains($result,456))`, "true"
-	default:
-		t.Fatal("missing case-specific limit control", proof.Name)
-	}
-	residualControl(t, proof, environment, options.version, "bounded same-operator control", expression, want, "XPath implementation-limit permission; the operator succeeds with independently verified bounded operands")
-	if proof.Name == "cbcl-codepoints-to-string-005" {
-		residualControl(t, proof, environment, options.version, "semantic invalid scalar remains FOCH0001", `codepoints-to-string(1114112)`, "FOCH0001", "FO 5.2.1 invalid Unicode codepoint error independent of range materialization")
-	}
-	if proof.Name == "cbcl-matches-004" {
-		residualControl(t, proof, environment, options.version, "actual invalid regex remains FORX0002", `matches('aaa','a{')`, "FORX0002", "FO matches invalid grammar differs from valid enormous quantifier implementation cap")
-	}
-}
-
-func qtResidualTransform27Controls(t *testing.T, options suiteOptions, item suiteCase, environment *preparedSuiteEnvironment, proof *qtResidualProof) {
-	t.Helper()
-	original := evaluateSuiteCase(t.Context(), options, item, environment)
-	if original.err != nil || residualSequenceText(t, original.sequence) != "true" {
-		t.Fatal("raised original case", original.err, residualSequenceText(t, original.sequence))
-	}
-	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "original expression with raised bounded profile and fixed host clock", Native: "true", Obligation: "FO31 16.3.2 cache option has no effect on transformation result; repeated results may be identical"})
-	bounded := strings.NewReplacer("-100000", "-100", "+100000", "+100").Replace(item.node.child("test").Text)
-	for _, cache := range []string{"false()", "true()"} {
-		expression := strings.ReplaceAll(bounded, `"cache":false()`, `"cache":`+cache)
-		value, err := residualXPath(t, environment, suiteVersion31, expression)
-		if err != nil || residualSequenceText(t, value) != "true" {
-			t.Fatal(cache, value, err)
-		}
-		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "fixed host clock, cache hint " + cache, Expression: expression, Native: "true", Obligation: "FO31 16.3.2 cache is an efficiency hint, not a promise of unequal current-dateTime values"})
-	}
-	residualControl(t, proof, environment, suiteVersion31, "current-dateTime is stable within one dynamic context", `current-dateTime() eq current-dateTime()`, "true", "FO31 15.3 same dynamic current-dateTime; host controls the supplied instant")
-	// A fresh public invocation can receive another explicit host clock. This
-	// isolates clock input from stylesheet caching without sleeping or wall time.
-	clockExpression := `transform(map{'stylesheet-text':"<xsl:stylesheet version='3.0' xmlns:xsl='http://www.w3.org/1999/XSL/Transform'><xsl:variable name='t' static='yes' select='current-dateTime()'/><xsl:template name='start'><xsl:value-of select='$t'/></xsl:template></xsl:stylesheet>",'initial-template':xs:QName('start'),'cache':false()})?output/string()`
-	for _, instant := range []string{"2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"} {
-		environment.currentTime, _ = time.Parse(time.RFC3339, instant)
-		value, err := residualXPath(t, environment, suiteVersion31, clockExpression)
-		if err != nil || residualSequenceText(t, value) != instant {
-			t.Fatal(value, err, instant)
-		}
-		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "explicit independent host clock " + instant, Expression: clockExpression, Native: instant, Obligation: "Configured per-invocation clock, not the cache hint, determines static current-dateTime here"})
-	}
-}
-
-func residualInlineBindings(t *testing.T, expression string, environment *preparedSuiteEnvironment) string {
-	t.Helper()
-	for name, value := range environment.variables {
-		if name.Space != "" {
-			t.Fatal("proof needs an explicit namespace binding", name)
-		}
-		item, err := value.Single()
-		if err != nil {
-			t.Fatal(err)
-		}
-		text, err := item.Text()
-		if err != nil {
-			t.Fatal(err)
-		}
-		expression = strings.ReplaceAll(expression, "$"+name.Local, "xs:"+item.Type().Local+"('"+strings.ReplaceAll(text, "'", "''")+"')")
-	}
-	return expression
-}
-
-func qtResidualFormatControls(t *testing.T, options suiteOptions, item suiteCase, original residualCaseResult, proof *qtResidualProof) {
-	t.Helper()
-	if original.executionError() != nil || original.AssertionError == nil {
-		t.Fatal("expected original publisher value mismatch", original.executionError(), original.AssertionError)
-	}
-	old := map[string]string{"format-dateTime-002g": "9:15:06.5", "format-dateTime-002h": "9:15:06.5", "format-dateTime-002i": "9:15:06.46", "format-dateTime-003m": "9:15:06.5", "format-dateTime-003n": "9:15:06.5", "format-dateTime-003p": "9:15:06.46", "format-dateTime-013s": "46", "format-dateTime-013u": "46", "millisecs-018": "12", "millisecs-022": "00"}[proof.Name]
-	if residualSequenceText(t, original.Evaluation.sequence) != old {
-		t.Fatal("old-edition algorithm changed", original.Evaluation.sequence, old)
-	}
-	expression := residualInlineBindings(t, item.node.child("test").Text, original.Environment)
-	oracle := residualSaxon20Expression(t, expression)
-	if oracle != old {
-		t.Fatal("published old-formatting algorithm disagreement", oracle, old)
-	}
-	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same literal date/picture under pre-3.1 formatting", Expression: expression, Native: old, Independent: oracle, Obligation: "FO30 9.8.4.1 old rounding/width precedence; FO31 9.8.4.5 truncation is a later algorithm"})
-	options.version = suiteVersion31
-	modern := evaluateResidualCase(t, options, item)
-	if modern.executionError() != nil || modern.AssertionError != nil {
-		t.Fatal("same pinned fixture must match its later-edition expectation", modern.executionError(), modern.AssertionError)
-	}
-	want := residualSequenceText(t, modern.Evaluation.sequence)
-	oracle = residualSaxonQuery(t, expression, "")
-	if oracle != want {
-		t.Fatal("modern oracle", oracle, want)
-	}
-	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same publisher input/assertion under processor 3.1", Expression: expression, Native: want, Independent: oracle, Obligation: "FO31 9.8.4.5 explicit fractional-second/width algorithm; publisher modifications in 2016 reference bugs 29749/29788"})
-}
-
-func qtResidualTransform43Controls(t *testing.T, original residualCaseResult, proof *qtResidualProof) {
-	t.Helper()
-	if original.executionError() != nil || !strings.Contains(fmt.Sprint(original.AssertionError), "FODC0006") {
-		t.Fatal("expected assertion's document parse error", original.executionError(), original.AssertionError)
-	}
-	assertions := original.Evaluation.item.node.child(suiteResultVariable).child("all-of").Children
-	if len(assertions) != 4 {
-		t.Fatal("publisher assertion inventory changed")
-	}
-	for index := range 3 {
-		if err := checkSuiteAssertion(t.Context(), original.Evaluation, assertions[index]); err != nil {
-			t.Fatal(index, err)
-		}
-	}
-	value, err := original.Evaluation.sequence.Single()
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := value.Keys()
-	if err != nil || len(keys) != 4 {
-		t.Fatal(keys, err)
-	}
-	principal := ""
-	for _, key := range keys {
-		name, err := key.Text()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.HasSuffix(name, "/output.html") {
-			part, found := value.Lookup(key)
-			if !found {
-				t.Fatal(name)
-			}
-			principal = residualSequenceText(t, part)
-		}
-	}
-	if principal == "" {
-		t.Fatal("missing principal serialization")
-	}
-	environment := original.Environment
-	literal := "'" + strings.ReplaceAll(principal, "'", "''") + "'"
-	residualControl(t, proof, environment, suiteVersion31, "principal is a valid empty external parsed entity", `count(parse-xml-fragment(`+literal+`)/node())`, "0", "SER31 5 XML external parsed entity; empty principal need not be a well-formed XML document")
-	residualControl(t, proof, environment, suiteVersion31, "the same principal is not an XML document", `parse-xml(`+literal+`)`, "FODC0006", "FO31 14.7.1 parse-xml requires a document element")
-	residualControl(t, proof, environment, suiteVersion31, "quantifier error binding visited first", `boolean(some $s in ('','<h1>Header for section 2</h1>') satisfies parse-xml($s)//h1='Header for section 2')`, "FODC0006", "XPath31 3.13 permits a satisfies error before the true witness; boolean does not catch errors")
-	residualControl(t, proof, environment, suiteVersion31, "quantifier witness visited first", `some $s in ('<h1>Header for section 2</h1>','') satisfies parse-xml($s)//h1='Header for section 2'`, "true", "XPath31 3.13 true witness is an allowed outcome; map keys have implementation-dependent order")
-	filtered, err := environment.query(t.Context(), `some $key in map:keys($result)[contains(.,'section')] satisfies parse-xml($result?($key))//h1='Header for section 2'`, transform.Bindings{{Local: "result"}: original.Evaluation.sequence})
-	if err != nil || residualSequenceText(t, filtered) != "true" {
-		t.Fatal("secondary map entry was lost", filtered, err)
-	}
-	proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "unchanged result map contains the required secondary document", Native: "true; first three exact catalog assertions also pass", Obligation: "FO31 16.3.2 serialized result map preserves secondary results; no reordering or publisher assertion rewrite"})
-}
-
-func qtResidualSerializationControls(t *testing.T, options suiteOptions, item suiteCase, original residualCaseResult, proof *qtResidualProof) {
-	t.Helper()
-	if original.AssertionError == nil {
-		t.Fatal("the original catalog assertion unexpectedly passed")
-	}
-	for _, version := range []string{suiteVersion30, suiteVersion31} {
-		options.version = version
-		value := evaluateResidualCase(t, options, item)
-		want := ""
-		if version == suiteVersion30 {
-			want = "SEPM0017"
-		} else if proof.Name == "serialize-xml-025b" {
-			want = "SEPM0019"
-		}
-		code := residualErrorCode(value.executionError())
-		if code != want || want == "" && value.executionError() != nil {
-			t.Fatal("edition-specific extraction", version, value.executionError(), want)
-		}
-		actual := code
-		if want == "" {
-			actual = residualSequenceText(t, value.Evaluation.sequence)
-			if !strings.Contains(actual, "atomic") {
-				t.Fatal("source document was not serialized", actual)
-			}
-		}
-		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "same source and parameter document under " + version, Native: actual, Obligation: "SER30 3.1 assesses the whole parameter document; SER31 3.1 first selects known standard parameter children; duplicate QNames have their own SEPM0019 rule"})
-	}
-	parameterFile := ""
-	for _, source := range item.node.child("environment").children("source") {
-		if source.attr("role") == "$params" {
-			_, parameterFile, _ = readSuiteReferencedFile(options.directory, item.base, source)
-		}
-	}
-	if parameterFile == "" {
-		t.Fatal("publisher parameter resource missing")
-	}
-	for _, edition := range []struct {
-		version  string
-		checksum string
-	}{
-		{"30", "1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953"},
-		{"31", "256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0"},
-	} {
-		schema := filepath.Join(residualRequired(t, "SERIALIZATION_SCHEMA_DIR"), "ser"+edition.version+".xsd")
-		data, err := os.ReadFile(schema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		digest := sha256.Sum256(data)
-		if hex.EncodeToString(digest[:]) != edition.checksum {
-			t.Fatal("published schema pin changed", schema)
-		}
-		parts := []string{}
-		if edition.version == "30" {
-			raw, err := os.ReadFile(parameterFile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			parts = append(parts, string(raw))
-		} else {
-			declared, _, err := decodeSuiteNode(data, schema)
-			if err != nil {
-				t.Fatal(err)
-			}
-			names := []string{}
-			for _, element := range declared.children("element") {
-				if name := element.attr("name"); name != "" && name != "serialization-parameters" {
-					names = append(names, "'"+name+"'")
-				}
-			}
-			if len(names) < 20 {
-				t.Fatal("published serialization declaration inventory", len(names))
-			}
-			// Selection names come from the independent published XSD, rather
-			// than the engine's parameter registry. Saxon performs the projection.
-			expression := `serialize(array{for $p in doc('` + suiteFileURI(parameterFile) + `')/*/*[namespace-uri()='http://www.w3.org/2010/xslt-xquery-serialization'][local-name()=(` + strings.Join(names, ",") + `)] return serialize($p,map{'method':'xml','omit-xml-declaration':true()})},map{'method':'json'})`
-			selected := residualSaxonQuery(t, expression, "")
-			if err := json.Unmarshal([]byte(selected), &parts); err != nil {
-				t.Fatal("independent projection result", selected, err)
-			}
-		}
-		valid := true
-		for _, part := range parts {
-			binary, err := exec.LookPath("xmllint")
-			if err != nil {
-				t.Fatal(err)
-			}
-			command := exec.CommandContext(t.Context(), binary, "--nonet", "--noout", "--schema", schema, "-")
-			command.Stdin = strings.NewReader(part)
-			output, err := command.CombinedOutput()
-			if err != nil {
-				var exit *exec.ExitError
-				if !errors.As(err, &exit) || exit.ExitCode() != 3 {
-					t.Fatalf("published XSD validator: %s: %v; selected part %q", output, err, part)
-				}
-				valid = false
-			}
-		}
-		want := edition.version == "31"
-		if valid != want {
-			t.Fatal("published schema assessment", edition.version, valid, want)
-		}
-		t.Log("P3_ORACLE published-schema")
-		proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "published SER" + edition.version + " schema after prescribed extraction", Native: strconv.FormatBool(valid), Independent: fmt.Sprintf("xmllint validity=%t; selected parts=%d; schema SHA256=%s", valid, len(parts), edition.checksum), Obligation: "Published SER30/31 3.1 parameter-document extraction and associated XSD; no extension schema declarations supplied"})
-	}
-	if proof.Name == "serialize-xml-025b" {
-		data, err := os.ReadFile(parameterFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		expression := `let $p:=parse-xml('` + strings.ReplaceAll(string(data), "'", "''") + `')/*/* return count($p)=2 and node-name($p[1]) eq node-name($p[2])`
-		residualControl(t, proof, original.Environment, suiteVersion31, "duplicate foreign QName exists independently of schema validity", expression, "true", "SER31 3.1 duplicate parameter QName SEPM0019; SER30 also has a simultaneous whole-document SEPM0017")
-	}
-}
-
-// The original publisher case is always executed before changing its selected
-// processor. The second run retains the same fixture, parameters and assertion.
-type xsltResidualEditionCase struct {
-	name    string
-	file    string
-	version string
-	code    string
-}
-
-func xsltResidualEditionCases() []xsltResidualEditionCase {
-	return []xsltResidualEditionCase{
-		{"backwards-046", "tests/misc/backwards/_backwards-test-set.xml", "2.0", "XTSE0080"},
-		{"character-map-026", "tests/decl/character-map/_character-map-test-set.xml", "2.0", "XTSE0020"},
-		{"character-map-901", "tests/decl/character-map/_character-map-test-set.xml", "2.0", "XTSE0080"},
-		{"choose-0202", "tests/insn/choose/_choose-test-set.xml", "2.0", "XTSE0080"},
-		{"collations-0128", "tests/misc/collations/_collations-test-set.xml", "2.0", "XTSE0010"},
-		{"collection-005", "tests/fn/collection/_collection-test-set.xml", "2.0", "XTSE0010"},
-		{"doe-0409", "tests/attr/disable-output-escaping/_disable-output-escaping-test-set.xml", "2.0", "XTSE0080"},
-		{"error-0600a", "tests/misc/error/_error-test-set.xml", "3.0", "XTTE0590"},
-		{"error-0720a", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
-		{"error-0720b", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
-		{"error-0720c", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
-		{"error-0720d", "tests/misc/error/_error-test-set.xml", "3.0", "XTDE0640"},
-		{"error-1370a", "tests/misc/error/_error-test-set.xml", "3.0", "XPDY0002"},
-		{"error-1380a", "tests/misc/error/_error-test-set.xml", "3.0", "XPDY0002"},
-		{"for-each-group-084", "tests/insn/for-each-group/_for-each-group-test-set.xml", "2.0", "XPST0003"},
-		{"for-each-group-091", "tests/insn/for-each-group/_for-each-group-test-set.xml", "2.0", "XTSE0080"},
-		{"function-0302", "tests/decl/function/_function-test-set.xml", "2.0", "XPST0003"},
-		{"function-1902", "tests/decl/function/_function-test-set.xml", "2.0", "XTSE0090"},
-		{"id-041", "tests/fn/id/_id-test-set.xml", "2.0", "XPST0003"},
-		{"match-248", "tests/attr/match/_match-test-set.xml", "2.0", "XPST0003"},
-		{"match-254", "tests/attr/match/_match-test-set.xml", "2.0", "XPST0003"},
-		{"namespace-0912", "tests/type/namespace/_namespace-test-set.xml", "2.0", "XTTE0570"},
-		{"number-1004", "tests/insn/number/_number-test-set.xml", "2.0", "XTSE0010"},
-		{"output-0725", "tests/decl/output/_output-test-set.xml", "2.0", "XTSE0090"},
-		{"output-0726", "tests/decl/output/_output-test-set.xml", "2.0", "XTSE0090"},
-		{"result-document-0286", "tests/insn/result-document/_result-document-test-set.xml", "2.0", "XTSE0020"},
-		{"result-document-0287", "tests/insn/result-document/_result-document-test-set.xml", "2.0", "XTSE0020"},
-		{"result-document-1006", "tests/insn/result-document/_result-document-test-set.xml", "2.0", "XPST0017"},
-		{"sequence-0132", "tests/insn/sequence/_sequence-test-set.xml", "2.0", "XTSE0010"},
-		{"system-property-022", "tests/fn/system-property/_system-property-test-set.xml", "2.0", "XTSE0010"},
-		{"variable-4802", "tests/decl/variable/_variable-test-set.xml", "2.0", ""},
-	}
-}
-
-func evaluateXSLTResidualVariant(t *testing.T, options suiteOptions, item suiteCase) residualCaseResult {
-	t.Helper()
-	// Some source fixtures declare a 2.0-only dependency while containing
-	// 3.0 syntax. This explicit controlled run bypasses applicability alone;
-	// it retains the pinned stylesheet and the complete publisher assertion.
-	environment, err := prepareSuiteEnvironment(t.Context(), options, item)
-	if err != nil {
-		return residualCaseResult{PrepareError: err}
-	}
-	evaluation := evaluateSuiteCase(t.Context(), options, item, environment)
-	return residualCaseResult{
-		Evaluation: evaluation, Environment: environment,
-		AssertionError: checkSuiteAssertion(t.Context(), evaluation, item.node.child(suiteResultVariable)),
-	}
-}
-
-func TestXSLTResidualCauses(t *testing.T) {
-	configureLanguageTest(t, false)
-	configured := os.Getenv("XMLSEC_XSLT_DIR")
-	if configured == "" {
-		configured = residualRequired(t, "XMLSEC_XSLT30_DIR")
-	}
-	directory, err := filepath.EvalSymlinks(configured)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runXSLTResidualCompetingErrors(t, directory)
-	runXSLTResidualLimits(t, directory)
-	runXSLTResidualMetadataControls(t, directory)
-	runXSLTResidualSingleCorrections(t, directory)
-	runXSLTResidualRegexEditions(t, directory)
-	runXSLTResidualExplicitResources(t, directory)
-	runXSLTResidualSerialization(t, directory)
-	runXSLTResidualWhitespace(t, directory)
-	runXSLTResidualWarnings(t, directory)
-	runXSLTResidualOptionalLibraries(t, directory)
-	runXSLTResidualPackageCorrections(t, directory)
-	runXSLTResidualTypeProfiles(t, directory)
-	runXSLTResidualPriming(t, directory)
-	runXSLTResidualEvaluateLibrary(t, directory)
-	runXSLTResidualJSONTyping(t, directory)
-	runXSLTResidualNumberProfiles(t, directory)
-	runXSLTResidualNamedOutput(t, directory)
-	for _, test := range xsltResidualEditionCases() {
-		t.Run(test.name, func(t *testing.T) {
-			item := loadPinnedResidualCase(t, directory, suiteXSLT, test.file, test.name)
-			options := suiteOptions{
-				kind: suiteXSLT, directory: directory, version: test.version,
-				xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default",
-			}
-			t.Run("original", func(t *testing.T) {
-				original := evaluateResidualCase(t, options, item)
-				if original.AssertionError == nil {
-					t.Fatal("the unchanged publisher assertion no longer reproduces the residual")
-				}
-				if got := residualErrorCode(original.executionError()); got != test.code {
-					t.Fatal("typed original error", got, original.executionError(), test.code)
-				}
-				if test.name == "variable-4802" {
-					value, err := original.Evaluation.assertionValue(t.Context(), `exists(//out[. = '{.}'])`, nil)
-					if err != nil || residualSequenceText(t, value) != suiteTrue {
-						t.Fatal("2.0 must preserve the unexpanded text-template literal", value, err)
-					}
-				}
-			})
-			t.Run("matching-edition", func(t *testing.T) {
-				var controlled residualCaseResult
-				switch test.name {
-				case "function-0302":
-					controlled = evaluateXSLTResidualSourceVariant(t, options, item, `$zls || 'value-of'`, `concat($zls, 'value-of')`)
-				case "function-1902":
-					controlled = evaluateXSLTResidualSourceVariant(t, options, item, ` expand-text="yes"`, "")
-				default:
-					options.version = suiteVersion30
-					if test.version == suiteVersion30 {
-						options.version = suiteVersion20
-					}
-					controlled = evaluateXSLTResidualVariant(t, options, item)
-				}
-				if controlled.PrepareError != nil || controlled.AssertionError != nil {
-					if test.name == "function-1902" && controlled.Evaluation != nil {
-						names, _ := controlled.Evaluation.assertionValue(t.Context(), `string-join(//incorrectly-available-function/concat(@name,'#',@arity),',')`, nil)
-						t.Log("functions available after grammar-only correction", residualSequenceText(t, names))
-					}
-					t.Fatal("matching selected edition must satisfy the unchanged assertion", controlled.executionError(), controlled.AssertionError)
-				}
-			})
-		})
-	}
-	t.Run("collection-006", func(t *testing.T) {
-		item := loadPinnedResidualCase(t, directory, suiteXSLT, "tests/fn/collection/_collection-test-set.xml", "collection-006")
-		options := suiteOptions{
-			kind: suiteXSLT, directory: directory, version: suiteVersion30,
-			xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default",
-		}
-		t.Run("original-30", func(t *testing.T) {
-			result := evaluateResidualCase(t, options, item)
-			if result.executionError() != nil || result.AssertionError != nil {
-				t.Fatal("fixed package-local collection views must pass the exact original", result.executionError(), result.AssertionError)
-			}
-		})
-		t.Run("original-20", func(t *testing.T) {
-			options.version = suiteVersion20
-			result := evaluateResidualCase(t, options, item)
-			if result.AssertionError == nil || residualErrorCode(result.executionError()) != "XTSE0080" {
-				t.Fatal("XSLT20 reserves the XSLT namespace even when a source 3.0 module names its initial template", result.executionError(), result.AssertionError)
-			}
-		})
-		runXSLTResidualCollectionEdition(t, options, item)
-	})
 }
 
 func xsltResidualOracleTransform(t *testing.T, version, main, input, initial, library string) ([]byte, error) {
@@ -4069,4 +4082,271 @@ func runXSLTResidualNumberProfiles(t *testing.T, directory string) {
 			t.Fatal("changing only the optional numbering alphabet to mandatory decimal must yield exact agreement", err)
 		}
 	})
+}
+
+// These independent literal rows apply F&O 3.0/3.1 section 9.8.4: a week
+// belongs to the month containing its Thursday. The unchanged publisher vector
+// differs at exactly 2006-01-30, whose Thursday is 2006-02-02.
+type isoMonthWeekFixturePair struct {
+	Date string `xml:"date,attr"`
+	Week string `xml:",chardata"`
+}
+
+func isoMonthWeekFixture(t *testing.T) []isoMonthWeekFixturePair {
+	t.Helper()
+	rows := []isoMonthWeekFixturePair{
+		{"2005-12-04", "1"},
+		{"2005-12-07", "2"},
+		{"2005-12-10", "2"},
+		{"2005-12-13", "3"},
+		{"2005-12-16", "3"},
+		{"2005-12-19", "4"},
+		{"2005-12-22", "4"},
+		{"2005-12-25", "4"},
+		{"2005-12-28", "5"},
+		{"2005-12-31", "5"},
+		{"2006-01-03", "1"},
+		{"2006-01-06", "1"},
+		{"2006-01-09", "2"},
+		{"2006-01-12", "2"},
+		{"2006-01-15", "2"},
+		{"2006-01-18", "3"},
+		{"2006-01-21", "3"},
+		{"2006-01-24", "4"},
+		{"2006-01-27", "4"},
+		{"2006-01-30", "1"},
+		{"2006-02-02", "1"},
+		{"2006-02-05", "1"},
+		{"2006-02-08", "2"},
+		{"2006-02-11", "2"},
+		{"2006-02-14", "3"},
+		{"2006-02-17", "3"},
+		{"2006-02-20", "4"},
+		{"2006-02-23", "4"},
+		{"2006-02-26", "4"},
+		{"2006-03-01", "1"},
+		{"2006-03-04", "1"},
+		{"2006-03-07", "2"},
+		{"2006-03-10", "2"},
+		{"2006-03-13", "3"},
+		{"2006-03-16", "3"},
+		{"2006-03-19", "3"},
+		{"2006-03-22", "4"},
+		{"2006-03-25", "4"},
+		{"2006-03-28", "5"},
+		{"2006-03-31", "5"},
+		{"2006-04-03", "1"},
+		{"2006-04-06", "1"},
+		{"2006-04-09", "1"},
+		{"2006-04-12", "2"},
+		{"2006-04-15", "2"},
+		{"2006-04-18", "3"},
+		{"2006-04-21", "3"},
+		{"2006-04-24", "4"},
+	}
+	if len(rows) != 48 {
+		t.Fatal("incomplete month-week fixture controls", len(rows))
+	}
+	seen := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if seen[row.Date] {
+			t.Fatal("duplicate month-week fixture date", row.Date)
+		}
+		seen[row.Date] = true
+	}
+	return rows
+}
+
+func checkISOMonthWeekRows(t *testing.T, actual []isoMonthWeekFixturePair, publisher bool) {
+	t.Helper()
+	want := isoMonthWeekFixture(t)
+	if len(actual) != len(want) {
+		t.Fatal("month-week row count", len(actual), len(want))
+	}
+	for i, expected := range want {
+		if publisher && expected.Date == "2006-01-30" {
+			expected.Week = "5"
+		}
+		if actual[i] != expected {
+			t.Fatalf("month-week row %d = %+v; want %+v (publisher=%t)", i, actual[i], expected, publisher)
+		}
+	}
+}
+
+func checkISOMonthWeekAssertionCorrection(t *testing.T, original residualCaseResult, corrected, wrong *suiteNode) {
+	t.Helper()
+	if original.executionError() != nil || original.AssertionError == nil {
+		t.Fatal("unchanged publisher must execute successfully and retain its value mismatch", original.executionError(), original.AssertionError)
+	}
+	if err := checkSuiteAssertion(t.Context(), original.Evaluation, corrected); err != nil {
+		t.Fatal("correcting only the known publisher cell must satisfy the complete assertion", err)
+	}
+	if err := checkSuiteAssertion(t.Context(), original.Evaluation, wrong); err == nil {
+		t.Fatal("changing another publisher cell must still fail the complete assertion")
+	}
+	if err := checkSuiteAssertion(t.Context(), original.Evaluation, original.Evaluation.item.node.child(suiteResultVariable)); err == nil {
+		t.Fatal("in-memory controls changed the original publisher assertion")
+	}
+}
+
+func qtResidualMonthWeekControls(t *testing.T, options suiteOptions, item suiteCase, initial residualCaseResult, proof *qtResidualProof) {
+	t.Helper()
+	for _, version := range []string{suiteVersion30, suiteVersion31} {
+		t.Run("XPath"+version, func(t *testing.T) {
+			original := initial
+			if version != options.version {
+				selected := options
+				selected.version = version
+				original = evaluateResidualCase(t, selected, item)
+			}
+			if original.executionError() != nil || original.AssertionError == nil {
+				t.Fatal("expected unchanged publisher value mismatch", original.executionError(), original.AssertionError)
+			}
+			if original.Evaluation.sequence.Len() != 48 {
+				t.Fatal("original expression must return all 48 date strings", original.Evaluation.sequence.Len())
+			}
+			corrected := cloneResidualNode(item.node.child(suiteResultVariable))
+			assertion := corrected.child("assert-string-value")
+			if assertion == nil || assertion.attr("normalize-space") != suiteTrue {
+				t.Fatal("pinned publisher assertion shape changed")
+			}
+			rows := isoMonthWeekFixture(t)
+			want, publisher := make([]string, 0, len(rows)), make([]string, 0, len(rows))
+			for _, row := range rows {
+				want = append(want, "["+row.Date+":"+row.Week+"]")
+				if row.Date == "2006-01-30" {
+					row.Week = "5"
+				}
+				publisher = append(publisher, "["+row.Date+":"+row.Week+"]")
+			}
+			if !slices.Equal(strings.Fields(assertion.Text), publisher) {
+				t.Fatal("original 48 publisher expectations changed")
+			}
+			actual := residualSequenceText(t, original.Evaluation.sequence)
+			if !slices.Equal(strings.Fields(actual), want) {
+				t.Fatal("full native 48-date result disagrees with normative literals", actual, want)
+			}
+			if strings.Count(assertion.Text, "[2006-01-30:5]") != 1 {
+				t.Fatal("known bad publisher cell must occur exactly once")
+			}
+			assertion.Text = strings.Replace(assertion.Text, "[2006-01-30:5]", "[2006-01-30:1]", 1)
+			wrong := cloneResidualNode(corrected)
+			wrongValue := wrong.child("assert-string-value")
+			if strings.Count(wrongValue.Text, "[2005-12-04:1]") != 1 {
+				t.Fatal("negative control cell must occur exactly once")
+			}
+			wrongValue.Text = strings.Replace(wrongValue.Text, "[2005-12-04:1]", "[2005-12-04:9]", 1)
+			checkISOMonthWeekAssertionCorrection(t, original, corrected, wrong)
+			proof.Controls = append(proof.Controls, qtResidualProofControl{Name: "XPath" + version + " complete 48-date month-week and one-cell assertion controls", Native: actual, Obligation: "F&O 3.0/3.1 section 9.8.4 Thursday-month rule; original assertion remains failed, 47 other publisher cells remain unchanged"})
+		})
+	}
+}
+
+func runXSLTResidualCalendarMonthWeek(t *testing.T, directory string) {
+	t.Helper()
+	t.Run("format-date-011", func(t *testing.T) {
+		item := loadPinnedResidualCase(t, directory, suiteXSLT, "tests/fn/format-date/_format-date-test-set.xml", "format-date-011")
+		for _, version := range []string{suiteVersion20, suiteVersion30} {
+			t.Run("XSLT"+version, func(t *testing.T) {
+				options := suiteOptions{kind: suiteXSLT, directory: directory, version: version, xsdVersion: suiteVersion10, timeout: time.Second, limitsProfile: "default"}
+				original := evaluateResidualCase(t, options, item)
+				if original.executionError() != nil || original.AssertionError == nil {
+					t.Fatal("expected unchanged publisher XML value mismatch", original.executionError(), original.AssertionError)
+				}
+				corrected := cloneResidualNode(item.node.child(suiteResultVariable))
+				assertion := corrected.child("assert-xml")
+				if assertion == nil || assertion.attr(suiteFile) != "format-date-011.out" {
+					t.Fatal("pinned publisher XML assertion shape changed")
+				}
+				raw, err := suiteExpectedBytes(original.Evaluation, assertion)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var publisher struct {
+					XMLName xml.Name                  `xml:"out"`
+					Rows    []isoMonthWeekFixturePair `xml:"t"`
+				}
+				if err := xml.Unmarshal(raw, &publisher); err != nil {
+					t.Fatal(err)
+				}
+				checkISOMonthWeekRows(t, publisher.Rows, true)
+				actualBytes, err := original.Evaluation.serialized(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				actual := publisher
+				actual.Rows = nil
+				if err := xml.Unmarshal(actualBytes, &actual); err != nil {
+					t.Fatal(err)
+				}
+				checkISOMonthWeekRows(t, actual.Rows, false)
+				const oldCell = `<t date="2006-01-30">5</t>`
+				if bytes.Count(raw, []byte(oldCell)) != 1 {
+					t.Fatal("known bad publisher XML cell must occur exactly once")
+				}
+				assertion.Text = strings.Replace(string(raw), oldCell, `<t date="2006-01-30">1</t>`, 1)
+				assertion.Attributes = slices.DeleteFunc(assertion.Attributes, func(a xml.Attr) bool { return a.Name.Space == "" && a.Name.Local == suiteFile })
+				wrong := cloneResidualNode(corrected)
+				wrongValue := wrong.child("assert-xml")
+				const otherCell = `<t date="2005-12-04">1</t>`
+				if strings.Count(wrongValue.Text, otherCell) != 1 {
+					t.Fatal("negative XML control cell must occur exactly once")
+				}
+				wrongValue.Text = strings.Replace(wrongValue.Text, otherCell, `<t date="2005-12-04">9</t>`, 1)
+				checkISOMonthWeekAssertionCorrection(t, original, corrected, wrong)
+				// XSLT 2.0 does not spell out this month-week extension. Its check
+				// records our chosen convention, not a later-version mandate.
+			})
+		}
+	})
+}
+
+func TestISOCalendarMonthWeekPrimaryExamples(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []struct {
+		name  string
+		value transform.XPathVersion
+	}{{"XPath3.0", transform.XPath30}, {"XPath3.1", transform.XPath31}} {
+		t.Run(version.name, func(t *testing.T) {
+			for _, test := range []struct {
+				name, date, want string
+				published        bool
+			}{
+				{"January29", "2013-01-29", "5", true},
+				{"February1", "2013-02-01", "5", true},
+				{"BeforeBoundary", "2006-01-29", "4", false},
+				{"January30Boundary", "2006-01-30", "1", false},
+				{"January31Boundary", "2006-01-31", "1", false},
+				{"February1Boundary", "2006-02-01", "1", false},
+				{"February2Boundary", "2006-02-02", "1", false},
+				{"February5Boundary", "2006-02-05", "1", false},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					expression := `format-date(xs:date('` + test.date + `'),'[w]','en','ISO',())`
+					query, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{Version: version.value})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					text, err := result.Text()
+					if err != nil {
+						t.Fatal(err)
+					} else if result.Len() != 1 || text != test.want {
+						t.Fatal("primary calendar example", text, result.Len(), err, test.want)
+					}
+					if test.published {
+						// The REC prints only the 2013 examples with result 5. The derived 2006
+						// boundary controls deliberately emit no published-vector marker.
+						t.Logf("P3_VECTOR %q", test.want)
+					}
+				})
+			}
+		})
+	}
 }

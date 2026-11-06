@@ -30,7 +30,7 @@ func normalizePKCS12BER(state *passwordState, input []byte, form pkcs12Form) ([]
 		return nil, pkcs12BERError(err)
 	}
 
-	if root.Tag != 0x30 {
+	if root.Tag != encodedSequenceTag {
 		return nil, ErrFormat
 	}
 
@@ -38,7 +38,7 @@ func normalizePKCS12BER(state *passwordState, input []byte, form pkcs12Form) ([]
 
 	switch form {
 	case pfxForm:
-		if len(root.Children) != 3 {
+		if len(root.Children) != pfxRequiredFields {
 			return nil, ErrFormat
 		}
 
@@ -94,7 +94,7 @@ func normalizePKCS12BER(state *passwordState, input []byte, form pkcs12Form) ([]
 }
 
 func pkcs12BERInfo(state *passwordState, info ber.Value, encrypted bool) ([]byte, error) {
-	if info.Tag != 0x30 || len(info.Children) != 2 {
+	if info.Tag != encodedSequenceTag || len(info.Children) != 2 {
 		return nil, ErrFormat
 	}
 
@@ -104,7 +104,7 @@ func pkcs12BERInfo(state *passwordState, info ber.Value, encrypted bool) ([]byte
 	}
 
 	explicit := info.Children[1]
-	if explicit.Tag != 0xa0 || len(explicit.Children) != 1 {
+	if explicit.Tag != encodedContext0Tag || len(explicit.Children) != 1 {
 		return nil, ErrFormat
 	}
 
@@ -137,33 +137,36 @@ func pkcs12BERInfo(state *passwordState, info ber.Value, encrypted bool) ([]byte
 }
 
 func pkcs12BEREncrypted(state *passwordState, content ber.Value) ([]byte, error) {
-	if content.Tag != 0x30 || len(content.Children) != 2 {
+	// Keep the constructed bit while restoring the universal OCTET STRING tag.
+	const constructedIdentifierBit = 0x20
+
+	if content.Tag != encodedSequenceTag || len(content.Children) != 2 {
 		return nil, ErrFormat
 	}
 
 	info := content.Children[1]
-	if info.Tag != 0x30 || len(info.Children) != 3 {
+	if info.Tag != encodedSequenceTag || len(info.Children) != encryptedContentInfoFields {
 		return nil, ErrFormat
 	}
 
 	cipher := info.Children[2]
-	if cipher.Tag != 0x80 && cipher.Tag != 0xa0 {
+	if cipher.Tag != encodedPrimitiveContext0Tag && cipher.Tag != encodedContext0Tag {
 		return nil, ErrFormat
 	}
 	// The implicit OCTET STRING has universal OCTET STRING segments when
 	// constructed. Flatten only its string encoding, never ciphertext bytes.
-	cipher.Tag = (cipher.Tag & 0x20) | 4
+	cipher.Tag = (cipher.Tag & constructedIdentifierBit) | asn1.TagOctetString
 
 	var output bytes.Buffer
 	if err := ber.AppendOctets(state.ctx, cipher, &output, state.limits.MaxContainerBytes); err != nil {
 		return nil, pkcs12BERError(err)
 	}
 
-	return der.Seq(content.Children[0].Full, der.Seq(info.Children[0].Full, info.Children[1].Full, der.Wrap(2, 0, false, output.Bytes()))), nil
+	return der.Seq(content.Children[0].Full, der.Seq(info.Children[0].Full, info.Children[1].Full, der.Wrap(asn1.ClassContextSpecific, 0, false, output.Bytes()))), nil
 }
 
 func pkcs12BERSafe(state *passwordState, contents ber.Value) ([]byte, error) {
-	if contents.Tag != 0x30 {
+	if contents.Tag != encodedSequenceTag {
 		return nil, ErrFormat
 	}
 
@@ -183,7 +186,7 @@ func pkcs12BERSafe(state *passwordState, contents ber.Value) ([]byte, error) {
 			return nil, err
 		}
 
-		if bag.Tag != 0x30 || len(bag.Children) < 2 || len(bag.Children) > 3 {
+		if bag.Tag != encodedSequenceTag || len(bag.Children) < 2 || len(bag.Children) > safeBagMaximumFields {
 			return nil, ErrFormat
 		}
 
@@ -193,7 +196,7 @@ func pkcs12BERSafe(state *passwordState, contents ber.Value) ([]byte, error) {
 		}
 
 		explicit := bag.Children[1]
-		if explicit.Tag != 0xa0 || len(explicit.Children) != 1 {
+		if explicit.Tag != encodedContext0Tag || len(explicit.Children) != 1 {
 			return nil, ErrFormat
 		}
 
@@ -221,7 +224,7 @@ func pkcs12BERSafe(state *passwordState, contents ber.Value) ([]byte, error) {
 			clear(value)
 		}
 
-		if len(bag.Children) == 3 {
+		if len(bag.Children) == safeBagMaximumFields {
 			fields = append(fields, bag.Children[2].Full)
 		}
 
@@ -233,12 +236,12 @@ func pkcs12BERSafe(state *passwordState, contents ber.Value) ([]byte, error) {
 }
 
 func pkcs12BERCertificate(state *passwordState, value ber.Value) ([]byte, error) {
-	if value.Tag != 0x30 || len(value.Children) != 2 {
+	if value.Tag != encodedSequenceTag || len(value.Children) != 2 {
 		return nil, ErrFormat
 	}
 
 	explicit := value.Children[1]
-	if explicit.Tag != 0xa0 || len(explicit.Children) != 1 {
+	if explicit.Tag != encodedContext0Tag || len(explicit.Children) != 1 {
 		return nil, ErrFormat
 	}
 

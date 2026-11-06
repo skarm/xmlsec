@@ -364,9 +364,19 @@ func TestAuthnRequestACSSelection(t *testing.T) {
 		{name: "first explicit true", first: metadata.Endpoint{DefaultSet: true, Default: true}, want: first},
 		{name: "explicit index", attributes: ` AssertionConsumerServiceIndex="1"`, want: second},
 		{name: "explicit URL", attributes: ` AssertionConsumerServiceURL="` + second + `" ProtocolBinding="` + metadata.HTTPPost + `"`, want: second},
+		{name: "explicit URL without binding", attributes: ` AssertionConsumerServiceURL="` + second + `"`, want: second},
+		{name: "explicit binding without URL", attributes: ` ProtocolBinding="` + metadata.HTTPPost + `"`, want: first},
 		{name: "unlisted index", attributes: ` AssertionConsumerServiceIndex="2"`},
 		{name: "unlisted URL", attributes: ` AssertionConsumerServiceURL="https://evil.test/acs" ProtocolBinding="` + metadata.HTTPPost + `"`},
+		{name: "unlisted URL without binding", attributes: ` AssertionConsumerServiceURL="https://evil.test/acs"`},
+		{name: "unsupported binding", attributes: ` AssertionConsumerServiceURL="` + second + `" ProtocolBinding="` + metadata.HTTPRedirect + `"`},
+		{name: "empty explicit URL", attributes: ` AssertionConsumerServiceURL=""`},
+		{name: "empty explicit binding", attributes: ` ProtocolBinding=""`},
+		{name: "explicit URL with empty binding", attributes: ` AssertionConsumerServiceURL="` + second + `" ProtocolBinding=""`},
 		{name: "index and URL conflict", attributes: ` AssertionConsumerServiceIndex="1" AssertionConsumerServiceURL="` + second + `"`},
+		{name: "index and binding conflict", attributes: ` AssertionConsumerServiceIndex="1" ProtocolBinding="` + metadata.HTTPPost + `"`},
+		{name: "index and empty URL conflict", attributes: ` AssertionConsumerServiceIndex="1" AssertionConsumerServiceURL=""`},
+		{name: "index and empty binding conflict", attributes: ` AssertionConsumerServiceIndex="1" ProtocolBinding=""`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, b := tc.first, tc.second

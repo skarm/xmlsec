@@ -10,17 +10,26 @@ import (
 	"encoding/base64"
 	byteorder "encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf16"
+)
+
+const (
+	canonicalSessionTimeout    = 8 * time.Minute
+	jdkXPathOperationLimitFlag = "-Djdk.xml.xpathExprOpLimit=10000"
+	jdkXPathGroupLimitFlag     = "-Djdk.xml.xpathExprGrpLimit=10000"
 )
 
 func TestCanonicalVectorsAgainstJDK(t *testing.T) {
@@ -41,6 +50,9 @@ func TestCanonicalVectorsAgainstJDK(t *testing.T) {
 		} `json:"cases"`
 	}
 	decode(t, read(t, filepath.Join(fixture.root, "c14n/testdata/normative-vectors.json")), &corpus)
+	if len(corpus.Cases) != 138 {
+		t.Fatalf("canonical fixture count = %d, want 138", len(corpus.Cases))
+	}
 
 	oracle := read(t, filepath.Join(fixture.root, "tests/interop/testdata/C14NOracle.java"))
 	if fmt.Sprintf("%x", sha256.Sum256(oracle)) != corpus.Producer.OracleSHA256 {
@@ -96,6 +108,9 @@ func TestCanonicalVectorsAgainstLibXML(t *testing.T) {
 		} `json:"cases"`
 	}
 	decode(t, read(t, filepath.Join(fixture.root, "c14n/testdata/normative-vectors.json")), &corpus)
+	if len(corpus.Cases) != 138 {
+		t.Fatalf("canonical fixture count = %d, want 138", len(corpus.Cases))
+	}
 
 	oracle := read(t, filepath.Join(fixture.root, "tests/interop/testdata/c14n-oracle.c"))
 	if fmt.Sprintf("%x", sha256.Sum256(oracle)) != corpus.Producer.OracleSHA256 {
@@ -179,11 +194,30 @@ func canonicalCorpus() []string {
 	return docs
 }
 
+// processStderr permits diagnostics while os/exec still copies child stderr.
+// String returns an immutable snapshot, so later writes cannot change its bytes.
+type processStderr struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (s *processStderr) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buffer.Write(p)
+}
+
+func (s *processStderr) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buffer.String()
+}
+
 type lineProcess struct {
 	cmd    *exec.Cmd
 	input  io.WriteCloser
 	output *bufio.Reader
-	stderr bytes.Buffer
+	stderr processStderr
 	cancel context.CancelFunc
 }
 
@@ -196,7 +230,7 @@ func (p *lineProcess) call(t *testing.T, data []byte) []byte {
 
 	line, err := p.output.ReadBytes('\n')
 	if err != nil {
-		t.Fatalf("helper response: %v: %s", err, p.stderr.Bytes())
+		t.Fatalf("helper response: %v: %s", err, p.stderr.String())
 	}
 
 	return bytes.TrimSuffix(line, []byte{'\n'})
@@ -249,7 +283,7 @@ func newCanonicalSession(t *testing.T, fixture *interopFixture) *canonicalSessio
 	compileJava(t, fixture)
 	c := cOracle(t, fixture)
 	goRPC := lines(t, fixture, binary(t, fixture, "c14nprobe"))
-	params := append(append([]string{}, javaExports()...), "-Djdk.xml.xpathExprOpLimit=10000", "-Djdk.xml.xpathExprGrpLimit=10000", "-cp", fixture.work, "C14NOracle")
+	params := append(append([]string{}, javaExports()...), jdkXPathOperationLimitFlag, jdkXPathGroupLimitFlag, "-cp", fixture.work, "C14NOracle")
 	jdk := lines(t, fixture, "java", params...)
 
 	return &canonicalSession{fixture: fixture, goRPC: goRPC, jdk: jdk, nativeProgram: c}
@@ -552,7 +586,7 @@ func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *
 	t.Helper()
 
 	// These helpers exit on EOF in Cleanup, after the test context is canceled.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), canonicalSessionTimeout)
 	p := &lineProcess{cmd: exec.CommandContext(ctx, name, args...), cancel: cancel}
 	p.cmd.Dir = fixture.root
 	p.cmd.Stderr = &p.stderr
@@ -582,7 +616,7 @@ func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *
 		cancel()
 
 		if err != nil {
-			t.Errorf("helper exited: %v: %s", err, p.stderr.Bytes())
+			t.Errorf("helper exited: %v: %s", err, p.stderr.String())
 		}
 	})
 
@@ -659,4 +693,60 @@ func selectionXPath(r canonicalRequest, markers bool) string {
 	}
 
 	return strings.Join(terms, " | ")
+}
+
+// TestLineProcessDiagnosticsProcess is only entered by the bounded lifecycle
+// test below. The peer deliberately stays alive after stdout closes; production
+// cleanup must release it through stdin EOF, without waiting in call().
+func TestLineProcessDiagnosticsProcess(t *testing.T) {
+	switch os.Getenv("XMLSEC_LINE_PROCESS_DIAGNOSTIC_ROLE") {
+	case "peer":
+		_, _ = io.WriteString(os.Stderr, "ordinary helper diagnostic\n")
+		_, _ = io.WriteString(os.Stdout, "ready\n")
+		input := bufio.NewReader(os.Stdin)
+		_, _ = input.ReadString('\n')
+		if os.Getenv("XMLSEC_LINE_PROCESS_DIAGNOSTIC_MODE") == "eof" {
+			_ = os.Stdout.Close()
+		} else {
+			_, _ = io.WriteString(os.Stdout, "ok\n")
+		}
+		_, _ = input.ReadString('\n')
+	case "caller":
+		t.Setenv("XMLSEC_LINE_PROCESS_DIAGNOSTIC_ROLE", "peer")
+		p := lines(t, &interopFixture{root: t.TempDir()}, os.Args[0], "-test.run=^TestLineProcessDiagnosticsProcess$")
+		ready, err := p.output.ReadString('\n')
+		if err != nil || ready != "ready\n" {
+			t.Fatalf("helper readiness: %q: %v", ready, err)
+		}
+		if got := p.call(t, []byte("request")); string(got) != "ok" {
+			t.Fatalf("helper reply: %q", got)
+		}
+	default:
+		t.Skip("child process used by TestLineProcessDiagnostics")
+	}
+}
+
+func TestLineProcessDiagnostics(t *testing.T) {
+	for _, mode := range []string{"reply", "eof"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLineProcessDiagnosticsProcess$")
+			command.Env = append(os.Environ(), "XMLSEC_LINE_PROCESS_DIAGNOSTIC_ROLE=caller", "XMLSEC_LINE_PROCESS_DIAGNOSTIC_MODE="+mode)
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil || bytes.Contains(output, []byte("DATA RACE")) {
+				t.Fatalf("helper lifecycle: %v: %s", ctx.Err(), output)
+			}
+			if mode == "reply" {
+				if err != nil {
+					t.Fatalf("successful helper reply: %v: %s", err, output)
+				}
+				return
+			}
+			var failure *exec.ExitError
+			if !errors.As(err, &failure) || failure.ExitCode() != 1 || !bytes.Contains(output, []byte("helper response: EOF: ordinary helper diagnostic")) {
+				t.Fatalf("helper EOF diagnostic: %v: %s", err, output)
+			}
+		})
+	}
 }

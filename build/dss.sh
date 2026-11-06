@@ -23,6 +23,7 @@ cleanup() {
 }
 
 inside() {
+    fixtures_dir=${XMLSEC_DSS_FIXTURE_DIR:-/fixtures}
     for tool in java keytool jar go bash timeout sha256sum; do
         command -v "$tool" >/dev/null 2>&1 || fail "missing container tool: $tool"
     done
@@ -44,7 +45,7 @@ inside() {
     sed -i 's/<Connector port="8080"/<Connector address="127.0.0.1" port="8080"/' "$CATALINA_BASE/conf/server.xml"
     grep -q '<Connector address="127.0.0.1" port="8080"' "$CATALINA_BASE/conf/server.xml" || fail 'the expected loopback connector was not configured'
     ln -s "$CATALINA_HOME/webapps/ROOT.war" "$CATALINA_BASE/webapps/ROOT.war"
-    keytool -importcert -noprompt -alias xmlsec-fixture-ca -file "/fixtures/$XMLSEC_DSS_CA_PEM" \
+    keytool -importcert -noprompt -alias xmlsec-fixture-ca -file "$fixtures_dir/$XMLSEC_DSS_CA_PEM" \
         -keystore "$CATALINA_BASE/lib/xmlsec-dss-roots.p12" -storetype PKCS12 -storepass xmlsec-dss-offline
     # DSS loads the explicit fixture truststore and properties as classpath resources.
     cat > "$CATALINA_BASE/lib/dss-custom.properties" <<'PROPERTIES'
@@ -82,7 +83,7 @@ PROBE
         sleep 1
     done
     export XMLSEC_DSS_URL=http://127.0.0.1:8080/
-    export XMLSEC_DSS_FIXTURES="/fixtures/$XMLSEC_DSS_MANIFEST_NAME"
+    export XMLSEC_DSS_FIXTURES="$fixtures_dir/${XMLSEC_DSS_MANIFEST_NAME:-manifest.json}"
     export XMLSEC_DSS_RUNTIME_JAR="$CATALINA_BASE/webapps/ROOT/WEB-INF/lib/dss-validation-$dss_version.jar"
     export XMLSEC_REQUIRE_P7_PROOFS=1
     # The test checks actual JAR Maven metadata and endpoint version as well as
@@ -90,13 +91,18 @@ PROBE
     XMLSEC_DSS_REPORT_DIR=${XMLSEC_DSS_REPORT_DIR:-/tmp/xmlsec-dss-reports}
     export XMLSEC_DSS_REPORT_DIR
     mkdir -p "$XMLSEC_DSS_REPORT_DIR"
+    if [ "${1:-}" = all ]; then
+        export XMLSEC_REQUIRE_P3_PROOFS=1 XMLSEC_REQUIRE_P5_PROOFS=1 XMLSEC_REQUIRE_P6_PROOFS=1
+        make interop INTEROP_ARGS=-suite=all
+        return
+    fi
     go run ./tests/cmd/dev proof capture -out "$XMLSEC_DSS_REPORT_DIR/dss.capture.json" -- \
         -tags=interop ./tests/interop -run '^TestDSS(Historical|Archive)' -timeout=10m -args -suite=portable
 }
 
-if [ "${1:-}" = --inside ]; then
+if [ "${1:-}" = --inside ] || [ "${1:-}" = --inside-all ]; then
     [ "$#" -eq 1 ] || fail 'unexpected internal arguments'
-    inside
+    if [ "$1" = --inside-all ]; then inside all; else inside; fi
     exit
 fi
 case "${1:-}" in ''|--check) ;; *) fail 'usage: sh build/dss.sh [--check]' ;; esac

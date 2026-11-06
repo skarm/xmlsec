@@ -10,6 +10,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
+	"github.com/skarm/xmlsec/saml/proof"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
@@ -38,6 +39,15 @@ type ResponseOptions struct {
 	// AllowUnsignedResponse permits a Response without an envelope signature. The
 	// Assertion signature remains required. Unsigned envelope fields are unauthenticated.
 	AllowUnsignedResponse bool
+	// AllowUnsignedAssertion accepts an unsigned assertion only when the Response
+	// envelope has been authenticated. A present assertion signature is always
+	// checked. The default continues to require both signatures.
+	AllowUnsignedAssertion bool
+	// Decryption supplies the explicit recipient key ring and exact cipher policy.
+	Decryption *DecryptionOptions
+	// RequireEncryption rejects plaintext at the selected positions. Attributes
+	// means every present Attribute; an absent AttributeStatement is allowed.
+	RequireEncryption EncryptionTargets
 	// AllowedNameIDFormats restricts subject identifier formats to exact URIs. Empty
 	// disables this membership check.
 	AllowedNameIDFormats []string
@@ -50,6 +60,16 @@ type ResponseOptions struct {
 	// ExpectedAddress supplies the trusted client address to require when subject
 	// confirmation includes Address.
 	ExpectedAddress string
+	// ExpectedChannelBindings requires authenticated Advice confirming at least
+	// one of the bindings retained with the soliciting ECP request.
+	ExpectedChannelBindings []ChannelBinding
+	// Proof is verified possession for this exact SOAP payload, never a peer
+	// certificate supplied independently of the received message.
+	// Supplying it selects HoK and never falls back to bearer confirmation.
+	Proof *proof.Verified
+	// RequireHolderOfKey rejects a bearer downgrade when HoK was requested.
+	RequireHolderOfKey  bool
+	producedCertificate []byte
 }
 
 // Attribute is a SAML attribute and its string values.
@@ -78,6 +98,7 @@ type VerifiedAssertion struct {
 	requestID      string
 	nameID         string
 	nameIDFormat   string
+	identifier     NameIdentifier
 	sessionIndex   string
 	contextClass   string
 	instant        time.Time
@@ -86,11 +107,23 @@ type VerifiedAssertion struct {
 	sessionExpires time.Time
 	attributes     []Attribute
 	responseSigned bool
+	encryption     EncryptionTargets
+	channels       []ChannelBinding
+	confirmation   string
+	hokCertificate []byte
 }
 
 // VerifyResponse authenticates and validates a solicited response and its signed assertion
 // under explicit expectations.
 func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.PublicKey, o ResponseOptions) (*VerifiedAssertion, error) {
+	const (
+		minimumWebResponseChildren = 2
+	)
+
+	if o.Proof != nil && !o.Proof.Covers(d) {
+		return nil, ErrConditions
+	}
+
 	l, e := normalize(o.Limits)
 	if e != nil {
 		return nil, e
@@ -100,16 +133,25 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 		return nil, e
 	}
 
+	if !validEncryptionTargets(o.RequireEncryption) || o.RequireEncryption != 0 && o.Decryption == nil {
+		return nil, ErrEncryption
+	}
+
+	decryption, e := newDecryptionState(o.Decryption)
+	if e != nil {
+		return nil, e
+	}
+
 	if e = ctx.Err(); e != nil {
 		return nil, e
 	}
 
 	root := d.Root()
-	if xmlutil.Attrs(root, []string{"ID", nameVersion, nameIssueInstant, nameDestination, nameInResponseTo}, nil) != nil {
+	if xmlutil.Attrs(root, []string{lexicon.SAMLAttrID, nameVersion, nameIssueInstant, nameDestination, nameInResponseTo}, nil) != nil {
 		return nil, ErrProfile
 	}
 
-	responseID, _, e := header(root, "Response", o.At, l)
+	responseID, _, e := header(root, lexicon.SAMLElementResponse, o.At, l)
 	if e != nil {
 		return nil, e
 	}
@@ -119,7 +161,7 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 	}
 
 	children, e := xmlutil.Children(root)
-	if e != nil || len(children) < 2 || issuer(children[0], o.Issuer) != nil {
+	if e != nil || len(children) < minimumWebResponseChildren || issuer(children[0], o.Issuer) != nil {
 		return nil, ErrProfile
 	}
 
@@ -137,42 +179,96 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 		return nil, ErrSignature
 	}
 
-	if pos >= len(children) || children[pos].Name() != xmlutil.Name(ProtocolNamespace, "Status") {
+	if pos >= len(children) || children[pos].Name() != xmlutil.Name(ProtocolNamespace, xmlNameStatus) {
 		return nil, ErrProfile
 	}
 
 	status := children[pos]
 	pos++
 
-	code, e := parseResponseStatus(status)
+	parsedStatus, e := readStatus(status)
 	if e != nil {
 		return nil, e
 	}
 
-	if code != Success {
+	if parsedStatus.Code != Success {
 		if !responseSigned || pos != len(children) || signingCount(d, 1) != nil {
 			return nil, ErrProfile
 		}
 
-		return nil, &StatusError{Code: code}
+		return nil, &StatusError{Code: parsedStatus.Code, Subcodes: parsedStatus.Subcodes, Message: parsedStatus.Message}
 	}
 
-	if pos+1 != len(children) || children[pos].Name() != xmlutil.Name(AssertionNamespace, "Assertion") {
+	if pos+1 != len(children) {
 		return nil, ErrProfile
 	}
 
-	assertion := children[pos]
+	return verifyAssertionPayload(ctx, d, children[pos], keys, o, l, decryption, responseID, responseSigned)
+}
 
-	expectedCount := 1
+func verifyAssertionPayload(ctx context.Context, d *document.Document, payload document.Element, keys []crypto.PublicKey, o ResponseOptions, l Limits, decryption *decryptionState, responseID string, responseSigned bool) (*VerifiedAssertion, error) {
+	var (
+		e         error
+		encrypted EncryptionTargets
+	)
+
+	if payload.Name() == xmlutil.Name(AssertionNamespace, xmlNameEncryptedAssertion) {
+		d, e = decryption.decryptSAML(ctx, d, payload, nameAssertion, responseSigned)
+		if e != nil {
+			return nil, e
+		}
+
+		encrypted |= EncryptAssertion
+
+		payload, e = xmlutil.Direct(d.Root(), xmlutil.Name(AssertionNamespace, nameAssertion))
+		if e != nil {
+			return nil, e
+		}
+	} else if o.RequireEncryption&EncryptAssertion != 0 {
+		return nil, ErrEncryption
+	}
+
+	if payload.Name() != xmlutil.Name(AssertionNamespace, nameAssertion) {
+		return nil, ErrProfile
+	}
+
+	assertion := payload
+
+	assertionSigned := false
+	for _, child := range assertion.Children() {
+		assertionSigned = assertionSigned || child.Name() == xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature)
+	}
+
+	expectedCount := 0
+	if assertionSigned {
+		expectedCount++
+
+		if e = targetSignature(ctx, d, assertion, keys, o.Policy); e != nil {
+			return nil, e
+		}
+	} else if !o.AllowUnsignedAssertion || !responseSigned {
+		return nil, ErrSignature
+	}
+
 	if responseSigned {
-		expectedCount = 2
+		expectedCount++
 	}
 
 	if signingCount(d, expectedCount) != nil {
 		return nil, ErrProfile
 	}
 
-	if e = targetSignature(ctx, d, assertion, keys, o.Policy); e != nil {
+	signedAssertion := assertion
+
+	d, innerEncryption, e := decryptAssertionContents(ctx, d, decryption, o.RequireEncryption, assertionSigned || responseSigned, l)
+	if e != nil {
+		return nil, e
+	}
+
+	encrypted |= innerEncryption
+
+	assertion, e = xmlutil.Direct(d.Root(), xmlutil.Name(AssertionNamespace, nameAssertion))
+	if e != nil {
 		return nil, e
 	}
 
@@ -183,12 +279,24 @@ func VerifyResponse(ctx context.Context, d *document.Document, keys []crypto.Pub
 
 	result.responseID = responseID
 	result.responseSigned = responseSigned
+	result.assertion = signedAssertion
+	result.encryption = encrypted
 
 	if e = ctx.Err(); e != nil {
 		return nil, e
 	}
 
 	return result, nil
+}
+
+// Encryption reports which SAML positions were successfully decrypted and
+// authenticated. It does not infer confidentiality of transport or other fields.
+func (r *VerifiedAssertion) Encryption() EncryptionTargets {
+	if r == nil {
+		return 0
+	}
+
+	return r.encryption
 }
 
 // AssertionID returns the authenticated assertion identifier.
@@ -263,6 +371,10 @@ func (r *VerifiedAssertion) NameIDFormat() string {
 	return r.nameIDFormat
 }
 
+// Identifier returns the complete authenticated NameID including its qualifiers
+// and current SPProvidedID. Retain this value for logout and name management.
+func (r *VerifiedAssertion) Identifier() NameIdentifier { return r.identifier }
+
 // SessionIndex returns the authenticated session identifier.
 func (r *VerifiedAssertion) SessionIndex() string {
 	if r == nil {
@@ -330,34 +442,55 @@ func (r *VerifiedAssertion) Attributes() []Attribute {
 // ResponseAuthenticated returns whether the response envelope itself was authenticated.
 func (r *VerifiedAssertion) ResponseAuthenticated() bool { return r != nil && r.responseSigned }
 
+// StatusError reports an authenticated non-success response. It does not indicate
+// login success. Remote StatusMessage and StatusDetail are not exposed as trusted
+// text.
+type StatusError struct {
+	// Subcodes are authenticated nested status codes, outermost first.
+	Subcodes []string
+	// Message is bounded authenticated remote diagnostic text, not a trust decision.
+	Message string
+	// Code is the authenticated non-success SAML status code URI.
+	Code string
+}
+
+// Error returns the diagnostic error message.
+func (e *StatusError) Error() string { return "SAML response status: " + e.Code }
+
+// ValidatePolicy checks a reusable policy before a stateful SP/IdP accepts it.
+func ValidatePolicy(l Limits) error { _, e := normalize(l); return e }
+
+// AcceptanceWindow returns normalized, immutable timing limits to wrappers.
+func AcceptanceWindow(l Limits) (messageAge, assertionLifetime, skew time.Duration, err error) {
+	n, e := normalize(l)
+	if e != nil {
+		return 0, 0, 0, e
+	}
+
+	return n.MaxMessageAge, n.MaxAssertionLifetime, n.ClockSkew, nil
+}
+
 func validateResponseOptions(ctx context.Context, d *document.Document, o ResponseOptions) error {
-	if ctx == nil || d == nil || o.At.IsZero() || !profile.URI(o.Issuer) || !profile.URI(o.Audience) || !profile.Endpoint(o.Destination, true) || !profile.ID(o.ExpectedRequestID) || len(o.AllowedNameIDFormats) > 16 || len(o.ExpectedAuthnContexts) > 16 || o.ForceAuthn && o.RequestIssueInstant.IsZero() {
+	const (
+		maximumAllowedNameIDFormats  = 16
+		maximumExpectedAuthnContexts = 16
+	)
+
+	if ctx == nil || d == nil || o.At.IsZero() || !profile.URI(o.Issuer) || !profile.URI(o.Audience) || !profile.Endpoint(o.Destination, true) || !profile.ID(o.ExpectedRequestID) || len(o.AllowedNameIDFormats) > maximumAllowedNameIDFormats || len(o.ExpectedAuthnContexts) > maximumExpectedAuthnContexts || o.ForceAuthn && o.RequestIssueInstant.IsZero() {
 		return ErrProfile
 	}
 
 	return nil
 }
 
-func parseResponseStatus(status document.Element) (string, error) {
-	if xmlutil.Attrs(status, nil, nil) != nil {
-		return "", ErrProfile
-	}
-
-	sc, e := xmlutil.Children(status)
-	if e != nil || len(sc) != 1 || sc[0].Name() != xmlutil.Name(ProtocolNamespace, "StatusCode") || xmlutil.Attrs(sc[0], []string{"Value"}, nil) != nil || !xmlutil.EmptyContent(sc[0]) {
-		return "", ErrProfile
-	}
-
-	code := xmlutil.Attr(sc[0], "Value")
-	if !profile.URI(code) {
-		return "", ErrProfile
-	}
-
-	return code, nil
-}
-
 func parseAssertion(a document.Element, o ResponseOptions, l Limits) (*VerifiedAssertion, error) {
-	if xmlutil.Attrs(a, []string{"ID", nameVersion, nameIssueInstant}, nil) != nil || xmlutil.Attr(a, nameVersion) != version20 || !profile.ID(xmlutil.Attr(a, "ID")) {
+	const (
+		maximumWebAssertionChildren         = 7
+		minimumWebAssertionChildren         = 4
+		requiredWebAssertionPayloadChildren = 3
+	)
+
+	if xmlutil.Attrs(a, []string{lexicon.SAMLAttrID, nameVersion, nameIssueInstant}, nil) != nil || xmlutil.Attr(a, nameVersion) != version20 || !profile.ID(xmlutil.Attr(a, lexicon.SAMLAttrID)) {
 		return nil, ErrProfile
 	}
 
@@ -367,31 +500,62 @@ func parseAssertion(a document.Element, o ResponseOptions, l Limits) (*VerifiedA
 	}
 
 	cs, e := xmlutil.Children(a)
-	if e != nil || len(cs) < 5 || len(cs) > 6 || issuer(cs[0], o.Issuer) != nil || cs[1].Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) || cs[2].Name() != xmlutil.Name(AssertionNamespace, "Subject") || cs[3].Name() != xmlutil.Name(AssertionNamespace, "Conditions") || cs[4].Name() != xmlutil.Name(AssertionNamespace, "AuthnStatement") {
+	if e != nil || len(cs) < minimumWebAssertionChildren || len(cs) > maximumWebAssertionChildren || issuer(cs[0], o.Issuer) != nil {
 		return nil, ErrProfile
 	}
 
-	r := &VerifiedAssertion{assertion: a, assertionID: xmlutil.Attr(a, "ID"), issuer: o.Issuer, audience: o.Audience, recipient: o.Destination, requestID: o.ExpectedRequestID, instant: instant}
-	if e = parseSubject(cs[2], o, l, r); e != nil {
+	pos := 1
+	if cs[pos].Name() == xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) {
+		pos++
+	} else if !o.AllowUnsignedAssertion {
+		return nil, ErrSignature
+	}
+
+	if len(cs) < pos+requiredWebAssertionPayloadChildren || cs[pos].Name() != xmlutil.Name(AssertionNamespace, xmlNameSubject) || cs[pos+1].Name() != xmlutil.Name(AssertionNamespace, xmlNameConditions) {
+		return nil, ErrProfile
+	}
+
+	r := &VerifiedAssertion{assertion: a, assertionID: xmlutil.Attr(a, lexicon.SAMLAttrID), issuer: o.Issuer, audience: o.Audience, recipient: o.Destination, requestID: o.ExpectedRequestID, instant: instant}
+	if e = parseSubject(cs[pos], o, l, r); e != nil {
 		return nil, e
 	}
 
-	expiry, e := parseConditions(cs[3], o, l)
+	expiry, e := parseConditions(cs[pos+1], o, l)
 	if e != nil {
 		return nil, e
 	}
 
 	r.expires = minTime(expiry, r.expires)
-	if e = parseAuthn(cs[4], o, l, r); e != nil {
+
+	pos += 2
+	if cs[pos].Name() == xmlutil.Name(AssertionNamespace, xmlNameAdvice) {
+		r.channels, e = readChannelContainer(cs[pos], true)
+		if e != nil {
+			return nil, e
+		}
+
+		pos++
+	}
+
+	if e := requireChannelAdvice(r.channels, o.ExpectedChannelBindings); e != nil {
 		return nil, e
 	}
 
-	if len(cs) == 6 {
-		if cs[5].Name() != xmlutil.Name(AssertionNamespace, "AttributeStatement") {
+	if pos >= len(cs) || cs[pos].Name() != xmlutil.Name(AssertionNamespace, xmlNameAuthnStatement) {
+		return nil, ErrProfile
+	}
+
+	if e = parseAuthn(cs[pos], o, l, r); e != nil {
+		return nil, e
+	}
+
+	pos++
+	if pos < len(cs) {
+		if pos+1 != len(cs) || cs[pos].Name() != xmlutil.Name(AssertionNamespace, xmlNameAttributeStatement) {
 			return nil, ErrProfile
 		}
 
-		r.attributes, e = parseAttributes(cs[5], l)
+		r.attributes, e = parseAttributes(cs[pos], l)
 		if e != nil {
 			return nil, e
 		}
@@ -406,7 +570,7 @@ func parseSubject(s document.Element, o ResponseOptions, l Limits, r *VerifiedAs
 	}
 
 	cs, e := xmlutil.Children(s)
-	if e != nil || len(cs) != 2 || cs[0].Name() != xmlutil.Name(AssertionNamespace, "NameID") || cs[1].Name() != xmlutil.Name(AssertionNamespace, "SubjectConfirmation") {
+	if e != nil || len(cs) < minimumSubjectChildren || len(cs) > maximumSubjectChildren || cs[0].Name() != xmlutil.Name(AssertionNamespace, xmlNameNameID) {
 		return ErrProfile
 	}
 
@@ -414,11 +578,37 @@ func parseSubject(s document.Element, o ResponseOptions, l Limits, r *VerifiedAs
 		return e
 	}
 
-	return parseBearerConfirmation(cs[1], o, l, r)
+	for _, conf := range cs[1:] {
+		if conf.Name() != xmlutil.Name(AssertionNamespace, xmlNameSubjectConfirmation) || xmlutil.Attrs(conf, []string{nameMethod}, nil) != nil {
+			return ErrProfile
+		}
+	}
+
+	wantHoK := o.RequireHolderOfKey || o.Proof != nil || len(o.producedCertificate) != 0
+	lastErr := ErrConditions
+
+	for _, conf := range cs[1:] {
+		candidate := *r
+		if wantHoK && xmlutil.Attr(conf, nameMethod) == HolderOfKey {
+			lastErr = parseHoKConfirmation(conf, o, l, &candidate)
+		} else if !wantHoK && xmlutil.Attr(conf, nameMethod) == Bearer {
+			candidate.confirmation = Bearer
+			lastErr = parseBearerConfirmation(conf, o, l, &candidate)
+		} else {
+			continue
+		}
+
+		if lastErr == nil {
+			*r = candidate
+			return nil
+		}
+	}
+
+	return lastErr
 }
 
 func parseSubjectNameID(id document.Element, o ResponseOptions, l Limits, r *VerifiedAssertion) error {
-	if xmlutil.Attrs(id, nil, []string{"Format", "NameQualifier", nameSPNameQualifier}) != nil || len(id.Children()) != 0 {
+	if xmlutil.Attrs(id, nil, []string{nameFormat, nameNameQualifier, nameSPNameQualifier, nameSPProvidedID}) != nil || len(id.Children()) != 0 {
 		return ErrProfile
 	}
 
@@ -429,16 +619,16 @@ func parseSubjectNameID(id document.Element, o ResponseOptions, l Limits, r *Ver
 
 	r.nameID = value
 
-	r.nameIDFormat = xmlutil.Attr(id, "Format")
+	r.nameIDFormat = xmlutil.Attr(id, nameFormat)
 	if r.nameIDFormat == "" {
 		r.nameIDFormat = NameIDUnspecified
 	}
 
-	if !profile.URI(r.nameIDFormat) || len(o.AllowedNameIDFormats) > 0 && !allowed(r.nameIDFormat, o.AllowedNameIDFormats) {
+	if !profile.URI(r.nameIDFormat) || r.nameIDFormat == NameIDEncrypted || len(o.AllowedNameIDFormats) > 0 && !allowed(r.nameIDFormat, o.AllowedNameIDFormats) {
 		return ErrProfile
 	}
 
-	if q, ok := id.Attribute(document.Name{Local: "NameQualifier"}); ok && q != o.Issuer {
+	if q, ok := id.Attribute(document.Name{Local: nameNameQualifier}); ok && q != o.Issuer {
 		return ErrProfile
 	}
 
@@ -446,37 +636,47 @@ func parseSubjectNameID(id document.Element, o ResponseOptions, l Limits, r *Ver
 		return ErrProfile
 	}
 
+	alias := xmlutil.Attr(id, nameSPProvidedID)
+	if len(alias) > l.MaxValueBytes {
+		return ErrProfile
+	}
+
+	r.identifier = NameIdentifier{Value: r.nameID, Format: r.nameIDFormat, NameQualifier: xmlutil.Attr(id, nameNameQualifier), SPNameQualifier: xmlutil.Attr(id, nameSPNameQualifier), SPProvidedID: alias}
+	if err := r.identifier.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func parseBearerConfirmation(c document.Element, o ResponseOptions, l Limits, r *VerifiedAssertion) error {
-	if xmlutil.Attrs(c, []string{"Method"}, nil) != nil || xmlutil.Attr(c, "Method") != Bearer {
+	if xmlutil.Attrs(c, []string{nameMethod}, nil) != nil || xmlutil.Attr(c, nameMethod) != Bearer {
 		return ErrProfile
 	}
 
 	ds, e := xmlutil.Children(c)
-	if e != nil || len(ds) != 1 || ds[0].Name() != xmlutil.Name(AssertionNamespace, "SubjectConfirmationData") {
+	if e != nil || len(ds) != 1 || ds[0].Name() != xmlutil.Name(AssertionNamespace, xmlNameSubjectConfirmationData) {
 		return ErrProfile
 	}
 
 	data := ds[0]
 	// Web Browser SSO bearer confirmation MUST NOT contain NotBefore.
-	if xmlutil.Attrs(data, []string{"Recipient", nameInResponseTo, "NotOnOrAfter"}, []string{"Address"}) != nil || !xmlutil.EmptyContent(data) {
+	if xmlutil.Attrs(data, []string{nameRecipient, nameInResponseTo, nameNotOnOrAfter}, []string{nameAddress}) != nil || !xmlutil.EmptyContent(data) {
 		return ErrProfile
 	}
 
-	if xmlutil.Attr(data, "Recipient") != o.Destination || xmlutil.Attr(data, nameInResponseTo) != o.ExpectedRequestID {
+	if xmlutil.Attr(data, nameRecipient) != o.Destination || xmlutil.Attr(data, nameInResponseTo) != o.ExpectedRequestID {
 		return ErrCorrelation
 	}
 
-	end, e := profile.ParseTime(xmlutil.Attr(data, "NotOnOrAfter"))
+	end, e := profile.ParseTime(xmlutil.Attr(data, nameNotOnOrAfter))
 	if e != nil || !o.At.Add(-l.ClockSkew).Before(end) || end.After(o.At.Add(l.MaxAssertionLifetime+l.ClockSkew)) {
 		return ErrConditions
 	}
 
 	r.expires = end
 
-	if addr, ok := data.Attribute(document.Name{Local: "Address"}); ok {
+	if addr, ok := data.Attribute(document.Name{Local: nameAddress}); ok {
 		actual := net.ParseIP(addr)
 
 		expected := net.ParseIP(o.ExpectedAddress)
@@ -489,22 +689,26 @@ func parseBearerConfirmation(c document.Element, o ResponseOptions, l Limits, r 
 }
 
 func parseConditions(c document.Element, o ResponseOptions, l Limits) (time.Time, error) {
-	if xmlutil.Attrs(c, []string{"NotBefore", "NotOnOrAfter"}, nil) != nil {
+	const (
+		maximumWebConditionsChildren = 17
+	)
+
+	if xmlutil.Attrs(c, []string{nameNotBefore, nameNotOnOrAfter}, nil) != nil {
 		return time.Time{}, ErrProfile
 	}
 
-	start, e := profile.ParseTime(xmlutil.Attr(c, "NotBefore"))
+	start, e := profile.ParseTime(xmlutil.Attr(c, nameNotBefore))
 	if e != nil {
 		return time.Time{}, ErrConditions
 	}
 
-	end, e := profile.ParseTime(xmlutil.Attr(c, "NotOnOrAfter"))
+	end, e := profile.ParseTime(xmlutil.Attr(c, nameNotOnOrAfter))
 	if e != nil || timeWindow(start, end, o.At, l) != nil {
 		return time.Time{}, ErrConditions
 	}
 
 	cs, e := xmlutil.Children(c)
-	if e != nil || len(cs) < 1 || len(cs) > 17 {
+	if e != nil || len(cs) < 1 || len(cs) > maximumWebConditionsChildren {
 		return time.Time{}, ErrProfile
 	}
 
@@ -517,13 +721,13 @@ func parseConditions(c document.Element, o ResponseOptions, l Limits) (time.Time
 		}
 
 		switch child.Name() {
-		case xmlutil.Name(AssertionNamespace, "AudienceRestriction"):
+		case xmlutil.Name(AssertionNamespace, xmlNameAudienceRestriction):
 			if e := validateAudienceRestriction(child, o.Audience); e != nil {
 				return time.Time{}, e
 			}
 
 			groups++
-		case xmlutil.Name(AssertionNamespace, "OneTimeUse"):
+		case xmlutil.Name(AssertionNamespace, xmlNameOneTimeUse):
 			if once || !xmlutil.EmptyContent(child) {
 				return time.Time{}, ErrProfile
 			}
@@ -542,19 +746,23 @@ func parseConditions(c document.Element, o ResponseOptions, l Limits) (time.Time
 }
 
 func validateAudienceRestriction(child document.Element, expected string) error {
+	const (
+		maximumAudienceAlternatives = 16
+	)
+
 	audiences, e := xmlutil.Children(child)
-	if e != nil || len(audiences) < 1 || len(audiences) > 16 {
+	if e != nil || len(audiences) < 1 || len(audiences) > maximumAudienceAlternatives {
 		return ErrProfile
 	}
 
 	match := false
 
 	for _, a := range audiences {
-		if a.Name() != xmlutil.Name(AssertionNamespace, "Audience") {
+		if a.Name() != xmlutil.Name(AssertionNamespace, xmlNameAudience) {
 			return ErrProfile
 		}
 
-		s, e := xmlutil.Simple(a, 2048)
+		s, e := xmlutil.Simple(a, maximumURITextBytes)
 		if e != nil || !profile.URI(s) {
 			return ErrProfile
 		}
@@ -572,11 +780,16 @@ func validateAudienceRestriction(child document.Element, expected string) error 
 }
 
 func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAssertion) error {
-	if xmlutil.Attrs(a, []string{"AuthnInstant"}, []string{"SessionIndex", "SessionNotOnOrAfter"}) != nil {
+	const (
+		maximumAuthnSessionIndexBytes  = 1024
+		maximumWebAuthnContextChildren = 9
+	)
+
+	if xmlutil.Attrs(a, []string{xmlNameAuthnInstant}, []string{xmlNameSessionIndex, nameSessionNotOnOrAfter}) != nil {
 		return ErrProfile
 	}
 
-	t, e := profile.ParseTime(xmlutil.Attr(a, "AuthnInstant"))
+	t, e := profile.ParseTime(xmlutil.Attr(a, xmlNameAuthnInstant))
 	if e != nil || t.After(o.At.Add(l.ClockSkew)) || t.After(r.instant.Add(l.ClockSkew)) {
 		return ErrConditions
 	}
@@ -587,12 +800,12 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 
 	r.authnInstant = t
 
-	r.sessionIndex = xmlutil.Attr(a, "SessionIndex")
-	if len(r.sessionIndex) > 1024 {
+	r.sessionIndex = xmlutil.Attr(a, xmlNameSessionIndex)
+	if len(r.sessionIndex) > maximumAuthnSessionIndexBytes {
 		return ErrProfile
 	}
 
-	if s, ok := a.Attribute(document.Name{Local: "SessionNotOnOrAfter"}); ok {
+	if s, ok := a.Attribute(document.Name{Local: nameSessionNotOnOrAfter}); ok {
 		end, e := profile.ParseTime(s)
 		if e != nil || !t.Before(end) || !o.At.Add(-l.ClockSkew).Before(end) {
 			return ErrConditions
@@ -603,16 +816,16 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 	}
 
 	cs, e := xmlutil.Children(a)
-	if e != nil || len(cs) != 1 || cs[0].Name() != xmlutil.Name(AssertionNamespace, "AuthnContext") || xmlutil.Attrs(cs[0], nil, nil) != nil {
+	if e != nil || len(cs) != 1 || cs[0].Name() != xmlutil.Name(AssertionNamespace, xmlNameAuthnContext) || xmlutil.Attrs(cs[0], nil, nil) != nil {
 		return ErrProfile
 	}
 
 	ac, e := xmlutil.Children(cs[0])
-	if e != nil || len(ac) < 1 || len(ac) > 9 || ac[0].Name() != xmlutil.Name(AssertionNamespace, "AuthnContextClassRef") {
+	if e != nil || len(ac) < 1 || len(ac) > maximumWebAuthnContextChildren || ac[0].Name() != xmlutil.Name(AssertionNamespace, xmlNameAuthnContextClassRef) {
 		return ErrProfile
 	}
 
-	class, e := xmlutil.Simple(ac[0], 2048)
+	class, e := xmlutil.Simple(ac[0], maximumURITextBytes)
 	if e != nil || !profile.URI(class) || len(o.ExpectedAuthnContexts) > 0 && !allowed(class, o.ExpectedAuthnContexts) {
 		return ErrConditions
 	}
@@ -620,11 +833,11 @@ func parseAuthn(a document.Element, o ResponseOptions, l Limits, r *VerifiedAsse
 	r.contextClass = class
 
 	for _, x := range ac[1:] {
-		if x.Name() != xmlutil.Name(AssertionNamespace, "AuthenticatingAuthority") {
+		if x.Name() != xmlutil.Name(AssertionNamespace, xmlNameAuthenticatingAuthority) {
 			return ErrProfile
 		}
 
-		s, e := xmlutil.Simple(x, 2048)
+		s, e := xmlutil.Simple(x, maximumURITextBytes)
 		if e != nil || !profile.URI(s) {
 			return ErrProfile
 		}
@@ -659,19 +872,19 @@ func parseAttributes(a document.Element, l Limits) ([]Attribute, error) {
 }
 
 func parseAttribute(c document.Element, l Limits, seen map[[2]string]struct{}) (Attribute, error) {
-	if c.Name() != xmlutil.Name(AssertionNamespace, "Attribute") || xmlutil.Attrs(c, []string{"Name"}, []string{"NameFormat", "FriendlyName"}) != nil {
+	if c.Name() != xmlutil.Name(AssertionNamespace, xmlNameAttribute) || xmlutil.Attrs(c, []string{nameAttributeName}, []string{xmlNameNameFormat, xmlNameFriendlyName}) != nil {
 		return Attribute{}, ErrProfile
 	}
 
-	name := xmlutil.Attr(c, "Name")
+	name := xmlutil.Attr(c, nameAttributeName)
 
-	format := xmlutil.Attr(c, "NameFormat")
+	format := xmlutil.Attr(c, xmlNameNameFormat)
 	if format == "" {
 		format = AttributeUnspecified
 	}
 
-	friendly := xmlutil.Attr(c, "FriendlyName")
-	if _, exists := seen[[2]string{name, format}]; len(name) == 0 || len(name) > 1024 || !profile.URI(format) || len(friendly) > 1024 || exists {
+	friendly := xmlutil.Attr(c, xmlNameFriendlyName)
+	if _, exists := seen[[2]string{name, format}]; len(name) == 0 || len(name) > maximumAttributeNameBytes || !profile.URI(format) || len(friendly) > maximumFriendlyNameBytes || exists {
 		return Attribute{}, ErrProfile
 	}
 
@@ -697,12 +910,16 @@ func parseAttribute(c document.Element, l Limits, seen map[[2]string]struct{}) (
 }
 
 func parseAttributeValue(x document.Element, l Limits) (string, error) {
-	if x.Name() != xmlutil.Name(AssertionNamespace, "AttributeValue") || len(x.Children()) != 0 {
+	const (
+		maximumAttributeTypeNameBytes = 256
+	)
+
+	if x.Name() != xmlutil.Name(AssertionNamespace, xmlNameAttributeValue) || len(x.Children()) != 0 {
 		return "", ErrProfile
 	}
 
 	for _, attr := range x.Attributes() {
-		if attr.Name != (document.Name{Space: lexicon.NamespaceXSI, Local: "type"}) || len(attr.Value) > 256 {
+		if attr.Name != (document.Name{Space: lexicon.NamespaceXSI, Local: lexicon.AttrType}) || len(attr.Value) > maximumAttributeTypeNameBytes {
 			return "", ErrProfile
 		}
 	}
@@ -723,28 +940,4 @@ func copyAttributes(a []Attribute) []Attribute {
 	}
 
 	return out
-}
-
-// StatusError reports an authenticated non-success response. It does not indicate
-// login success. Remote StatusMessage and StatusDetail are not exposed as trusted
-// text.
-type StatusError struct {
-	// Code is the authenticated non-success SAML status code URI.
-	Code string
-}
-
-// Error returns the diagnostic error message.
-func (e *StatusError) Error() string { return "SAML response status: " + e.Code }
-
-// ValidatePolicy checks a reusable policy before a stateful SP/IdP accepts it.
-func ValidatePolicy(l Limits) error { _, e := normalize(l); return e }
-
-// AcceptanceWindow returns normalized, immutable timing limits to wrappers.
-func AcceptanceWindow(l Limits) (messageAge, assertionLifetime, skew time.Duration, err error) {
-	n, e := normalize(l)
-	if e != nil {
-		return 0, 0, 0, e
-	}
-
-	return n.MaxMessageAge, n.MaxAssertionLifetime, n.ClockSkew, nil
 }

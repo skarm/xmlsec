@@ -47,6 +47,10 @@ func (c *compiler) enterModuleNamespaceScope(root *xdm.Element) func() {
 // extension-element-prefixes to the set of namespace URIs to exclude from result
 // trees. inScope is the module root's in-scope namespaces.
 func (c *compiler) moduleResultPrefixExcludes(root *xdm.Element, inScope map[string]string) map[string]struct{} {
+	const (
+		moduleExclusionInitialCapacity = 4
+	)
+
 	erp := getAttr(root, nameExcludeResultPrefixes)
 
 	eep := getAttr(root, nameExtensionElementPrefixes)
@@ -54,7 +58,7 @@ func (c *compiler) moduleResultPrefixExcludes(root *xdm.Element, inScope map[str
 		return nil
 	}
 
-	out := make(map[string]struct{}, 4)
+	out := make(map[string]struct{}, moduleExclusionInitialCapacity)
 
 	addPrefix := func(prefix string) {
 		if prefix == lexicon.ModeDefault {
@@ -411,7 +415,7 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 	savedXPathDefaultNS := c.xpathDefaultNS
 
 	savedHasXPathDefaultNS := c.hasXPathDefaultNS
-	if xdn, ok := root.GetAttribute(nameXpathDefaultNamespace); ok {
+	if xdn, ok := root.GetAttribute(nameXPathDefaultNamespace); ok {
 		c.xpathDefaultNS = xdn
 		c.hasXPathDefaultNS = true
 	}
@@ -427,13 +431,13 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 	// root — so an included module whose computed version is < 2.0 enters
 	// backwards-compatible mode.
 	savedVersion := c.effectiveVersion
-	if _, hasShadow := root.GetAttribute("_version"); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, root, lexicon.SerializationVersion); err != nil {
+	if _, hasShadow := root.GetAttribute(shadowAttrVersion); hasShadow {
+		if err := c.resolveSingleShadowAttribute(ctx, root, xslAttrVersion); err != nil {
 			return err
 		}
 	}
 
-	if ver := getAttr(root, lexicon.SerializationVersion); ver != "" {
+	if ver := getAttr(root, xslAttrVersion); ver != "" {
 		c.effectiveVersion = ver
 	}
 
@@ -618,13 +622,13 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 	// and included modules — so an imported module whose computed version is < 2.0
 	// enters backwards-compatible mode.
 	savedVersion := c.effectiveVersion
-	if _, hasShadow := importedRoot.GetAttribute("_version"); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, importedRoot, lexicon.SerializationVersion); err != nil {
+	if _, hasShadow := importedRoot.GetAttribute(shadowAttrVersion); hasShadow {
+		if err := c.resolveSingleShadowAttribute(ctx, importedRoot, xslAttrVersion); err != nil {
 			return err
 		}
 	}
 
-	if ver := getAttr(importedRoot, lexicon.SerializationVersion); ver != "" {
+	if ver := getAttr(importedRoot, xslAttrVersion); ver != "" {
 		c.effectiveVersion = ver
 	}
 
@@ -717,7 +721,7 @@ func (c *compiler) enterModule(uri string, imported bool) (func(), error) {
 // original source remains available to document(""); only a private module tree
 // receives the implicit stylesheet/template wrappers.
 func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.Element) (*xdm.Document, error) {
-	version := root.GetAttributeNodeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
+	version := root.GetAttributeNodeNS(xslAttrVersion, lexicon.NamespaceXSLT)
 	if version == nil {
 		return nil, staticError(errCodeXTSE0150, "simplified stylesheet requires xsl:version")
 	}
@@ -733,7 +737,7 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 
 	wrapper := &tree.Node{
 		Kind: tree.ElementNode, Name: tree.Name{Space: lexicon.NamespaceXSLT, Local: nameStylesheet}, Prefix: version.Prefix(), SourceLine: literal.SourceLine,
-		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: lexicon.SerializationVersion}, Value: version.Value()}},
+		NS: []tree.Namespace{{Prefix: version.Prefix(), URI: lexicon.NamespaceXSLT}}, Attrs: []tree.Attribute{{Name: tree.Name{Local: xslAttrVersion}, Value: version.Value()}},
 	}
 	// Extraction loses ancestor xml:space. Keep it on the synthetic wrapper so
 	// re-normalization preserves the same text without adding an LRE attribute.
@@ -742,7 +746,7 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 	}
 
 	if base := xpath.NodeBaseURI(root.Parent()); base != "" && base != doc.URL() {
-		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: "base"}, Prefix: "xml", Value: base})
+		wrapper.Attrs = append(wrapper.Attrs, tree.Attribute{Name: tree.Name{Space: lexicon.NamespaceXML, Local: lexicon.AttrBase}, Prefix: lexicon.PrefixXML, Value: base})
 	}
 
 	tmpl := &tree.Node{
@@ -770,7 +774,7 @@ func expandSimplifiedModule(ctx context.Context, doc *xdm.Document, root *xdm.El
 func inheritedStylesheetXMLSpace(node xdm.Node) string {
 	for ; node != nil; node = node.Parent() {
 		if elem, ok := node.(*xdm.Element); ok {
-			if space, present := elem.GetAttributeNS("space", lexicon.NamespaceXML); present {
+			if space, present := elem.GetAttributeNS(lexicon.AttrSpace, lexicon.NamespaceXML); present {
 				return space
 			}
 		}
@@ -871,7 +875,7 @@ func isWindowsDrivePath(s string) bool {
 // the boundary that descendant walks stop at.
 func moduleEffectiveBaseURI(root *xdm.Element, uri string) string {
 	if _, isDoc := root.Parent().(*xdm.Document); isDoc {
-		if xmlBase, present := root.GetAttributeNS("base", lexicon.NamespaceXML); present {
+		if xmlBase, present := root.GetAttributeNS(lexicon.AttrBase, lexicon.NamespaceXML); present {
 			return resolveRootXMLBase(uri, xmlBase)
 		}
 
@@ -887,7 +891,7 @@ func moduleEffectiveBaseURI(root *xdm.Element, uri string) string {
 			continue
 		}
 
-		if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok {
+		if xmlBase, ok := elem.GetAttributeNS(lexicon.AttrBase, lexicon.NamespaceXML); ok {
 			bases = append(bases, xmlBase)
 		}
 	}
@@ -938,7 +942,7 @@ func stylesheetBaseURI(n xdm.Node, fallback string, stopAt *xdm.Element) string 
 			}
 		}
 
-		if xmlBase, ok := elem.GetAttributeNS("base", lexicon.NamespaceXML); ok {
+		if xmlBase, ok := elem.GetAttributeNS(lexicon.AttrBase, lexicon.NamespaceXML); ok {
 			bases = append(bases, xmlBase)
 		}
 		// An external parsed entity supplies a new physical base, independent
@@ -1041,11 +1045,11 @@ func findElementByID(doc *xdm.Document, id string) *xdm.Element {
 				continue
 			}
 
-			if v, found := elem.GetAttribute("id"); found && v == id {
+			if v, found := elem.GetAttribute(lexicon.AttrID); found && v == id {
 				return elem
 			}
 
-			if v, found := elem.GetAttributeNS("id", lexicon.NamespaceXML); found && v == id {
+			if v, found := elem.GetAttributeNS(lexicon.AttrID, lexicon.NamespaceXML); found && v == id {
 				return elem
 			}
 

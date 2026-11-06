@@ -20,6 +20,13 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
+const (
+	// Hard byte ceiling for an observation and for the caller-selected spool byte budget.
+	maximumRecordBytes = 64 << 20
+	maximumRedirects   = 10
+	maximumURIBytes    = 8192
+)
+
 var (
 	// ErrInput reports malformed observation metadata or collector configuration.
 	ErrInput = errors.New("evidence: invalid input")
@@ -57,15 +64,19 @@ type Provenance struct {
 	RetrievedAt time.Time
 	// RequestSHA256 optionally identifies an accompanying request, such as OCSP.
 	// Offline verification must independently bind any expected nonce or CertID.
-	RequestSHA256 [32]byte
+	RequestSHA256 [sha256.Size]byte
 }
 
 // Observation owns raw bytes and their digest. The zero value is invalid.
 // Accessors return fresh copies of all mutable data and support concurrent use.
 type Observation struct {
-	kind       Kind
-	data       []byte
-	digest     [32]byte
+	// kind identifies the observed DER object's encoding.
+	kind Kind
+	// data owns the exact observed bytes.
+	data []byte
+	// digest identifies data by its SHA-256 digest.
+	digest [sha256.Size]byte
+	// provenance records collection metadata without authenticating the object.
 	provenance Provenance
 }
 
@@ -81,7 +92,7 @@ func NewObservation(ctx context.Context, kind Kind, data []byte, provenance Prov
 		return nil, err
 	}
 
-	if len(data) > 64<<20 {
+	if len(data) > maximumRecordBytes {
 		return nil, ErrLimit
 	}
 
@@ -115,7 +126,7 @@ func ReadObservation(ctx context.Context, kind Kind, src io.Reader, provenance P
 		return nil, err
 	}
 
-	if maximum < 1 || maximum > 64<<20 {
+	if maximum < 1 || maximum > maximumRecordBytes {
 		return nil, ErrLimit
 	}
 
@@ -174,9 +185,9 @@ func (o *Observation) Bytes() []byte {
 }
 
 // DigestSHA256 returns the digest of the original byte snapshot.
-func (o *Observation) DigestSHA256() [32]byte {
+func (o *Observation) DigestSHA256() [sha256.Size]byte {
 	if !o.Valid() {
-		return [32]byte{}
+		return [sha256.Size]byte{}
 	}
 
 	return o.digest
@@ -209,7 +220,7 @@ func ValidKind(kind Kind) bool {
 }
 
 func snapshotProvenance(provenance Provenance) (Provenance, error) {
-	if len(provenance.Redirects) > 10 {
+	if len(provenance.Redirects) > maximumRedirects {
 		return Provenance{}, ErrLimit
 	}
 
@@ -232,7 +243,7 @@ func snapshotProvenance(provenance Provenance) (Provenance, error) {
 }
 
 func validProvenanceURI(raw string) bool {
-	if len(raw) > 8192 || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
+	if len(raw) > maximumURIBytes || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
 		return false
 	}
 

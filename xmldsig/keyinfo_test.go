@@ -217,6 +217,8 @@ func testStage4VectorMutations(t *testing.T, test stage4Case, key crypto.PublicK
 		result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), doc, xmldsig.Signatures(doc)[0], key, opt)
 		test.Resources[uriUrnAttachment] = original
 
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if result != nil || !errors.Is(err, xmldsig.ErrDigest) || report.References[0].Status != xmldsig.Valid || report.ManifestValidation == xmldsig.Valid {
 			t.Fatal("independent nested-content mutation", report, err)
 		}
@@ -290,7 +292,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 
 	signed, sel := makeKeyInfoSigned(t, k, ki)
 	before := coreXML(t, signed)
-	opt := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{namePayload}, RequiredElements: []document.Element{signed.Root().Children()[0]}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}
+	opt := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}, RequiredElements: []document.Element{signed.Root().Children()[0]}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}
 
 	r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, opt)
 	if e != nil || !r.CoversElement(signed.Root().Children()[0]) || r.CoversElement(signed.Root()) || coreXML(t, signed) != before {
@@ -349,7 +351,7 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 	})
 	t.Run("freeze-reference-policy", func(t *testing.T) {
 		o := opt
-		o.Signature.ExpectedURIs = []string{namePayload}
+		o.Signature.ExpectedURIs = []string{payloadReferenceURI}
 
 		o.SelectTrustedKey = func(context.Context, *keyinfo.Result) (int, error) {
 			o.Signature.ExpectedURIs[0] = "#tampered"
@@ -427,7 +429,7 @@ func TestKeyInfoLinkedFromSignature(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	draft, sel, e := xmldsig.BuildTemplate(ctx, d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: linked, References: []xmldsig.ReferenceTemplate{{URI: namePayload}}})
+	draft, sel, e := xmldsig.BuildTemplate(ctx, d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: linked, References: []xmldsig.ReferenceTemplate{{URI: payloadReferenceURI}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -654,7 +656,7 @@ func TestKeyInfoBuilderMutualExclusion(t *testing.T) {
 		certs [][]byte
 	}{{"both", ki, [][]byte{{1}}}, {"wrong-root", coreParse(t, `<not-KeyInfo/>`), nil}} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: test.ki, Certificates: test.certs, References: []xmldsig.ReferenceTemplate{{URI: nameData}}, Objects: []xmldsig.ObjectTemplate{{ID: nameData2, Binary: []byte("x")}}})
+			_, _, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: test.ki, Certificates: test.certs, References: []xmldsig.ReferenceTemplate{{URI: dataReferenceURI}}, Objects: []xmldsig.ObjectTemplate{{ID: dataLiteral, Binary: []byte("x")}}})
 			if e == nil {
 				t.Fatal("accepted")
 			}
@@ -733,7 +735,7 @@ func FuzzVerifyWithKeyInfo(f *testing.F) {
 			return
 		}
 
-		options := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{nameData}}, SelectTrustedKey: selectKey}
+		options := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{dataReferenceURI}}, SelectTrustedKey: selectKey}
 		if len(b) > 0 && int(b[0]) < len(vectors.Cases) {
 			options.Signature = independentOptions[int(b[0])]
 			options.SelectTrustedKey = independentSelector
@@ -761,6 +763,29 @@ func FuzzVerifyWithKeyInfo(f *testing.F) {
 			t.Fatal("partial success")
 		}
 	})
+}
+
+func TestTemplateCertificateEncodingConsistency(t *testing.T) {
+	chain := testcert.New(t)
+	for _, test := range testcert.CertificateEncodings(t, chain) {
+		t.Run(test.Name, func(t *testing.T) {
+			before := bytes.Clone(test.DER)
+			draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data"}}, Certificates: [][]byte{test.DER}})
+			if !test.Valid {
+				if draft != nil || selected.Valid() || !errors.Is(err, xmldsig.ErrStructure) {
+					t.Fatal("template accepted invalid certificate DER", err)
+				}
+				return
+			}
+			if err != nil || draft == nil || !selected.Valid() {
+				t.Fatal(err)
+			}
+			wire, err := draft.XML(t.Context())
+			if err != nil || !bytes.Contains(wire, []byte(base64.StdEncoding.EncodeToString(test.DER))) || !bytes.Equal(before, test.DER) {
+				t.Fatal("template changed original certificate bytes", err)
+			}
+		})
+	}
 }
 
 func keySelector(t testing.TB, expected crypto.PublicKey) xmldsig.TrustedKeySelector {
@@ -794,7 +819,7 @@ func makeKeyInfoSigned(t testing.TB, k crypto.Signer, ki *document.Document) (*d
 	ctx := t.Context()
 	d := coreParse(t, `<root><payload ID="payload">hello</payload></root>`)
 
-	draft, selected, e := xmldsig.BuildTemplate(ctx, d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: ki, References: []xmldsig.ReferenceTemplate{{URI: namePayload, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}})
+	draft, selected, e := xmldsig.BuildTemplate(ctx, d, d.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: ki, References: []xmldsig.ReferenceTemplate{{URI: payloadReferenceURI, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -825,28 +850,5 @@ func assertTemplateKeyInfoCount(t testing.TB, doc *document.Document, present bo
 
 	if count != want {
 		t.Fatalf("KeyInfo count %d, want %d", count, want)
-	}
-}
-
-func TestTemplateCertificateEncodingConsistency(t *testing.T) {
-	chain := testcert.New(t)
-	for _, test := range testcert.CertificateEncodings(t, chain) {
-		t.Run(test.Name, func(t *testing.T) {
-			before := bytes.Clone(test.DER)
-			draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data"}}, Certificates: [][]byte{test.DER}})
-			if !test.Valid {
-				if draft != nil || selected.Valid() || !errors.Is(err, xmldsig.ErrStructure) {
-					t.Fatal("template accepted invalid certificate DER", err)
-				}
-				return
-			}
-			if err != nil || draft == nil || !selected.Valid() {
-				t.Fatal(err)
-			}
-			wire, err := draft.XML(t.Context())
-			if err != nil || !bytes.Contains(wire, []byte(base64.StdEncoding.EncodeToString(test.DER))) || !bytes.Equal(before, test.DER) {
-				t.Fatal("template changed original certificate bytes", err)
-			}
-		})
 	}
 }

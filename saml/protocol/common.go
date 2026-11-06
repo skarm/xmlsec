@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/saml/internal/profile"
@@ -32,6 +33,9 @@ const (
 	NameIDPersistent = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
 	// NameIDTransient is the transient SAML NameID format URI.
 	NameIDTransient = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient"
+	// NameIDEncrypted is a NameIDPolicy request for EncryptedID, not a format
+	// of the underlying NameID. SAML Core 3.4.1.1 permits any supported inner format.
+	NameIDEncrypted = "urn:oasis:names:tc:SAML:2.0:nameid-format:encrypted"
 	// AttributeUnspecified is the SAML unspecified attribute name format URI.
 	AttributeUnspecified = "urn:oasis:names:tc:SAML:2.0:attrname-format:unspecified"
 	// Success is the SAML successful response status URI.
@@ -79,32 +83,73 @@ type SigningKey struct {
 	// SignatureMethod selects the XML signature algorithm. Empty selects RSA-SHA256
 	// for RSA keys or ECDSA-SHA256 for ECDSA keys.
 	SignatureMethod string
+	// DigestMethod selects the reference digest. Empty uses SHA-256. SHA-1
+	// requires an explicit legacy digest allowlist.
+	DigestMethod string
+	// Canonicalization selects Exclusive C14N (default) or Canonical XML 1.0
+	// without comments, the original SAML mandatory baseline.
+	Canonicalization string
+	// InclusivePrefixes retains QName namespace bindings under Exclusive C14N.
+	InclusivePrefixes []string
+	// PreserveKeys authorizes completed nested signatures when forwarding
+	// assertions or Evidence from another signer. The parent XML object is a
+	// lookup hint, never a source of trust. Nil preserves only this signer's key.
+	PreserveKeys func(context.Context, document.Element) ([]crypto.PublicKey, error)
+	// Secret explicitly selects a shared-secret MAC at protocol level. It is
+	// mutually exclusive with Key and CertificateDER and requires HMAC policy.
+	// High-level SP/IdP metadata workflows use public-key credentials.
+	Secret *SharedSecret
 	// Policy sets signature algorithms and key limits. Zero selects xmldsig.DefaultPolicy.
 	Policy xmldsig.Policy
 }
 
+// SharedSecret is an immutable, explicitly selected protocol-level SAML MAC
+// credential. Every holder can produce a valid MAC. It is not a public key.
+// Supply its value in the trusted verification-key list only for its peer.
+type SharedSecret = xmlsig.SharedSecret
+
+// NewSharedSecret copies an application-provisioned secret. Secrets must contain
+// at least 32 unpredictable bytes and must never be taken from received XML.
+func NewSharedSecret(secret []byte) (SharedSecret, error) {
+	return xmlsig.NewSharedSecret(secret)
+}
+
 func normalize(l Limits) (Limits, error) {
+	const (
+		defaultAssertionLifetime       = 10 * time.Minute
+		defaultAttributeLimit          = 64
+		defaultAttributeValueBytes     = 4096
+		defaultMessageAge              = 5 * time.Minute
+		defaultValuesPerAttributeLimit = 32
+		maximumAssertionLifetime       = time.Hour
+		maximumAttributeLimit          = 512
+		maximumAttributeValueBytes     = 64 << 10
+		maximumClockSkew               = 5 * time.Minute
+		maximumMessageAge              = time.Hour
+		maximumValuesPerAttributeLimit = 128
+	)
+
 	if l.MaxMessageAge == 0 {
-		l.MaxMessageAge = 5 * time.Minute
+		l.MaxMessageAge = defaultMessageAge
 	}
 
 	if l.MaxAssertionLifetime == 0 {
-		l.MaxAssertionLifetime = 10 * time.Minute
+		l.MaxAssertionLifetime = defaultAssertionLifetime
 	}
 
 	if l.MaxAttributes == 0 {
-		l.MaxAttributes = 64
+		l.MaxAttributes = defaultAttributeLimit
 	}
 
 	if l.MaxValuesPerAttribute == 0 {
-		l.MaxValuesPerAttribute = 32
+		l.MaxValuesPerAttribute = defaultValuesPerAttributeLimit
 	}
 
 	if l.MaxValueBytes == 0 {
-		l.MaxValueBytes = 4096
+		l.MaxValueBytes = defaultAttributeValueBytes
 	}
 
-	if l.MaxMessageAge <= 0 || l.MaxMessageAge > time.Hour || l.MaxAssertionLifetime <= 0 || l.MaxAssertionLifetime > time.Hour || l.ClockSkew < 0 || l.ClockSkew > 5*time.Minute || l.MaxAttributes < 1 || l.MaxAttributes > 512 || l.MaxValuesPerAttribute < 1 || l.MaxValuesPerAttribute > 128 || l.MaxValueBytes < 1 || l.MaxValueBytes > 64<<10 {
+	if l.MaxMessageAge <= 0 || l.MaxMessageAge > maximumMessageAge || l.MaxAssertionLifetime <= 0 || l.MaxAssertionLifetime > maximumAssertionLifetime || l.ClockSkew < 0 || l.ClockSkew > maximumClockSkew || l.MaxAttributes < 1 || l.MaxAttributes > maximumAttributeLimit || l.MaxValuesPerAttribute < 1 || l.MaxValuesPerAttribute > maximumValuesPerAttributeLimit || l.MaxValueBytes < 1 || l.MaxValueBytes > maximumAttributeValueBytes {
 		return l, ErrProfile
 	}
 
@@ -112,7 +157,7 @@ func normalize(l Limits) (Limits, error) {
 }
 
 func header(e document.Element, local string, at time.Time, l Limits) (string, time.Time, error) {
-	if e.Name() != xmlutil.Name(ProtocolNamespace, local) || xmlutil.Attr(e, nameVersion) != version20 || !profile.ID(xmlutil.Attr(e, "ID")) {
+	if e.Name() != xmlutil.Name(ProtocolNamespace, local) || xmlutil.Attr(e, nameVersion) != version20 || !profile.ID(xmlutil.Attr(e, lexicon.SAMLAttrID)) {
 		return "", time.Time{}, ErrProfile
 	}
 
@@ -121,15 +166,23 @@ func header(e document.Element, local string, at time.Time, l Limits) (string, t
 		return "", time.Time{}, ErrConditions
 	}
 
-	return xmlutil.Attr(e, "ID"), t, nil
+	return xmlutil.Attr(e, lexicon.SAMLAttrID), t, nil
 }
 
 func issuer(e document.Element, expected string) error {
-	if e.Name() != xmlutil.Name(AssertionNamespace, "Issuer") {
+	if e.Name() != xmlutil.Name(AssertionNamespace, xmlNameIssuer) {
 		return ErrProfile
 	}
 
-	s, er := xmlutil.Simple(e, 2048)
+	if xmlutil.Attrs(e, nil, []string{nameFormat}) != nil {
+		return ErrProfile
+	}
+
+	if format := xmlutil.Attr(e, nameFormat); format != "" && format != lexicon.SAMLNameIDFormatEntity {
+		return ErrProfile
+	}
+
+	s, er := xmlutil.SimpleText(e, maximumURITextBytes)
 	if er != nil || s != expected {
 		return ErrProfile
 	}
@@ -166,6 +219,19 @@ func timeWindow(start, end, at time.Time, l Limits) error {
 }
 
 func signing(k SigningKey) (xmlsig.SigningKey, error) {
+	if k.Secret != nil {
+		if !nilcheck.IsNil(k.Key) || len(k.CertificateDER) != 0 {
+			return xmlsig.SigningKey{}, ErrSignature
+		}
+
+		method := k.SignatureMethod
+		if method == "" {
+			method = xmldsig.HMACSHA256
+		}
+
+		return xmlsig.SigningKey{Secret: k.Secret, Method: method, DigestMethod: k.DigestMethod, Canonicalization: k.Canonicalization, InclusivePrefixes: slices.Clone(k.InclusivePrefixes), PreserveKeys: k.PreserveKeys, Policy: k.Policy}, nil
+	}
+
 	if nilcheck.IsNil(k.Key) {
 		return xmlsig.SigningKey{}, ErrSignature
 	}
@@ -186,7 +252,15 @@ func signing(k SigningKey) (xmlsig.SigningKey, error) {
 		}
 	}
 
-	return xmlsig.SigningKey{Key: k.Key, CertificateDER: k.CertificateDER, Method: method, Policy: k.Policy}, nil
+	return xmlsig.SigningKey{Key: k.Key, CertificateDER: k.CertificateDER, Method: method, DigestMethod: k.DigestMethod, Canonicalization: k.Canonicalization, InclusivePrefixes: slices.Clone(k.InclusivePrefixes), PreserveKeys: k.PreserveKeys, Policy: k.Policy}, nil
+}
+
+func verificationKey(k SigningKey) crypto.PublicKey {
+	if k.Secret != nil {
+		return *k.Secret
+	}
+
+	return k.Key.Public()
 }
 
 func signingCount(d *document.Document, n int) error {

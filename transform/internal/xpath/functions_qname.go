@@ -14,34 +14,54 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// QName constructor/accessor local names are function dispatch vocabulary.
+const (
+	fnNameQName                 = "QName"
+	fnNamePrefixFromQName       = "prefix-from-QName"
+	fnNameLocalNameFromQName    = "local-name-from-QName"
+	fnNameNamespaceURIFromQName = "namespace-uri-from-QName"
+	fnNameNamespaceURIForPrefix = "namespace-uri-for-prefix"
+	fnNameInScopePrefixes       = "in-scope-prefixes"
+	fnNameResolveQName          = "resolve-QName"
+)
+
+// Optional QName strings allow an atomized-empty namespace/prefix. Atomization
+// and required-element cardinalities are independent argument constraints.
+const (
+	qnameStringOptional   = true
+	qnameStringRequired   = false
+	qnameMaximumAtoms     = 1
+	qnameRequiredElements = 1
+)
+
 func lookupFunctionsQName(name string) (*builtinFunc, bool) {
 	switch name {
-	case lexicon.TypeQName:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnQName}, true
-	case "prefix-from-QName":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnPrefixFromQName}, true
-	case "local-name-from-QName":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnLocalNameFromQName}, true
-	case "namespace-uri-from-QName":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnNamespaceURIFromQName}, true
-	case "namespace-uri-for-prefix":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnNamespaceURIForPrefix}, true
-	case "in-scope-prefixes":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnInScopePrefixes}, true
-	case "resolve-QName":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnResolveQName}, true
+	case fnNameQName:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnQName}, true
+	case fnNamePrefixFromQName:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnPrefixFromQName}, true
+	case fnNameLocalNameFromQName:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnLocalNameFromQName}, true
+	case fnNameNamespaceURIFromQName:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnNamespaceURIFromQName}, true
+	case fnNameNamespaceURIForPrefix:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnNamespaceURIForPrefix}, true
+	case fnNameInScopePrefixes:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnInScopePrefixes}, true
+	case fnNameResolveQName:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnResolveQName}, true
 	}
 
 	return nil, false
 }
 
 func fnQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	uri, err := coerceQNameString(args[0], true, "fn:QName namespace argument must be a string")
+	uri, err := coerceQNameString(args[0], qnameStringOptional, "fn:QName namespace argument must be a string")
 	if err != nil {
 		return nil, err
 	}
 
-	qname, err := coerceQNameString(args[1], false, "fn:QName QName argument must be a string")
+	qname, err := coerceQNameString(args[1], qnameStringRequired, "fn:QName QName argument must be a string")
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +94,7 @@ func atomizeQNameArg(seq xdm.Sequence, fname string) (xdm.AtomicValue, bool, err
 
 	err := atomizeStream(seq, func(av xdm.AtomicValue) (bool, error) {
 		count++
-		if count == 1 {
+		if count == qnameMaximumAtoms {
 			first = av
 			return true, nil
 		}
@@ -89,7 +109,7 @@ func atomizeQNameArg(seq xdm.Sequence, fname string) (xdm.AtomicValue, bool, err
 		return xdm.AtomicValue{}, true, nil
 	}
 
-	if count > 1 {
+	if count > qnameMaximumAtoms {
 		return xdm.AtomicValue{}, false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fname + " expects a single QName"}
 	}
 
@@ -102,7 +122,7 @@ func atomizeQNameArg(seq xdm.Sequence, fname string) (xdm.AtomicValue, bool, err
 }
 
 func fnPrefixFromQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	a, empty, err := atomizeQNameArg(args[0], "fn:prefix-from-QName")
+	a, empty, err := atomizeQNameArg(args[0], prefixFn+":"+fnNamePrefixFromQName)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +140,7 @@ func fnPrefixFromQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, er
 }
 
 func fnLocalNameFromQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	a, empty, err := atomizeQNameArg(args[0], "fn:local-name-from-QName")
+	a, empty, err := atomizeQNameArg(args[0], prefixFn+":"+fnNameLocalNameFromQName)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +153,7 @@ func fnLocalNameFromQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence,
 }
 
 func fnNamespaceURIFromQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	a, empty, err := atomizeQNameArg(args[0], "fn:namespace-uri-from-QName")
+	a, empty, err := atomizeQNameArg(args[0], prefixFn+":"+fnNameNamespaceURIFromQName)
 	if err != nil {
 		return nil, err
 	}
@@ -148,12 +168,12 @@ func fnNamespaceURIFromQName(_ context.Context, args []xdm.Sequence) (xdm.Sequen
 func fnNamespaceURIForPrefix(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// The element() second argument is required and must be exactly one
 	// element() regardless of the first argument, so validate it FIRST.
-	elem, err := requireSingleElement(args[1], "fn:namespace-uri-for-prefix")
+	elem, err := requireSingleElement(args[1], prefixFn+":"+fnNameNamespaceURIForPrefix)
 	if err != nil {
 		return nil, err
 	}
 
-	prefix, err := coerceQNameString(args[0], true, "fn:namespace-uri-for-prefix prefix argument must be a string")
+	prefix, err := coerceQNameString(args[0], qnameStringOptional, "fn:namespace-uri-for-prefix prefix argument must be a string")
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +190,7 @@ func fnNamespaceURIForPrefix(_ context.Context, args []xdm.Sequence) (xdm.Sequen
 // before any sibling argument is coerced so an invalid element() arg yields
 // XPTY0004, and never an error from atomizing the other argument.
 func requireSingleElement(seq xdm.Sequence, fname string) (*xdm.Element, error) {
-	if xdm.SequenceLen(seq) != 1 {
+	if xdm.SequenceLen(seq) != qnameRequiredElements {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fname + ": expects a single element"}
 	}
 
@@ -190,7 +210,7 @@ func requireSingleElement(seq xdm.Sequence, fname string) (*xdm.Element, error) 
 func fnResolveQName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// The element() second argument is required and must be exactly one
 	// element() regardless of whether $qname is empty, so validate it FIRST.
-	elem, err := requireSingleElement(args[1], "resolve-QName")
+	elem, err := requireSingleElement(args[1], fnNameResolveQName)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +320,7 @@ func coerceOptionalQNameString(seq xdm.Sequence, message string) (string, bool, 
 
 	err := atomizeStream(seq, func(av xdm.AtomicValue) (bool, error) {
 		count++
-		if count == 1 {
+		if count == qnameMaximumAtoms {
 			first = av
 			return true, nil
 		}
@@ -315,7 +335,7 @@ func coerceOptionalQNameString(seq xdm.Sequence, message string) (string, bool, 
 		return "", true, nil
 	}
 
-	if count > 1 {
+	if count > qnameMaximumAtoms {
 		return "", false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: message}
 	}
 
@@ -340,7 +360,7 @@ func coerceOptionalQNameString(seq xdm.Sequence, message string) (string, bool, 
 }
 
 func fnInScopePrefixes(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xdm.SequenceLen(args[0]) != 1 {
+	if xdm.SequenceLen(args[0]) != qnameRequiredElements {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:in-scope-prefixes expects a single element"}
 	}
 

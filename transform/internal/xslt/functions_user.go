@@ -113,7 +113,7 @@ func (f *xslUserFunc) DynamicRefSnapshot(_ context.Context, arity int) (xdm.Func
 func (f *xslUserFunc) FuncParamTypes() []xdm.SequenceType {
 	// The XSLT 2.0 call boundary performs conversion itself so that a mismatch
 	// raises XTTE0790. XPath's generic precheck would mask it with XPTY0004.
-	if f.ec.stylesheet.processorLanguage() == 20 {
+	if f.ec.stylesheet.processorLanguage() == processorXSLT20 {
 		return nil
 	}
 
@@ -250,10 +250,8 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
 	}()
 
-	for _, inst := range f.def.Body {
-		if err := ec.executeInstruction(ctx, inst); err != nil {
-			return nil, err
-		}
+	if err := ec.executeSequenceConstructor(ctx, f.def.Body); err != nil {
+		return nil, err
 	}
 
 	if f.def.selectOnly && tmpRoot.FirstChild() != nil {
@@ -350,7 +348,7 @@ func (ec *execContext) convertSequenceType(ctx context.Context, value xdm.Sequen
 
 func (ec *execContext) convertFunctionArgument(ctx context.Context, value xdm.Sequence, st xdm.SequenceType) (xdm.Sequence, error) {
 	converted, err := ec.convertSequenceType(ctx, value, st)
-	if err != nil && ec.stylesheet.processorLanguage() == 20 {
+	if err != nil && ec.stylesheet.processorLanguage() == processorXSLT20 {
 		var detail *xdm.Error
 		if errors.As(err, &detail) && detail.Code == lexicon.ErrXPTY0004 {
 			return nil, dynamicError(errCodeXTTE0790, "function argument: %s", detail.Message)
@@ -401,13 +399,17 @@ func (ec *execContext) captureFunctionContext() *execContext {
 // typeAnnotations, ...) keyed by node identity, which a recycled slab would
 // alias.
 func (ec *execContext) functionOutputRoot(def *xslFunction) (*xdm.Document, *xdm.Element, error) {
+	const (
+		functionResultWrapper = "_xsl_fn_result"
+	)
+
 	if def.selectOnly && ec.fnScratchRoot != nil {
 		return ec.fnScratchDoc, ec.fnScratchRoot, nil
 	}
 
 	doc := xdm.NewDefaultDocument()
 
-	root, err := doc.CreateElement("_xsl_fn_result")
+	root, err := doc.CreateElement(functionResultWrapper)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -431,6 +433,7 @@ func (ec *execContext) functionInvocation(ctx context.Context) *execContext {
 		config.rawCapturedItems, config.primaryItems = nil, nil
 		config.valueResults = make(map[string]ValueResult)
 		cfg = &config
+		rebaseFunctionResources(ctx, cfg)
 	}
 
 	local := newTransformExecContext(ctx, ec.sourceDoc, ec.stylesheet, cfg)
@@ -470,6 +473,10 @@ func (ec *execContext) functionInvocation(ctx context.Context) *execContext {
 }
 
 func (ec *execContext) functionCacheKey(def *xslFunction, args []xdm.Sequence) (string, bool) {
+	const (
+		memoPackageIdentityFormat = "pkg:%p|"
+	)
+
 	if ec == nil || def == nil {
 		return "", false
 	}
@@ -481,12 +488,11 @@ func (ec *execContext) functionCacheKey(def *xslFunction, args []xdm.Sequence) (
 
 	var b strings.Builder
 	if def.OwnerPackage != nil {
-		fmt.Fprintf(&b, "pkg:%p|", def.OwnerPackage)
+		fmt.Fprintf(&b, memoPackageIdentityFormat, def.OwnerPackage)
 	}
 
-	b.WriteString(def.Name.URI)
-	b.WriteByte('|')
-	b.WriteString(def.Name.Name)
+	writeFunctionCacheString(&b, def.Name.URI)
+	writeFunctionCacheString(&b, def.Name.Name)
 	b.WriteByte('#')
 	b.WriteString(strconv.Itoa(len(args)))
 
@@ -499,6 +505,12 @@ func (ec *execContext) functionCacheKey(def *xslFunction, args []xdm.Sequence) (
 	}
 
 	return b.String(), true
+}
+
+func writeFunctionCacheString(b *strings.Builder, value string) {
+	b.WriteString(strconv.Itoa(len(value)))
+	b.WriteByte(':')
+	b.WriteString(value)
 }
 
 func (ec *execContext) writeFunctionCacheSequence(b *strings.Builder, seq xdm.Sequence) bool {
@@ -519,6 +531,17 @@ func (ec *execContext) writeFunctionCacheSequence(b *strings.Builder, seq xdm.Se
 }
 
 func (ec *execContext) writeFunctionCacheItem(b *strings.Builder, item xdm.Item) bool {
+	const (
+		memoArrayPrefix  = "r["
+		memoAtomicPrefix = "a:"
+		memoMapPrefix    = "m{"
+		memoNodePrefix   = "n:"
+	)
+
+	const (
+		memoNodeDecimalRadix = 10
+	)
+
 	switch v := item.(type) {
 	case xdm.AtomicValue:
 		s, err := xpath.AtomicToString(v)
@@ -526,39 +549,37 @@ func (ec *execContext) writeFunctionCacheItem(b *strings.Builder, item xdm.Item)
 			return false
 		}
 
-		b.WriteString("a:")
-		b.WriteString(v.TypeName)
+		b.WriteString(memoAtomicPrefix)
+		writeFunctionCacheString(b, v.TypeName)
 		b.WriteByte('=')
 		// AtomicToString for QName returns prefix:local, which omits the
 		// namespace URI. Two QNames can share a local name but differ in URI,
 		// so we must include the URI in the cache key.
 		if q, ok := v.Value.(xdm.QNameValue); ok {
-			b.WriteString("{")
-			b.WriteString(q.URI)
-			b.WriteString("}")
-			b.WriteString(q.Local)
+			writeFunctionCacheString(b, q.URI)
+			writeFunctionCacheString(b, q.Local)
 		} else {
-			b.WriteString(s)
+			writeFunctionCacheString(b, s)
 		}
 
 		return true
 	case xdm.NodeItem:
-		b.WriteString("n:")
-		b.WriteString(strconv.FormatUint(ec.memoNodeID(v.Node), 10))
+		b.WriteString(memoNodePrefix)
+		b.WriteString(strconv.FormatUint(ec.memoNodeID(v.Node), memoNodeDecimalRadix))
 
 		if v.TypeAnnotation != "" {
 			b.WriteByte('@')
-			b.WriteString(v.TypeAnnotation)
+			writeFunctionCacheString(b, v.TypeAnnotation)
 		}
 
 		if v.AtomizedType != "" {
 			b.WriteByte('!')
-			b.WriteString(v.AtomizedType)
+			writeFunctionCacheString(b, v.AtomizedType)
 		}
 
 		return true
 	case xdm.MapItem:
-		b.WriteString("m{")
+		b.WriteString(memoMapPrefix)
 
 		for _, key := range v.Keys() {
 			if !ec.writeFunctionCacheItem(b, key) {
@@ -579,7 +600,7 @@ func (ec *execContext) writeFunctionCacheItem(b *strings.Builder, item xdm.Item)
 
 		return true
 	case xdm.ArrayItem:
-		b.WriteString("r[")
+		b.WriteString(memoArrayPrefix)
 
 		for _, member := range v.Members() {
 			if !ec.writeFunctionCacheSequence(b, member) {
@@ -809,7 +830,7 @@ func (fn *xslFunction) prepareCall(ctx context.Context, namespaces map[string]st
 	for _, p := range fn.Params {
 		as := p.As
 		if as == "" {
-			as = "item()*"
+			as = lexicon.NodeTestItem + "*"
 		}
 
 		st, err := xpath.ParseSequenceType(as)

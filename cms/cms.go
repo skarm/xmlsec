@@ -5,6 +5,28 @@ import (
 	"errors"
 )
 
+const (
+	defaultMaxAttributes   = 64
+	defaultMaxBytes        = 16 << 20
+	defaultMaxCertificates = 32
+	defaultMaxContentBytes = 12 << 20
+	defaultMaxSigners      = 16
+	maximumAttributes      = 128
+	maximumBytes           = 64 << 20
+	maximumCertificates    = 128
+	maximumSigners         = 32
+	minimumAttributes      = 2
+)
+
+// CMS wire versions depend on the content and signer identifier choices.
+// SignedData and SignerInfo encode separate version fields with separate roles.
+const (
+	signedDataVersion1        = 1
+	signedDataVersion3        = 3
+	signerIssuerSerialVersion = 1
+	signerSubjectKeyIDVersion = 3
+)
+
 var (
 	// ErrUnsupported reports a semantic feature outside the selected CMS profile.
 	ErrUnsupported = errors.New("unsupported CMS feature")
@@ -38,7 +60,9 @@ type Limits struct {
 }
 
 // DefaultLimits returns a fresh value containing the default resource budgets.
-func DefaultLimits() Limits { return Limits{16 << 20, 12 << 20, 32, 16, 64} }
+func DefaultLimits() Limits {
+	return Limits{defaultMaxBytes, defaultMaxContentBytes, defaultMaxCertificates, defaultMaxSigners, defaultMaxAttributes}
+}
 
 // DataOID returns an owned copy of the CMS id-data object identifier.
 func DataOID() asn1.ObjectIdentifier { return append(asn1.ObjectIdentifier(nil), oidData()...) }
@@ -93,8 +117,8 @@ func normalize(l Limits) (Limits, error) {
 		l.MaxAttributes = d.MaxAttributes
 	}
 
-	if l.MaxBytes < 1 || l.MaxBytes > 64<<20 || l.MaxContentBytes < 1 || l.MaxCertificates < 1 || l.MaxCertificates > 128 ||
-		l.MaxSigners < 1 || l.MaxSigners > 32 || l.MaxAttributes < 2 || l.MaxAttributes > 128 {
+	if l.MaxBytes < 1 || l.MaxBytes > maximumBytes || l.MaxContentBytes < 1 || l.MaxCertificates < 1 || l.MaxCertificates > maximumCertificates ||
+		l.MaxSigners < 1 || l.MaxSigners > maximumSigners || l.MaxAttributes < minimumAttributes || l.MaxAttributes > maximumAttributes {
 		return l, ErrPolicy
 	}
 

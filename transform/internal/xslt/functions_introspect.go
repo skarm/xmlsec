@@ -34,7 +34,7 @@ func (ec *execContext) fnFunctionAvailable(ctx context.Context, args []xdm.Seque
 }
 
 func (ec *execContext) functionAvailable(ctx context.Context, name xdm.QNameValue, arity int) bool {
-	if ec.stylesheet.processorLanguage() == 10 {
+	if ec.stylesheet.processorLanguage() == processorXSLT10 {
 		if name.URI != xpath.NSFn {
 			function := xpath.FnRegisteredFunction(ctx, name.URI, name.Local)
 			return function != nil && functionAvailableAtArity(function, arity)
@@ -76,7 +76,7 @@ func (ec *execContext) fnTypeAvailable(ctx context.Context, args []xdm.Sequence)
 // current-group() returns the items in the current group during for-each-group.
 func (ec *execContext) fnCurrentGroup(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	if !ec.inGroupContext || xpath.IsDynamicCall(ctx) {
-		if ec.stylesheet.processorLanguage() < 30 {
+		if ec.stylesheet.processorLanguage() < processorXSLT30 {
 			return xdm.EmptySequence(), nil
 		}
 
@@ -96,7 +96,7 @@ func (ec *execContext) fnCurrentGroup(ctx context.Context, _ []xdm.Sequence) (xd
 // not establish a grouping key), or when called outside xsl:for-each-group.
 func (ec *execContext) fnCurrentGroupingKey(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	if !ec.inGroupContext || xpath.IsDynamicCall(ctx) {
-		if ec.stylesheet.processorLanguage() < 30 {
+		if ec.stylesheet.processorLanguage() < processorXSLT30 {
 			return xdm.EmptySequence(), nil
 		}
 
@@ -104,7 +104,7 @@ func (ec *execContext) fnCurrentGroupingKey(ctx context.Context, _ []xdm.Sequenc
 	}
 
 	if !ec.groupHasKey {
-		if ec.stylesheet.processorLanguage() < 30 {
+		if ec.stylesheet.processorLanguage() < processorXSLT30 {
 			return xdm.EmptySequence(), nil
 		}
 
@@ -264,7 +264,8 @@ func (ec *execContext) checkAccumulatorAccess(name string) error {
 	// so that an accumulator rule referencing a non-applicable peer
 	// (e.g. one not listed in use-accumulators) is rejected.
 	if ec.activeAccumulators != nil {
-		if _, ok := ec.activeAccumulators[name]; !ok {
+		_, all := ec.activeAccumulators[lexicon.ModeAll]
+		if _, ok := ec.activeAccumulators[name]; !ok && !all {
 			return dynamicError(errCodeXTDE3362, "accumulator %q is not applicable in the current source-document", name)
 		}
 	}
@@ -302,6 +303,10 @@ func (ec *execContext) checkAccumulatorAccess(name string) error {
 // ensureAccumulatorStates lazily computes accumulator states for the document
 // tree containing the given node, if not already computed.
 func (ec *execContext) ensureAccumulatorStates(ctx context.Context, node xdm.Node) error {
+	const (
+		accumulatorDocumentPackageFormat = "%p@%p"
+	)
+
 	if xdm.IsNilNode(node) || len(ec.effectiveAccumulators()) == 0 {
 		return nil
 	}
@@ -317,7 +322,7 @@ func (ec *execContext) ensureAccumulatorStates(ctx context.Context, node xdm.Nod
 	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
 		// Create a synthetic key node per package to avoid collision.
 		// We reuse the root but track per-package with a separate map entry.
-		pkgKey := fmt.Sprintf("%p@%p", root, ec.currentPackage)
+		pkgKey := fmt.Sprintf(accumulatorDocumentPackageFormat, root, ec.currentPackage)
 		if ec.accumulatorComputedPkgs == nil {
 			ec.accumulatorComputedPkgs = make(map[string]struct{})
 		}
@@ -364,7 +369,7 @@ func introspectionArgumentName(ctx context.Context, args []xdm.Sequence, default
 		return xdm.QNameValue{}, err
 	}
 
-	if processor < 30 && !xmlchar.IsValidQName(name) {
+	if processor < processorXSLT30 && !xmlchar.IsValidQName(name) {
 		return xdm.QNameValue{}, dynamicError(code, "%q is not a valid QName", name)
 	}
 
@@ -380,15 +385,15 @@ func elementAvailable(name xdm.QNameValue, processor int, disabled bool) bool {
 		return false
 	}
 
-	if processor < 30 && !isXSLTInstruction(name.Local) {
+	if processor < processorXSLT30 && !isXSLTInstruction(name.Local) {
 		return false
 	}
 
 	switch minXSLTElementVersion(name.Local) {
-	case "3.0":
-		return processor >= 30
-	case "2.0":
-		return processor >= 20
+	case lexicon.XSLTVersion30:
+		return processor >= processorXSLT30
+	case lexicon.XSLTVersion20:
+		return processor >= processorXSLT20
 	default:
 		return true
 	}
@@ -432,11 +437,11 @@ func introspectionTypeAvailable(ctx context.Context, args []xdm.Sequence, proces
 }
 
 func typeAvailable(name xdm.QNameValue, processor int) bool {
-	if name.URI != lexicon.NamespaceXSD || !xdm.IsKnownXSDType("xs:"+name.Local) {
+	if name.URI != lexicon.NamespaceXSD || !xdm.IsKnownXSDType(lexicon.PrefixXS+":"+name.Local) {
 		return false
 	}
 
-	if name.Local == lexicon.TypeNumeric && processor < 30 {
+	if name.Local == lexicon.TypeNumeric && processor < processorXSLT30 {
 		return false
 	}
 

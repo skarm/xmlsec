@@ -31,8 +31,24 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+// The harness pins its default dynamic language and per-case timeout. The language profile explicitly raises individual resource budgets; prepared runs and direct suite execution use the same timeout default.
+const (
+	// Pinned language for dependency matching, evaluation and reports; it does not read the process locale.
+	suiteDefaultLanguage = "en"
+	// Per-case wall-clock default, also emitted by the preparation launcher.
+	suiteDefaultTimeout        = time.Second
+	suiteLanguageInputBytes    = 32 << 20
+	suiteLanguageResourceBytes = 64 << 20
+	suiteLanguageProgramBytes  = 1 << 20
+	suiteLanguageOutputBytes   = 64 << 20
+	suiteLanguageNodes         = 2_000_000
+	suiteLanguageOperations    = 50_000_000
+)
+
 const suiteXSLTNamespace = "http://www.w3.org/2012/10/xslt-test-catalog"
 
+// Outcome spellings distinguish harness failures and resource exhaustion from
+// normative error expectations; unsupported assertions cannot pass as errors.
 const (
 	suiteVersion10          = "1.0"
 	suiteVersion11          = "1.1"
@@ -284,9 +300,9 @@ func suiteSourceDigest(ctx context.Context, root string) (string, error) {
 func suiteLimits(options suiteOptions) transform.Limits {
 	limits := transform.DefaultLimits()
 	if options.limitsProfile == suiteLanguage {
-		limits.MaxInputBytes, limits.MaxResourceBytes = 32<<20, 64<<20
-		limits.MaxProgramBytes, limits.MaxOutputBytes = 1<<20, 64<<20
-		limits.MaxNodes, limits.MaxOperations = 2_000_000, 50_000_000
+		limits.MaxInputBytes, limits.MaxResourceBytes = suiteLanguageInputBytes, suiteLanguageResourceBytes
+		limits.MaxProgramBytes, limits.MaxOutputBytes = suiteLanguageProgramBytes, suiteLanguageOutputBytes
+		limits.MaxNodes, limits.MaxOperations = suiteLanguageNodes, suiteLanguageOperations
 	}
 
 	return limits
@@ -329,7 +345,7 @@ func parseSuiteOptions(args []string, stderr io.Writer) (suiteOptions, error) {
 	setPattern := flags.String("sets", ".*", "test-set name pattern")
 	casePattern := flags.String("match", ".*", "test-case name pattern")
 	flags.IntVar(&options.limit, "limit", 0, "selected-case limit; remaining cases are explicitly skipped")
-	flags.DurationVar(&options.timeout, "timeout", time.Second, "per-case wall-clock budget")
+	flags.DurationVar(&options.timeout, "timeout", suiteDefaultTimeout, "per-case wall-clock budget")
 	currentTime := flags.String("current-time", suiteDefaultCurrentTime, "fixed RFC3339 dynamic-context time shared by cases and assertions")
 
 	if err := flags.Parse(args); err != nil {
@@ -599,7 +615,7 @@ func writeSuiteReport(path string, out io.Writer, report *suiteReport) error {
 		return writeJSONListObject(dst, metadata, "cases", report.Cases, func(_ io.Writer, item *suiteOutcome) error { return encoder.Encode(item) })
 	}
 	if path != "" {
-		return writeJSONFile(path, len(report.Cases) > 128, write)
+		return writeJSONFile(path, len(report.Cases) > reportStreamingThreshold, write)
 	}
 
 	return write(out)
@@ -642,7 +658,7 @@ func executeSuite(ctx context.Context, options suiteOptions, pin suitePin) (*sui
 			"case_timeout":                options.timeout.String(),
 			"current_time":                suiteDynamicContext(options.currentTime).CurrentTime.Format(time.RFC3339Nano),
 			"implicit_timezone":           "UTC",
-			"default_language":            "en",
+			"default_language":            suiteDefaultLanguage,
 			"default_collation":           "Unicode codepoint",
 			"schema_aware":                false,
 			"xsd_version":                 suiteXSDVersionName(options),

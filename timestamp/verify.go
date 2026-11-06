@@ -3,21 +3,37 @@ package timestamp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"slices"
 	"time"
 
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509name"
 	"github.com/skarm/xmlsec/pki"
+)
+
+const (
+	// Caps each TSA lookup or signer certificate encoding before parsing, in bytes.
+	maximumCertificateBytes = 1 << 20
+	// Caps the configured TSA lookup-certificate set and immutable replacement snapshots.
+	maximumLookupCertificates = 32
+)
+
+const (
+	// Limits explicit clock tolerance and the number of distinct permitted TSA policy OIDs.
+	maximumClockSkew = 10 * time.Minute
+	maximumPolicies  = 64
 )
 
 // Config supplies TSA trust and token validation policy. Construction copies its
@@ -54,30 +70,41 @@ type Config struct {
 // Verifier checks RFC 3161 tokens against explicit TSA policy, certificate trust and
 // offline revocation evidence.
 type Verifier struct {
-	trust           *pki.Verifier
-	policies        map[string]struct{}
-	certificates    [][]byte
-	skew            time.Duration
-	maxAge          time.Duration
-	maxAccuracy     time.Duration
-	maxBytes        int
-	allowUnchecked  bool
-	legacy          bool
+	// trust supplies explicit TSA certificate and revocation policy.
+	trust *pki.Verifier
+	// policies contains the explicitly accepted TSA policy OIDs.
+	policies map[string]struct{}
+	// certificates retains application-supplied TSA certificate candidates.
+	certificates [][]byte
+	// skew is the accepted generation-time clock tolerance.
+	skew time.Duration
+	// maxAge bounds token age when the configured policy requires it.
+	maxAge time.Duration
+	// maxAccuracy bounds the accepted TSA uncertainty.
+	maxAccuracy time.Duration
+	// maxBytes bounds encoded token and response input.
+	maxBytes int
+	// allowUnchecked explicitly permits TSA verification without a successful
+	// revocation check.
+	allowUnchecked bool
+	// legacy permits the legacy SHA-1 ESSCertID certificate-binding attribute.
+	legacy bool
+	// requireAccuracy rejects tokens that omit authenticated accuracy.
 	requireAccuracy bool
 }
 
 // NewVerifier validates and snapshots explicit TSA policies, trust anchors and evidence
 // limits.
 func NewVerifier(c Config) (*Verifier, error) {
-	if len(c.AllowedPolicies) < 1 || len(c.AllowedPolicies) > 64 || len(c.Certificates) > 32 || c.ClockSkew < 0 || c.ClockSkew > 10*time.Minute || c.MaxAge < 0 || c.MaxAccuracy < 0 || c.MaxAccuracy > 24*time.Hour {
+	if len(c.AllowedPolicies) < 1 || len(c.AllowedPolicies) > maximumPolicies || len(c.Certificates) > maximumLookupCertificates || c.ClockSkew < 0 || c.ClockSkew > maximumClockSkew || c.MaxAge < 0 || c.MaxAccuracy < 0 || c.MaxAccuracy > maximumAccuracy {
 		return nil, ErrPolicy
 	}
 
 	if c.MaxBytes == 0 {
-		c.MaxBytes = 16 << 20
+		c.MaxBytes = maximumResponseBytes
 	}
 
-	if c.MaxBytes < 1 || c.MaxBytes > 16<<20 {
+	if c.MaxBytes < 1 || c.MaxBytes > maximumResponseBytes {
 		return nil, ErrPolicy
 	}
 
@@ -110,7 +137,7 @@ func NewVerifier(c Config) (*Verifier, error) {
 	total := 0
 	for _, b := range c.Certificates {
 		total += len(b)
-		if len(b) > 1<<20 || total > c.MaxBytes {
+		if len(b) > maximumCertificateBytes || total > c.MaxBytes {
 			return nil, ErrPolicy
 		}
 
@@ -121,7 +148,41 @@ func NewVerifier(c Config) (*Verifier, error) {
 		v.certificates = append(v.certificates, bytes.Clone(b))
 	}
 
+	if len(v.certificates) > 0 {
+		// Both groups have already passed their count and byte limits. Keep
+		// configured PKI intermediates and charge every distinct candidate to
+		// the same PKI constructor limits without promoting any trust anchor.
+		c.PKI.Intermediates = mergeCertificateCandidates(c.PKI.Intermediates, v.certificates)
+
+		v.trust, e = pki.NewVerifier(c.PKI)
+		if e != nil {
+			return nil, e
+		}
+	}
+
 	return v, nil
+}
+
+// mergeCertificateCandidates is called only after both groups pass their input
+// limits. The PKI constructor then checks the combined candidate policy.
+func mergeCertificateCandidates(configured, lookup [][]byte) [][]byte {
+	seen := make(map[[sha256.Size]byte]struct{})
+	intermediates := make([][]byte, 0, len(configured)+len(lookup))
+
+	for _, group := range [][][]byte{configured, lookup} {
+		for _, certificate := range group {
+			digest := sha256.Sum256(certificate)
+			if _, exists := seen[digest]; exists {
+				continue
+			}
+
+			seen[digest] = struct{}{}
+
+			intermediates = append(intermediates, certificate)
+		}
+	}
+
+	return intermediates
 }
 
 // VerifyToken checks PKIX at the explicit validation time, never silently at
@@ -135,7 +196,7 @@ func (v *Verifier) VerifyToken(ctx context.Context, raw []byte, want Expectation
 		return nil, e
 	}
 
-	if want.Nonce != nil && (want.Nonce.Sign() <= 0 || want.Nonce.BitLen() > 256) {
+	if want.Nonce != nil && (want.Nonce.Sign() <= 0 || want.Nonce.BitLen() > maximumNonceBits) {
 		return nil, ErrPolicy
 	}
 
@@ -226,7 +287,7 @@ func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, a
 		return nil, nil, err
 	}
 
-	if want.Nonce != nil && (want.Nonce.Sign() <= 0 || want.Nonce.BitLen() > 256) {
+	if want.Nonce != nil && (want.Nonce.Sign() <= 0 || want.Nonce.BitLen() > maximumNonceBits) {
 		return nil, nil, ErrPolicy
 	}
 
@@ -338,132 +399,6 @@ func (v *Verifier) validateTimestampTime(info Info, at time.Time) error {
 	return nil
 }
 
-func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) pki.Evidence {
-	ev := evidence
-	ev.Intermediates = append([][]byte(nil), evidence.Intermediates...)
-
-	for _, c := range certificates {
-		if !bytes.Equal(c, chosen) {
-			ev.Intermediates = append(ev.Intermediates, c)
-		}
-	}
-
-	return ev
-}
-
-func checkTSACertificate(c *x509.Certificate, at time.Time) error {
-	if c == nil || c.IsCA || c.KeyUsage&x509.KeyUsageDigitalSignature == 0 || len(c.ExtKeyUsage) != 1 || c.ExtKeyUsage[0] != x509.ExtKeyUsageTimeStamping || len(c.UnknownExtKeyUsage) > 0 || at.Before(c.NotBefore) || at.After(c.NotAfter) {
-		return ErrTrust
-	}
-
-	critical := false
-
-	for _, e := range c.Extensions {
-		if e.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 37}) {
-			critical = e.Critical
-		}
-	}
-
-	if !critical {
-		return fmt.Errorf("%w: critical timeStamping-only EKU required", ErrTrust)
-	}
-
-	return nil
-}
-
-func matchTSAName(ctx context.Context, n asn1.RawValue, c *x509.Certificate) error {
-	if len(n.FullBytes) == 0 {
-		return nil
-	}
-
-	if n.Class != 2 {
-		return ErrFormat
-	}
-
-	switch n.Tag {
-	case 4:
-		rv, e := der.Explicit(n, 4)
-		if e != nil {
-			return ErrFormat
-		}
-
-		equal, err := x509name.EqualOrExact(ctx, rv.FullBytes, c.RawSubject)
-		if err != nil {
-			return fmt.Errorf("%w: TSA name: %w", ErrTrust, err)
-		}
-
-		if equal {
-			return nil
-		}
-	case 1:
-		if n.IsCompound {
-			return ErrFormat
-		}
-
-		if slices.Contains(c.EmailAddresses, string(n.Bytes)) {
-			return nil
-		}
-	case 2:
-		if n.IsCompound {
-			return ErrFormat
-		}
-
-		if slices.Contains(c.DNSNames, string(n.Bytes)) {
-			return nil
-		}
-	case 6:
-		if n.IsCompound {
-			return ErrFormat
-		}
-
-		if tsaURINameMatches(string(n.Bytes), c) {
-			return nil
-		}
-
-	case 7:
-		if n.IsCompound || (len(n.Bytes) != 4 && len(n.Bytes) != 16) {
-			return ErrFormat
-		}
-
-		if tsaIPNameMatches(n.Bytes, c) {
-			return nil
-		}
-
-	default:
-		return ErrFormat
-	}
-
-	return fmt.Errorf("%w: tsa name", ErrTrust)
-}
-
-func tsaURINameMatches(name string, c *x509.Certificate) bool {
-	for _, uri := range c.URIs {
-		if uri.String() == name {
-			return true
-		}
-	}
-
-	return false
-}
-
-func tsaIPNameMatches(name []byte, c *x509.Certificate) bool {
-	for _, ip := range c.IPAddresses {
-		if ip.Equal(name) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func validateTimestampBinding(info Info, want Expectation) error {
-	if want.Imprint.Hash != info.imprint.Hash || !bytes.Equal(want.Imprint.Digest, info.imprint.Digest) || len(want.Policy) > 0 && !want.Policy.Equal(info.policy) || want.Nonce != nil && (info.nonce == nil || want.Nonce.Cmp(info.nonce) != 0) {
-		return ErrBinding
-	}
-
-	return nil
-}
-
 // Expectation supplies the required data imprint and optional exact nonce and TSA
 // policy bindings.
 type Expectation struct {
@@ -478,8 +413,10 @@ type Expectation struct {
 // Token retains an immutable parsed RFC 3161 CMS token. Use Verifier.Verify to
 // authenticate its information and certificates before accepting its claims.
 type Token struct {
+	// signed owns the parsed CMS container; parsing alone authenticates nothing.
 	signed *cms.SignedData
-	info   Info
+	// info retains the parsed, unverified timestamp claims.
+	info Info
 }
 
 // ParseToken parses a bounded token into owned storage, without authenticating it.
@@ -490,7 +427,7 @@ func ParseToken(ctx context.Context, raw []byte) (*Token, error) {
 // ParseTokenReader reads one token, retaining its complete DER and parsed model.
 // It limits DER to 16 MiB and TSTInfo to 1 MiB, and leaves src open.
 func ParseTokenReader(ctx context.Context, src io.Reader) (*Token, error) {
-	return parseTokenReader(ctx, src, 16<<20)
+	return parseTokenReader(ctx, src, maximumResponseBytes)
 }
 
 // UnverifiedInfo returns parsed timestamp claims, without authenticating them.
@@ -543,10 +480,15 @@ func (t *Token) WriterTo(ctx context.Context) io.WriterTo {
 // Result retains an immutable timestamp token with authenticated TSTInfo and the
 // accepted TSA trust result.
 type Result struct {
-	token     *Token
-	info      Info
-	tsa       []byte
-	trust     *pki.Result
+	// token is the token accepted by the configured verifier.
+	token *Token
+	// info retains its authenticated timestamp claims.
+	info Info
+	// tsa owns the exact accepted TSA certificate DER.
+	tsa []byte
+	// trust retains the successful TSA certificate and revocation result.
+	trust *pki.Result
+	// assertion binds the accepted token, imprint, time and trust result.
 	assertion *VerifiedAssertion
 }
 
@@ -606,8 +548,138 @@ func InspectToken(ctx context.Context, b []byte) (Info, error) {
 	return token.UnverifiedInfo(), nil
 }
 
+func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) pki.Evidence {
+	ev := evidence
+	ev.Intermediates = append([][]byte(nil), evidence.Intermediates...)
+
+	for _, c := range certificates {
+		if !bytes.Equal(c, chosen) {
+			ev.Intermediates = append(ev.Intermediates, c)
+		}
+	}
+
+	return ev
+}
+
+func checkTSACertificate(c *x509.Certificate, at time.Time) error {
+	const requiredTSAKeyUsages = 1
+
+	if c == nil || c.IsCA || c.KeyUsage&x509.KeyUsageDigitalSignature == 0 || len(c.ExtKeyUsage) != requiredTSAKeyUsages || c.ExtKeyUsage[0] != x509.ExtKeyUsageTimeStamping || len(c.UnknownExtKeyUsage) > 0 || at.Before(c.NotBefore) || at.After(c.NotAfter) {
+		return ErrTrust
+	}
+
+	critical := false
+
+	for _, e := range c.Extensions {
+		if e.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 37}) {
+			critical = e.Critical
+		}
+	}
+
+	if !critical {
+		return fmt.Errorf("%w: critical timeStamping-only EKU required", ErrTrust)
+	}
+
+	return nil
+}
+
+func matchTSAName(ctx context.Context, n asn1.RawValue, c *x509.Certificate) error {
+	if len(n.FullBytes) == 0 {
+		return nil
+	}
+
+	if n.Class != asn1.ClassContextSpecific {
+		return ErrFormat
+	}
+
+	switch n.Tag {
+	case lexicon.GeneralNameDirectory:
+		rv, e := der.Explicit(n, lexicon.GeneralNameDirectory)
+		if e != nil {
+			return ErrFormat
+		}
+
+		equal, err := x509name.EqualOrExact(ctx, rv.FullBytes, c.RawSubject)
+		if err != nil {
+			return fmt.Errorf("%w: TSA name: %w", ErrTrust, err)
+		}
+
+		if equal {
+			return nil
+		}
+	case lexicon.GeneralNameRFC822:
+		if n.IsCompound {
+			return ErrFormat
+		}
+
+		if slices.Contains(c.EmailAddresses, string(n.Bytes)) {
+			return nil
+		}
+	case lexicon.GeneralNameDNS:
+		if n.IsCompound {
+			return ErrFormat
+		}
+
+		if slices.Contains(c.DNSNames, string(n.Bytes)) {
+			return nil
+		}
+	case lexicon.GeneralNameURI:
+		if n.IsCompound {
+			return ErrFormat
+		}
+
+		if tsaURINameMatches(string(n.Bytes), c) {
+			return nil
+		}
+
+	case lexicon.GeneralNameIP:
+		if n.IsCompound || (len(n.Bytes) != net.IPv4len && len(n.Bytes) != net.IPv6len) {
+			return ErrFormat
+		}
+
+		if tsaIPNameMatches(n.Bytes, c) {
+			return nil
+		}
+
+	default:
+		return ErrFormat
+	}
+
+	return fmt.Errorf("%w: tsa name", ErrTrust)
+}
+
+func tsaURINameMatches(name string, c *x509.Certificate) bool {
+	for _, uri := range c.URIs {
+		if uri.String() == name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func tsaIPNameMatches(name []byte, c *x509.Certificate) bool {
+	for _, ip := range c.IPAddresses {
+		if ip.Equal(name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateTimestampBinding(info Info, want Expectation) error {
+	if want.Imprint.Hash != info.imprint.Hash || !bytes.Equal(want.Imprint.Digest, info.imprint.Digest) || len(want.Policy) > 0 && !want.Policy.Equal(info.policy) || want.Nonce != nil && (info.nonce == nil || want.Nonce.Cmp(info.nonce) != 0) {
+		return ErrBinding
+	}
+
+	return nil
+}
+
 func parseTokenReader(ctx context.Context, src io.Reader, maximum int) (*Token, error) {
-	s, err := cms.ParseReader(ctx, src, cms.Limits{MaxBytes: maximum, MaxContentBytes: min(maximum, 1<<20)})
+	const requiredTokenSigners = 1
+
+	s, err := cms.ParseReader(ctx, src, cms.Limits{MaxBytes: maximum, MaxContentBytes: min(maximum, maximumInfoBytes)})
 	if err != nil {
 		if errors.Is(err, cms.ErrPolicy) {
 			return nil, fmt.Errorf("%w: %w", ErrPolicy, err)
@@ -616,7 +688,7 @@ func parseTokenReader(ctx context.Context, src io.Reader, maximum int) (*Token, 
 		return nil, fmt.Errorf("%w: %w", ErrFormat, err)
 	}
 
-	if s.SignerCount() != 1 || s.Detached() || !s.ContentType().Equal(tstOID()) {
+	if s.SignerCount() != requiredTokenSigners || s.Detached() || !s.ContentType().Equal(tstOID()) {
 		return nil, ErrFormat
 	}
 

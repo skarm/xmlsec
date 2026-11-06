@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+// Poll cancellation during node-set scans without charging every element with a context lookup.
+const (
+	filterCancellationMask = 255
+)
+
 // FilterNodeSet is an internal, immutable membership filter. Iteration order is
 // irrelevant: ordering is established only when a node-set is consumed.
 // keep must be pure; partial selections are evaluated twice to size the result.
@@ -19,7 +24,7 @@ func FilterNodeSet(ctx context.Context, set NodeSet, keep func(NodeRef) bool) (N
 
 	count, i := 0, 0
 	for n := range set.members {
-		if i&255 == 0 {
+		if i&filterCancellationMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return NodeSet{}, err
 			}
@@ -40,7 +45,7 @@ func FilterNodeSet(ctx context.Context, set NodeSet, keep func(NodeRef) bool) (N
 	if count != 0 {
 		i = 0
 		for n := range set.members {
-			if i&255 == 0 {
+			if i&filterCancellationMask == 0 {
 				if err := ctx.Err(); err != nil {
 					return NodeSet{}, err
 				}
@@ -85,7 +90,7 @@ func IsNodeSetSubset(ctx context.Context, subset, superset NodeSet) (bool, error
 
 	index := 0
 	for node := range subset.members {
-		if index&255 == 0 {
+		if index&filterCancellationMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}

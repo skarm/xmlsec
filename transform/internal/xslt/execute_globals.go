@@ -10,9 +10,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
+)
+
+// Private construction wrapper or provisional prefix; existing ownership and namespace fixup decide which names can reach a result.
+const (
+	temporaryOutputWrapper = "_tmp"
 )
 
 // Params with caller-provided values are set immediately; all others are
@@ -80,8 +86,8 @@ func (ec *execContext) initGlobalVars(ctx context.Context, cfg *transformConfig)
 
 func (ec *execContext) missingGlobalParam(p *param) error {
 	code := errCodeXTDE0050
-	if ec.stylesheet.processorLanguage() == 20 && !p.Required {
-		code = "XTDE0610"
+	if ec.stylesheet.processorLanguage() == processorXSLT20 && !p.Required {
+		code = errCodeXTDE0610
 	}
 
 	return dynamicError(code, "required stylesheet parameter $%s was not supplied", p.Name)
@@ -293,6 +299,10 @@ func (ec *execContext) evaluateGlobalParam(ctx context.Context, p *param) (xdm.S
 }
 
 func (ec *execContext) evaluateGlobalBinding(ctx context.Context, binding globalBinding) (xdm.Sequence, error) {
+	const (
+		globalEvaluationDepthFallback = 128
+	)
+
 	if value, ok := ec.globalValueCache[binding]; ok {
 		ec.publishGlobalValue(binding, value)
 		return value, nil
@@ -306,7 +316,7 @@ func (ec *execContext) evaluateGlobalBinding(ctx context.Context, binding global
 		return nil, err
 	}
 
-	if len(ec.globalEvaluating) >= xpath.DepthLimit(ctx, 128) {
+	if len(ec.globalEvaluating) >= xpath.DepthLimit(ctx, globalEvaluationDepthFallback) {
 		return nil, xpath.ErrBudget
 	}
 
@@ -483,10 +493,7 @@ func (ec *execContext) computeGlobalVar(ctx context.Context, v *variable) (xdm.S
 		ec.temporaryOutputDepth++
 
 		var err error
-		if strings.HasPrefix(v.As, "document-node") && !strings.HasSuffix(v.As, "*") && !strings.HasSuffix(v.As, "+") {
-			// document-node() or document-node()?: wrap body in document node
-			val, err = ec.evaluateBodyAsDocument(ctx, v.Body)
-		} else if v.As != "" {
+		if v.As != "" {
 			// With as attribute: evaluate as sequence constructor,
 			// keeping each node as a separate item
 			val, err = ec.evaluateBodyAsSequence(ctx, v.Body)
@@ -503,9 +510,8 @@ func (ec *execContext) computeGlobalVar(ctx context.Context, v *variable) (xdm.S
 		}
 	} else {
 		// No select, no body (or empty body after whitespace stripping).
-		// XSLT 3.0 §9.3: if as specifies a sequence type whose occurrence
-		// indicator is ? or *, the effective value is an empty sequence.
-		if v.As != "" && (strings.HasSuffix(v.As, "?") || strings.HasSuffix(v.As, "*")) {
+		// An explicit as retains the empty sequence constructor.
+		if v.As != "" {
 			val = nil
 		} else {
 			val = xdm.SingleString("")
@@ -621,7 +627,7 @@ func (ec *execContext) computeGlobalParam(ctx context.Context, p *param) (xdm.Se
 func (ec *execContext) evaluateBodyForAttr(ctx context.Context, body []instruction) (xdm.Sequence, error) {
 	tmpDoc := xdm.NewDefaultDocument()
 
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
+	tmpRoot, err := tmpDoc.CreateElement(temporaryOutputWrapper)
 	if err != nil {
 		return nil, err
 	}
@@ -656,54 +662,6 @@ func (ec *execContext) evaluateBodyForAttr(ctx context.Context, body []instructi
 	return xdm.EmptySequence(), nil
 }
 
-// evaluateBodySeparateText keeps each produced
-// text node as a separate string item instead of letting the DOM merge
-// adjacent text nodes.  This is needed by xsl:value-of with separator
-// so that each text value is a distinct item for separator insertion.
-func (ec *execContext) evaluateBodySeparateText(ctx context.Context, body []instruction) (xdm.Sequence, error) {
-	tmpDoc := xdm.NewDefaultDocument()
-
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
-	if err != nil {
-		return nil, err
-	}
-
-	if err := tmpDoc.AddChild(tmpRoot); err != nil {
-		return nil, err
-	}
-
-	frame := &outputFrame{doc: tmpDoc, current: tmpRoot, captureItems: true, separateTextNodes: true}
-
-	ec.outputStack = append(ec.outputStack, frame)
-	defer func() {
-		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
-	}()
-
-	if err := ec.executeSequenceConstructor(ctx, body); err != nil {
-		return nil, err
-	}
-
-	if tmpRoot.FirstChild() != nil {
-		var seq xdm.ItemSlice
-		for child := range xdm.Children(tmpRoot) {
-			seq = append(seq, xdm.NodeItem{Node: child})
-		}
-
-		seq = append(seq, frame.pendingItems...)
-
-		return seq, nil
-	}
-
-	if len(frame.pendingItems) > 0 {
-		return frame.pendingItems, nil
-	}
-
-	return xdm.EmptySequence(), nil
-}
-
-// evaluateBodyAsDocument executes instructions and wraps the result in a
-// document node (temporary tree), as required by the XSLT spec for variables
-// and params with content body and no select/as attributes.
 // effectiveStaticBaseURI returns the static base URI for the current
 // execution context, considering xml:base overrides, template base URIs,
 // and the stylesheet base URI.
@@ -732,6 +690,9 @@ func (ec *execContext) effectiveStaticBaseURI() string {
 	return ec.stylesheet.baseURI
 }
 
+// evaluateBodyAsDocument executes instructions and wraps the result in a
+// document node (temporary tree), as required by the XSLT spec for variables
+// and params with content body and no select/as attributes.
 func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instruction) (xdm.Sequence, error) {
 	tmpDoc := xdm.NewDefaultDocument()
 	// Mark as internal so document-uri() returns empty for temporary trees.
@@ -774,7 +735,9 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 		// entities, notations) that would be lost if we atomized it.
 		if first := tmpDoc.FirstChild(); first != nil && first.NextSibling() == nil {
 			if items, ok := frame.seqPlaceholders[first]; ok {
-				if seq, ok := capturedInternalDocument(items); ok {
+				if seq, ok, err := capturedInternalDocument(ctx, tmpDoc, items); err != nil {
+					return nil, err
+				} else if ok {
 					return seq, nil
 				}
 			}
@@ -795,7 +758,9 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 		// DTD information (unparsed entities, notations) that would be lost
 		// if we atomized the document into text.
 		if len(frame.pendingItems) == 1 && tmpDoc.FirstChild() == nil {
-			if seq, ok := capturedInternalDocument(frame.pendingItems); ok {
+			if seq, ok, err := capturedInternalDocument(ctx, tmpDoc, frame.pendingItems); err != nil {
+				return nil, err
+			} else if ok {
 				return seq, nil
 			}
 		}
@@ -809,7 +774,7 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 	// in the tree whose string-value is zero-length is deleted."
 	removeEmptyDocumentText(tmpDoc)
 
-	return xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc, ResultTreeFragment: ec.stylesheet.processorLanguage() == 10}}, nil
+	return xdm.ItemSlice{xdm.NodeItem{Node: tmpDoc, ResultTreeFragment: ec.stylesheet.processorLanguage() == processorXSLT10}}, nil
 }
 
 // resolveSequencePlaceholders replaces the xsl:sequence placeholder PIs in the
@@ -883,7 +848,7 @@ func (ec *execContext) evaluateBodyAsSequence(ctx context.Context, body []instru
 		tmpDoc.SetURL(baseURI)
 	}
 
-	tmpRoot, err := tmpDoc.CreateElement("_tmp")
+	tmpRoot, err := tmpDoc.CreateElement(temporaryOutputWrapper)
 	if err != nil {
 		return nil, err
 	}
@@ -944,24 +909,36 @@ func validateUsedPackageGlobalContextItem(ss *Stylesheet, seen map[*Stylesheet]s
 	return nil
 }
 
-func capturedInternalDocument(items xdm.ItemSlice) (xdm.Sequence, bool) {
+// Copy the captured document, retaining its DTD metadata while giving the
+// implicit document constructor fresh identity and its own static base URI.
+func capturedInternalDocument(ctx context.Context, target *xdm.Document, items xdm.ItemSlice) (xdm.Sequence, bool, error) {
 	if len(items) != 1 {
-		return nil, false
+		return nil, false, nil
 	}
 
 	ni, ok := items[0].(xdm.NodeItem)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 
 	doc, ok := ni.Node.(*xdm.Document)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 
-	doc.SetProperties(doc.Properties() | xdm.DocInternal)
+	if err := xpath.ChargeTree(ctx, doc); err != nil {
+		return nil, false, err
+	}
 
-	return xdm.ItemSlice{xdm.NodeItem{Node: doc}}, true
+	owned, err := xdm.CopyDoc(doc)
+	if err != nil {
+		return nil, false, err
+	}
+
+	owned.SetProperties(owned.Properties() | xdm.DocInternal)
+	owned.SetURL(target.URL())
+
+	return xdm.ItemSlice{xdm.NodeItem{Node: owned}}, true, nil
 }
 
 func appendPendingDocumentItems(doc *xdm.Document, items xdm.ItemSlice) error {
@@ -1050,7 +1027,7 @@ func ensureFileURI(path string) string {
 	}
 
 	if strings.HasPrefix(path, "/") {
-		return "file://" + path
+		return lexicon.SchemeFile + "://" + path
 	}
 
 	return path

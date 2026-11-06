@@ -152,6 +152,52 @@ type failingWriter struct {
 	calls int
 }
 
+func TestPendingFlushDoesNotConsumeNextByte(t *testing.T) {
+	const prefixBytes = 4096
+	prefix := strings.Repeat("a", prefixBytes)
+	failure := errors.New("destination rejected pending output")
+
+	for _, short := range []bool{false, true} {
+		t.Run(strconv.FormatBool(short), func(t *testing.T) {
+			sink := &failingWriter{err: failure}
+			want := failure
+			if short {
+				sink.err, want = nil, io.ErrShortWrite
+			}
+
+			writer := normalization.NewWriter(t.Context(), sink, normalization.NFC)
+			if n, err := writer.Write([]byte(prefix)); n != prefixBytes || err != nil || sink.calls != 0 {
+				t.Fatalf("pending input: n=%d error=%v calls=%d", n, err, sink.calls)
+			}
+
+			if n, err := writer.Write([]byte("b")); n != 0 || !errors.Is(err, want) || sink.calls != 1 {
+				t.Fatalf("unaccepted byte counted: n=%d error=%v calls=%d", n, err, sink.calls)
+			}
+
+			if n, err := writer.Write([]byte("c")); n != 0 || !errors.Is(err, want) || sink.calls != 1 {
+				t.Fatalf("failure was not terminal: n=%d error=%v calls=%d", n, err, sink.calls)
+			}
+			if err := writer.Close(); !errors.Is(err, want) || sink.calls != 1 {
+				t.Fatal("close retried failed output", err, sink.calls)
+			}
+		})
+	}
+
+	t.Run("successful flush", func(t *testing.T) {
+		var output bytes.Buffer
+		writer := normalization.NewWriter(t.Context(), &output, normalization.NFC)
+		if n, err := writer.Write([]byte(prefix)); n != prefixBytes || err != nil {
+			t.Fatal(n, err)
+		}
+		if n, err := writer.Write([]byte("b")); n != 1 || err != nil {
+			t.Fatal(n, err)
+		}
+		if err := writer.Close(); err != nil || output.String() != prefix+"b" {
+			t.Fatal("successful flush lost current input", err, output.Len())
+		}
+	})
+}
+
 func (w *failingWriter) Write([]byte) (int, error) {
 	w.calls++
 	return 0, w.err

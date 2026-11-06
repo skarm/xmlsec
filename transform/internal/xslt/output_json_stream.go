@@ -12,18 +12,32 @@ import (
 // JSON serialization does not normalize sequences into arrays (SER31 §9).
 // The same cardinality rules apply to the result and every map/array member.
 func writeJSONItems(ctx context.Context, w io.Writer, seq xdm.Sequence, out *OutputDef, depth int) error {
+	const (
+		jsonNullLiteral = "null"
+	)
+
+	const (
+		errCodeSERE0023 = "SERE0023"
+	)
+
 	switch xdm.SequenceLen(seq) {
 	case 0:
-		return writeFullString(w, "null")
+		return writeFullString(w, jsonNullLiteral)
 	case 1:
 		return writeJSONItem(ctx, w, seq.Get(0), out, depth)
 	default:
-		return dynamicError("SERE0023", "JSON serialization requires at most one item")
+		return dynamicError(errCodeSERE0023, "JSON serialization requires at most one item")
 	}
 }
 
 func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputDef, depth int) error {
-	if depth > xpath.DepthLimit(ctx, 128) {
+	const (
+		jsonOutputDepthFallback = 128
+		errCodeSERE0020         = "SERE0020"
+		errCodeSERE0021         = "SERE0021"
+	)
+
+	if depth > xpath.DepthLimit(ctx, jsonOutputDepthFallback) {
 		return xpath.ErrBudget
 	}
 
@@ -66,7 +80,7 @@ func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputD
 
 	value, ok := item.(xdm.AtomicValue)
 	if !ok {
-		return dynamicError("SERE0021", "cannot serialize %T as JSON", item)
+		return dynamicError(errCodeSERE0021, "cannot serialize %T as JSON", item)
 	}
 
 	text, err := xpath.AtomicToString(value)
@@ -74,8 +88,8 @@ func writeJSONItem(ctx context.Context, w io.Writer, item xdm.Item, out *OutputD
 		return err
 	}
 
-	if value.IsNumeric() && (text == lexicon.FloatNaN || text == "INF" || text == "-INF" || text == "+INF") {
-		return dynamicError("SERE0020", "cannot serialize NaN or infinity as JSON")
+	if value.IsNumeric() && (text == lexicon.FloatNaN || text == lexicon.FloatINF || text == lexicon.FloatNegINF || text == lexicon.FloatPosINF) {
+		return dynamicError(errCodeSERE0020, "cannot serialize NaN or infinity as JSON")
 	}
 
 	return writeFullString(w, text)

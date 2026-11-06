@@ -33,7 +33,7 @@ func TestProcessInterruptsBlockedStdin(t *testing.T) {
 		t.Skip("os.Interrupt is not supported by os.Process.Signal on Windows")
 	}
 
-	cmd := testProcess(t, nameC14n)
+	cmd := testProcess(t, nameC14N)
 
 	input, err := cmd.StdinPipe()
 	if err != nil {
@@ -73,7 +73,7 @@ func TestProcessJSONErrorsAndDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		code int
-	}{{[]string{jsonErrorsFlag, nameUnknown}, 2}, {[]string{jsonErrorsFlag, nameC14n, "-timeout", "25ms"}, 124}, {[]string{jsonErrorsFlag, nameC14n, "-bad-flag"}, 2}} {
+	}{{[]string{jsonErrorsFlag, nameUnknown}, 2}, {[]string{jsonErrorsFlag, nameC14N, "-timeout", "25ms"}, 124}, {[]string{jsonErrorsFlag, nameC14N, "-bad-flag"}, 2}} {
 		cmd := testProcess(t, tc.args...)
 
 		input, err := cmd.StdinPipe()
@@ -103,7 +103,7 @@ func TestProcessInterruptsBlockedStdout(t *testing.T) {
 		t.Skip("os.Interrupt is not supported by os.Process.Signal on Windows")
 	}
 
-	cmd := testProcess(t, nameC14n)
+	cmd := testProcess(t, nameC14N)
 	cmd.Stdin = bytes.NewReader(append(append([]byte("<r>"), bytes.Repeat([]byte{'x'}, 2<<20)...), []byte("</r>")...))
 
 	output, err := cmd.StdoutPipe()

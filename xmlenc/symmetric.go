@@ -9,6 +9,15 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// Scalar boundaries shared by symmetric and agreement KeyName profiles. KeyName
+// remains an untrusted lookup hint; these checks do not authenticate a key.
+const (
+	minimumKeyNameRune      = 0x20
+	keyNameDeleteRune       = 0x7f
+	keyNameNoncharacterFFFE = 0xfffe
+	keyNameNoncharacterFFFF = 0xffff
+)
+
 // EncryptBytesWithKey encrypts bytes with an explicitly supplied symmetric data key.
 // GCM creates a fresh random 96-bit nonce and a 128-bit tag. Explicit legacy
 // CBC uses a fresh IV and XMLENC padding, without authentication. No EncryptedKey
@@ -124,7 +133,7 @@ func DecryptContentWithKey(ctx context.Context, doc *document.Document, selected
 }
 
 func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions) (profile, error) {
-	if options.Data.OAEP != nil {
+	if options.Data.OAEP != nil || options.Data.KeyTransportAlgorithm != "" {
 		return profile{}, ErrPolicy
 	}
 
@@ -133,12 +142,12 @@ func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions)
 		return profile{}, err
 	}
 
-	if len(key) != p.keyBytes || len(options.KeyName) > 1024 || !utf8.ValidString(options.KeyName) || strings.TrimSpace(options.KeyName) != options.KeyName {
+	if len(key) != p.keyBytes || len(options.KeyName) > maximumKeyNameBytes || !utf8.ValidString(options.KeyName) || strings.TrimSpace(options.KeyName) != options.KeyName {
 		return profile{}, ErrPolicy
 	}
 
 	for _, r := range options.KeyName {
-		if r < 0x20 || r == 0x7f || r == 0xfffe || r == 0xffff {
+		if r < minimumKeyNameRune || r == keyNameDeleteRune || r == keyNameNoncharacterFFFE || r == keyNameNoncharacterFFFF {
 			return profile{}, ErrPolicy
 		}
 	}
@@ -156,19 +165,19 @@ func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions)
 }
 
 func decodeDirectProfile(ctx context.Context, root document.Element, p profile) ([]byte, []byte, error) {
-	names := []document.Name{elementName(Namespace, "EncryptionMethod")}
+	names := []document.Name{elementName(Namespace, nameEncryptionMethod)}
 	if p.keyName != "" {
 		names = append(names, elementName(SignatureNamespace, lexicon.DSigElementKeyInfo))
 	}
 
-	names = append(names, elementName(Namespace, "CipherData"))
+	names = append(names, elementName(Namespace, nameCipherData))
 
 	children, err := childElements(root, names...)
 	if err != nil {
 		return nil, nil, ErrFormat
 	}
 
-	if err := checkEncryptionMethod(ctx, children[0], p.options.DataAlgorithm, p.keyBytes*8, false); err != nil {
+	if err := checkEncryptionMethod(ctx, children[0], p.options.DataAlgorithm, p.keyBytes*keyOctetBits, false); err != nil {
 		return nil, nil, err
 	}
 

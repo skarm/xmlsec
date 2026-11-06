@@ -15,7 +15,18 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/uriref"
 	"github.com/skarm/xmlsec/resource"
+)
+
+const (
+	cipherEncodingBase64             = "base64"
+	externalCipherChunkBytes         = 32 << 10
+	maximumCipherDocumentBytes       = 64 << 20
+	maximumReferencedCiphertextBytes = (32 << 20) + 32
+	// Ciphertext reference resolved only through explicitly configured resource policy. Compare the
+	// expected XML Encryption namespace when matching it.
+	nameCipherReference = "CipherReference"
 )
 
 // CipherResolver supplies ciphertext for an exact application-approved URI.
@@ -58,14 +69,14 @@ func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected
 	}
 
 	node, err := selectedNode(doc, selected)
-	if err != nil || selected.Name() != elementName(Namespace, "EncryptedData") {
+	if err != nil || selected.Name() != elementName(Namespace, nameEncryptedData) {
 		return nil, document.Element{}, nil, ErrFormat
 	}
 
 	var cipherData *tree.Node
 
 	for _, child := range node.Children {
-		if child.Name == elementName(Namespace, "CipherData") {
+		if child.Name == elementName(Namespace, nameCipherData) {
 			if cipherData != nil {
 				return nil, document.Element{}, nil, ErrFormat
 			}
@@ -79,7 +90,7 @@ func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected
 	}
 
 	// AES-CBC needs an IV plus up to one complete padding block.
-	ciphertext, err := decodeCipherValue(ctx, tree.Wrap(doc, cipherData), (32<<20)+32)
+	ciphertext, err := decodeCipherValue(ctx, tree.Wrap(doc, cipherData), maximumReferencedCiphertextBytes)
 	if err != nil {
 		return nil, document.Element{}, nil, err
 	}
@@ -89,8 +100,8 @@ func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected
 	root.Children = append([]*tree.Node(nil), node.Children...)
 	for i, child := range root.Children {
 		if child == cipherData {
-			ref := newElement(Namespace, child.Prefix, "CipherReference")
-			setAttribute(ref, "URI", uri)
+			ref := newElement(Namespace, child.Prefix, nameCipherReference)
+			setAttribute(ref, lexicon.SecurityAttrURI, uri)
 
 			copyData := *child
 			copyData.Children = nil
@@ -108,7 +119,7 @@ func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected
 }
 
 func validCipherURI(value string) bool {
-	if value == "" || len(value) > 4096 || !utf8.ValidString(value) || strings.Contains(value, "\\") {
+	if value == "" || len(value) > maximumCipherURIBytes || !utf8.ValidString(value) || strings.Contains(value, "\\") || uriref.Validate(value) != nil {
 		return false
 	}
 
@@ -129,10 +140,10 @@ func normalizeExternal(p ExternalCipherReference, maxCiphertext int) (ExternalCi
 	}
 
 	if p.MaxBytes == 0 {
-		p.MaxBytes = base64.StdEncoding.EncodedLen(maxCiphertext) + 4096
+		p.MaxBytes = base64.StdEncoding.EncodedLen(maxCiphertext) + cipherValueWhitespaceBytes
 	}
 
-	if p.MaxBytes < 1 || p.MaxBytes > 64<<20 {
+	if p.MaxBytes < 1 || p.MaxBytes > maximumCipherDocumentBytes {
 		return ExternalCipherReference{}, ErrPolicy
 	}
 
@@ -145,15 +156,15 @@ func decodeCipherData(ctx context.Context, data document.Element, maxBytes int, 
 	}
 
 	child := data.Children()[0]
-	if child.Name() == elementName(Namespace, "CipherValue") {
+	if child.Name() == elementName(Namespace, nameCipherValue) {
 		return decodeCipherValue(ctx, data, maxBytes)
 	}
 
-	if _, err := childElements(data, elementName(Namespace, "CipherReference")); err != nil || !exactAttributes(child, "URI") {
+	if _, err := childElements(data, elementName(Namespace, nameCipherReference)); err != nil || !exactAttributes(child, lexicon.SecurityAttrURI) {
 		return nil, ErrFormat
 	}
 
-	if external == nil || attributeValue(child, "URI") != external.URI {
+	if external == nil || attributeValue(child, lexicon.SecurityAttrURI) != external.URI {
 		return nil, ErrPolicy
 	}
 
@@ -170,7 +181,7 @@ func decodeCipherData(ctx context.Context, data document.Element, maxBytes int, 
 		}
 
 		transforms, err := childElements(children[0], elementName(SignatureNamespace, lexicon.DSigElementTransform))
-		if err != nil || !matchesMethod(transforms[0], SignatureNamespace+"base64", true) {
+		if err != nil || !matchesMethod(transforms[0], SignatureNamespace+cipherEncodingBase64, true) {
 			return nil, ErrFormat
 		}
 
@@ -245,7 +256,7 @@ func readCiphertext(ctx context.Context, source io.Reader, maximum int) ([]byte,
 
 	total := 0
 	for {
-		chunk := make([]byte, min(32<<10, maximum-total+1))
+		chunk := make([]byte, min(externalCipherChunkBytes, maximum-total+1))
 
 		n, err := io.ReadFull(reader, chunk)
 		if n > 0 {

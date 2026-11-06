@@ -275,6 +275,32 @@ func FnXPath10Compat(ctx context.Context) bool {
 	return getFnContext(ctx) != nil && getFnContext(ctx).xpath10Compat
 }
 
+// WithXMLSchemaVersion selects lexical and regex rules for nested evaluations.
+func WithXMLSchemaVersion(ctx context.Context, version int) context.Context {
+	return context.WithValue(ctx, xmlSchemaVersionKey{}, version)
+}
+
+// Schema edition zero inherits the surrounding context; without an explicit
+// edition the nested lexical/regex context retains XML Schema 1.1. These codes
+// are independent of XPath language editions.
+const (
+	schemaEditionDefault = 0
+	schemaEdition11      = 11
+)
+
+// XMLSchemaVersion returns the edition retained by the current function context.
+func XMLSchemaVersion(ctx context.Context) int {
+	if ec := getFnContext(ctx); ec != nil && ec.xmlSchemaVersion != schemaEditionDefault {
+		return ec.xmlSchemaVersion
+	}
+
+	if version, _ := ctx.Value(xmlSchemaVersionKey{}).(int); version != schemaEditionDefault {
+		return version
+	}
+
+	return schemaEdition11
+}
+
 func bindInvocationScope(ctx context.Context, ec *evalContext) {
 	if state, ok := ctx.Value(invocationScopeKey{}).(*invocationState); ok {
 		ec.invocation = state
@@ -293,24 +319,6 @@ type invocationState struct{ values map[any]any }
 type invocationScopeKey struct{}
 
 type xmlSchemaVersionKey struct{}
-
-// WithXMLSchemaVersion selects lexical and regex rules for nested evaluations.
-func WithXMLSchemaVersion(ctx context.Context, version int) context.Context {
-	return context.WithValue(ctx, xmlSchemaVersionKey{}, version)
-}
-
-// XMLSchemaVersion returns the edition retained by the current function context.
-func XMLSchemaVersion(ctx context.Context) int {
-	if ec := getFnContext(ctx); ec != nil && ec.xmlSchemaVersion != 0 {
-		return ec.xmlSchemaVersion
-	}
-
-	if version, _ := ctx.Value(xmlSchemaVersionKey{}).(int); version != 0 {
-		return version
-	}
-
-	return 11
-}
 
 // dynamicCallKey marks a function call as originating from a dynamic
 // function reference (e.g. $f(args) where $f holds a named function ref).

@@ -100,6 +100,121 @@ func TestExactRoundingBoundariesAndOwnership(t *testing.T) {
 	}
 }
 
+func TestDecimalDigitsAndWideRounding(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		value string
+		want  int
+	}{{"42", 0}, {"1/8", 3}, {"1/40", 3}, {"1/125", 3}, {"1/3", math.MaxInt}, {"1/7", math.MaxInt}, {"1/9", math.MaxInt}} {
+		value, ok := new(big.Rat).SetString(test.value)
+		if !ok {
+			t.Fatal(test.value)
+		}
+		if got := number.RatDecimalDigits(value); got != test.want {
+			t.Errorf("decimal digits(%s) = %d; want %d", value, got, test.want)
+		}
+	}
+	for _, test := range []struct {
+		value, want string
+		precision   int
+	}{
+		{"1/7", "0.1429", 4},
+		{"1/9", "0.1111", 4},
+		{"0." + strings.Repeat("0", 1000) + "59", "0." + strings.Repeat("0", 1000) + "6", 1001},
+		{"-0." + strings.Repeat("0", 1000) + "59", "-0." + strings.Repeat("0", 1000) + "6", 1001},
+		{"125" + strings.Repeat("0", 1001), "12" + strings.Repeat("0", 1002), -1002},
+		{"42", "0", math.MinInt},
+	} {
+		value, ok := new(big.Rat).SetString(test.value)
+		if !ok {
+			t.Fatal(test.value)
+		}
+		want, ok := new(big.Rat).SetString(test.want)
+		if !ok {
+			t.Fatal(test.want)
+		}
+		if got := number.RatRoundHalfToEven(value, test.precision); got.Cmp(want) != 0 {
+			t.Errorf("precision %d: got %s; want %s", test.precision, got, want)
+		}
+	}
+}
+
+func TestIntegerHalfEvenRoundingDistanceAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	check := func(value *big.Rat) {
+		t.Helper()
+
+		before := value.RatString()
+		got := number.RatRoundHalfToEvenInt(value)
+		distance := new(big.Rat).Sub(value, new(big.Rat).SetInt(got))
+		distance.Abs(distance)
+		comparison := distance.Cmp(big.NewRat(1, 2))
+		if comparison > 0 || comparison == 0 && got.Bit(0) != 0 {
+			t.Fatalf("rounded %s to %s, distance %s; want nearest integer with even ties", value, got, distance)
+		}
+		got.SetInt64(999)
+		if value.RatString() != before {
+			t.Fatal("rounding changed or aliased its source", before, value)
+		}
+	}
+	for numerator := int64(-64); numerator <= 64; numerator++ {
+		for denominator := int64(1); denominator <= 33; denominator++ {
+			check(big.NewRat(numerator, denominator))
+		}
+	}
+	// Exercise multiword division around half, with even/odd quotients and
+	// both signs. The distance/parity oracle does not perform quotient rounding.
+	denominator := new(big.Int).Lsh(big.NewInt(1), 128)
+	for _, odd := range []int64{0, 1} {
+		quotient := new(big.Int).Lsh(big.NewInt(1), 256)
+		quotient.Add(quotient, big.NewInt(odd))
+		for _, offset := range []int64{-1, 0, 1} {
+			numerator := new(big.Int).Mul(quotient, denominator)
+			remainder := new(big.Int).Rsh(new(big.Int).Set(denominator), 1)
+			remainder.Add(remainder, big.NewInt(offset))
+			numerator.Add(numerator, remainder)
+			value := new(big.Rat).SetFrac(numerator, denominator)
+			check(value)
+			check(new(big.Rat).Neg(value))
+		}
+	}
+}
+
+func TestScaledHalfEvenRoundingDistanceAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	for precision := -3; precision <= 3; precision++ {
+		exponent := precision
+		if exponent < 0 {
+			exponent = -exponent
+		}
+		quantum := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
+		if precision > 0 {
+			quantum.Inv(quantum)
+		}
+		for numerator := int64(-24); numerator <= 24; numerator++ {
+			for denominator := int64(1); denominator <= 17; denominator++ {
+				value := big.NewRat(numerator, denominator)
+				before := value.RatString()
+				got := number.RatRoundHalfToEven(value, precision)
+				units := new(big.Rat).Quo(got, quantum)
+				distance := new(big.Rat).Sub(value, got)
+				distance.Quo(distance.Abs(distance), quantum)
+				comparison := distance.Cmp(big.NewRat(1, 2))
+				if !units.IsInt() || comparison > 0 || comparison == 0 && units.Num().Bit(0) != 0 {
+					t.Fatalf("precision %d: rounded %s to %s, distance %s units; want nearest with even ties", precision, value, got, distance)
+				}
+				got.SetInt64(999)
+				if value.RatString() != before {
+					t.Fatal("scaled rounding changed or aliased its source", before, value)
+				}
+			}
+		}
+	}
+}
+
 func TestScientificAndFractionGroupingPictures(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ value, picture, want string }{
@@ -142,6 +257,13 @@ func TestFractionLongDivisionOwnership(t *testing.T) {
 		{"1/7", strings.Repeat("142857", 21) + "14", 128, 128},
 		{"1/8", "125", 0, 128},
 		{"1/8", "12500", 5, 5},
+		{"1/8", "125", 5, 3},
+		{"1/8", "12", 0, 2},
+		{"1/8", "", 0, 0},
+		{"1/1024", "00097", 0, 5},
+		{"1/1024", "", 0, 2},
+		{"1/1024", "00", 2, 2},
+		{"99/100", "9", 0, 1},
 		{"0", "000", 3, 128},
 	} {
 		r, ok := new(big.Rat).SetString(tc.value)
@@ -152,6 +274,30 @@ func TestFractionLongDivisionOwnership(t *testing.T) {
 		got := number.FormatRatFrac(r, tc.min, tc.max, df)
 		if got != tc.want || r.RatString() != before {
 			t.Fatalf("%s: %q, source %s; want %q", tc.value, got, r.RatString(), tc.want)
+		}
+	}
+	df.ZeroDigit = '٠'
+	if got := number.FormatRatFrac(big.NewRat(1, 8), 5, 5, df); got != "١٢٥٠٠" {
+		t.Fatal("localized fractional digits", got)
+	}
+}
+
+func BenchmarkFractionFormattingWidth(b *testing.B) {
+	for _, width := range []int{3, 128, 4096} {
+		for _, test := range []struct {
+			name  string
+			value *big.Rat
+		}{
+			{"RoundedSeventh", number.RatRoundHalfToEven(big.NewRat(1, 7), width)},
+			{"LeadingZeros", big.NewRat(1, 1024)},
+			{"TrailingZeros", big.NewRat(1, 8)},
+		} {
+			b.Run(test.name+"/"+strconv.Itoa(width), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					_ = number.FormatRatFrac(test.value, min(3, width), width, number.DefaultDecimalFormat())
+				}
+			})
 		}
 	}
 }

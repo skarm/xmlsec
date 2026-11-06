@@ -122,7 +122,7 @@ type recordState struct {
 
 func (r *recordState) token(token xml.Token, offset int64) error {
 	p := r.parser
-	if _, text := token.(xml.CharData); !text {
+	if _, text := token.(*xml.CharData); !text {
 		if err := p.flushText(); err != nil {
 			return err
 		}
@@ -132,7 +132,7 @@ func (r *recordState) token(token xml.Token, offset int64) error {
 		return err
 	}
 
-	if _, start := token.(xml.StartElement); start && r.selected == nil && r.matches() {
+	if _, start := token.(*xml.StartElement); start && r.selected == nil && r.matches() {
 		r.selected = p.stack[len(p.stack)-1].node
 		r.start = offset
 		p.count = 1
@@ -144,7 +144,7 @@ func (r *recordState) token(token xml.Token, offset int64) error {
 			return ErrLimit
 		}
 
-		if _, end := token.(xml.EndElement); end && len(p.stack) == len(r.options.Path)-1 {
+		if _, end := token.(*xml.EndElement); end && len(p.stack) == len(r.options.Path)-1 {
 			if r.options.MaxRecords > 0 && r.count >= r.options.MaxRecords {
 				return ErrLimit
 			}
@@ -229,7 +229,7 @@ func inheritRecordAttributes(node *Node) error {
 
 	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
 		for _, attr := range ancestor.Attrs {
-			if attr.Name.Space != XMLNamespace || attr.Name.Local != "lang" && attr.Name.Local != xmlSpaceName {
+			if attr.Name.Space != XMLNamespace || attr.Name.Local != lexicon.AttrLang && attr.Name.Local != xmlSpaceName {
 				continue
 			}
 

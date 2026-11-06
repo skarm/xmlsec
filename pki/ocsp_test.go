@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -14,12 +16,14 @@ import (
 	"math/big"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/signature"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
 )
@@ -83,6 +87,8 @@ func TestOCSPRoundTripAndFailures(t *testing.T) {
 		}
 
 		r, rep, e := pki.VerifyOCSP(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if r != nil || e == nil || rep.Signature != pki.Valid || rep.Status != status {
 			t.Fatalf("%v %+v", e, rep)
 		}
@@ -121,7 +127,12 @@ func testOCSPRoundTripAndFailuresCase(t *testing.T, tc *struct {
 func TestOCSPDelegation(t *testing.T) {
 	c := testcert.New(t)
 
-	req, e := pki.CreateOCSPRequest(c.Leaf.Raw, c.Root.Raw, crypto.SHA1, nil)
+	hash := crypto.SHA1
+	if fips140.Enabled() {
+		hash = crypto.SHA256
+	}
+
+	req, e := pki.CreateOCSPRequest(c.Leaf.Raw, c.Root.Raw, hash, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -167,6 +178,169 @@ func TestOCSPDelegation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOCSPFIPSRequestIdentifier(t *testing.T) {
+	if !testutil.RunFIPSTest(t) {
+		return
+	}
+
+	chain := testcert.New(t)
+	if request, err := pki.CreateOCSPRequest(chain.Leaf.Raw, chain.Root.Raw, crypto.SHA256, nil); err != nil || len(request) == 0 {
+		t.Fatal("SHA-256 CertID must remain available in FIPS", err)
+	}
+
+	if request, err := pki.CreateOCSPRequest(chain.Leaf.Raw, chain.Root.Raw, crypto.SHA1, nil); request != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("SHA-1 CertID must return a policy error in FIPS", err)
+	}
+}
+
+func TestOCSPFIPSResponderIdentifier(t *testing.T) {
+	if !testutil.RunFIPSTest(t) {
+		return
+	}
+
+	chain, byName, byKey := ocspKeyIdentifierResponses(t)
+	if result, _, err := pki.VerifyOCSP(t.Context(), byName, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), pki.OCSPOptions{}); result == nil || err != nil {
+		t.Fatal("SHA-256 response with byName responder must remain available", err)
+	}
+
+	if result, _, err := pki.VerifyOCSP(t.Context(), byKey, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), pki.OCSPOptions{}); result != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("byKey SHA-1 identifier must return a policy error in FIPS", err)
+	}
+}
+
+func TestOCSPResponderKeyIdentifier(t *testing.T) {
+	chain, _, byKey := ocspKeyIdentifierResponses(t)
+	result, report, err := pki.VerifyOCSP(t.Context(), byKey, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), pki.OCSPOptions{})
+	if fips140.Enabled() {
+		if result != nil || !errors.Is(err, pki.ErrPolicy) {
+			t.Fatal("byKey identifier was not rejected by FIPS policy", err)
+		}
+
+		return
+	}
+
+	if result == nil || err != nil || report.Signature != pki.Valid || report.Authorization != pki.OCSPAuthorityIssuer {
+		t.Fatal("correctly signed byKey response was rejected", report, err)
+	}
+}
+
+func TestOCSPChainPreservesCancellationCause(t *testing.T) {
+	chain, response, _ := ocspKeyIdentifierResponses(t)
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireOCSP})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An unrelated invalid extra response must not poison independent GOOD evidence.
+	withExtra := pki.Evidence{OCSPResponses: [][]byte{response, {0x30, 0}}}
+	if result, _, err := verifier.Verify(t.Context(), chain.Leaf.Raw, testcert.Now(), withExtra); result == nil || err != nil {
+		t.Fatal("ordinary invalid extra response poisoned GOOD evidence", err)
+	}
+
+	checkRevocationCancellation(t, verifier, chain.Leaf.Raw, pki.Evidence{OCSPResponses: [][]byte{response}})
+}
+
+func TestCRLChainPreservesCancellationCause(t *testing.T) {
+	chain := testcert.New(t)
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checkRevocationCancellation(t, verifier, chain.Leaf.Raw, pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}})
+}
+
+func checkRevocationCancellation(t *testing.T, verifier *pki.Verifier, certificate []byte, evidence pki.Evidence) {
+	t.Helper()
+
+	if result, _, err := verifier.Verify(t.Context(), certificate, testcert.Now(), evidence); result == nil || err != nil {
+		t.Fatal("signed evidence must pass before cancellation", err)
+	}
+
+	canceled, completed := 0, 0
+	// Sweep checkpoints rather than relying on one internal call count. The wrapped
+	// standard context really becomes canceled; it supplies the final observed cause.
+	for checkpoint := int32(1); checkpoint <= 80; checkpoint++ {
+		parent, cancel := context.WithCancel(t.Context())
+		ctx := &ocspCancelAtCheckContext{Context: parent, cancel: cancel}
+		ctx.remaining.Store(checkpoint)
+
+		result, _, err := verifier.Verify(ctx, certificate, testcert.Now(), evidence)
+		if parent.Err() != nil {
+			canceled++
+			if result != nil || !errors.Is(err, context.Canceled) {
+				t.Errorf("checkpoint %d lost cancellation: result=%v err=%v", checkpoint, result != nil, err)
+			}
+		} else {
+			completed++
+			if result == nil || err != nil {
+				t.Errorf("checkpoint %d failed without cancellation: result=%v err=%v", checkpoint, result != nil, err)
+			}
+		}
+
+		cancel()
+	}
+
+	if canceled == 0 {
+		t.Fatal("fixture never exercised cancellation")
+	}
+
+	t.Logf("canceled checkpoints=%d, completed controls=%d", canceled, completed)
+}
+
+type ocspCancelAtCheckContext struct {
+	context.Context
+	cancel    context.CancelFunc
+	remaining atomic.Int32
+}
+
+func (c *ocspCancelAtCheckContext) Err() error {
+	if c.remaining.Add(-1) == 0 {
+		c.cancel()
+	}
+
+	return c.Context.Err()
+}
+
+func ocspKeyIdentifierResponses(t *testing.T) (testcert.Chain, []byte, []byte) {
+	t.Helper()
+
+	chain := testcert.New(t)
+	request, err := pki.CreateOCSPRequest(chain.Leaf.Raw, chain.Root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byName, err := pki.CreateOCSPResponse(t.Context(), request, chain.Leaf.Raw, chain.Root.Raw, chain.Root.Raw, chain.RootKey, ocspTemplate())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identifier := make([]byte, sha1.Size)
+	if !fips140.Enabled() {
+		var public struct {
+			Algorithm pkix.AlgorithmIdentifier
+			Key       asn1.BitString
+		}
+
+		if rest, err := asn1.Unmarshal(chain.Root.RawSubjectPublicKeyInfo, &public); err != nil || len(rest) != 0 {
+			t.Fatal("issuer public key", err)
+		}
+
+		digest := sha1.Sum(public.Key.Bytes) // #nosec G401 -- RFC 6960 byKey identifier, not a signature.
+		copy(identifier, digest[:])
+	}
+	// In FIPS a well-formed identifier is sufficient: computing its expected
+	// SHA-1 value must be rejected before comparison or any SHA-1 invocation.
+	byKey := rewriteOCSPData(t, byName, chain.RootKey, func(fields []asn1.RawValue) [][]byte {
+		parts := ocspFieldBytes(fields)
+		parts[0] = der.Ctx(2, der.Octets(identifier))
+		return parts
+	})
+
+	return chain, byName, byKey
 }
 
 func TestOCSPNonceSizeAndCancellation(t *testing.T) {
@@ -403,18 +577,12 @@ func FuzzOCSPResponse(f *testing.F) {
 		}
 
 		result, report, e := pki.VerifyOCSP(t.Context(), b, leaf, issuer, fixture.At, options)
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if e != nil && result != nil || e == nil && (result == nil || report.Signature != pki.Valid || report.Status != pki.OCSPGood) {
 			t.Fatal("inconsistent OCSP verification result")
 		}
 	})
-}
-
-type ocspWriteFunc func([]byte) (int, error)
-
-func (f ocspWriteFunc) Write(p []byte) (int, error) { return f(p) }
-
-func ocspTemplate() pki.OCSPResponseTemplate {
-	return pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Minute)}
 }
 
 func TestOCSPResponderNameCandidateMustBeAuthorized(t *testing.T) {
@@ -517,66 +685,6 @@ func TestOCSPAuthenticatedEvidence(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Re-sign each intervention so semantic failures cannot be explained by a bad signature.
-func rewriteOCSPData(t *testing.T, raw []byte, key crypto.Signer, change func([]asn1.RawValue) [][]byte) []byte {
-	t.Helper()
-	root, err := der.Read(raw, len(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	outer, err := der.Sequence(root, 2, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	explicit, err := der.Explicit(outer[1], 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := der.Sequence(explicit, 2, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var octets []byte
-	if der.Decode(response[1], &octets) != nil {
-		t.Fatal("response octets")
-	}
-	basic, err := der.Read(octets, len(octets))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := der.Sequence(basic, 3, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tbs, err := der.Sequence(fields[0], 3, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed := der.Seq(change(tbs)...)
-	algorithm, err := signature.Algorithm(fields[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	sig, err := signature.Sign(t.Context(), key, algorithm, changed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := asn1.Marshal(asn1.BitString{Bytes: sig, BitLength: len(sig) * 8})
-	parts := [][]byte{changed, fields[1].FullBytes, encoded}
-	if len(fields) == 4 {
-		parts = append(parts, fields[3].FullBytes)
-	}
-	return der.Seq(outer[0].FullBytes, der.Ctx(0, der.Seq(response[0].FullBytes, der.Octets(der.Seq(parts...)))))
-}
-
-func ocspFieldBytes(fields []asn1.RawValue) [][]byte {
-	out := make([][]byte, len(fields))
-	for i := range fields {
-		out[i] = fields[i].FullBytes
-	}
-	return out
 }
 
 func TestOCSPMultipleEntrySelection(t *testing.T) {
@@ -749,6 +857,8 @@ func TestOCSPAuthorizationDependenciesAndSources(t *testing.T) {
 	}
 	for _, invalid := range []*evidence.Observation{nil, {}, crlSource} {
 		options = pki.OCSPOptions{Sources: []*evidence.Observation{invalid}}
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if result, report, err := pki.VerifyOCSP(t.Context(), raw, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), options); result != nil || !errors.Is(err, pki.ErrEvidence) || report.Signature != pki.NotChecked {
 			t.Fatal("invalid/unmatched provenance accepted", err)
 		}
@@ -851,5 +961,128 @@ func TestOCSPRequestRejectsExplicitDefaultFalse(t *testing.T) {
 	changed := der.Seq(der.Seq(fields[0].FullBytes, der.Ctx(2, der.Seq(extension))))
 	if parsed, err := pki.ParseOCSPRequest(changed); parsed != nil || !errors.Is(err, pki.ErrEvidence) {
 		t.Fatal("DEFAULT FALSE encoded in request", err)
+	}
+}
+
+type ocspWriteFunc func([]byte) (int, error)
+
+func (f ocspWriteFunc) Write(p []byte) (int, error) { return f(p) }
+
+func ocspTemplate() pki.OCSPResponseTemplate {
+	return pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: testcert.Now(), ThisUpdate: testcert.Now().Add(-time.Minute), NextUpdate: testcert.Now().Add(time.Minute)}
+}
+
+// Re-sign each intervention so semantic failures cannot be explained by a bad signature.
+func rewriteOCSPData(t *testing.T, raw []byte, key crypto.Signer, change func([]asn1.RawValue) [][]byte) []byte {
+	t.Helper()
+	root, err := der.Read(raw, len(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := der.Sequence(root, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := der.Explicit(outer[1], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := der.Sequence(explicit, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var octets []byte
+	if der.Decode(response[1], &octets) != nil {
+		t.Fatal("response octets")
+	}
+	basic, err := der.Read(octets, len(octets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(basic, 3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tbs, err := der.Sequence(fields[0], 3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := der.Seq(change(tbs)...)
+	algorithm, err := signature.Algorithm(fields[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := signature.Sign(t.Context(), key, algorithm, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := asn1.Marshal(asn1.BitString{Bytes: sig, BitLength: len(sig) * 8})
+	parts := [][]byte{changed, fields[1].FullBytes, encoded}
+	if len(fields) == 4 {
+		parts = append(parts, fields[3].FullBytes)
+	}
+	return der.Seq(outer[0].FullBytes, der.Ctx(0, der.Seq(response[0].FullBytes, der.Octets(der.Seq(parts...)))))
+}
+
+func ocspFieldBytes(fields []asn1.RawValue) [][]byte {
+	out := make([][]byte, len(fields))
+	for i := range fields {
+		out[i] = fields[i].FullBytes
+	}
+	return out
+}
+
+func TestOCSPConfiguredAuthoritySourceBindings(t *testing.T) {
+	chain, responder := testcert.New(t), testcert.New(t)
+	request, err := pki.CreateOCSPRequest(chain.Leaf.Raw, chain.Root.Raw, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), request, chain.Leaf.Raw, chain.Root.Raw, responder.Leaf.Raw, responder.LeafKey, ocspTemplate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorities := []pki.OCSPAuthority{{ResponderCertificateDER: responder.Leaf.Raw, IssuerCertificateDER: chain.Root.Raw}}
+	options := pki.OCSPOptions{Authorities: authorities}
+	if result, _, err := pki.VerifyOCSP(t.Context(), raw, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), options); result == nil || err != nil {
+		t.Fatal("configured authority must authenticate the control response", err)
+	}
+	source, err := evidence.NewObservation(t.Context(), evidence.Certificate, responder.Leaf.Raw, evidence.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireOCSP, OCSPAuthorities: authorities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _, err := verifier.Verify(t.Context(), chain.Leaf.Raw, testcert.Now(), pki.Evidence{OCSPResponses: [][]byte{raw}, Sources: []*evidence.Observation{source}}); result == nil || err != nil {
+		t.Fatal("full verifier must accept the exact configured certificate source", err)
+	}
+	options.Sources = []*evidence.Observation{source}
+	if result, report, err := pki.VerifyOCSP(t.Context(), raw, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), options); result == nil || err != nil || report.Authorization != pki.OCSPAuthorityLocal {
+		t.Error("standalone verifier rejected the exact configured certificate source", err)
+	} else if !bytes.Equal(result.ResponderDER(), responder.Leaf.Raw) {
+		t.Error("certificate provenance changed the authenticated responder")
+	}
+	for _, tc := range []struct {
+		name string
+		kind evidence.Kind
+		raw  []byte
+	}{
+		{"wrong kind", evidence.CRL, responder.Leaf.Raw},
+		{"wrong certificate digest", evidence.Certificate, responder.Root.Raw},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observation, err := evidence.NewObservation(t.Context(), tc.kind, tc.raw, evidence.Provenance{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options.Sources = []*evidence.Observation{observation}
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
+			if result, report, err := pki.VerifyOCSP(t.Context(), raw, chain.Leaf.Raw, chain.Root.Raw, testcert.Now(), options); result != nil || !errors.Is(err, pki.ErrEvidence) || report.Signature != pki.NotChecked {
+				t.Fatal("unmatched provenance acquired authority", result != nil, report, err)
+			}
+		})
 	}
 }

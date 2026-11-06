@@ -237,8 +237,8 @@ func xmlElement(t *testing.T, d *document.Document, n *tree.Node) []byte {
 }
 
 func nativeKeyArgs(mode, keyName string) (string, string) {
-	if mode == nameRsa {
-		return flagPubkeyPem, "--privkey-pem"
+	if mode == nameRSA {
+		return flagPublicKeyPEM, "--privkey-pem"
 	}
 
 	arg := "--aeskey"

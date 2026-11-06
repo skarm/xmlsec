@@ -180,6 +180,118 @@ func TestUnspecifiedNameIDDoesNotRequireLiteralUnspecifiedFormat(t *testing.T) {
 	}
 }
 
+func TestOutboundPOSTSerialization(t *testing.T) {
+	s := setup(t)
+	out, request, _ := begin(t, s, metadata.HTTPPost)
+	issued, err := s.idp.Issue(t.Context(), request, auth(), testcert.Now().Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("late sink failure")
+	for name, write := range map[string]func(context.Context, io.Writer) (int64, error){
+		"request": out.WritePOST, "response": issued.WritePOST,
+		"requestHTML": out.WritePOSTForm, "responseHTML": issued.WritePOSTForm,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var expected bytes.Buffer
+			count, err := write(t.Context(), &expected)
+			if err != nil || count != int64(expected.Len()) || expected.Len() == 0 {
+				t.Fatalf("output: %d %v", count, err)
+			}
+			var repeated bytes.Buffer
+			if _, err := write(t.Context(), &repeated); err != nil || !bytes.Equal(expected.Bytes(), repeated.Bytes()) {
+				t.Fatalf("repeatability: %v", err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			var untouched bytes.Buffer
+			if n, err := write(ctx, &untouched); n != 0 || untouched.Len() != 0 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled: %d %v", n, err)
+			}
+			if _, err := write(t.Context(), &postFailureWriter{}); !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("short write: %v", err)
+			}
+			if n, err := write(t.Context(), &postFailureWriter{remaining: 512, err: sentinel}); n == 0 || !errors.Is(err, sentinel) {
+				t.Fatalf("late failure: %d %v", n, err)
+			}
+			repeated.Reset()
+			if _, err := write(t.Context(), &repeated); err != nil || !bytes.Equal(expected.Bytes(), repeated.Bytes()) {
+				t.Fatalf("failed writer mutated message: %v", err)
+			}
+
+			var workers sync.WaitGroup
+			for range 8 {
+				workers.Go(func() {
+					var concurrent bytes.Buffer
+					if _, err := write(t.Context(), &concurrent); err != nil || !bytes.Equal(expected.Bytes(), concurrent.Bytes()) {
+						t.Errorf("concurrent serialization: %v", err)
+					}
+				})
+			}
+			workers.Wait()
+		})
+	}
+	redirect, _, _ := begin(t, s, metadata.HTTPRedirect)
+	if _, err := redirect.WritePOST(t.Context(), io.Discard); !errors.Is(err, sp.ErrPolicy) {
+		t.Fatal(err)
+	}
+	if _, err := redirect.WritePOSTForm(t.Context(), io.Discard); !errors.Is(err, sp.ErrPolicy) {
+		t.Fatal(err)
+	}
+}
+
+type postFailureWriter struct {
+	remaining int
+	err       error
+}
+
+func (w *postFailureWriter) Write(p []byte) (int, error) {
+	if w.remaining <= 0 {
+		return 0, w.err
+	}
+	n := min(w.remaining, len(p))
+	w.remaining -= n
+	if n < len(p) {
+		return n, w.err
+	}
+	return n, nil
+}
+
+func TestPOSTLimitPrecedesStoreCommit(t *testing.T) {
+	s := setup(t)
+	requests, err := state.NewMemoryStore(state.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, err := replay.NewMemoryStore(replay.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := sp.NewServiceProvider(sp.Config{EntityID: spID, Metadata: s.registry, Signing: protocol.SigningKey{Key: s.cert.LeafKey, CertificateDER: s.cert.Leaf.Raw}, Requests: requests, Replay: sr, POSTLimits: binding.POSTLimits{MaxFormBytes: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := service.Begin(t.Context(), sp.BeginOptions{IDP: idpID, Binding: metadata.HTTPPost, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)}); out != nil || !errors.Is(err, binding.ErrBinding) || requests.Len() != 0 {
+		t.Fatalf("pending commit: %v %d", err, requests.Len())
+	}
+	config := s.idpConfig
+	replayStore := &countReplayStore{Store: config.Replay}
+	config.Replay = replayStore
+	config.POSTLimits.MaxFormBytes = 1
+	identity, err := idp.NewIdentityProvider(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, _ := begin(t, s, metadata.HTTPRedirect)
+	request, err := identity.AcceptRedirect(t.Context(), out.RawQuery(), spID, ssoRedirect, testcert.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issued, err := identity.Issue(t.Context(), request, auth(), testcert.Now().Add(2*time.Second)); issued != nil || !errors.Is(err, binding.ErrBinding) || replayStore.calls != 0 {
+		t.Fatalf("replay commit: %v %d", err, replayStore.calls)
+	}
+}
+
 type registry map[string]*metadata.Snapshot
 
 func (r registry) Lookup(ctx context.Context, id string, at time.Time) (*metadata.Entity, error) {
@@ -315,118 +427,6 @@ func postBody(t testing.TB, message postSerializer) []byte {
 		t.Fatal(err)
 	}
 	return body.Bytes()
-}
-
-func TestOutboundPOSTSerialization(t *testing.T) {
-	s := setup(t)
-	out, request, _ := begin(t, s, metadata.HTTPPost)
-	issued, err := s.idp.Issue(t.Context(), request, auth(), testcert.Now().Add(2*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sentinel := errors.New("late sink failure")
-	for name, write := range map[string]func(context.Context, io.Writer) (int64, error){
-		"request": out.WritePOST, "response": issued.WritePOST,
-		"requestHTML": out.WritePOSTForm, "responseHTML": issued.WritePOSTForm,
-	} {
-		t.Run(name, func(t *testing.T) {
-			var expected bytes.Buffer
-			count, err := write(t.Context(), &expected)
-			if err != nil || count != int64(expected.Len()) || expected.Len() == 0 {
-				t.Fatalf("output: %d %v", count, err)
-			}
-			var repeated bytes.Buffer
-			if _, err := write(t.Context(), &repeated); err != nil || !bytes.Equal(expected.Bytes(), repeated.Bytes()) {
-				t.Fatalf("repeatability: %v", err)
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
-			var untouched bytes.Buffer
-			if n, err := write(ctx, &untouched); n != 0 || untouched.Len() != 0 || !errors.Is(err, context.Canceled) {
-				t.Fatalf("canceled: %d %v", n, err)
-			}
-			if _, err := write(t.Context(), &postFailureWriter{}); !errors.Is(err, io.ErrShortWrite) {
-				t.Fatalf("short write: %v", err)
-			}
-			if n, err := write(t.Context(), &postFailureWriter{remaining: 512, err: sentinel}); n == 0 || !errors.Is(err, sentinel) {
-				t.Fatalf("late failure: %d %v", n, err)
-			}
-			repeated.Reset()
-			if _, err := write(t.Context(), &repeated); err != nil || !bytes.Equal(expected.Bytes(), repeated.Bytes()) {
-				t.Fatalf("failed writer mutated message: %v", err)
-			}
-
-			var workers sync.WaitGroup
-			for range 8 {
-				workers.Go(func() {
-					var concurrent bytes.Buffer
-					if _, err := write(t.Context(), &concurrent); err != nil || !bytes.Equal(expected.Bytes(), concurrent.Bytes()) {
-						t.Errorf("concurrent serialization: %v", err)
-					}
-				})
-			}
-			workers.Wait()
-		})
-	}
-	redirect, _, _ := begin(t, s, metadata.HTTPRedirect)
-	if _, err := redirect.WritePOST(t.Context(), io.Discard); !errors.Is(err, sp.ErrPolicy) {
-		t.Fatal(err)
-	}
-	if _, err := redirect.WritePOSTForm(t.Context(), io.Discard); !errors.Is(err, sp.ErrPolicy) {
-		t.Fatal(err)
-	}
-}
-
-type postFailureWriter struct {
-	remaining int
-	err       error
-}
-
-func (w *postFailureWriter) Write(p []byte) (int, error) {
-	if w.remaining <= 0 {
-		return 0, w.err
-	}
-	n := min(w.remaining, len(p))
-	w.remaining -= n
-	if n < len(p) {
-		return n, w.err
-	}
-	return n, nil
-}
-
-func TestPOSTLimitPrecedesStoreCommit(t *testing.T) {
-	s := setup(t)
-	requests, err := state.NewMemoryStore(state.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sr, err := replay.NewMemoryStore(replay.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := sp.NewServiceProvider(sp.Config{EntityID: spID, Metadata: s.registry, Signing: protocol.SigningKey{Key: s.cert.LeafKey, CertificateDER: s.cert.Leaf.Raw}, Requests: requests, Replay: sr, POSTLimits: binding.POSTLimits{MaxFormBytes: 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out, err := service.Begin(t.Context(), sp.BeginOptions{IDP: idpID, Binding: metadata.HTTPPost, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)}); out != nil || !errors.Is(err, binding.ErrBinding) || requests.Len() != 0 {
-		t.Fatalf("pending commit: %v %d", err, requests.Len())
-	}
-	config := s.idpConfig
-	replayStore := &countReplayStore{Store: config.Replay}
-	config.Replay = replayStore
-	config.POSTLimits.MaxFormBytes = 1
-	identity, err := idp.NewIdentityProvider(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, _, _ := begin(t, s, metadata.HTTPRedirect)
-	request, err := identity.AcceptRedirect(t.Context(), out.RawQuery(), spID, ssoRedirect, testcert.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if issued, err := identity.Issue(t.Context(), request, auth(), testcert.Now().Add(2*time.Second)); issued != nil || !errors.Is(err, binding.ErrBinding) || replayStore.calls != 0 {
-		t.Fatalf("replay commit: %v %d", err, replayStore.calls)
-	}
 }
 
 type countReplayStore struct {

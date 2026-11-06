@@ -14,7 +14,11 @@ import (
 )
 
 func (c *compiler) compileImportSchema(ctx context.Context, elem *xdm.Element) error {
-	return staticError("XTSE1650", "schema imports require a schema-aware processor")
+	const (
+		errCodeXTSE1650 = "XTSE1650"
+	)
+
+	return staticError(errCodeXTSE1650, "schema imports require a schema-aware processor")
 }
 
 // schemaDeclsForValidation returns the in-scope schema declarations for
@@ -35,7 +39,7 @@ func (c *compiler) schemaDeclsForValidation() xpath.SchemaDeclarations { return 
 // using schema-element() or schema-attribute() with an undeclared name.
 func (c *compiler) validateAsSequenceType(ctx context.Context, elem *xdm.Element, as string, context string) error {
 	if as == "" {
-		if _, present := elem.GetAttribute("as"); present {
+		if _, present := elem.GetAttribute(nameAs); present {
 			return staticError(lexicon.ErrXPST0003, "%s: empty 'as' type", context)
 		}
 	}
@@ -70,7 +74,7 @@ func (c *compiler) validateAsSequenceTypeWithNS(_ context.Context, as string, co
 	}
 
 	if requiresSchemaNodeTest(st.ItemTest, ns, defaultNS, hasDefaultNS) {
-		return staticError("XTSE1660", "%s: 'as' requires schema-annotated nodes", context)
+		return staticError(errCodeXTSE1660, "%s: 'as' requires schema-annotated nodes", context)
 	}
 
 	if err := xpath.ValidateSequenceTypeForVersion(st, ns, defaultNS, nil, c.stylesheet.xpathVersion()); err != nil {
@@ -109,10 +113,10 @@ func requiresSchemaNodeTest(test xdm.NodeTest, ns map[string]string, defaultNS s
 	}
 
 	if attribute {
-		return local != "untypedAtomic" && local != "anyAtomicType" && local != "anySimpleType"
+		return local != lexicon.TypeUntypedAtomic && local != lexicon.TypeAnyAtomicType && local != lexicon.TypeAnySimpleType
 	}
 
-	return local != strings.TrimPrefix(lexicon.XSUntyped, "xs:") && local != "anyType"
+	return local != strings.TrimPrefix(lexicon.XSUntyped, lexicon.PrefixXS+":") && local != lexicon.TypeAnyType
 }
 
 // checkTypedModePatterns validates XTSE3105: for modes declared with
@@ -147,7 +151,7 @@ func resolveXSDTypeNameNS(qname string, nsBindings map[string]string, xpathDefau
 
 			local := qname[closeIdx+1:]
 			if uri == lexicon.NamespaceXSD {
-				return "xs:" + local
+				return lexicon.PrefixXS + ":" + local
 			}
 
 			return qname
@@ -155,13 +159,13 @@ func resolveXSDTypeNameNS(qname string, nsBindings map[string]string, xpathDefau
 	}
 
 	if prefix, local, ok := strings.Cut(qname, ":"); ok {
-		if prefix == "xs" || prefix == nameXsd {
-			return "xs:" + local
+		if prefix == lexicon.PrefixXS || prefix == lexicon.PrefixXSD {
+			return lexicon.PrefixXS + ":" + local
 		}
 
 		if uri, ok := nsBindings[prefix]; ok {
 			if uri == lexicon.NamespaceXSD {
-				return "xs:" + local
+				return lexicon.PrefixXS + ":" + local
 			}
 			// User-defined type: resolve to Q{ns}local canonical form.
 			return xdm.QAnnotation(uri, local)

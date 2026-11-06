@@ -67,6 +67,55 @@ func TestTimestampRequestInputCompletion(t *testing.T) {
 	}
 }
 
+func TestVerificationRejectsNewCaseAliasedOutputs(t *testing.T) {
+	dir := t.TempDir()
+	testutil.WriteFile(t, dir, "case-probe", nil)
+	if _, err := os.Stat(filepath.Join(dir, "CASE-PROBE")); errors.Is(err, os.ErrNotExist) {
+		t.Skip("filesystem distinguishes filename case")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	f := evidenceSetup(t)
+	content := []byte("authenticated content")
+	signed := cli(t, content, nameCMS, nameSign, flagKey, f.key, "-certificate", f.cert)
+	request := cli(t, content, "timestamp", nameRequest)
+	requestPath := testutil.WriteFile(t, f.dir, "request.tsq", request)
+	response := cli(t, request, "timestamp", nameIssue, flagKey, f.tsaKey, "-certificate", f.tsaCert, "-at", f.at, "-serial", "1", "-tsa-policy", "1.2.3.4")
+	parsed, err := timestamp.ParseResponse(t.Context(), response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := []byte(`<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"></samlp:AuthnRequest>`)
+	query := cli(t, message, "saml", nameRedirectSign, flagKey, f.key)
+	for _, tc := range []struct {
+		name  string
+		input []byte
+		args  []string
+		flag  string
+		want  []byte
+	}{
+		{"CMS content", signed, []string{nameCMS, nameVerify, "-expect-certificate", f.cert}, "-extract", content},
+		{"timestamp token", response, []string{"timestamp", nameVerify, "-request", requestPath, "-trust", f.tsaTrust, "-at", f.at}, "-token-out", parsed.TokenDER()},
+		{"SAML XML", query, []string{"saml", nameRedirectVerify, flagKey, f.public}, "-extract", message},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			payload := filepath.Join(dir, "payload")
+			report := filepath.Join(dir, "PAYLOAD")
+			args := append([]string(nil), tc.args...)
+			args = append(args, tc.flag, payload, "-out", report)
+			err := run(t.Context(), args, bytes.NewReader(tc.input), io.Discard, io.Discard)
+			if err == nil || exitCode(err) != 2 {
+				t.Fatal("accepted colliding payload and report paths", err)
+			}
+			data, err := os.ReadFile(payload)
+			if err != nil || !bytes.Equal(data, tc.want) {
+				t.Fatal("report replaced the authenticated payload", err)
+			}
+		})
+	}
+}
+
 type timestampReadFunc func([]byte) (int, error)
 
 func (f timestampReadFunc) Read(p []byte) (int, error) { return f(p) }

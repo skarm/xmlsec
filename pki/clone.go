@@ -10,7 +10,7 @@ import (
 // rules, replacing ONLY untrusted path-building certificates. It is useful for
 // checking that a document supplies its own validation material.
 func (v *Verifier) WithIntermediateCertificates(raw [][]byte) (*Verifier, error) {
-	if v == nil || len(raw) > 64 {
+	if v == nil || len(raw) > maxIntermediateCertificates {
 		return nil, ErrPolicy
 	}
 
@@ -18,7 +18,7 @@ func (v *Verifier) WithIntermediateCertificates(raw [][]byte) (*Verifier, error)
 	out.intermediates = x509.NewCertPool()
 
 	out.issuerCertificates = append([][]byte(nil), v.anchorCertificates...)
-	out.originalCertificates = make(map[[32]byte]*x509.Certificate, len(v.anchorCertificates)+len(raw))
+	out.originalCertificates = make(map[[sha256.Size]byte]*x509.Certificate, len(v.anchorCertificates)+len(raw))
 
 	for _, source := range v.anchorCertificates {
 		digest := sha256.Sum256(source)

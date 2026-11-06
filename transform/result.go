@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -16,11 +17,16 @@ import (
 // Result is a complete immutable XSLT result before serialization. It supports
 // concurrent reads and reuse as XPath/XSLT input without an XML round trip.
 type Result struct {
-	engine    *Engine
-	native    *xslt.Execution
-	primary   Sequence
+	// engine retains the policy used when serializing or reusing results.
+	engine *Engine
+	// native retains execution metadata and serialization settings.
+	native *xslt.Execution
+	// primary is the immutable principal XDM result sequence.
+	primary Sequence
+	// secondary maps result URIs to immutable secondary sequences.
 	secondary map[string]Sequence
-	messages  []Message
+	// messages retains xsl:message diagnostics in execution order.
+	messages []Message
 }
 
 // Primary returns the primary XDM sequence, preserving order and atomic types.
@@ -71,8 +77,8 @@ func (r *Result) OutputEncoding(uri string) (string, error) {
 		}
 	}
 
-	if value.Output == nil || value.Output.Encoding == "" || value.Output.Method == "adaptive" {
-		return "UTF-8", nil
+	if value.Output == nil || value.Output.Encoding == "" || value.Output.Method == lexicon.MethodAdaptive {
+		return lexicon.EncodingUTF8U, nil
 	}
 
 	return value.Output.Encoding, nil
@@ -150,7 +156,7 @@ func (r *Result) WriteSecondary(ctx context.Context, uri string, dst io.Writer) 
 		return 0, wrap("write secondary XSLT", ErrInput)
 	}
 
-	return r.writeValue(ctx, dst, value)
+	return r.writeValue(ctx, dst, value, "write secondary XSLT")
 }
 
 // Document converts a single document or element result to a complete XML
@@ -194,14 +200,14 @@ func (r *Result) Document(ctx context.Context) (*Document, error) {
 	return doc, nil
 }
 
-func (r *Result) writeValue(ctx context.Context, dst io.Writer, value xslt.ValueResult) (int64, error) {
+func (r *Result) writeValue(ctx context.Context, dst io.Writer, value xslt.ValueResult, operation string) (int64, error) {
 	if nilcheck.IsNil(dst) {
-		return 0, wrap("write XSLT", ErrInput)
+		return 0, wrap(operation, ErrInput)
 	}
 
 	ctx, cancel, err := r.engine.invocation(ctx)
 	if err != nil {
-		return 0, err
+		return 0, wrap(operation, err)
 	}
 	defer cancel()
 
@@ -212,7 +218,7 @@ func (r *Result) writeValue(ctx context.Context, dst io.Writer, value xslt.Value
 		err = ctx.Err()
 	}
 
-	return writer.Written, xsltError("write XSLT", err)
+	return writer.Written, xsltError(operation, err)
 }
 
 // Execute runs the selected template or mode and returns typed XDM results.
@@ -319,7 +325,7 @@ func (w resultWriterTo) WriteTo(dst io.Writer) (int64, error) {
 		return 0, wrap("write XSLT", ErrInput)
 	}
 
-	return r.writeValue(w.ctx, dst, r.native.Primary)
+	return r.writeValue(w.ctx, dst, r.native.Primary, "write XSLT")
 }
 
 type nodePublication struct {

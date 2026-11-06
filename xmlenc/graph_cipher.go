@@ -17,6 +17,10 @@ import (
 	"github.com/skarm/xmlsec/resource"
 )
 
+const (
+	maximumCipherReferenceTransforms = 8
+)
+
 type graphCipherPlan struct {
 	document   *graphDocument
 	element    document.Element
@@ -73,7 +77,7 @@ func (g *keyGraph) referenceOptions(maximum int) (reference.Options, error) {
 		}
 	}
 
-	return reference.Options{AllowedTransforms: allowed, MaxTransforms: 8, MaxInputBytes: g.remaining.MaxBytes, MaxOutputBytes: min(maximum, g.remaining.MaxBytes), MaxProducedBytes: g.remaining.MaxBytes, MaxNodeVisits: g.remaining.MaxNodes, XMLLimits: g.profile.options.XMLLimits}, nil
+	return reference.Options{AllowedTransforms: allowed, MaxTransforms: maximumCipherReferenceTransforms, MaxInputBytes: g.remaining.MaxBytes, MaxOutputBytes: min(maximum, g.remaining.MaxBytes), MaxProducedBytes: g.remaining.MaxBytes, MaxNodeVisits: g.remaining.MaxNodes, XMLLimits: g.profile.options.XMLLimits}, nil
 }
 
 func (g *keyGraph) cipherPlan(doc *graphDocument, data document.Element, maximum int) (*graphCipherPlan, error) {
@@ -84,7 +88,7 @@ func (g *keyGraph) cipherPlan(doc *graphDocument, data document.Element, maximum
 	p := &graphCipherPlan{document: doc, element: data, maximum: maximum}
 
 	child := data.Children()[0]
-	if child.Name() == elementName(Namespace, "CipherValue") {
+	if child.Name() == elementName(Namespace, nameCipherValue) {
 		if !exactAttributes(child) || len(child.Children()) != 0 {
 			return nil, ErrFormat
 		}
@@ -94,11 +98,11 @@ func (g *keyGraph) cipherPlan(doc *graphDocument, data document.Element, maximum
 		return p, nil
 	}
 
-	if child.Name() != elementName(Namespace, "CipherReference") || !exactAttributes(child, "URI") || !graphStructuralText(child) {
+	if child.Name() != elementName(Namespace, nameCipherReference) || !exactAttributes(child, lexicon.SecurityAttrURI) || !graphStructuralText(child) {
 		return nil, ErrFormat
 	}
 
-	p.uri = attributeValue(child, "URI")
+	p.uri = attributeValue(child, lexicon.SecurityAttrURI)
 	if !validGraphReference(p.uri) {
 		return nil, ErrFormat
 	}
@@ -275,21 +279,21 @@ func graphCipherTransforms(child document.Element) ([]reference.Transform, error
 }
 
 func graphCipherTransform(item document.Element) (reference.Transform, error) {
-	if item.Name() != elementName(SignatureNamespace, lexicon.DSigElementTransform) || !exactAttributes(item, "Algorithm") || !graphStructuralText(item) {
+	if item.Name() != elementName(SignatureNamespace, lexicon.DSigElementTransform) || !exactAttributes(item, lexicon.SecurityAttrAlgorithm) || !graphStructuralText(item) {
 		return reference.Transform{}, ErrFormat
 	}
 
-	t := reference.Transform{Algorithm: attributeValue(item, "Algorithm")}
+	t := reference.Transform{Algorithm: attributeValue(item, lexicon.SecurityAttrAlgorithm)}
 	if len(item.Children()) == 0 {
 		return t, nil
 	}
 
-	children, err := childElements(item, elementName(c14n.Exclusive, "InclusiveNamespaces"))
-	if err != nil || !exactAttributes(children[0], "PrefixList") || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
+	children, err := childElements(item, elementName(c14n.Exclusive, lexicon.C14NElementInclusiveNamespaces))
+	if err != nil || !exactAttributes(children[0], lexicon.C14NAttrPrefixList) || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
 		return reference.Transform{}, ErrFormat
 	}
 
-	t.InclusivePrefixes = strings.Fields(attributeValue(children[0], "PrefixList"))
+	t.InclusivePrefixes = strings.Fields(attributeValue(children[0], lexicon.C14NAttrPrefixList))
 
 	return t, nil
 }

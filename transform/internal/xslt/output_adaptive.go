@@ -19,7 +19,7 @@ func serializeAdaptiveItems(ctx context.Context, w io.Writer, items xdm.Sequence
 
 	options := streamXMLWriteOptions(definition, strings.ToLower(definition.Encoding))
 	if options.Normalization == lexicon.NormFullyNormalized {
-		options.Normalization = normalizationFormNFC
+		options.Normalization = lexicon.NormalizationFormNFC
 	}
 
 	writer := xdm.XMLSerialization{XMLWriteOptions: options, Encoding: definition.Encoding, OmitDeclaration: definition.OmitDeclaration, OmitDoctype: definition.DoctypeSystem == "", CompactDeclaration: !definition.Indent}

@@ -4,6 +4,16 @@ import (
 	"time"
 )
 
+// Only workspaces above this many entry slots are compacted after a usage spike; this is not a limit on live records.
+const (
+	retainedCapacityThreshold = 1024
+)
+
+// Shrink at quarter occupancy while preserving every live entry and the Index conservative latest-deadline bound.
+const (
+	retainedCapacityDivisor = 4
+)
+
 // Queue is a min-heap ordered by expiration. Its zero value is ready to use.
 // Equal expiration times have no guaranteed order. Queue is not concurrent-safe.
 type Queue[K any] struct{ items []item[K] }
@@ -17,7 +27,11 @@ type item[K any] struct {
 // storage; larger queues shrink at or below one-quarter occupancy, leaving room
 // for reuse. The heap order and all live entries are preserved.
 func (q *Queue[K]) Trim() {
-	if cap(q.items) <= 1024 || len(q.items) > cap(q.items)/4 {
+	const (
+		retainedCapacityGrowthFactor = 2
+	)
+
+	if cap(q.items) <= retainedCapacityThreshold || len(q.items) > cap(q.items)/retainedCapacityDivisor {
 		return
 	}
 
@@ -26,7 +40,7 @@ func (q *Queue[K]) Trim() {
 		return
 	}
 
-	items := make([]item[K], len(q.items), max(1024, 2*len(q.items)))
+	items := make([]item[K], len(q.items), max(retainedCapacityThreshold, retainedCapacityGrowthFactor*len(q.items)))
 	copy(items, q.items)
 	q.items = items
 }

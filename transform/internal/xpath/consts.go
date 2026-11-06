@@ -16,11 +16,25 @@ const (
 	// http://www.w3.org/2005/xpath-functions namespace. Kept separate from
 	// keywordMap/keywordArray because the conceptual roles are unrelated
 	// even though the string values coincide.
-	jsonKindNull  = "null"
-	jsonKindMap   = "map"
-	jsonKindArray = "array"
+	jsonKindNull    = "null"
+	jsonKindMap     = "map"
+	jsonKindArray   = "array"
+	jsonKindString  = "string"
+	jsonKindNumber  = "number"
+	jsonKindBoolean = "boolean"
 
 	// Duplicate-key handling option values for JSON-related functions.
 	duplicatesUseFirst = "use-first"
 	duplicatesReject   = "reject"
+)
+
+// XPath 1.0 retains legacy errors; XPath 2.0 introduces the standard dynamic
+// error-code vocabulary; 3.0 and 3.1 select later grammars and function libraries.
+// These language codes are separate from schema and XSLT.
+const (
+	xpathVersionDefault = 0 // selects the engine default
+	xpathVersion10      = 10
+	xpathVersion20      = 20
+	xpathVersion30      = 30
+	xpathVersion31      = 31
 )

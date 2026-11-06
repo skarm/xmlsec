@@ -13,14 +13,29 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Explicit encoding requires the second argument. A zero byte/cache setting
+// selects defaults; line limit zero disables the line bound, while one is the
+// minimum splitter request when an exhausted operation budget must still fail.
+const (
+	textEncodingArgumentThreshold = 1
+	defaultTextResourceByteLimit  = 0
+	textCacheDefaultThreshold     = 0
+	noTextResourceLineLimit       = 0
+	minimumTextSplitLineLimit     = 1
+)
+
+// A negative remaining-byte value means the available() validation has no
+// output budget bound; retain int64 so subtraction and comparisons stay typed.
+const unlimitedTextRemainingBytes = int64(-1)
+
 func lookupFunctionsUnparsedText(name string) (*builtinFunc, bool) {
 	switch name {
 	case fnNameUnparsedText:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedText}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnUnparsedText}, true
 	case fnNameUnparsedTextAvailable:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedTextAvailable}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnUnparsedTextAvailable}, true
 	case nameUnparsedTextLines:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnUnparsedTextLines}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnUnparsedTextLines}, true
 	}
 
 	return nil, false
@@ -84,12 +99,12 @@ const (
 func textResourceStore(ctx context.Context, ec *evalContext) *textSnapshotStore {
 	cache, _ := InvocationState(ctx, textSnapshotKey{}, func() any {
 		limit, _ := ctx.Value(textResourceCacheLimitKey{}).(int64)
-		if limit <= 0 {
+		if limit <= textCacheDefaultThreshold {
 			if ec != nil {
 				limit = ec.maxResourceBytes
 			}
 
-			if limit <= 0 {
+			if limit <= textCacheDefaultThreshold {
 				limit = unparsedtext.DefaultMaxBytes
 			}
 		}
@@ -183,7 +198,7 @@ func readTextResourceSnapshot(ctx context.Context, ec *evalContext, cfg *unparse
 	}
 
 	maximum := cfg.MaxBytes
-	if maximum == 0 {
+	if maximum == defaultTextResourceByteLimit {
 		maximum = unparsedtext.DefaultMaxBytes
 	}
 
@@ -289,7 +304,7 @@ func readTextResourceSource(ctx context.Context, cfg *unparsedtext.Config, uri, 
 
 func configureTextResourceRead(ctx context.Context, cfg *unparsedtext.Config, entry *textResourceSnapshot, mode textResourceMode, retentionLimit int64) int64 {
 	cfg.ReadBytes = func(n int) { entry.rawBytes += int64(n) }
-	remaining := int64(-1)
+	remaining := unlimitedTextRemainingBytes
 
 	if mode == textResourceAvailable {
 		cfg.CheckBytes = nil // A validation probe does not produce an XDM string.
@@ -380,14 +395,14 @@ func fnUnparsedText(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 	}
 
 	encoding := ""
-	if len(args) > 1 {
+	if len(args) > textEncodingArgumentThreshold {
 		encoding, err = coerceArgToString(ctx, args[1])
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	text, err := loadTextResource(ctx, href, encoding, len(args) > 1, textResourceValue, 0, nil)
+	text, err := loadTextResource(ctx, href, encoding, len(args) > textEncodingArgumentThreshold, textResourceValue, noTextResourceLineLimit, nil)
 	if err != nil {
 		return nil, wrapUnparsedTextError(err)
 	}
@@ -408,14 +423,14 @@ func fnUnparsedTextAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 	}
 
 	encoding := ""
-	if len(args) > 1 {
+	if len(args) > textEncodingArgumentThreshold {
 		encoding, err = coerceArgToString(ctx, args[1])
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	_, err = loadTextResource(ctx, href, encoding, len(args) > 1, textResourceAvailable, 0, nil)
+	_, err = loadTextResource(ctx, href, encoding, len(args) > textEncodingArgumentThreshold, textResourceAvailable, noTextResourceLineLimit, nil)
 	if ControlFailure(ctx, err) != nil || errors.Is(err, tree.ErrLimit) {
 		return nil, err
 	}
@@ -440,7 +455,7 @@ func fnUnparsedTextLines(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 	}
 
 	encoding := ""
-	if len(args) > 1 {
+	if len(args) > textEncodingArgumentThreshold {
 		encoding, err = coerceArgToString(ctx, args[1])
 		if err != nil {
 			return nil, err
@@ -466,8 +481,8 @@ func fnUnparsedTextLines(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 	// budget (rem == 0) must still cap allocation, so floor the splitter bound at
 	// 1. The op charge below then rejects the single produced line via ErrOpLimit.
 	splitLimit := limit
-	if opBounded && splitLimit < 1 {
-		splitLimit = 1
+	if opBounded && splitLimit < minimumTextSplitLineLimit {
+		splitLimit = minimumTextSplitLineLimit
 	}
 
 	lineFailure := ErrNodeSetLimit
@@ -475,7 +490,7 @@ func fnUnparsedTextLines(ctx context.Context, args []xdm.Sequence) (xdm.Sequence
 		lineFailure = ErrOpLimit
 	}
 
-	body, err := loadTextResource(ctx, href, encoding, len(args) > 1, textResourceLines, splitLimit, lineFailure)
+	body, err := loadTextResource(ctx, href, encoding, len(args) > textEncodingArgumentThreshold, textResourceLines, splitLimit, lineFailure)
 	lines, truncated := unparsedtext.SplitLinesBounded(body, splitLimit)
 
 	if err != nil {

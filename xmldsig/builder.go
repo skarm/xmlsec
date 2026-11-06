@@ -12,6 +12,16 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	// Fallback unqualified application ID attribute used by builders and reference resolution.
+	defaultIDAttribute           = "ID"
+	maximumBuilderReferences     = 64
+	maximumCertificateBytes      = 1 << 20
+	maximumCertificateGroupBytes = 4 << 20
+	maximumEmbeddedCertificates  = 16
+	maximumSignatureObjects      = 256
+)
+
 // ReferenceTemplate describes one direct or Manifest reference to a same-document
 // target or an allowlisted external URI. An empty transform list follows XMLDSig
 // input-type conversion rules and does not select Exclusive C14N.
@@ -114,7 +124,7 @@ func BuildTemplate(ctx context.Context, doc *document.Document, parent document.
 		return fail(err)
 	}
 
-	if len(spec.References) < 1 || len(spec.References) > 64 || len(spec.Objects) > 256 {
+	if len(spec.References) < 1 || len(spec.References) > maximumBuilderReferences || len(spec.Objects) > maximumSignatureObjects {
 		return fail(fmt.Errorf("%w: template size", ErrPolicy))
 	}
 
@@ -144,7 +154,7 @@ func BuildTemplate(ctx context.Context, doc *document.Document, parent document.
 func signatureTemplateNode(ctx context.Context, spec SignatureTemplate, cm reference.Transform) (*tree.Node, error) {
 	sig := newDS(lexicon.DSigElementSignature)
 
-	sig.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}}
+	sig.NS = []tree.Namespace{{Prefix: lexicon.PrefixDSig, URI: Namespace}}
 	if err := templateID(sig, spec.ID); err != nil {
 		return nil, err
 	}
@@ -153,7 +163,7 @@ func signatureTemplateNode(ctx context.Context, spec SignatureTemplate, cm refer
 	add(sig, si)
 
 	c := newDS(lexicon.DSigElementCanonicalizationMethod)
-	setAttr(c, "Algorithm", cm.Algorithm)
+	setAttr(c, lexicon.SecurityAttrAlgorithm, cm.Algorithm)
 	addInclusive(c, cm.InclusivePrefixes)
 	add(si, c)
 
@@ -206,14 +216,14 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 			return fmt.Errorf("%w: expected a KeyInfo document", ErrStructure)
 		}
 
-		if _, err := structure(n, lexicon.DSigElementKeyInfo, "Id"); err != nil {
+		if _, err := structure(n, lexicon.DSigElementKeyInfo, lexicon.SecurityAttrID); err != nil {
 			return err
 		}
 
 		add(sig, tree.ImportSubtree(n))
 	}
 
-	if len(spec.Certificates) > 16 {
+	if len(spec.Certificates) > maximumEmbeddedCertificates {
 		return fmt.Errorf("%w: too many embedded certificates", ErrPolicy)
 	}
 
@@ -227,7 +237,7 @@ func appendTemplateKeyInfo(ctx context.Context, sig *tree.Node, spec SignatureTe
 	total := 0
 	for _, der := range spec.Certificates {
 		total += len(der)
-		if len(der) == 0 || len(der) > 1<<20 || total > 4<<20 {
+		if len(der) == 0 || len(der) > maximumCertificateBytes || total > maximumCertificateGroupBytes {
 			return fmt.Errorf("%w: certificate size", ErrPolicy)
 		}
 
@@ -257,13 +267,13 @@ func objectTemplateNode(ctx context.Context, spec ObjectTemplate) (*tree.Node, e
 		return nil, fmt.Errorf("%w: Object needs exactly one content variant", ErrStructure)
 	}
 
-	object := newDS("Object")
+	object := newDS(lexicon.DSigElementObject)
 	if err := templateID(object, spec.ID); err != nil {
 		return nil, err
 	}
 
 	if spec.MIMEType != "" {
-		setAttr(object, "MimeType", spec.MIMEType)
+		setAttr(object, lexicon.SecurityAttrMimeType, spec.MIMEType)
 	}
 
 	switch {
@@ -316,12 +326,12 @@ func objectTemplateVariants(spec ObjectTemplate) int {
 }
 
 func manifestTemplateNode(ctx context.Context, spec ManifestTemplate) (*tree.Node, error) {
-	manifest := newDS("Manifest")
+	manifest := newDS(nameManifest)
 	if err := templateID(manifest, spec.ID); err != nil {
 		return nil, err
 	}
 
-	if len(spec.References) < 1 || len(spec.References) > 64 {
+	if len(spec.References) < 1 || len(spec.References) > maximumBuilderReferences {
 		return nil, fmt.Errorf("%w: Manifest template reference count", ErrPolicy)
 	}
 
@@ -430,7 +440,7 @@ func parseTemplateDraft(ctx context.Context, draft signatureTemplateDraft) (*doc
 	}
 	// Detect ds:Id/default ID collisions early. Additional application ID rules
 	// are still checked by SignTemplate's validation configuration.
-	if _, err := reference.NewSameDocumentResolverWithRules(ctx, final, coreIDRules(SignatureOptions{IDAttribute: document.Name{Local: "ID"}})); err != nil {
+	if _, err := reference.NewSameDocumentResolverWithRules(ctx, final, coreIDRules(SignatureOptions{IDAttribute: document.Name{Local: defaultIDAttribute}})); err != nil {
 		return fail(err)
 	}
 
@@ -446,7 +456,7 @@ func templateID(n *tree.Node, id string) error {
 		return fmt.Errorf("%w: invalid template ID", ErrReference)
 	}
 
-	setAttr(n, "Id", id)
+	setAttr(n, lexicon.SecurityAttrID, id)
 
 	return nil
 }
@@ -483,17 +493,17 @@ func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node
 		return nil, err
 	}
 
-	setAttr(n, "URI", r.URI)
+	setAttr(n, lexicon.SecurityAttrURI, r.URI)
 
 	if r.Type != "" {
-		setAttr(n, "Type", r.Type)
+		setAttr(n, lexicon.SecurityAttrType, r.Type)
 	}
 
 	if len(r.Transforms) > 0 {
 		ts := newDS(lexicon.DSigElementTransforms)
 		for _, tr := range r.Transforms {
 			t := newDS(lexicon.DSigElementTransform)
-			setAttr(t, "Algorithm", tr.Algorithm)
+			setAttr(t, lexicon.SecurityAttrAlgorithm, tr.Algorithm)
 			addInclusive(t, tr.InclusivePrefixes)
 
 			if reference.IsExtension(tr.Algorithm) {
@@ -509,7 +519,7 @@ func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node
 	}
 
 	dm := newDS(lexicon.DSigElementDigestMethod)
-	setAttr(dm, "Algorithm", r.DigestMethod)
+	setAttr(dm, lexicon.SecurityAttrAlgorithm, r.DigestMethod)
 	add(n, dm)
 	add(n, newDS(lexicon.DSigElementDigestValue))
 

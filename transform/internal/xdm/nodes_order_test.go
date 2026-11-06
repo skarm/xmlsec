@@ -255,3 +255,162 @@ func TestNodeOrderUnionAndStepResultFastPathsRespectLimits(t *testing.T) {
 		t.Fatal("general merge ignored limit", got, err)
 	}
 }
+
+func TestDirectNodeOrderReportsUnknownOutsideSharedTree(t *testing.T) {
+	t.Parallel()
+
+	first := parseNodeDocument(t, `<r xmlns:p="urn:p" a="1"><child/></r>`)
+	second := parseNodeDocument(t, `<s xmlns:q="urn:q" b="2"><other/></s>`)
+	r, s := first.DocumentElement(), second.DocumentElement()
+	ns := xdm.NewNamespaceNodeWrapper(xdm.NewNamespace("p", "urn:p"), r)
+	otherNS := xdm.NewNamespaceNodeWrapper(xdm.NewNamespace("q", "urn:q"), s)
+	detachedNS := xdm.NewNamespaceNodeWrapper(xdm.NewNamespace("p", "urn:p"), nil)
+	otherDetachedNS := xdm.NewNamespaceNodeWrapper(xdm.NewNamespace("q", "urn:q"), nil)
+	detachedAttribute, err := first.CreateAttribute("detached", "value", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Freeze()
+	second.Freeze()
+
+	for _, tc := range []struct {
+		name string
+		a, b xdm.Node
+	}{
+		{"unrelated elements", r, s},
+		{"unrelated namespaces", ns, otherNS},
+		{"unrelated attribute and child", r.GetAttributeNodeNS("a", ""), s.FirstChild()},
+		{"detached namespace and element", detachedNS, r},
+		{"detached namespace and owned namespace", detachedNS, ns},
+		{"distinct detached namespaces", detachedNS, otherDetachedNS},
+		{"detached attribute and element", detachedAttribute, r},
+		{"nil", nil, r},
+		{"typed nil document", (*xdm.Document)(nil), r},
+		{"typed nil namespace", (*xdm.NamespaceNodeWrapper)(nil), ns},
+		{"typed nil attribute", (*xdm.Attribute)(nil), r},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			defer func() {
+				if value := recover(); value != nil {
+					t.Errorf("comparison outside a shared tree panicked: %v", value)
+				}
+			}()
+
+			if forward, reverse := xdm.CompareNodeOrder(tc.a, tc.b), xdm.CompareNodeOrder(tc.b, tc.a); forward != 0 || reverse != 0 {
+				t.Fatalf("unknown order acquired node-kind-dependent direction: %d/%d", forward, reverse)
+			}
+		})
+	}
+
+	if xdm.CompareNodeOrder(r, r.FirstChild()) >= 0 || xdm.CompareNodeOrder(r.FirstChild(), r) <= 0 {
+		t.Fatal("shared-tree ancestor order changed")
+	}
+
+	var cache xdm.DocOrderCache
+	cache.BuildFrom(first)
+	cache.BuildFrom(second)
+	if cache.Compare(detachedAttribute, r) != 0 || cache.Compare(r, s) >= 0 || cache.Compare(s, r) <= 0 {
+		t.Fatal("cache cross-document registration contract changed")
+	}
+}
+
+func TestNamespaceOrderIsTotalStableAndSharedAcrossOperations(t *testing.T) {
+	t.Parallel()
+
+	doc := parseNodeDocument(t, `<r xmlns="urn:r" xmlns:z="urn:z" xmlns:a="urn:a" attr="value"><child/></r>`)
+	root := doc.DocumentElement()
+	nodes, err := xdm.TraverseAxis(t.Context(), xdm.AxisNamespace, root, 100)
+	requireNodeSuccess(t, err)
+	if len(nodes) != 4 {
+		t.Fatal("namespace bindings lost", len(nodes))
+	}
+	duplicates := make([]xdm.Node, len(nodes))
+	for i, n := range nodes {
+		duplicates[i] = xdm.NewNamespaceNodeWrapper(xdm.NewNamespace(n.Name(), xdm.StringValue(n)), root)
+	}
+	doc.Freeze()
+	var cache xdm.DocOrderCache
+	cache.BuildFrom(root)
+	attribute, child := root.GetAttributeNodeNS("attr", ""), root.FirstChild()
+	for i, a := range nodes {
+		for j, b := range duplicates {
+			want := cmp.Compare(i, j)
+			if got := cache.Compare(a, b); got != want || xdm.CompareNodeOrder(a, b) != want || xdm.SameNode(a, b) != (i == j) {
+				t.Fatalf("namespace order/identity inconsistent at %d,%d: cache=%d direct=%d same=%v", i, j, got, xdm.CompareNodeOrder(a, b), xdm.SameNode(a, b))
+			}
+		}
+		for _, following := range []xdm.Node{attribute, child} {
+			if cache.Compare(root, a) >= 0 || cache.Compare(a, following) >= 0 || xdm.CompareNodeOrder(a, following) >= 0 {
+				t.Fatal("namespace node escaped its element/attribute boundary")
+			}
+		}
+	}
+
+	for _, reverseOperands := range []bool{false, true} {
+		first := slices.Clone(nodes)
+		slices.Reverse(first)
+		second := append(slices.Clone(duplicates), attribute, child)
+		if reverseOperands {
+			first, second = second, first
+		}
+		input := append(slices.Clone(first), second...)
+		want := append(slices.Clone(nodes), attribute, child)
+		for _, operation := range []func(int) ([]xdm.Node, error){
+			func(limit int) ([]xdm.Node, error) { return xdm.DeduplicateNodes(slices.Clone(input), &cache, limit) },
+			func(limit int) ([]xdm.Node, error) { return xdm.MergeNodeSets(first, second, &cache, limit) },
+			func(limit int) ([]xdm.Node, error) {
+				return xdm.UnionNodeSets(slices.Clone(input), len(first), &cache, limit)
+			},
+		} {
+			got, err := operation(len(want))
+			requireNodeSuccess(t, err)
+			if len(got) != len(want) {
+				t.Fatal("namespace union lost bindings or failed to deduplicate", got)
+			}
+			for i := range want {
+				if !xdm.SameNode(got[i], want[i]) {
+					t.Fatal("namespace order depends on operand order", i)
+				}
+			}
+			if got, err := operation(len(want) - 1); got != nil || !errors.Is(err, xdm.ErrNodeSetLimit) {
+				t.Fatal("namespace ordering bypassed node-set limit", got, err)
+			}
+		}
+	}
+
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Go(func() {
+			for range 100 {
+				for i := range nodes {
+					if cache.Compare(nodes[i], duplicates[i]) != 0 || cache.Compare(nodes[0], duplicates[len(nodes)-1]) >= 0 {
+						t.Error("concurrent namespace ordering changed identity or direction")
+					}
+				}
+			}
+		})
+	}
+	readers.Wait()
+}
+
+func TestNamespaceOrderIncreasingMergeAndLocationStep(t *testing.T) {
+	t.Parallel()
+
+	doc := parseNodeDocument(t, `<r xmlns:c="urn:c" xmlns:a="urn:a" xmlns:b="urn:b"/>`)
+	nodes, err := xdm.TraverseAxis(t.Context(), xdm.AxisNamespace, doc.DocumentElement(), 100)
+	requireNodeSuccess(t, err)
+	var cache xdm.DocOrderCache
+	got, err := xdm.OrderStepResult(slices.Clone(nodes), []xdm.Node{doc.DocumentElement()}, xdm.AxisNamespace, &cache, len(nodes))
+	requireNodeSuccess(t, err)
+	if !slices.Equal(got, nodes) {
+		t.Fatal("namespace location step changed axis document order")
+	}
+	first, second := []xdm.Node{nodes[0], nodes[2]}, []xdm.Node{nodes[1], nodes[3]}
+	merged, err := xdm.UnionNodeSets(append(first, second...), len(first), &cache, len(nodes))
+	requireNodeSuccess(t, err)
+	if !slices.Equal(merged, nodes) {
+		t.Fatal("increasing-run merge disagreed with namespace axis order")
+	}
+}

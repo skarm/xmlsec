@@ -9,10 +9,15 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -21,8 +26,11 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/c14n"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
+	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/keys"
+	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
@@ -145,7 +153,7 @@ func TestCLIProtectedKeys(t *testing.T) {
 	resources := write("resources.json", []byte(`[{"uri":"urn:test:data","path":"payload.xml"}]`))
 	template := fmt.Sprintf(`<root><item ID="data">payload</item><ds:Signature xmlns:ds="%s"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="%s"/><ds:SignatureMethod Algorithm="%s"/><ds:Reference URI="#data"><ds:Transforms><ds:Transform Algorithm="%s"/></ds:Transforms><ds:DigestMethod Algorithm="%s"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/></ds:Signature></root>`, xmldsig.Namespace, c14n.Exclusive, xmldsig.ECDSASHA256, c14n.Exclusive, xmldsig.SHA256)
 
-	for format, raw := range map[string][]byte{namePkcs8: pkcs8, namePKCS12: pfx} {
+	for format, raw := range map[string][]byte{namePKCS8: pkcs8, namePKCS12: pfx} {
 		private := write(format, raw)
 		for _, mode := range []string{nameSign, nameSignTemplate, nameSignDetached} {
 			t.Run(format+"/"+mode, func(t *testing.T) {
@@ -157,7 +165,7 @@ func TestCLIProtectedKeys(t *testing.T) {
 	private := write("encrypted.der", pkcs8)
 	for _, content := range [][]byte{[]byte("one\ntwo\n"), []byte("one\x00two"), []byte("one\r"), bytes.Repeat([]byte{'x'}, 1025)} {
 		bad := write("invalid-password.txt", content)
-		if key, err := loadPrivateConfigured(ctx, private, &privateKeyFlags{format: namePkcs8, passwordFile: bad, maxKDFWork: 3000000}); key != nil || err == nil {
+		if key, err := loadPrivateConfigured(ctx, private, &privateKeyFlags{format: namePKCS8, passwordFile: bad, maxKDFWork: 3000000}); key != nil || err == nil {
 			t.Fatal("invalid password file accepted")
 		}
 	}
@@ -165,11 +173,11 @@ func TestCLIProtectedKeys(t *testing.T) {
 	for _, flags := range []*privateKeyFlags{
 		{format: namePlain, passwordFile: pwd},
 		{format: nameUnknown},
-		{format: namePkcs8},
-		{format: namePkcs8, passwordFile: "-"},
-		{format: namePkcs8, passwordFile: dir},
-		{format: namePkcs8, passwordFile: filepath.Join(dir, "missing")},
-		{format: namePkcs8, passwordFile: pwd, maxKDFWork: 999},
+		{format: namePKCS8},
+		{format: namePKCS8, passwordFile: "-"},
+		{format: namePKCS8, passwordFile: dir},
+		{format: namePKCS8, passwordFile: filepath.Join(dir, "missing")},
+		{format: namePKCS8, passwordFile: pwd, maxKDFWork: 999},
 	} {
 		if key, err := loadPrivateConfigured(ctx, private, flags); key != nil || err == nil {
 			t.Fatal("invalid key-loading options accepted")
@@ -267,5 +275,117 @@ func TestCLIKeyMaterialRejectsAmbiguity(t *testing.T) {
 
 	if key, err := loadPrivateContext(t.Context(), path); err == nil || key != nil {
 		t.Fatal("mismatched PEM label accepted")
+	}
+}
+
+func TestKeyInfoInspectionApprovedPrograms(t *testing.T) {
+	var corpus struct {
+		PublicKey string `json:"public_key_pem"`
+		Cases     []stage4CLICase
+	}
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "next", "dsig-stage4-vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+
+	block, rest := pem.Decode([]byte(corpus.PublicKey))
+	if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(rest)) != 0 {
+		t.Fatal("missing independent SPKI pin")
+	}
+
+	digest := sha256.Sum256(block.Bytes)
+	wantFingerprint := hex.EncodeToString(digest[:])
+	fixtures := make(map[string]stage4CLICase, len(corpus.Cases))
+	for _, fixture := range corpus.Cases {
+		fixtures[fixture.Name] = fixture
+	}
+
+	for _, name := range []string{"retrieval-xpath", "retrieval-filter2", "retrieval-xslt", "retrieval-prefixlist"} {
+		fixture, ok := fixtures[name]
+		if !ok {
+			t.Fatalf("missing independent fixture %s", name)
+		}
+
+		t.Run(name, func(t *testing.T) {
+			testKeyInfoInspectionProgram(t, fixture, wantFingerprint)
+		})
+	}
+
+	dir := t.TempDir()
+	public := testutil.WriteFile(t, dir, "public.pem", []byte(corpus.PublicKey))
+	programs := testutil.WriteJSON(t, dir, "programs.json", []reference.Transform{{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "false()"}}}})
+	var output bytes.Buffer
+	if err := run(t.Context(), []string{"keyinfo", "build", "-key", public, "-allowed-programs", programs}, nil, &output, io.Discard); err == nil || output.Len() != 0 {
+		t.Fatal("inspection-only option accepted for build", err)
+	}
+}
+
+func testKeyInfoInspectionProgram(t *testing.T, fixture stage4CLICase, wantFingerprint string) {
+	t.Helper()
+	dir := t.TempDir()
+	entries := make([]resourceEntry, 0, len(fixture.Resources))
+	for uri, data := range fixture.Resources {
+		path := testutil.WriteFile(t, dir, fmt.Sprintf("resource-%d.xml", len(entries)), data)
+		entries = append(entries, resourceEntry{URI: uri, Path: path})
+	}
+
+	resources := testutil.WriteJSON(t, dir, "resources.json", entries)
+	processing := reference.DefaultOptions()
+	for _, program := range fixture.Programs {
+		processing.AllowedTransforms = append(processing.AllowedTransforms, program.Algorithm)
+	}
+
+	config := testutil.WriteJSON(t, dir, "keyinfo.json", keyinfo.Options{RetrievalProcessing: &processing})
+	args := []string{"keyinfo", nameInspect, "-index", "0", "-config", config, "-resources", resources}
+	t.Run("approved", func(t *testing.T) {
+		approved := append([]string(nil), args...)
+		if len(fixture.Programs) != 0 {
+			programs := testutil.WriteJSON(t, dir, "programs.json", fixture.Programs)
+			approved = append(approved, "-allowed-programs", programs)
+		}
+
+		var output bytes.Buffer
+		if err := run(t.Context(), approved, strings.NewReader(fixture.XML), &output, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+
+		var report struct {
+			Status     string
+			Candidates []struct {
+				Fingerprint string `json:"spki_sha256"`
+			}
+		}
+
+		if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+
+		if report.Status != statusUnverified || len(report.Candidates) != 1 || report.Candidates[0].Fingerprint != wantFingerprint {
+			t.Fatal("inspection changed untrusted candidate", output.String())
+		}
+	})
+	if len(fixture.Programs) == 0 {
+		return
+	}
+
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed-approval=%t", changed), func(t *testing.T) {
+			denied := append([]string(nil), args...)
+			if changed {
+				programs := testutil.WriteJSON(t, dir, "different.json", []reference.Transform{{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "false()"}}}})
+				denied = append(denied, "-allowed-programs", programs)
+			}
+
+			var output bytes.Buffer
+			err := run(t.Context(), denied, strings.NewReader(fixture.XML), &output, io.Discard)
+			if !errors.Is(err, keyinfo.ErrPolicy) || output.Len() != 0 {
+				t.Fatal("unapproved retrieval program accepted or lost policy error", err, output.String())
+			}
+		})
 	}
 }

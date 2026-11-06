@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"path"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -17,6 +18,36 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// String keys of the fn:transform options map; required-type conversion and present-versus-empty semantics are enforced separately.
+const (
+	transformOptionBaseOutputURI         = "base-output-uri"
+	transformOptionDeliveryFormat        = "delivery-format"
+	transformOptionEnableAssertions      = "enable-assertions"
+	transformOptionFunctionParams        = "function-params"
+	transformOptionGlobalContextItem     = "global-context-item"
+	transformOptionInitialFunction       = "initial-function"
+	transformOptionInitialMatchSelection = "initial-match-selection"
+	transformOptionInitialMode           = "initial-mode"
+	transformOptionInitialTemplate       = "initial-template"
+	transformOptionPackageName           = "package-name"
+	transformOptionPackageVersion        = "package-version"
+	transformOptionPostProcess           = "post-process"
+	transformOptionRequestedProperties   = "requested-properties"
+	transformOptionSerializationParams   = "serialization-params"
+	transformOptionSourceNode            = "source-node"
+	transformOptionStaticParams          = "static-params"
+	transformOptionStylesheetBaseURI     = "stylesheet-base-uri"
+	transformOptionStylesheetLocation    = "stylesheet-location"
+	transformOptionStylesheetNode        = "stylesheet-node"
+	transformOptionStylesheetParams      = "stylesheet-params"
+	transformOptionStylesheetText        = "stylesheet-text"
+	transformOptionTemplateParams        = "template-params"
+	transformOptionTunnelParams          = "tunnel-params"
+	transformOptionXSLTVersion           = "xslt-version"
+)
+
+// Hard ceiling on active fn:transform calls in the inherited invocation context;
+// cumulative resource and program budgets remain independent.
 const maxTransformDepth = 10
 
 type transformProgramLimitKey struct{}
@@ -122,7 +153,7 @@ func TransformFunction(options ...TransformOption) xpath.TypedFunctionByArity {
 
 	cfg.nestedCompiler = c
 
-	return &xsltFunc{min: 1, max: 1, fn: cfg.run, name: fnNameTransform, signature: xpath.HostBuiltin(31, fnNameTransform)}
+	return &xsltFunc{min: 1, max: 1, fn: cfg.run, name: fnNameTransform, signature: xpath.HostBuiltin(xpathProfile31, fnNameTransform)}
 }
 
 // paramKeyToClark converts an XPath map key to the Clark notation string
@@ -162,17 +193,17 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameStreamAvailable}] = &xsltFunc{min: 1, max: 1, fn: ec.fnStreamAvailable}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityURI}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI}
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameUnparsedEntityPublicID}] = &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityPublicID}
-	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: nameKey2}] = &keyFunction{ec: ec, scope: ec.effectiveStylesheet()}
+	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: keyLocalName}] = &keyFunction{ec: ec, scope: ec.effectiveStylesheet()}
 
 	ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: lexicon.FnGenerateID}] = xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID)
-	if ec.stylesheet.processorLanguage() <= 20 {
-		for _, name := range []string{lexicon.FnFormatNumber, "format-date", "format-dateTime", "format-time"} {
+	if ec.stylesheet.processorLanguage() <= processorXSLT20 {
+		for _, name := range []string{lexicon.FnFormatNumber, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime} {
 			ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
 		}
 	}
 
-	if ec.stylesheet.processorLanguage() == 20 {
-		for _, name := range []string{"unparsed-text", fnNameUnparsedTextAvailable} {
+	if ec.stylesheet.processorLanguage() == processorXSLT20 {
+		for _, name := range []string{fnNameUnparsedText, fnNameUnparsedTextAvailable} {
 			ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: name}] = newLegacyTextFunction(name)
 		}
 	}
@@ -194,8 +225,8 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 
 	// Dynamic lookup sees declarations in the calling package, excluding
 	// abstract declarations and components accepted from other packages.
-	if ec.stylesheet.processorLanguage() >= 30 {
-		ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: "function-lookup"}] = &xsltFunc{min: 2, max: 2, fn: ec.fnFunctionLookupPackage}
+	if ec.stylesheet.processorLanguage() >= processorXSLT30 {
+		ec.cachedFnsNS[xpath.QualifiedName{URI: xpath.NSFn, Name: fnNameFunctionLookup}] = &xsltFunc{min: 2, max: 2, fn: ec.fnFunctionLookupPackage}
 	}
 
 	if ec.currentPackage != nil {
@@ -211,7 +242,7 @@ func (ec *execContext) xsltFunctionsNS() map[xpath.QualifiedName]xpath.Function 
 		}
 	}
 
-	if ec.stylesheet.processorLanguage() == 20 {
+	if ec.stylesheet.processorLanguage() == processorXSLT20 {
 		for name := range ec.cachedFnsNS {
 			if name.URI == xpath.NSFn && xslt30Function(name.Name) {
 				delete(ec.cachedFnsNS, name)
@@ -382,12 +413,17 @@ func (ec *execContext) xsltEvaluateFunctions() map[string]xpath.Function {
 func (ec *execContext) fnTransform(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	ctx = ec.xpathContext(ctx)
 
+	baseURI := ec.effectiveStaticBaseURI()
+	if captured, present := xpath.ContextBaseURI(ctx); present {
+		baseURI = captured
+	}
+
 	cfg := &transformFnConfig{
 		// The static base URI of the fn:transform CALL — used to resolve a
 		// relative stylesheet-location, stylesheet-base-uri, and base-output-uri —
 		// is the effective static base URI at the call site (honoring an xml:base
 		// on the calling template/element), NOT the bare module URI.
-		baseURI:            ec.effectiveStaticBaseURI(),
+		baseURI:            baseURI,
 		nestedCompiler:     ec.stylesheet.newNestedCompiler().MaxResourceBytes(ec.resourceLimit()),
 		stylesheetResolver: ec.stylesheet.uriResolver,
 		packageResolver:    ec.stylesheet.packageResolver,
@@ -452,7 +488,13 @@ func (ss *Stylesheet) newNestedCompiler() Compiler {
 
 type transformDepthKey struct{}
 
-const transformSerialized = "serialized"
+// Delivery-format selectors and the default principal-result map key belong to
+// fn:transform, independently of document() and the xsl:output declaration.
+const (
+	transformSerialized       = "serialized"
+	transformDeliveryDocument = "document"
+	transformPrimaryResultKey = "output"
+)
 
 // transformFnConfig carries the resolvers, resource caps and XML limits for
 // fn:transform. It
@@ -486,6 +528,8 @@ type transformFnConfig struct {
 // executes an XSLT stylesheet from the options map, using the resolvers and
 // resource policy carried on cfg.
 func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	config := cfg.invocationConfig(ctx)
+
 	depth, _ := ctx.Value(transformDepthKey{}).(int)
 	if depth >= maxTransformDepth {
 		return nil, dynamicErrorCause(errCodeFOXT0004, xpath.ErrBudget, "fn:transform: maximum recursion depth (%d) exceeded", maxTransformDepth)
@@ -502,28 +546,33 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 		return nil, dynamicError(lexicon.ErrXPTY0004, "fn:transform argument must be a map")
 	}
 
-	request := newTransformRequest(options, cfg.baseURI)
+	options, err := convertTransformOptions(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+
+	request := newTransformRequest(options, config.baseURI)
 	if err := validateTransformOptions(ctx, options, request.deliveryFormat); err != nil {
 		return nil, err
 	}
 
-	assertions, err := transformBooleanOption(ctx, options, "enable-assertions")
+	assertions, err := transformBooleanOption(ctx, options, transformOptionEnableAssertions)
 	if err != nil {
 		return nil, err
 	}
 
 	ctx = WithAssertions(ctx, assertions)
 
-	compiler, staticParams := transformStaticParameters(cfg.nestedCompiler, transformMapSeq(options, "static-params"))
+	compiler, staticParams := transformStaticParameters(config.nestedCompiler, transformMapSeq(options, transformOptionStaticParams))
 
 	processor, err := transformProcessorVersion(options)
 	if err != nil {
 		return nil, err
 	}
 
-	compiler = compiler.ProcessorVersion(processor).MaxResourceBytes(cfg.programLimit(ctx))
+	compiler = compiler.ProcessorVersion(processor).MaxResourceBytes(config.programLimit(ctx))
 
-	stylesheet, err := cfg.compileTransformStylesheet(ctx, compiler, request)
+	stylesheet, err := config.compileTransformStylesheet(ctx, compiler, request)
 	if err != nil {
 		return nil, err
 	}
@@ -532,7 +581,7 @@ func (cfg *transformFnConfig) run(ctx context.Context, args []xdm.Sequence) (xdm
 		return nil, dynamicError(errCodeFOXT0002, "fn:transform: no stylesheet specified (stylesheet-location, stylesheet-node, stylesheet-text, or package-name required)")
 	}
 
-	invocation := request.newInvocation(ctx, cfg, staticParams)
+	invocation := request.newInvocation(ctx, config, staticParams)
 	source := request.prepareSource(invocation)
 
 	resultDoc, err := executeTransform(ctx, source, stylesheet, invocation)
@@ -564,11 +613,11 @@ func (cfg *transformFnConfig) compileTransformStylesheet(ctx context.Context, co
 		return cfg.compileTransformPackage(ctx, compiler, request.packageName, request.packageVersion)
 	}
 
-	if text := transformStringOption(request.options, "stylesheet-text"); text != "" {
+	if text := transformStringOption(request.options, transformOptionStylesheetText); text != "" {
 		return cfg.compileTransformText(ctx, compiler, text, request.stylesheetBaseURI)
 	}
 
-	return cfg.compileTransformNode(ctx, compiler, transformMapSeq(request.options, "stylesheet-node"), request.stylesheetBaseURI)
+	return cfg.compileTransformNode(ctx, compiler, transformMapSeq(request.options, transformOptionStylesheetNode), request.stylesheetBaseURI)
 }
 
 func (cfg *transformFnConfig) programLimit(ctx context.Context) int64 {
@@ -770,7 +819,7 @@ func transformStaticParameters(nestedCompiler Compiler, staticParamsSeq xdm.Sequ
 // fn:transform options map, or ok=false when the option is absent or is not a
 // function item.
 func transformPostProcess(m xdm.MapItem) (xdm.FunctionItem, bool) {
-	seq := transformMapSeq(m, "post-process")
+	seq := transformMapSeq(m, transformOptionPostProcess)
 	if !transformOptionPresent(seq) {
 		return xdm.FunctionItem{}, false
 	}
@@ -795,7 +844,7 @@ func applyTransformPostProcess(ctx context.Context, fi xdm.FunctionItem, result 
 		value, _ := result.Get(key)
 
 		uri := baseOutputURI
-		if s, err := xpath.AtomicToString(key); err == nil && s != nameOutput {
+		if s, err := xpath.AtomicToString(key); err == nil && s != transformPrimaryResultKey {
 			uri = s
 		}
 
@@ -828,6 +877,122 @@ func lookupTransformCapability(ctx context.Context, key string) (bool, bool) {
 	return zero, false
 }
 
+// transformOptionType records the F&O 3.1 section 16.3.2 required types.
+// Unknown keys remain implementation extensions and are not standard aliases.
+func transformOptionType(name string) string {
+	const (
+		transformAtomicSequenceMapType = "map(xs:anyAtomicType, item()*)"
+		transformDecimalType           = lexicon.PrefixXS + ":" + lexicon.TypeDecimal
+		transformItemSequenceType      = lexicon.NodeTestItem + "*"
+		transformOptionEnableMessages  = "enable-messages"
+		transformOptionEnableTrace     = "enable-trace"
+		transformOptionPackageLocation = "package-location"
+		transformOptionPackageNode     = "package-node"
+		transformOptionPackageText     = "package-text"
+		transformOptionVendorOptions   = "vendor-options"
+		transformPostProcessType       = "function(xs:string, item()*) as item()*"
+		transformQNameAtomicMapType    = "map(xs:QName, xs:anyAtomicType)"
+		transformQNameSequenceMapType  = "map(xs:QName, item()*)"
+		transformQNameType             = lexicon.PrefixXS + ":" + lexicon.TypeQName
+		transformSequenceArrayType     = "array(item()*)"
+	)
+
+	const (
+		transformOptionCache = "cache"
+	)
+
+	switch name {
+	case transformOptionBaseOutputURI, transformOptionDeliveryFormat, transformOptionPackageName, transformOptionPackageVersion, transformOptionPackageLocation, transformOptionPackageText, transformOptionStylesheetBaseURI, transformOptionStylesheetLocation, transformOptionStylesheetText:
+		return lexicon.XSString
+	case transformOptionCache, transformOptionEnableAssertions, transformOptionEnableMessages, transformOptionEnableTrace:
+		return lexicon.XSBoolean
+	case transformOptionInitialTemplate, transformOptionInitialMode, transformOptionInitialFunction:
+		return transformQNameType
+	case transformOptionSourceNode, transformOptionStylesheetNode, transformOptionPackageNode:
+		return lexicon.NodeTestNode
+	case transformOptionStylesheetParams, transformOptionStaticParams, transformOptionTemplateParams, transformOptionTunnelParams, transformOptionVendorOptions:
+		return transformQNameSequenceMapType
+	case transformOptionSerializationParams:
+		return transformAtomicSequenceMapType
+	case transformOptionRequestedProperties:
+		return transformQNameAtomicMapType
+	case transformOptionFunctionParams:
+		return transformSequenceArrayType
+	case transformOptionGlobalContextItem:
+		return lexicon.NodeTestItem
+	case transformOptionInitialMatchSelection:
+		return transformItemSequenceType
+	case transformOptionPostProcess:
+		return transformPostProcessType
+	case transformOptionXSLTVersion:
+		return transformDecimalType
+	default:
+		return ""
+	}
+}
+
+func convertTransformOptions(ctx context.Context, options xdm.MapItem) (xdm.MapItem, error) {
+	builder := xdm.NewMapBuilder(xdm.MergeReject, options.Size())
+
+	err := options.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		name := ""
+		if xdm.IsStringDerived(key.TypeName) || key.TypeName == xdm.TypeUntypedAtomic || key.TypeName == xdm.TypeAnyURI {
+			name, _ = xpath.AtomicToString(key)
+		}
+
+		if err := prevalidateTransformParamMap(name, value); err != nil {
+			return err
+		}
+
+		if source := transformOptionType(name); source != "" {
+			st, err := xpath.ParseSequenceType(source)
+			if err != nil {
+				return err
+			}
+
+			st, err = xpath.BindSequenceType(ctx, st, xpath.PredeclaredNamespaces(), "")
+			if err != nil {
+				return err
+			}
+
+			value, err = xpath.ConvertToSequenceType(ctx, value, st)
+			if err != nil {
+				return err
+			}
+		}
+
+		return builder.Add(key, value)
+	})
+	if err != nil {
+		return xdm.MapItem{}, err
+	}
+
+	return builder.Build(), nil
+}
+
+// Invalid parameter names use FOXT0002. Leave outer type and cardinality errors
+// to the required-type conversion, without inspecting keys of multiple maps.
+func prevalidateTransformParamMap(name string, value xdm.Sequence) error {
+	switch name {
+	case transformOptionStylesheetParams, transformOptionStaticParams, transformOptionTemplateParams, transformOptionTunnelParams:
+		if xdm.SequenceLen(value) != 1 {
+			return nil
+		}
+
+		if _, ok := value.Get(0).(xdm.MapItem); !ok {
+			return nil
+		}
+
+		return validateTransformParamMap(name, value)
+	default:
+		return nil
+	}
+}
+
 // validateTransformOptions enforces the fn:transform option-map constraints that
 // are independent of the compiled stylesheet (F&O 3.1 §16.3.2): exactly one
 // stylesheet source, mutually-exclusive invocation options, a legal
@@ -837,7 +1002,7 @@ func lookupTransformCapability(ctx context.Context, key string) (bool, bool) {
 func validateTransformOptions(ctx context.Context, m xdm.MapItem, deliveryFormat string) error {
 	sources := 0
 
-	for _, k := range []string{"stylesheet-location", "stylesheet-node", "stylesheet-text", "package-name"} {
+	for _, k := range []string{transformOptionStylesheetLocation, transformOptionStylesheetNode, transformOptionStylesheetText, transformOptionPackageName} {
 		if transformOptionPresent(transformMapSeq(m, k)) {
 			sources++
 		}
@@ -849,7 +1014,7 @@ func validateTransformOptions(ctx context.Context, m xdm.MapItem, deliveryFormat
 
 	entryPoints := 0
 
-	for _, k := range []string{"initial-template", "initial-mode", "initial-function"} {
+	for _, k := range []string{transformOptionInitialTemplate, transformOptionInitialMode, transformOptionInitialFunction} {
 		if transformOptionPresent(transformMapSeq(m, k)) {
 			entryPoints++
 		}
@@ -859,18 +1024,18 @@ func validateTransformOptions(ctx context.Context, m xdm.MapItem, deliveryFormat
 		return dynamicError(errCodeFOXT0002, "fn:transform: at most one of initial-template, initial-mode, initial-function may be supplied")
 	}
 
-	if transformOptionPresent(transformMapSeq(m, "initial-function")) {
-		if _, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "function-params"}); !present {
+	if transformOptionPresent(transformMapSeq(m, transformOptionInitialFunction)) {
+		if _, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: transformOptionFunctionParams}); !present {
 			return dynamicError(errCodeFOXT0002, "fn:transform: initial-function requires function-params")
 		}
 	}
 
-	if transformOptionPresent(transformMapSeq(m, "source-node")) && transformOptionPresent(transformMapSeq(m, "initial-match-selection")) {
+	if transformOptionPresent(transformMapSeq(m, transformOptionSourceNode)) && transformOptionPresent(transformMapSeq(m, transformOptionInitialMatchSelection)) {
 		return dynamicError(errCodeFOXT0002, "fn:transform: source-node and initial-match-selection are mutually exclusive")
 	}
 
 	switch deliveryFormat {
-	case "", fnNameDocument, transformSerialized, lexicon.OutputRaw:
+	case "", transformDeliveryDocument, transformSerialized, lexicon.OutputRaw:
 	default:
 		return dynamicError(errCodeFOXT0002, "fn:transform: delivery-format %q is not one of document, serialized, raw", deliveryFormat)
 	}
@@ -883,13 +1048,7 @@ func validateTransformOptions(ctx context.Context, m xdm.MapItem, deliveryFormat
 		return err
 	}
 
-	for _, name := range []string{"stylesheet-params", "static-params", "template-params", "tunnel-params"} {
-		if err := validateTransformParamMap(name, transformMapSeq(m, name)); err != nil {
-			return err
-		}
-	}
-
-	return checkTransformCapabilities(ctx, transformMapSeq(m, "requested-properties"))
+	return checkTransformCapabilities(ctx, transformMapSeq(m, transformOptionRequestedProperties))
 }
 
 func transformBooleanOption(ctx context.Context, options xdm.MapItem, key string) (bool, error) {
@@ -898,7 +1057,7 @@ func transformBooleanOption(ctx context.Context, options xdm.MapItem, key string
 		return false, nil
 	}
 
-	value, err := xpath.ConvertToSequenceType(ctx, seq, xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Prefix: "xs", Name: lexicon.TypeBoolean}})
+	value, err := xpath.ConvertToSequenceType(ctx, seq, xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Prefix: lexicon.PrefixXS, Name: lexicon.TypeBoolean}})
 	if err != nil {
 		return false, err
 	}
@@ -918,7 +1077,7 @@ func transformBooleanOption(ctx context.Context, options xdm.MapItem, key string
 // truncated to its first item. An omitted key is fine (the global context item
 // then defaults to the source-node root, or is absent).
 func validateTransformGlobalContextItem(m xdm.MapItem) error {
-	seq, ok := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.XSLTElementGlobalContextItem})
+	seq, ok := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: transformOptionGlobalContextItem})
 	if !ok {
 		return nil
 	}
@@ -937,9 +1096,9 @@ func validateTransformXSLTVersion(m xdm.MapItem) error {
 }
 
 func transformProcessorVersion(m xdm.MapItem) (int, error) {
-	seq, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "xslt-version"})
+	seq, present := m.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: transformOptionXSLTVersion})
 	if !present {
-		return 30, nil
+		return processorXSLT30, nil
 	}
 
 	if xdm.SequenceLen(seq) != 1 {
@@ -954,13 +1113,13 @@ func transformProcessorVersion(m xdm.MapItem) (int, error) {
 	// The option requests a minimum, not an exact processor. Use the modern
 	// processor's backwards-compatible behavior for every supported
 	// minimum, consistently with an omitted option.
-	compatible, err := xpath.ValueCompare(xpath.TokenLe, av, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(3)})
+	compatible, err := xpath.ValueCompare(xpath.TokenLe, av, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(xsltMajorVersion3)})
 	if err != nil {
 		return 0, err
 	}
 
 	if compatible {
-		return 30, nil
+		return processorXSLT30, nil
 	}
 
 	text, err := xpath.AtomicToString(av)
@@ -1122,7 +1281,7 @@ func stylesheetNodeXMLSpace(ctx context.Context, node xdm.Node, source *xdm.Docu
 		return source, nil
 	}
 
-	if _, own := elem.GetAttributeNS("space", lexicon.NamespaceXML); own {
+	if _, own := elem.GetAttributeNS(lexicon.AttrSpace, lexicon.NamespaceXML); own {
 		return source, nil
 	}
 
@@ -1239,18 +1398,18 @@ type transformRequest struct {
 func newTransformRequest(options xdm.MapItem, baseURI string) transformRequest {
 	request := transformRequest{
 		options:               options,
-		stylesheetLoc:         transformStringOption(options, "stylesheet-location"),
-		packageName:           transformStringOption(options, "package-name"),
-		packageVersion:        transformStringOption(options, namePackageVersion),
-		initialTemplate:       transformQNameOption(options, "initial-template"),
-		initialMode:           transformStringOption(options, "initial-mode"),
-		initialFunction:       transformQNameOption(options, "initial-function"),
-		deliveryFormat:        transformStringOption(options, "delivery-format"),
-		baseOutputURI:         transformStringOption(options, "base-output-uri"),
-		stylesheetBaseURI:     transformStringOption(options, "stylesheet-base-uri"),
-		initialMatchSelection: transformMapSeq(options, "initial-match-selection"),
-		sourceNode:            transformMapSeq(options, "source-node"),
-		globalContextItem:     transformMapSeq(options, lexicon.XSLTElementGlobalContextItem),
+		stylesheetLoc:         transformStringOption(options, transformOptionStylesheetLocation),
+		packageName:           transformStringOption(options, transformOptionPackageName),
+		packageVersion:        transformStringOption(options, transformOptionPackageVersion),
+		initialTemplate:       transformQNameOption(options, transformOptionInitialTemplate),
+		initialMode:           transformQNameOption(options, transformOptionInitialMode),
+		initialFunction:       transformQNameOption(options, transformOptionInitialFunction),
+		deliveryFormat:        transformStringOption(options, transformOptionDeliveryFormat),
+		baseOutputURI:         transformStringOption(options, transformOptionBaseOutputURI),
+		stylesheetBaseURI:     transformStringOption(options, transformOptionStylesheetBaseURI),
+		initialMatchSelection: transformMapSeq(options, transformOptionInitialMatchSelection),
+		sourceNode:            transformMapSeq(options, transformOptionSourceNode),
+		globalContextItem:     transformMapSeq(options, transformOptionGlobalContextItem),
 	}
 	if request.baseOutputURI != "" {
 		request.baseOutputURI = canonicalResultURIKey(request.baseOutputURI, baseURI)
@@ -1293,10 +1452,10 @@ func (request transformRequest) newInvocation(ctx context.Context, cfg *transfor
 }
 
 func (request transformRequest) applyParameters(fnTransformCfg *transformConfig, staticParamValues map[string]xdm.Sequence) {
-	stylesheetParamsSeq := transformMapSeq(request.options, "stylesheet-params")
-	templateParamsSeq := transformMapSeq(request.options, "template-params")
-	tunnelParamsSeq := transformMapSeq(request.options, "tunnel-params")
-	functionParamsSeq := transformMapSeq(request.options, "function-params")
+	stylesheetParamsSeq := transformMapSeq(request.options, transformOptionStylesheetParams)
+	templateParamsSeq := transformMapSeq(request.options, transformOptionTemplateParams)
+	tunnelParamsSeq := transformMapSeq(request.options, transformOptionTunnelParams)
+	functionParamsSeq := transformMapSeq(request.options, transformOptionFunctionParams)
 	// Apply map-valued options from the fn:transform options map.
 	for _, mp := range []struct {
 		seq    xdm.Sequence
@@ -1364,7 +1523,7 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 		}
 	}
 
-	if _, provided := request.options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: "initial-match-selection"}); provided {
+	if _, provided := request.options.Get(xdm.AtomicValue{TypeName: xdm.TypeString, Value: transformOptionInitialMatchSelection}); provided {
 		if xdm.SequenceLen(request.initialMatchSelection) == 1 {
 			if item, ok := request.initialMatchSelection.Get(0).(xdm.NodeItem); ok {
 				if owner := owningDocument(item.Node); owner != nil {
@@ -1397,7 +1556,7 @@ func (request transformRequest) prepareSource(invocation *transformConfig) *xdm.
 }
 
 func (request transformRequest) deliver(ctx context.Context, resultDoc *xdm.Document, cfg *transformConfig) (xdm.MapItem, error) {
-	key := xdm.AtomicValue{TypeName: xdm.TypeString, Value: nameOutput}
+	key := xdm.AtomicValue{TypeName: xdm.TypeString, Value: transformPrimaryResultKey}
 	if request.baseOutputURI != "" {
 		key.Value = request.baseOutputURI
 	}
@@ -1411,7 +1570,7 @@ func (request transformRequest) deliver(ctx context.Context, resultDoc *xdm.Docu
 	if request.deliveryFormat != lexicon.OutputRaw {
 		var forceTree *bool
 
-		if request.deliveryFormat == fnNameDocument {
+		if request.deliveryFormat == transformDeliveryDocument {
 			enabled := true
 			forceTree = &enabled
 		}
@@ -1435,8 +1594,13 @@ func (request transformRequest) deliver(ctx context.Context, resultDoc *xdm.Docu
 // deliverSerialized uses the same complete value sequences and serializer as
 // the public XSLT API, including JSON/adaptive results with no document tree.
 func (request transformRequest) deliverSerialized(ctx context.Context, doc *xdm.Document, cfg *transformConfig, key xdm.AtomicValue) (xdm.MapItem, error) {
-	params := transformMapSeq(request.options, "serialization-params")
-	output := applySerializationParams(cfg.resolvedOutputDef, params)
+	params := transformMapSeq(request.options, transformOptionSerializationParams)
+
+	output, err := applySerializationParams(ctx, cfg.resolvedOutputDef, params)
+	if err != nil {
+		return xdm.MapItem{}, err
+	}
+
 	result := xdm.MapItem{}
 
 	value := ValueResult{Document: doc, Items: cfg.rawCapturedItems, Output: output}
@@ -1498,18 +1662,22 @@ func serializeDeliveredValue(ctx context.Context, value ValueResult) (string, er
 	return buf.String(), nil
 }
 
-// applySerializationParams returns an OutputDef with the fn:transform
-// serialization-params option applied over base. base is returned unchanged when
-// no params are supplied. Recognized keys (string or fn/output-namespace QName)
-// map to the corresponding OutputDef fields.
-func applySerializationParams(base *OutputDef, seq xdm.Sequence) *OutputDef {
+// applySerializationParams applies only validated supplied parameters over base.
+// Empty-sequence values reset inherited values; empty maps and explicit false
+// remain supplied values. QName/name sets and character maps retain augmentation.
+func applySerializationParams(ctx context.Context, base *OutputDef, seq xdm.Sequence) (*OutputDef, error) {
 	if !transformOptionPresent(seq) {
-		return base
+		return base, nil
 	}
 
-	sm, ok := seq.Get(0).(xdm.MapItem)
-	if !ok {
-		return base
+	params, ok := seq.Get(0).(xdm.MapItem)
+	if !ok || xdm.SequenceLen(seq) != 1 {
+		return nil, dynamicError(lexicon.ErrXPTY0004, "serialization-params requires one map")
+	}
+
+	validated, err := xpath.ReadSerializationParameterMap(ctx, params, xpathProfile31)
+	if err != nil {
+		return nil, err
 	}
 
 	out := cloneOutputDef(base)
@@ -1517,47 +1685,36 @@ func applySerializationParams(base *OutputDef, seq xdm.Sequence) *OutputDef {
 		out = defaultOutputDef()
 	}
 
-	versionExplicit := false
-
-	for _, key := range sm.Keys() {
-		name := serializationParamName(key)
-		if name == "" {
-			continue
-		}
-
-		if name == lexicon.SerializationVersion {
-			versionExplicit = true
-		}
-
-		val, ok := sm.Get(key)
-		if !ok {
-			continue
-		}
-		// A recognized parameter present with an empty-sequence value overrides
-		// the inherited xsl:output value by resetting the parameter to its
-		// serialization default (F&O 3.1 §16.3.2), leaving no
-		// inherited value in place.
-		if !transformOptionPresent(val) {
-			resetSerializationParam(out, name)
-			continue
-		}
-
-		applySerializationParam(out, name, val)
+	_, versionExplicit := validated.Strings[lexicon.SerializationVersion]
+	for _, name := range validated.Reset {
+		versionExplicit = versionExplicit || name == lexicon.SerializationVersion
+		resetSerializationParam(out, name)
 	}
-	// The version parameter's default is method-dependent, so an inherited xml
-	// version="1.0" must not carry into an html/xhtml method selected via
-	// serialization-params. When these params switch the method to html/xhtml
-	// without supplying an explicit version — and the base stylesheet did not
-	// declare one either (VersionRaw empty) — unset Version so the
-	// method-appropriate serialization default applies instead of the inherited
-	// "1.0" (which the html method rejects with SESU0007). An explicit base
-	// version (e.g. <xsl:output method="html" version="1.0"/>) is preserved so
-	// it still raises SESU0007.
+
+	for name, value := range validated.Booleans {
+		(&parameterDocumentValues{output: out}).applyBoolean(name, value)
+	}
+
+	for name, value := range validated.Strings {
+		(&parameterDocumentValues{output: out}).applyString(name, value)
+	}
+
+	out.CDATASections = unionOutputNames(out.CDATASections, validated.Names[lexicon.SerializationCDATASectionElements])
+
+	out.SuppressIndentation = unionOutputNames(out.SuppressIndentation, validated.Names[lexicon.SerializationSuppressIndentation])
+	if validated.CharactersSet {
+		if out.ResolvedCharMap == nil {
+			out.ResolvedCharMap = make(map[rune]string, len(validated.Characters))
+		}
+
+		maps.Copy(out.ResolvedCharMap, validated.Characters)
+	}
+
 	if !versionExplicit && out.VersionRaw == "" && out.MethodExplicit && (out.Method == lexicon.MethodHTML || out.Method == lexicon.MethodXHTML) {
 		out.Version = ""
 	}
 
-	return out
+	return out, nil
 }
 
 // resetSerializationParam resets a recognized serialization parameter (by local
@@ -1569,6 +1726,12 @@ func resetSerializationParam(out *OutputDef, name string) {
 		out.MethodExplicit = false
 	case lexicon.SerializationIndent:
 		out.Indent = false
+	case lexicon.SerializationAllowDuplicateNames:
+		out.AllowDuplicateNames = false
+	case lexicon.SerializationEscapeURIAttributes:
+		out.EscapeURIAttributes = nil
+	case lexicon.SerializationIncludeContentType:
+		out.IncludeContentType = nil
 	case lexicon.SerializationOmitXMLDeclaration:
 		out.OmitDeclaration = false
 		out.OmitDeclarationExplicit = false
@@ -1579,7 +1742,7 @@ func resetSerializationParam(out *OutputDef, name string) {
 	case lexicon.SerializationEncoding:
 		out.Encoding = lexicon.EncodingUTF8U
 	case lexicon.SerializationVersion:
-		out.Version = lexicon.XSLTVersion10
+		out.Version, out.VersionRaw = "", ""
 	case lexicon.SerializationStandalone:
 		out.Standalone = ""
 	case lexicon.SerializationMediaType:
@@ -1589,177 +1752,20 @@ func resetSerializationParam(out *OutputDef, name string) {
 	case lexicon.SerializationDoctypeSystem:
 		out.DoctypeSystem = ""
 	case lexicon.SerializationItemSeparator:
-		out.ItemSeparator = nil
+		out.ItemSeparator, out.ItemSeparatorAbsent = nil, true
 	case lexicon.SerializationCDATASectionElements:
 		out.CDATASections = nil
 	case lexicon.SerializationSuppressIndentation:
 		out.SuppressIndentation = nil
 	case lexicon.SerializationUseCharacterMaps:
-		out.ResolvedCharMap = nil
+		out.UseCharacterMaps, out.ResolvedCharMap = nil, nil
+	case lexicon.SerializationNormalizationForm:
+		out.NormalizationForm = ""
+	case lexicon.SerializationHTMLVersion:
+		out.HTMLVersion = ""
+	case lexicon.SerializationJSONNodeOutputMethod:
+		out.JSONNodeOutputMethod = lexicon.MethodXML
 	}
-}
-
-// serializationParamName returns the local name of a serialization-params map
-// key, which may be supplied either as an xs:string or as an xs:QName in the
-// serialization-parameter (fn/output) namespace.
-func serializationParamName(key xdm.AtomicValue) string {
-	if qv, ok := key.Value.(xdm.QNameValue); ok {
-		return qv.Local
-	}
-
-	s, err := xpath.AtomicToString(key)
-	if err != nil {
-		return ""
-	}
-
-	return s
-}
-
-// applySerializationParam applies a single serialization parameter (identified
-// by its local name) to out.
-func applySerializationParam(out *OutputDef, name string, val xdm.Sequence) {
-	switch name {
-	case lexicon.SerializationMethod:
-		if s, ok := transformSeqString(val); ok {
-			out.Method = s
-			out.MethodExplicit = true
-		}
-	case lexicon.SerializationIndent:
-		if b, ok := transformSeqBool(val); ok {
-			out.Indent = b
-		}
-	case lexicon.SerializationOmitXMLDeclaration:
-		if b, ok := transformSeqBool(val); ok {
-			out.OmitDeclaration = b
-			out.OmitDeclarationExplicit = true
-		}
-	case lexicon.SerializationByteOrderMark:
-		if b, ok := transformSeqBool(val); ok {
-			out.ByteOrderMark = b
-		}
-	case lexicon.SerializationUndeclarePrefixes:
-		if b, ok := transformSeqBool(val); ok {
-			out.UndeclarePrefixes = b
-		}
-	case lexicon.SerializationEncoding:
-		if s, ok := transformSeqString(val); ok {
-			out.Encoding = s
-		}
-	case lexicon.SerializationVersion:
-		if s, ok := transformSeqString(val); ok {
-			out.Version = s
-		}
-	case lexicon.SerializationStandalone:
-		if s, ok := transformSeqString(val); ok {
-			out.Standalone = s
-		}
-	case lexicon.SerializationMediaType:
-		if s, ok := transformSeqString(val); ok {
-			out.MediaType = s
-		}
-	case lexicon.SerializationDoctypePublic:
-		if s, ok := transformSeqString(val); ok {
-			out.DoctypePublic = s
-		}
-	case lexicon.SerializationDoctypeSystem:
-		if s, ok := transformSeqString(val); ok {
-			out.DoctypeSystem = s
-		}
-	case lexicon.SerializationItemSeparator:
-		if s, ok := transformSeqString(val); ok {
-			out.ItemSeparator = &s
-		}
-	case lexicon.SerializationCDATASectionElements:
-		out.CDATASections = mergeSerializationQNames(out.CDATASections, val)
-	case lexicon.SerializationSuppressIndentation:
-		out.SuppressIndentation = mergeSerializationQNames(out.SuppressIndentation, val)
-	case lexicon.SerializationUseCharacterMaps:
-		applyUseCharacterMapsParam(out, val)
-	}
-}
-
-// serializationQNameClarkName returns the Clark-notation name ({uri}local, or
-// the bare local name when there is no namespace) of a serialization-params
-// value item that is an xs:QName. Non-QName items yield "".
-func serializationQNameClarkName(item xdm.Item) string {
-	av, err := xpath.AtomizeItem(item)
-	if err != nil {
-		return ""
-	}
-
-	qv, ok := av.Value.(xdm.QNameValue)
-	if !ok {
-		return ""
-	}
-
-	if qv.URI != "" {
-		return xdm.ClarkName(qv.URI, qv.Local)
-	}
-
-	return qv.Local
-}
-
-// mergeSerializationQNames unions the Clark names of the xs:QName items in val
-// into base. The cdata-section-elements / suppress-indentation values supplied
-// via serialization-params accumulate onto the stylesheet's xsl:output set,
-// replacing none of it (F&O 3.1 §16.3.2), skipping duplicates.
-func mergeSerializationQNames(base []string, val xdm.Sequence) []string {
-	seen := make(map[string]struct{}, len(base))
-	for _, n := range base {
-		seen[n] = struct{}{}
-	}
-
-	for i := range xdm.SequenceLen(val) {
-		name := serializationQNameClarkName(val.Get(i))
-		if name == "" {
-			continue
-		}
-
-		if _, ok := seen[name]; ok {
-			continue
-		}
-
-		seen[name] = struct{}{}
-		base = append(base, name)
-	}
-
-	return base
-}
-
-// applyUseCharacterMapsParam merges the (character → replacement) entries of a
-// use-character-maps serialization-param map into out.ResolvedCharMap. Its
-// value is a map(xs:string, xs:string) keyed by single characters; entries
-// override any inherited mapping for the same character.
-func applyUseCharacterMapsParam(out *OutputDef, val xdm.Sequence) {
-	sm, ok := val.Get(0).(xdm.MapItem)
-	if !ok {
-		return
-	}
-
-	if out.ResolvedCharMap == nil {
-		out.ResolvedCharMap = make(map[rune]string, sm.Size())
-	}
-
-	_ = sm.ForEach(func(key xdm.AtomicValue, value xdm.Sequence) error {
-		ks, err := xpath.AtomicToString(key)
-		if err != nil {
-			return nil //nolint:nilerr // skip unparseable character-map keys
-		}
-
-		runes := []rune(ks)
-		if len(runes) != 1 {
-			return nil // character-map keys are single characters
-		}
-
-		rs, ok := transformSeqString(value)
-		if !ok {
-			return nil
-		}
-
-		out.ResolvedCharMap[runes[0]] = rs
-
-		return nil
-	})
 }
 
 func transformStringOption(options xdm.MapItem, key string) string {

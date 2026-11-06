@@ -7,15 +7,45 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/x509name"
+)
+
+const (
+	// Bounds individual CRL scope/name extension encodings, in bytes.
+	maxCRLExtensionBytes       = 1 << 20
+	maxDistributionPointFields = 256
+	maxDistributionPointNames  = 256
+	maxRDNAttributes           = 256
 )
 
 type crlReasonMask uint16
 
-const allCRLReasons crlReasonMask = 255
+// CRL ReasonFlags positions 1..8 map to bits 0..7 in the internal coverage mask.
+// This mask is separate from the CRLReason ENUMERATED values in signed entries.
+const (
+	crlReasonFlagBitLength               = 9
+	allCRLReasons          crlReasonMask = 1<<(crlReasonFlagBitLength-1) - 1
+)
+
+// DistributionPoint and IssuingDistributionPoint have distinct tagged schemas.
+const (
+	crlPointNameTag       = 0
+	crlPointReasonsTag    = 1
+	crlPointIssuerTag     = 2
+	crlPointMaximumFields = 3
+	crlScopeNameTag       = 0
+	crlScopeOnlyUserTag   = 1
+	crlScopeOnlyCATag     = 2
+	crlScopeReasonsTag    = 3
+	crlScopeIndirectTag   = 4
+	crlScopeOnlyAttrTag   = 5
+	crlScopeMaximumFields = 6
+)
 
 type crlGeneralName struct {
 	tag   int
@@ -40,7 +70,7 @@ type crlScope struct {
 
 func parseDistinguishedName(raw []byte) (pkix.RDNSequence, error) {
 	var name pkix.RDNSequence
-	if len(raw) > 1<<20 || der.Unmarshal(raw, &name) != nil {
+	if len(raw) > maxCRLExtensionBytes || der.Unmarshal(raw, &name) != nil {
 		return nil, ErrEvidence
 	}
 
@@ -67,15 +97,15 @@ func canonicalNameKey(ctx context.Context, raw []byte) (string, error) {
 
 func crlDirectoryName(ctx context.Context, raw []byte) (crlGeneralName, error) {
 	key, err := canonicalNameKey(ctx, raw)
-	return crlGeneralName{tag: 4, value: raw, key: key}, err
+	return crlGeneralName{tag: lexicon.GeneralNameDirectory, value: raw, key: key}, err
 }
 
 func parseGeneralNames(ctx context.Context, value asn1.RawValue, implicit bool) ([]crlGeneralName, error) {
-	if !value.IsCompound || !implicit && !der.Is(value, 0, asn1.TagSequence, true) || implicit && value.Class != 2 {
+	if !value.IsCompound || !implicit && !der.Is(value, asn1.ClassUniversal, asn1.TagSequence, true) || implicit && value.Class != asn1.ClassContextSpecific {
 		return nil, ErrEvidence
 	}
 
-	fields, err := der.ChildrenLimit(value, 256)
+	fields, err := der.ChildrenLimit(value, maxDistributionPointFields)
 	if errors.Is(err, der.ErrLimit) {
 		return nil, fmt.Errorf("%w: %w: CRL GeneralNames count", ErrPolicy, ErrLimit)
 	}
@@ -107,7 +137,7 @@ func parseCRLReasonMask(value asn1.RawValue) (crlReasonMask, error) {
 	}
 
 	var bits asn1.BitString
-	if der.Unmarshal(der.Wrap(0, asn1.TagBitString, false, value.Bytes), &bits) != nil || bits.BitLength > 9 || bits.At(0) != 0 {
+	if der.Unmarshal(der.Wrap(asn1.ClassUniversal, asn1.TagBitString, false, value.Bytes), &bits) != nil || bits.BitLength > crlReasonFlagBitLength || bits.At(0) != 0 {
 		return 0, ErrEvidence
 	}
 
@@ -124,7 +154,7 @@ func parseCRLReasonMask(value asn1.RawValue) (crlReasonMask, error) {
 
 func parseCRLPointName(ctx context.Context, value asn1.RawValue) ([]crlGeneralName, []byte, error) {
 	name, err := der.Explicit(value, 0)
-	if err != nil || name.Class != 2 || !name.IsCompound {
+	if err != nil || name.Class != asn1.ClassContextSpecific || !name.IsCompound {
 		return nil, nil, ErrEvidence
 	}
 
@@ -133,13 +163,13 @@ func parseCRLPointName(ctx context.Context, value asn1.RawValue) ([]crlGeneralNa
 		names, err := parseGeneralNames(ctx, name, true)
 		return names, nil, err
 	case 1:
-		raw := der.Wrap(0, asn1.TagSet, true, name.Bytes)
-		if _, err := der.Read(raw, 1<<20); err != nil {
+		raw := der.Wrap(asn1.ClassUniversal, asn1.TagSet, true, name.Bytes)
+		if _, err := der.Read(raw, maxCRLExtensionBytes); err != nil {
 			return nil, nil, ErrEvidence
 		}
 
 		var rdn pkix.RelativeDistinguishedNameSET
-		if der.Unmarshal(raw, &rdn) != nil || len(rdn) == 0 || len(rdn) > 256 {
+		if der.Unmarshal(raw, &rdn) != nil || len(rdn) == 0 || len(rdn) > maxRDNAttributes {
 			return nil, nil, ErrEvidence
 		}
 
@@ -150,19 +180,19 @@ func parseCRLPointName(ctx context.Context, value asn1.RawValue) ([]crlGeneralNa
 }
 
 func parseCRLDistributionPoints(ctx context.Context, raw []byte) ([]crlDistributionPoint, error) {
-	value, err := der.Read(raw, 1<<20)
+	value, err := der.Read(raw, maxCRLExtensionBytes)
 	if err != nil {
 		return nil, ErrEvidence
 	}
 
-	fields, err := der.Sequence(value, 1, 256)
+	fields, err := der.Sequence(value, 1, maxDistributionPointNames)
 	if err != nil {
 		return nil, ErrEvidence
 	}
 
 	out := make([]crlDistributionPoint, 0, len(fields))
 	for _, value := range fields {
-		fields, err := der.Sequence(value, 1, 3)
+		fields, err := der.Sequence(value, 1, crlPointMaximumFields)
 		if err != nil {
 			return nil, ErrEvidence
 		}
@@ -171,18 +201,18 @@ func parseCRLDistributionPoints(ctx context.Context, raw []byte) ([]crlDistribut
 
 		previous := -1
 		for _, field := range fields {
-			if field.Class != 2 || field.Tag <= previous {
+			if field.Class != asn1.ClassContextSpecific || field.Tag <= previous {
 				return nil, ErrEvidence
 			}
 
 			previous = field.Tag
 			switch field.Tag {
-			case 0:
+			case crlPointNameTag:
 				point.names, point.relative, err = parseCRLPointName(ctx, field)
-			case 1:
+			case crlPointReasonsTag:
 				point.reasonsPresent = true
 				point.reasons, err = parseCRLReasonMask(field)
-			case 2:
+			case crlPointIssuerTag:
 				point.issuer, err = parseGeneralNames(ctx, field, true)
 			default:
 				return nil, ErrEvidence
@@ -202,7 +232,7 @@ func parseCRLDistributionPoints(ctx context.Context, raw []byte) ([]crlDistribut
 		}
 
 		for _, name := range point.issuer {
-			if name.tag != 4 {
+			if name.tag != lexicon.GeneralNameDirectory {
 				return nil, ErrEvidence
 			}
 		}
@@ -214,43 +244,46 @@ func parseCRLDistributionPoints(ctx context.Context, raw []byte) ([]crlDistribut
 }
 
 func parseCRLScope(ctx context.Context, raw []byte) (crlScope, error) {
+	// DER TRUE is encoded as a single all-one octet.
+	const crlDERTrue = 0xff
+
 	scope := crlScope{reasons: allCRLReasons, raw: raw}
 
-	value, err := der.Read(raw, 1<<20)
+	value, err := der.Read(raw, maxCRLExtensionBytes)
 	if err != nil {
 		return scope, ErrEvidence
 	}
 
-	fields, err := der.Sequence(value, 1, 6)
+	fields, err := der.Sequence(value, 1, crlScopeMaximumFields)
 	if err != nil {
 		return scope, ErrEvidence
 	}
 
 	previous := -1
 	for _, field := range fields {
-		if field.Class != 2 || field.Tag <= previous {
+		if field.Class != asn1.ClassContextSpecific || field.Tag <= previous {
 			return scope, ErrEvidence
 		}
 
 		previous = field.Tag
 		switch field.Tag {
-		case 0:
+		case crlScopeNameTag:
 			scope.names, scope.relative, err = parseCRLPointName(ctx, field)
-		case 3:
+		case crlScopeReasonsTag:
 			scope.reasons, err = parseCRLReasonMask(field)
-		case 1, 2, 4, 5:
-			if field.IsCompound || len(field.Bytes) != 1 || field.Bytes[0] != 255 {
+		case crlScopeOnlyUserTag, crlScopeOnlyCATag, crlScopeIndirectTag, crlScopeOnlyAttrTag:
+			if field.IsCompound || len(field.Bytes) != 1 || field.Bytes[0] != crlDERTrue {
 				return scope, ErrEvidence
 			}
 
 			switch field.Tag {
-			case 1:
+			case crlScopeOnlyUserTag:
 				scope.onlyUser = true
-			case 2:
+			case crlScopeOnlyCATag:
 				scope.onlyCA = true
-			case 4:
+			case crlScopeIndirectTag:
 				scope.indirect = true
-			case 5:
+			case crlScopeOnlyAttrTag:
 				scope.onlyAttribute = true
 			}
 		default:
@@ -283,7 +316,7 @@ func crlPointNames(ctx context.Context, point crlDistributionPoint, issuer []byt
 	}
 
 	if len(point.issuer) != 0 {
-		if len(point.issuer) != 1 || point.issuer[0].tag != 4 {
+		if len(point.issuer) != 1 || point.issuer[0].tag != lexicon.GeneralNameDirectory {
 			return nil, ErrEvidence
 		}
 
@@ -318,13 +351,13 @@ func equalCRLGeneralName(a, b crlGeneralName) bool {
 	}
 
 	switch a.tag {
-	case 4:
+	case lexicon.GeneralNameDirectory:
 		return a.key != "" && a.key == b.key
-	case 1:
+	case lexicon.GeneralNameRFC822:
 		return equalCRLMailbox(string(a.value), string(b.value))
-	case 6:
+	case lexicon.GeneralNameURI:
 		return crlURIKey(string(a.value)) == crlURIKey(string(b.value))
-	case 2:
+	case lexicon.GeneralNameDNS:
 		return strings.EqualFold(string(a.value), string(b.value))
 	}
 
@@ -344,7 +377,7 @@ func intersectCRLNames(a, b []crlGeneralName) bool {
 }
 
 func parseCRLGeneralName(ctx context.Context, field asn1.RawValue) (crlGeneralName, error) {
-	if field.Class != 2 || field.Tag < 0 || field.Tag > 8 {
+	if field.Class != asn1.ClassContextSpecific || field.Tag < lexicon.GeneralNameOtherName || field.Tag > lexicon.GeneralNameRegisteredID {
 		return crlGeneralName{}, ErrEvidence
 	}
 
@@ -353,7 +386,7 @@ func parseCRLGeneralName(ctx context.Context, field asn1.RawValue) (crlGeneralNa
 	var err error
 
 	switch field.Tag {
-	case 4:
+	case lexicon.GeneralNameDirectory:
 		if !field.IsCompound {
 			return crlGeneralName{}, ErrEvidence
 		}
@@ -362,25 +395,25 @@ func parseCRLGeneralName(ctx context.Context, field asn1.RawValue) (crlGeneralNa
 		if err != nil {
 			return crlGeneralName{}, err
 		}
-	case 1, 2, 6:
+	case lexicon.GeneralNameRFC822, lexicon.GeneralNameDNS, lexicon.GeneralNameURI:
 		if err := validateCRLIA5Name(field); err != nil {
 			return crlGeneralName{}, err
 		}
 
-	case 7:
-		if field.IsCompound || len(field.Bytes) != 4 && len(field.Bytes) != 16 {
+	case lexicon.GeneralNameIP:
+		if field.IsCompound || len(field.Bytes) != net.IPv4len && len(field.Bytes) != net.IPv6len {
 			return crlGeneralName{}, ErrEvidence
 		}
-	case 8:
+	case lexicon.GeneralNameRegisteredID:
 		if field.IsCompound {
 			return crlGeneralName{}, ErrEvidence
 		}
 
 		var oid asn1.ObjectIdentifier
-		if der.Unmarshal(der.Wrap(0, asn1.TagOID, false, field.Bytes), &oid) != nil {
+		if der.Unmarshal(der.Wrap(asn1.ClassUniversal, asn1.TagOID, false, field.Bytes), &oid) != nil {
 			return crlGeneralName{}, ErrEvidence
 		}
-	case 0:
+	case lexicon.GeneralNameOtherName:
 		if !field.IsCompound {
 			return crlGeneralName{}, ErrEvidence
 		}
@@ -408,17 +441,23 @@ func parseCRLGeneralName(ctx context.Context, field asn1.RawValue) (crlGeneralNa
 }
 
 func validateCRLIA5Name(field asn1.RawValue) error {
+	// GeneralName IA5 spellings here exclude space/control bytes and DEL.
+	const (
+		ia5SpaceByte  = 32
+		ia5DeleteByte = 127
+	)
+
 	if field.IsCompound || len(field.Bytes) == 0 {
 		return ErrEvidence
 	}
 
 	for _, b := range field.Bytes {
-		if b <= 32 || b >= 127 {
+		if b <= ia5SpaceByte || b >= ia5DeleteByte {
 			return ErrEvidence
 		}
 	}
 
-	if field.Tag == 6 {
+	if field.Tag == lexicon.GeneralNameURI {
 		if !validCRLURI(string(field.Bytes)) {
 			return ErrEvidence
 		}

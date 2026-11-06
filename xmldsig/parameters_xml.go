@@ -11,12 +11,31 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	decimalRadix              = 10
+	maximumParameterTextBytes = 64
+	parameterIntegerBits      = 32
+)
+
+const (
+	pssTrailerFieldLexical = "1"
+)
+
+const (
+	nameHMACOutputLength       = "HMACOutputLength"
+	nameMaskGenerationFunction = "MaskGenerationFunction"
+	nameRSAPSSParams           = "RSAPSSParams"
+	nameSaltLength             = "SaltLength"
+	nameTrailerField           = "TrailerField"
+	prefixRSAPSS               = "pss"
+)
+
 func pssElement(n *tree.Node, local string) bool {
 	return n != nil && n.Kind == tree.ElementNode && n.Name == (document.Name{Space: PSSNamespace, Local: local})
 }
 
 func newPSS(local string) *tree.Node {
-	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: PSSNamespace, Local: local}, Prefix: "pss"}
+	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: PSSNamespace, Local: local}, Prefix: prefixRSAPSS}
 }
 
 // xmlInteger accepts the XML Schema signed integer lexical form, but bounds
@@ -33,16 +52,16 @@ func xmlInteger(n *tree.Node) (int, error) {
 			return 0, fmt.Errorf("%w: integer must contain only text", ErrStructure)
 		}
 
-		if value.Len()+len(c.Data) > 64 {
+		if value.Len()+len(c.Data) > maximumParameterTextBytes {
 			return 0, fmt.Errorf("%w: integer too long", ErrStructure)
 		}
 
 		value.WriteString(c.Data)
 	}
 
-	v := strings.Trim(value.String(), " \t\r\n")
+	v := strings.Trim(value.String(), lexicon.XMLWhitespace)
 
-	number, err := strconv.ParseInt(v, 10, 32)
+	number, err := strconv.ParseInt(v, decimalRadix, parameterIntegerBits)
 	if err != nil {
 		return 0, fmt.Errorf("%w: invalid integer", ErrStructure)
 	}
@@ -51,12 +70,12 @@ func xmlInteger(n *tree.Node) (int, error) {
 }
 
 func parseSignatureMethod(n *tree.Node, p Policy) (signatureSpec, error) {
-	children, err := structure(n, lexicon.DSigElementSignatureMethod, "Algorithm")
+	children, err := structure(n, lexicon.DSigElementSignatureMethod, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return signatureSpec{}, err
 	}
 
-	method, err := requiredAttribute(n, "Algorithm")
+	method, err := requiredAttribute(n, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return signatureSpec{}, err
 	}
@@ -75,7 +94,7 @@ func parseSignatureMethod(n *tree.Node, p Policy) (signatureSpec, error) {
 			}
 		}
 	} else if _, ok := macHash(method); ok {
-		if len(children) > 1 || len(children) == 1 && !isDS(children[0], "HMACOutputLength") {
+		if len(children) > 1 || len(children) == 1 && !isDS(children[0], nameHMACOutputLength) {
 			return signatureSpec{}, fmt.Errorf("%w: HMAC parameters", ErrStructure)
 		}
 
@@ -102,7 +121,7 @@ func parseSignatureMethod(n *tree.Node, p Policy) (signatureSpec, error) {
 }
 
 func parsePSS(n *tree.Node) (*PSSParameters, error) {
-	if !pssElement(n, "RSAPSSParams") {
+	if !pssElement(n, nameRSAPSSParams) {
 		return nil, fmt.Errorf("%w: expected pss:RSAPSSParams", ErrStructure)
 	}
 
@@ -134,7 +153,7 @@ func parsePSS(n *tree.Node) (*PSSParameters, error) {
 
 	p.MGFHash = p.Hash
 
-	if pos < len(children) && pssElement(children[pos], "MaskGenerationFunction") {
+	if pos < len(children) && pssElement(children[pos], nameMaskGenerationFunction) {
 		mgf := children[pos]
 		pos++
 
@@ -145,7 +164,7 @@ func parsePSS(n *tree.Node) (*PSSParameters, error) {
 	}
 
 	p.SaltLength = p.Hash.Size()
-	if pos < len(children) && pssElement(children[pos], "SaltLength") {
+	if pos < len(children) && pssElement(children[pos], nameSaltLength) {
 		p.SaltLength, err = xmlInteger(children[pos])
 		if err != nil {
 			return nil, err
@@ -154,7 +173,7 @@ func parsePSS(n *tree.Node) (*PSSParameters, error) {
 		pos++
 	}
 
-	if pos < len(children) && pssElement(children[pos], "TrailerField") {
+	if pos < len(children) && pssElement(children[pos], nameTrailerField) {
 		p.TrailerField, err = xmlInteger(children[pos])
 		if err != nil {
 			return nil, err
@@ -181,39 +200,39 @@ func signatureMethodNode(method string, params SignatureParameters) (*tree.Node,
 	}
 
 	sm := newDS(lexicon.DSigElementSignatureMethod)
-	setAttr(sm, "Algorithm", method)
+	setAttr(sm, lexicon.SecurityAttrAlgorithm, method)
 	// Keep omission vs explicit defaults stable in a caller's template. When
 	// supplied, emit every effective PSS parameter to avoid ambiguous output.
 	if spec.pss != nil && params.PSS != nil {
 		p := spec.pss
-		root := newPSS("RSAPSSParams")
-		root.NS = []tree.Namespace{{Prefix: "pss", URI: PSSNamespace}}
+		root := newPSS(nameRSAPSSParams)
+		root.NS = []tree.Namespace{{Prefix: prefixRSAPSS, URI: PSSNamespace}}
 		dm := newDS(lexicon.DSigElementDigestMethod)
 		uri, _ := digestURI(p.Hash)
-		setAttr(dm, "Algorithm", uri)
+		setAttr(dm, lexicon.SecurityAttrAlgorithm, uri)
 		add(root, dm)
 
-		mgf := newPSS("MaskGenerationFunction")
-		setAttr(mgf, "Algorithm", MGF1)
+		mgf := newPSS(nameMaskGenerationFunction)
+		setAttr(mgf, lexicon.SecurityAttrAlgorithm, MGF1)
 
 		md := newDS(lexicon.DSigElementDigestMethod)
 		uri, _ = digestURI(p.MGFHash)
-		setAttr(md, "Algorithm", uri)
+		setAttr(md, lexicon.SecurityAttrAlgorithm, uri)
 		add(mgf, md)
 		add(root, mgf)
 
-		salt := newPSS("SaltLength")
+		salt := newPSS(nameSaltLength)
 		text(salt, strconv.Itoa(p.SaltLength))
 		add(root, salt)
 
-		trailer := newPSS("TrailerField")
-		text(trailer, "1")
+		trailer := newPSS(nameTrailerField)
+		text(trailer, pssTrailerFieldLexical)
 		add(root, trailer)
 		add(sm, root)
 	}
 
 	if spec.hmacBits != 0 && params.HMACOutputLength != 0 {
-		length := newDS("HMACOutputLength")
+		length := newDS(nameHMACOutputLength)
 		text(length, strconv.Itoa(spec.hmacBits))
 		add(sm, length)
 	}
@@ -223,11 +242,11 @@ func signatureMethodNode(method string, params SignatureParameters) (*tree.Node,
 
 func parseMGFHash(mgf *tree.Node, fallback crypto.Hash) (crypto.Hash, error) {
 	hash := fallback
-	if err := attributes(mgf, "Algorithm"); err != nil {
+	if err := attributes(mgf, lexicon.SecurityAttrAlgorithm); err != nil {
 		return fallback, err
 	}
 
-	if uri, exists := getAttr(mgf, document.Name{Local: "Algorithm"}); exists && uri != MGF1 {
+	if uri, exists := getAttr(mgf, document.Name{Local: lexicon.SecurityAttrAlgorithm}); exists && uri != MGF1 {
 		return fallback, fmt.Errorf("%w: unsupported mask generation function", ErrAlgorithm)
 	}
 

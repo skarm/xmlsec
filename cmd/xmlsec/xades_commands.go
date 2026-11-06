@@ -10,10 +10,21 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/xades"
 	"github.com/skarm/xmlsec/xmldsig"
+)
+
+// Application-supplied identifier defaults remain independent from fixed JSON report keys. Validation-profile labels select current-time or historical validation.
+const (
+	cliDefaultSignatureID  = "signature"
+	cliDefaultPropertiesID = "properties"
+	cliDefaultReferenceID  = "data-reference"
+	cliProfileCurrentTime  = "current-time"
+	cliProfileWithTime     = "with-time"
+	fieldSignature         = "signature"
 )
 
 type xadesConfig struct {
@@ -41,15 +52,15 @@ func runXAdES(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	configFile := fs.String("trust", "", "trusted XAdES validator JSON with signer_trust, tsa_config and level")
 	tsaFile := fs.String("tsa-trust", "", "TSA JSON for attaching/requesting a signature timestamp")
 	tokenFile := fs.String(nameToken, "", "previously obtained timestamp token DER")
-	idAttr := fs.String("id-attr", "ID", "application ID attribute local name")
+	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "application ID attribute local name")
 	idNS := fs.String("id-ns", "", "application ID namespace")
-	sigID := fs.String("signature-id", "signature", "signature ID when signing")
-	propsID := fs.String("properties-id", "properties", "SignedProperties ID")
-	refID := fs.String("reference-id", "data-reference", "data Reference ID")
-	mimeType := fs.String("mime-type", "application/xml", "signed data MIME type")
-	index := fs.Int("signature-index", -1, "explicit zero-based signature selection; omitted requires exactly one signature")
-	canonical := fs.String(nameC14n, c14n.Exclusive, "timestamp canonicalization URI")
-	profile := fs.String("validation-profile", "current-time", "validation: current-time or with-time")
+	sigID := fs.String("signature-id", cliDefaultSignatureID, "signature ID when signing")
+	propsID := fs.String("properties-id", cliDefaultPropertiesID, "SignedProperties ID")
+	refID := fs.String("reference-id", cliDefaultReferenceID, "data Reference ID")
+	mimeType := fs.String("mime-type", lexicon.MediaTypeXML, "signed data MIME type")
+	index := fs.Int("signature-index", cliUnspecifiedSelectionIndex, "explicit zero-based signature selection; omitted requires exactly one signature")
+	canonical := fs.String(nameC14N, c14n.Exclusive, "timestamp canonicalization URI")
+	profile := fs.String("validation-profile", cliProfileCurrentTime, "validation: current-time or with-time")
 	flags := registerPrivateKeyFlags(fs)
 
 	specific := "in out certificate at id-attr id-ns signature-index"
@@ -128,7 +139,7 @@ func runXAdES(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return usageError("-signature-index must be nonnegative when supplied")
 	}
 
-	selected, err := selectElement(doc, document.Name{}, "", *index, document.Name{Space: xmldsig.Namespace, Local: "Signature"})
+	selected, err := selectElement(doc, document.Name{}, "", *index, document.Name{Space: xmldsig.Namespace, Local: lexicon.DSigElementSignature})
 	if err != nil {
 		return err
 	}
@@ -167,11 +178,11 @@ func runXAdES(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 
 	evidence := xades.ValidationEvidence{Signer: signerEvidence, TSA: tsaEvidence}
 
-	if *profile == "with-time" {
+	if *profile == cliProfileWithTime {
 		return operation.withTime(ctx, cmd, cfg, signerTrust, tsa, evidence, stdout)
 	}
 
-	if *profile != "current-time" {
+	if *profile != cliProfileCurrentTime {
 		return usageError("-validation-profile must be current-time or with-time")
 	}
 
@@ -240,12 +251,16 @@ func (o xadesOperation) withTime(ctx context.Context, cmd string, cfg xadesConfi
 
 	result, report, verifyErr := validator.ValidateEnveloped(ctx, o.doc, o.selected, o.certificate, o.at, evidence)
 
-	detail := map[string]any{"profile": report.Profile(), "indication": report.Indication(), "proof_time": report.ProofTime(), "verification_time": report.VerificationTime()}
+	detail := withTimeXAdESReport(report)
 	if verifyErr == nil {
-		detail["signature"] = basicXAdESReport(result.Basic())
+		detail[fieldSignature] = basicXAdESReport(result.Basic())
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, o.output, stdout, resultReport("xades validate", "explicit-pkix-and-tsa-policy", detail, verifyErr)))
+}
+
+func withTimeXAdESReport(report *xades.WithTimeReport) map[string]any {
+	return map[string]any{"profile": report.Profile(), "indication": report.Indication(), "proof_time": report.ProofTime(), "verification_time": report.VerificationTime()}
 }
 
 func basicXAdESReport(r *xades.BasicResult) any {
@@ -304,7 +319,7 @@ func runXAdESCurrent(ctx context.Context, o xadesOperation, cmd string, cfg xade
 		detail = map[string]any{
 			"profile":            result.Profile(),
 			"level":              result.Level(),
-			"signature":          basicXAdESReport(result.Basic()),
+			fieldSignature:       basicXAdESReport(result.Basic()),
 			"timestamps":         len(result.Timestamps()),
 			"archive_timestamps": len(result.ArchiveTimestamps()),
 		}

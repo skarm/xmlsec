@@ -105,7 +105,7 @@ func resolveSequenceTypeQName(qname string, kind qnameKind, resolve nsResolver, 
 		// xs:/xsd: are conventional aliases for the XSD namespace when naming a
 		// type; for element/attribute names they are ordinary prefixes resolved
 		// through the binding map (so xsd: works only if declared).
-		if kind == qnameTypeName && (prefix == "xs" || prefix == nameXsd) {
+		if kind == qnameTypeName && (prefix == lexicon.PrefixXS || prefix == lexicon.PrefixXSD) {
 			return loc, lexicon.NamespaceXSD
 		}
 		// The xml prefix is predeclared everywhere; an explicit binding overrides.

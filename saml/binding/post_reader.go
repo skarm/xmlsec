@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/url"
 
+	"github.com/skarm/xmlsec/saml/internal/profile"
+
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
@@ -18,6 +20,10 @@ import (
 // bytes. Every field is checked before returning an unauthenticated message.
 // It leaves src open; blocking readers must honor ctx themselves.
 func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, limits POSTLimits) (*POSTMessage, error) {
+	const (
+		expectedPOSTFieldCount = 2
+	)
+
 	l, err := postLimits(limits)
 	if err != nil {
 		return nil, err
@@ -33,7 +39,7 @@ func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, li
 
 	input := bufio.NewReader(&streamio.Reader{Context: ctx, Source: src, Limit: int64(l.MaxFormBytes), LimitError: ErrBinding})
 	message := &POSTMessage{parameter: expected}
-	seen := make(map[string]struct{}, 2)
+	seen := make(map[string]struct{}, expectedPOSTFieldCount)
 
 	for {
 		if _, err := input.Peek(1); err != nil {
@@ -90,12 +96,12 @@ func DecodePOSTReader(ctx context.Context, src io.Reader, expected Parameter, li
 }
 
 func readPOSTRelay(message *POSTMessage, value io.Reader) error {
-	raw, err := io.ReadAll(io.LimitReader(value, 81))
+	raw, err := io.ReadAll(io.LimitReader(value, profile.HTTPRelayStateMaxBytes+1))
 	if err != nil {
 		return err
 	}
 
-	if len(raw) > 80 {
+	if len(raw) > profile.HTTPRelayStateMaxBytes {
 		return ErrBinding
 	}
 
@@ -106,7 +112,11 @@ func readPOSTRelay(message *POSTMessage, value io.Reader) error {
 }
 
 func postFieldKey(input *bufio.Reader) (string, bool, error) {
-	var encoded [64]byte
+	const (
+		encodedPOSTFieldBufferBytes = 64
+	)
+
+	var encoded [encodedPOSTFieldBufferBytes]byte
 
 	used := 0
 

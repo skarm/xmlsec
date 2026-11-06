@@ -14,6 +14,18 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// XPath 1.0 core function local names are dispatch vocabulary, separate from
+// similarly spelled schema type names and XML attribute names.
+const (
+	fnNameID     = "id"
+	fnNameLang   = "lang"
+	fnNameString = "string"
+	fnNameNumber = "number"
+)
+
+// Both lexical parsing and formatting use IEEE binary64 precision in XPath 1.0.
+const xpath10FloatBitSize = 64
+
 // XPath10String implements XPath 1.0 string(), including double formatting.
 func XPath10String(seq xdm.Sequence) (string, error) { return xpath10String(seq) }
 
@@ -72,18 +84,24 @@ func XPath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) { return xpath10Nu
 // Adapted from lestrrat-go/helium number.ToString; Copyright (c) 2015
 // lestrrat, MIT license in licenses/MIT-helium.txt.
 func xpath10NumberString(v float64) string {
+	// XPath 1.0 number-to-string uses these words, unlike XSD INF/-INF lexicals.
+	const (
+		xpath10PositiveInfinity = "Infinity"
+		xpath10NegativeInfinity = "-Infinity"
+	)
+
 	switch {
 	case math.IsNaN(v):
 		return lexicon.FloatNaN
 	case math.IsInf(v, 1):
-		return "Infinity"
+		return xpath10PositiveInfinity
 	case math.IsInf(v, -1):
-		return "-Infinity"
+		return xpath10NegativeInfinity
 	case v == 0:
 		return "0"
 	}
 
-	return strconv.FormatFloat(v, 'f', -1, 64)
+	return strconv.FormatFloat(v, 'f', -1, xpath10FloatBitSize)
 }
 
 func xpath10String(seq xdm.Sequence) (string, error) {
@@ -115,21 +133,24 @@ func xpath10Double(v float64) xdm.Sequence {
 // its core library; stylesheet functions and explicitly registered extensions
 // are checked by their host, rather than being mistaken for newer builtins.
 func lookupXPath10FunctionArity(key string) ([2]int, bool) {
+	// A negative maximum denotes a variadic signature, not an argument count.
+	const xpath10VariadicMaximumArity = -1
+
 	switch key {
 	case lexicon.FnLast, lexicon.FnPosition, lexicon.ValueTrue, lexicon.ValueFalse:
 		return [2]int{0, 0}, true
-	case fnNameCount, "id", fnNameBoolean, fnNameNot, lexicon.AttrLang, nameSum, nameFloor, nameCeiling, nameRound:
-		return [2]int{1, 1}, true
-	case nameLocalName, nameNamespaceURI, lexicon.FnName, lexicon.TypeString, nameStringLength, fnNameNormalizeSpace, lexicon.TypeNumber:
-		return [2]int{0, 1}, true
+	case fnNameCount, fnNameID, fnNameBoolean, fnNameNot, fnNameLang, nameSum, nameFloor, nameCeiling, nameRound:
+		return [2]int{builtinArityOne, builtinArityOne}, true
+	case nameLocalName, nameNamespaceURI, lexicon.FnName, fnNameString, nameStringLength, fnNameNormalizeSpace, fnNameNumber:
+		return [2]int{0, builtinArityOne}, true
 	case nameConcat:
-		return [2]int{2, -1}, true
+		return [2]int{builtinArityTwo, xpath10VariadicMaximumArity}, true
 	case fnNameStartsWith, fnNameContains, fnNameSubstringBefore, fnNameSubstringAfter:
-		return [2]int{2, 2}, true
+		return [2]int{builtinArityTwo, builtinArityTwo}, true
 	case fnNameSubstring:
-		return [2]int{2, 3}, true
+		return [2]int{builtinArityTwo, builtinArityThree}, true
 	case fnNameTranslate:
-		return [2]int{3, 3}, true
+		return [2]int{builtinArityThree, builtinArityThree}, true
 	}
 
 	var zero [2]int
@@ -164,7 +185,7 @@ func xpath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{}, err
 	}
 
-	s = strings.Trim(s, " \t\r\n")
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 	body := strings.TrimPrefix(s, "-")
 	digits, dot := 0, false
 
@@ -183,7 +204,7 @@ func xpath10Number(seq xdm.Sequence) (xdm.AtomicValue, error) {
 		return doubleNaNAtom(), nil
 	}
 
-	v, err := strconv.ParseFloat(s, 64)
+	v, err := strconv.ParseFloat(s, xpath10FloatBitSize)
 	if err != nil && !math.IsInf(v, 0) {
 		return doubleNaNAtom(), nil
 	}
@@ -206,24 +227,24 @@ func validateXPath10Expr(ast Expr) error {
 				switch n.Op {
 				case TokenPlus, TokenMinus, TokenStar, TokenDiv, TokenMod, TokenAnd, TokenOr, TokenEquals, TokenNotEquals, TokenLess, TokenLessEq, TokenGreater, TokenGreaterEq:
 				default:
-					return profileError(lexicon.ErrXPST0003, "operator", 10)
+					return profileError(lexicon.ErrXPST0003, "operator", xpathVersion10)
 				}
 			case UnaryExpr:
 				if !n.Negate {
-					return profileError(lexicon.ErrXPST0003, "unary plus", 10)
+					return profileError(lexicon.ErrXPST0003, "unary plus", xpathVersion10)
 				}
 			default:
-				return profileError(lexicon.ErrXPST0003, "expression", 10)
+				return profileError(lexicon.ErrXPST0003, "expression", xpathVersion10)
 			}
 		case xdm.NameTest:
-			if n.URI != "" || n.Prefix == "*" {
-				return profileError(lexicon.ErrXPST0003, "name test", 10)
+			if n.URIQualified || n.URI != "" || n.Prefix == "*" {
+				return profileError(lexicon.ErrXPST0003, "name test", xpathVersion10)
 			}
 		case xdm.NodeTest:
 			switch n.(type) {
 			case xdm.NameTest, xdm.TypeTest, xdm.PITest:
 			default:
-				return profileError(lexicon.ErrXPST0003, "kind test", 10)
+				return profileError(lexicon.ErrXPST0003, "kind test", xpathVersion10)
 			}
 		}
 
@@ -312,7 +333,7 @@ func xpath10NodeSet(seq xdm.Sequence) error {
 // builtin. Only the functions whose definitions changed need their own case.
 func callXPath10Builtin(ctx context.Context, ec *evalContext, function resolvedFunction, args []xdm.Sequence) (xdm.Sequence, error) {
 	switch function.name {
-	case lexicon.TypeString, lexicon.TypeNumber:
+	case fnNameString, fnNameNumber:
 		return callXPath10ContextConversion(ctx, ec, function.name, args)
 	case nameSum:
 		return sumXPath10Nodes(ctx, args[0])
@@ -341,7 +362,7 @@ func callXPath10ContextConversion(ctx context.Context, ec *evalContext, name str
 		return nil, err
 	}
 
-	if name == lexicon.TypeString {
+	if name == fnNameString {
 		return coerceXPath10StringArgument(ctx, argument)
 	}
 
@@ -381,7 +402,7 @@ func coerceXPath10Argument(ctx context.Context, name string, index int, argument
 		}
 
 		return argument, nil
-	case nameConcat, fnNameStartsWith, fnNameContains, fnNameSubstringBefore, fnNameSubstringAfter, fnNameTranslate, nameStringLength, fnNameNormalizeSpace, lexicon.AttrLang:
+	case nameConcat, fnNameStartsWith, fnNameContains, fnNameSubstringBefore, fnNameSubstringAfter, fnNameTranslate, nameStringLength, fnNameNormalizeSpace, fnNameLang:
 		return coerceXPath10StringArgument(ctx, argument)
 	case fnNameSubstring:
 		if index == 0 {
@@ -391,7 +412,7 @@ func coerceXPath10Argument(ctx context.Context, name string, index int, argument
 		return coerceXPath10NumberArgument(argument)
 	case nameFloor, nameCeiling, nameRound:
 		return coerceXPath10NumberArgument(argument)
-	case "id":
+	case fnNameID:
 		return coerceXPath10IDArgument(ctx, argument)
 	default:
 		return argument, nil

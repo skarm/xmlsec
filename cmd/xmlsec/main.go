@@ -39,7 +39,7 @@ func main() {
 
 	if err != nil {
 		if jsonErrors {
-			report := map[string]any{"schema_version": 1, fieldStatus: "error", "error": err.Error(), "exit_code": exitCode(err)}
+			report := map[string]any{"schema_version": cliReportSchemaVersion, fieldStatus: "error", "error": err.Error(), "exit_code": exitCode(err)}
 			if diagnostics.Len() > 0 {
 				report["diagnostics"] = diagnostics.String()
 			}
@@ -65,7 +65,7 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	exec := registerExecutionFlags(fs)
 	input := fs.String("in", "-", "input XML file; - reads stdin")
 	output := fs.String("out", "-", "output file; - writes stdout")
-	idAttr := fs.String("id-attr", "ID", "ID attribute local name (not guessed)")
+	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "ID attribute local name (not guessed)")
 	idNS := fs.String("id-ns", "", "ID attribute namespace URI")
 	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
 
@@ -91,7 +91,7 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		fs.StringVar(&keyFile, "key", "", "externally trusted public key or pinned certificate, PEM/DER")
 		fs.StringVar(&rootLocal, "root-local", "", "expected root local name")
 		fs.StringVar(&rootNS, "root-ns", "", "expected root namespace URI")
-	case nameC14n:
+	case nameC14N:
 		fs.StringVar(&xpathExpression, nameXPath, "", "XPath 1.0 node-set filter (evaluated for each node)")
 		fs.Var(&xpathNamespaces, "namespace", "PREFIX=URI for -xpath; repeatable")
 		fs.StringVar(&canonicalAlgorithm, "algorithm", c14n.Exclusive, "canonicalization URI: Exclusive, C14N 1.0 or C14N 1.1")
@@ -100,7 +100,7 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		fs.StringVar(&selectID, "id", "", "canonicalize the unique element with this ID; default whole document")
 	}
 
-	if cmd == nameC14n {
+	if cmd == nameC14N {
 		fs = commandFlags(fs, "in out id-attr id-ns algorithm comments inclusive-prefixes id xpath namespace max-node-visits", false)
 	} else {
 		fs = withoutFlags(fs, "allowed-programs max-node-visits max-transforms")
@@ -114,7 +114,7 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		return errors.New("unexpected positional arguments")
 	}
 
-	if cmd != nameC14n && keyFile == "" {
+	if cmd != nameC14N && keyFile == "" {
 		return usageError("-key is required")
 	}
 
@@ -150,7 +150,7 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	var out []byte
 
 	switch cmd {
-	case nameC14n:
+	case nameC14N:
 		opt := c14n.Options{MaxOutputBytes: exec.output, Algorithm: canonicalAlgorithm, WithComments: comments, InclusivePrefixes: strings.Fields(inclusive)}
 
 		return produceOutput(ctx, *output, stdout, func(w io.Writer) error {

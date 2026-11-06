@@ -10,10 +10,20 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
+)
+
+const (
+	absoluteMinimumHMACOutputBits = 80
+	defaultPSSSaltBytes           = 32
+	// Hard byte ceiling for accepted or configured RSA-PSS salt lengths.
+	maximumPSSSaltBytes = 2048
+	pssTrailerByte      = 0xbc
+	pssZeroPrefixBytes  = 8
 )
 
 const (
@@ -115,7 +125,7 @@ func SignMessageWithParametersReader(ctx context.Context, src io.Reader, signer 
 	}
 
 	credential := signatureCredential{public: key, signer: signer}
-	if err := credential.validateSigner(s); err != nil {
+	if err := credential.validateSigner(s, p); err != nil {
 		return nil, err
 	}
 
@@ -124,7 +134,7 @@ func SignMessageWithParametersReader(ctx context.Context, src io.Reader, signer 
 		return nil, err
 	}
 
-	return credential.signPrepared(ctx, s, digest)
+	return credential.signPrepared(ctx, s, p, digest)
 }
 
 // VerifyMessageWithParameters verifies a raw message with explicit signature parameters
@@ -212,7 +222,7 @@ func (s signatureSpec) validatePolicy(p Policy) error {
 			return fmt.Errorf("%w: HMAC hash", ErrPolicy)
 		}
 
-		if s.hmacBits < p.MinHMACOutputBits || (!p.AllowHMACTruncation && s.hmacBits != h.Size()*8) {
+		if s.hmacBits < p.MinHMACOutputBits || (!p.AllowHMACTruncation && s.hmacBits != h.Size()*signatureOctetBits) {
 			return fmt.Errorf("%w: HMAC truncation", ErrPolicy)
 		}
 	}
@@ -239,7 +249,7 @@ func (s signatureSpec) validatePublicKey(key crypto.PublicKey, p Policy) error {
 			return ErrKey
 		}
 
-		emLen := (k.N.BitLen() - 1 + 7) / 8
+		emLen := (k.N.BitLen() - 1 + signatureOctetBits - 1) / signatureOctetBits
 		if s.pss.SaltLength > emLen-s.pss.Hash.Size()-2 {
 			return fmt.Errorf("%w: PSS salt does not fit the RSA modulus", ErrPolicy)
 		}
@@ -249,7 +259,7 @@ func (s signatureSpec) validatePublicKey(key crypto.PublicKey, p Policy) error {
 }
 
 func (s signatureSpec) validateSigner(signer crypto.Signer) error {
-	if s.algorithm == DSASHA1 || s.algorithm == RSASHA1 {
+	if s.algorithm == DSASHA1 {
 		return fmt.Errorf("%w: legacy signature generation is disabled", ErrPolicy)
 	}
 
@@ -329,12 +339,12 @@ func copySignatureParameters(p SignatureParameters) SignatureParameters {
 // validation; bounds are rechecked here before slicing or allocating.
 func verifyParameterizedPSS(k *rsa.PublicKey, digest, signature []byte, p PSSParameters) error {
 	invalid := func() error { return fmt.Errorf("%w: RSA-PSS", ErrSignature) }
-	if k == nil || k.N == nil || k.N.Sign() <= 0 || k.E < 3 || len(signature) != (k.N.BitLen()+7)/8 {
+	if k == nil || k.N == nil || k.N.Sign() <= 0 || k.E < minimumRSAExponent || len(signature) != (k.N.BitLen()+signatureOctetBits-1)/signatureOctetBits {
 		return invalid()
 	}
 
 	emBits := k.N.BitLen() - 1
-	emLen := (emBits + 7) / 8
+	emLen := (emBits + signatureOctetBits - 1) / signatureOctetBits
 
 	hLen := p.Hash.Size()
 	if p.SaltLength < 0 || emLen < hLen+p.SaltLength+2 {
@@ -357,21 +367,21 @@ func verifyParameterizedPSS(k *rsa.PublicKey, digest, signature []byte, p PSSPar
 	}
 
 	m := new(big.Int).Exp(sig, big.NewInt(int64(k.E)), k.N)
-	if m.BitLen() > emLen*8 {
+	if m.BitLen() > emLen*signatureOctetBits {
 		return invalid()
 	}
 
 	em := make([]byte, emLen)
 	m.FillBytes(em)
 
-	if em[emLen-1] != 0xbc {
+	if em[emLen-1] != pssTrailerByte {
 		return invalid()
 	}
 
 	dbLen := emLen - hLen - 1
 
-	unused := uint(8*emLen - emBits)
-	if em[0] & ^byte(0xff>>unused) != 0 {
+	unused := uint(signatureOctetBits*emLen - emBits)
+	if em[0] & ^byte(math.MaxUint8>>unused) != 0 {
 		return invalid()
 	}
 
@@ -381,7 +391,10 @@ func verifyParameterizedPSS(k *rsa.PublicKey, digest, signature []byte, p PSSPar
 
 	mask := p.MGFHash.New()
 
-	var counter [4]byte
+	// MGF1 uses an unsigned 32-bit big-endian block counter.
+	const mgfCounterBytes = 4
+
+	var counter [mgfCounterBytes]byte
 
 	off := 0
 	for i := uint32(0); off < dbLen; i++ {
@@ -401,7 +414,7 @@ func verifyParameterizedPSS(k *rsa.PublicKey, digest, signature []byte, p PSSPar
 		}
 	}
 
-	db[0] &= 0xff >> unused
+	db[0] &= math.MaxUint8 >> unused
 	psLen := dbLen - p.SaltLength - 1
 
 	bad := byte(0)
@@ -414,7 +427,7 @@ func verifyParameterizedPSS(k *rsa.PublicKey, digest, signature []byte, p PSSPar
 	}
 
 	hash := p.Hash.New()
-	_, _ = hash.Write(make([]byte, 8))
+	_, _ = hash.Write(make([]byte, pssZeroPrefixBytes))
 	_, _ = hash.Write(digest)
 
 	_, _ = hash.Write(db[psLen+1:])
@@ -462,7 +475,7 @@ func normalizeSignatureSpec(method string, params SignatureParameters) (signatur
 			return s, fmt.Errorf("%w: HMAC parameter on RSA-PSS", ErrStructure)
 		}
 
-		p := PSSParameters{Hash: crypto.SHA256, MGFHash: crypto.SHA256, SaltLength: 32, TrailerField: 1}
+		p := PSSParameters{Hash: crypto.SHA256, MGFHash: crypto.SHA256, SaltLength: defaultPSSSaltBytes, TrailerField: 1}
 		normalizeSignatureSpecPSS(&params, &p)
 
 		if p.Hash == crypto.SHA1 || p.MGFHash == crypto.SHA1 {
@@ -481,7 +494,7 @@ func normalizeSignatureSpec(method string, params SignatureParameters) (signatur
 			return s, fmt.Errorf("%w: PSS trailer must be 1", ErrAlgorithm)
 		}
 
-		if p.SaltLength < 0 || p.SaltLength > 2048 {
+		if p.SaltLength < 0 || p.SaltLength > maximumPSSSaltBytes {
 			return s, fmt.Errorf("%w: PSS salt bounds", ErrPolicy)
 		}
 
@@ -497,11 +510,11 @@ func normalizeSignatureSpec(method string, params SignatureParameters) (signatur
 
 		bits := params.HMACOutputLength
 		if bits == 0 {
-			bits = h.Size() * 8
+			bits = h.Size() * signatureOctetBits
 		}
 		// XMLDSig 1.1 sections 4.4.2 and 6.3.1: whole bytes, >= half
 		// the hash output and >=80 bits, never longer than the hash output.
-		if bits%8 != 0 || bits < h.Size()*4 || bits < 80 || bits > h.Size()*8 {
+		if bits%signatureOctetBits != 0 || bits < h.Size()*(signatureOctetBits/2) || bits < absoluteMinimumHMACOutputBits || bits > h.Size()*signatureOctetBits {
 			return s, fmt.Errorf("%w: invalid HMAC output length", ErrPolicy)
 		}
 

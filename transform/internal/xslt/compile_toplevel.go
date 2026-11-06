@@ -58,7 +58,7 @@ func (c *compiler) compileTopLevel(ctx context.Context, root *xdm.Element) error
 
 	dv := c.stylesheet.defaultValidation
 	if requiresSchemaAttribute(nameDefaultValidation, dv, c.stylesheet.processorLanguage()) && !c.stylesheet.schemaAware {
-		return staticError("XTSE1660", "default-validation=%q requires a schema-aware processor", dv)
+		return staticError(errCodeXTSE1660, "default-validation=%q requires a schema-aware processor", dv)
 	}
 
 	if err := c.collectTopLevelImports(ctx, root); err != nil {
@@ -234,13 +234,13 @@ func (c *compiler) compileStaticSelect(ctx context.Context, elem *xdm.Element) (
 // Static values must be converted before another declaration, use-when or
 // shadow attribute observes them, rather than only when the stylesheet runs.
 func (c *compiler) convertStaticDeclarationValue(ctx context.Context, elem *xdm.Element, value xdm.Sequence) (xdm.Sequence, error) {
-	if elem.LocalName() == nameParam && xsdBoolTrue(getAttr(elem, ctxItemRequired)) {
+	if elem.LocalName() == nameParam && xsdBoolTrue(getAttr(elem, xslAttrRequired)) {
 		if err := validateRequiredParamDefault(elem); err != nil {
 			return nil, err
 		}
 	}
 
-	as := getAttr(elem, "as")
+	as := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, as, "static "+elem.LocalName()); err != nil {
 		return nil, err
 	}
@@ -283,12 +283,12 @@ func (c *compiler) bindImplicitStaticParam(ctx context.Context, elem *xdm.Elemen
 		return nil
 	}
 
-	as := getAttr(elem, "as")
+	as := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, as, "static parameter"); err != nil {
 		return err
 	}
 
-	if xsdBoolTrue(getAttr(elem, ctxItemRequired)) || as != "" && !allowsEmptySequence(as) {
+	if xsdBoolTrue(getAttr(elem, xslAttrRequired)) || as != "" && !allowsEmptySequence(as) {
 		return staticError(errCodeXTDE0050, "required static parameter $%s was not supplied", getAttr(elem, xslAttrName))
 	}
 
@@ -462,8 +462,8 @@ func (c *compiler) topLevelUseWhen(ctx context.Context, elem *xdm.Element) (bool
 }
 
 func (c *compiler) ignoredTopLevelDeclaration(elem *xdm.Element) bool {
-	if c.stylesheet.processorLanguage() >= 30 {
-		if _, shadow := elem.GetAttribute("_version"); shadow {
+	if c.stylesheet.processorLanguage() >= processorXSLT30 {
+		if _, shadow := elem.GetAttribute(shadowAttrVersion); shadow {
 			return false
 		}
 	}
@@ -472,7 +472,11 @@ func (c *compiler) ignoredTopLevelDeclaration(elem *xdm.Element) bool {
 }
 
 func (c *compiler) validateModuleImportOrder(ctx context.Context, root *xdm.Element) error {
-	if c.stylesheet.processorLanguage() >= 30 {
+	const (
+		errCodeXTSE0200 = "XTSE0200"
+	)
+
+	if c.stylesheet.processorLanguage() >= processorXSLT30 {
 		return nil
 	}
 
@@ -503,7 +507,7 @@ func (c *compiler) validateModuleImportOrder(ctx context.Context, root *xdm.Elem
 
 		if elem.URI() == lexicon.NamespaceXSLT && elem.LocalName() == nameImport {
 			if seenOther {
-				return staticError("XTSE0200", "xsl:import must precede other module elements in XSLT 1.0/2.0")
+				return staticError(errCodeXTSE0200, "xsl:import must precede other module elements in XSLT 1.0/2.0")
 			}
 		} else {
 			seenOther = true
@@ -583,7 +587,7 @@ func (c *compiler) topLevelDeclarationIncluded(ctx context.Context, elem *xdm.El
 	}
 
 	if !isKnownXSLTElement(ln) || !isTopLevelXSLTElement(ln) {
-		elemVer := getAttr(elem, lexicon.SerializationVersion)
+		elemVer := getAttr(elem, xslAttrVersion)
 		if c.forwardsCompatible(c.effectiveVersion) || c.forwardsCompatible(elemVer) {
 			return false, nil
 		}
@@ -651,7 +655,7 @@ func (c *compiler) compileTopLevelDeclaration(ctx context.Context, elem *xdm.Ele
 	case lexicon.XSLTElementGlobalContextItem:
 		return c.compileGlobalContextItem(ctx, elem)
 	default:
-		elemVer := getAttr(elem, lexicon.SerializationVersion)
+		elemVer := getAttr(elem, xslAttrVersion)
 		if !c.forwardsCompatible(c.effectiveVersion) && !c.forwardsCompatible(elemVer) {
 			return staticError(errCodeXTSE0010,
 				"element xsl:%s is not allowed as a top-level declaration", elem.LocalName())
@@ -734,12 +738,12 @@ func (c *compiler) checkConflictingNamespaceAliases(_ context.Context) error {
 
 // compileNamespaceAlias compiles an xsl:namespace-alias declaration.
 func (c *compiler) compileNamespaceAlias(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames("stylesheet-prefix", "result-prefix", xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(nameStylesheetPrefix, nameResultPrefix, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
-	stylesheetPrefix, hasStylesheetPrefix := elem.GetAttribute("stylesheet-prefix")
-	resultPrefix, hasResultPrefix := elem.GetAttribute("result-prefix")
+	stylesheetPrefix, hasStylesheetPrefix := elem.GetAttribute(nameStylesheetPrefix)
+	resultPrefix, hasResultPrefix := elem.GetAttribute(nameResultPrefix)
 
 	if !hasStylesheetPrefix {
 		return staticError(errCodeXTSE0010, "xsl:namespace-alias requires stylesheet-prefix attribute")

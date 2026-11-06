@@ -8,7 +8,16 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
+)
+
+const (
+	generalizedTimeBytes            = 15
+	maximumOCSPEmbeddedCertificates = 8
+	maximumOCSPEntries              = 64
+	reasonAACompromise              = 10
+	reasonUnused                    = 7
 )
 
 type singleResponse struct {
@@ -23,11 +32,11 @@ type singleResponse struct {
 
 func (s *singleResponse) parseStatus(v asn1.RawValue) error {
 	switch {
-	case der.Is(v, 2, 0, false) && len(v.Bytes) == 0:
+	case der.Is(v, asn1.ClassContextSpecific, 0, false) && len(v.Bytes) == 0:
 		s.status = OCSPGood
-	case der.Is(v, 2, 2, false) && len(v.Bytes) == 0:
+	case der.Is(v, asn1.ClassContextSpecific, 2, false) && len(v.Bytes) == 0:
 		s.status = OCSPUnknown
-	case der.Is(v, 2, 1, true):
+	case der.Is(v, asn1.ClassContextSpecific, 1, true):
 		s.status = OCSPRevoked
 
 		return s.parseRevokedInfo(v)
@@ -67,7 +76,7 @@ func (s *singleResponse) parseRevokedInfo(v asn1.RawValue) error {
 
 func (s *singleResponse) parseOptionalFields(fields []asn1.RawValue) error {
 	i := 0
-	if i < len(fields) && der.Is(fields[i], 2, 0, true) {
+	if i < len(fields) && der.Is(fields[i], asn1.ClassContextSpecific, 0, true) {
 		next, err := der.Explicit(fields[i], 0)
 		if err != nil {
 			return err
@@ -105,7 +114,7 @@ func (s *singleResponse) parseOptionalFields(fields []asn1.RawValue) error {
 				return ErrEvidence
 			}
 
-			value, err := der.Read(extension.Value, 64)
+			value, err := der.Read(extension.Value, maxScalarExtensionBytes)
 			if err != nil {
 				return ErrEvidence
 			}
@@ -126,14 +135,14 @@ func (s *singleResponse) parseOptionalFields(fields []asn1.RawValue) error {
 	return nil
 }
 
-func validReason(r int) bool { return r >= 0 && r <= 10 && r != 7 }
+func validReason(r int) bool { return r >= 0 && r <= reasonAACompromise && r != reasonUnused }
 
 func generalized(v asn1.RawValue) (time.Time, error) {
 	var t time.Time
 	// RFC 6960 section 4.2.2.1 applies RFC 5280 section 4.1.2.5.2:
 	// UTC, seconds present, and no fractional seconds. encoding/asn1 also
 	// accepts BER time forms; successful decoding alone is insufficient.
-	if !der.Is(v, 0, asn1.TagGeneralizedTime, false) || len(v.Bytes) != 15 || der.Decode(v, &t) != nil || t.Year() < 1 || string(v.Bytes) != t.UTC().Format("20060102150405Z") {
+	if !der.Is(v, asn1.ClassUniversal, asn1.TagGeneralizedTime, false) || len(v.Bytes) != generalizedTimeBytes || der.Decode(v, &t) != nil || t.Year() < 1 || string(v.Bytes) != t.UTC().Format(lexicon.ASN1GeneralizedTimeLayout) {
 		return t, ErrEvidence
 	}
 
@@ -157,7 +166,7 @@ func (p *parsedOCSP) parseCertificates(v asn1.RawValue) error {
 		return ErrEvidence
 	}
 
-	certificates, err := der.Sequence(x, 1, 8)
+	certificates, err := der.Sequence(x, 1, maximumOCSPEmbeddedCertificates)
 	if err != nil {
 		return ErrEvidence
 	}
@@ -175,13 +184,19 @@ func (p *parsedOCSP) parseCertificates(v asn1.RawValue) error {
 }
 
 func (p *parsedOCSP) parseResponseData(v asn1.RawValue) error {
-	fields, err := der.Sequence(v, 3, 4)
+	// The supported v1 ResponseData omits its default version; extensions are optional.
+	const (
+		responseDataRequiredFields = 3
+		responseDataMaximumFields  = 4
+	)
+
+	fields, err := der.Sequence(v, responseDataRequiredFields, responseDataMaximumFields)
 	if err != nil {
 		return ErrEvidence
 	}
 
 	p.rid = fields[0]
-	if !der.Is(p.rid, 2, 1, true) && !der.Is(p.rid, 2, 2, true) {
+	if !der.Is(p.rid, asn1.ClassContextSpecific, 1, true) && !der.Is(p.rid, asn1.ClassContextSpecific, 2, true) {
 		return ErrUnsupported
 	}
 
@@ -194,7 +209,7 @@ func (p *parsedOCSP) parseResponseData(v asn1.RawValue) error {
 		return err
 	}
 
-	if len(fields) == 4 {
+	if len(fields) == responseDataMaximumFields {
 		return p.parseResponseExtensions(fields[3])
 	}
 
@@ -202,7 +217,7 @@ func (p *parsedOCSP) parseResponseData(v asn1.RawValue) error {
 }
 
 func (p *parsedOCSP) parseEntries(v asn1.RawValue) error {
-	entries, err := der.Sequence(v, 1, 64)
+	entries, err := der.Sequence(v, 1, maximumOCSPEntries)
 	if err != nil {
 		return ErrEvidence
 	}
@@ -236,7 +251,13 @@ func (p *parsedOCSP) parseResponseExtensions(v asn1.RawValue) error {
 }
 
 func parseSingle(v asn1.RawValue) (singleResponse, error) {
-	fields, err := der.Sequence(v, 3, 5)
+	// CertID, certStatus and thisUpdate precede optional nextUpdate and extensions.
+	const (
+		singleResponseRequiredFields = 3
+		singleResponseMaximumFields  = 5
+	)
+
+	fields, err := der.Sequence(v, singleResponseRequiredFields, singleResponseMaximumFields)
 	if err != nil {
 		return singleResponse{}, ErrEvidence
 	}
@@ -256,7 +277,7 @@ func parseSingle(v asn1.RawValue) (singleResponse, error) {
 		return s, err
 	}
 
-	if err := s.parseOptionalFields(fields[3:]); err != nil {
+	if err := s.parseOptionalFields(fields[singleResponseRequiredFields:]); err != nil {
 		return s, err
 	}
 
@@ -283,30 +304,41 @@ func parseOCSP(b []byte, maximum int) (parsedOCSP, error) {
 
 // ocspResponseBytes validates the outer status before decoding BasicOCSPResponse.
 func ocspResponseBytes(b []byte, maximum int) ([]byte, error) {
+	// OCSPResponseStatus uses encoded ENUMERATED values; 4 is unassigned and
+	// unauthorized (6) is the last defined status. Only successful carries a body.
+	const (
+		responseStatusSuccessful   = 0
+		responseStatusUnassigned   = 4
+		responseStatusUnauthorized = 6
+		responseMinimumFields      = 1 // responseStatus alone on failure
+		responseMaximumFields      = 2 // successful response adds responseBytes
+		responseBytesFields        = 2 // responseType OID and response OCTET STRING
+	)
+
 	v, err := der.Read(b, maximum)
 	if err != nil {
 		return nil, ErrEvidence
 	}
 
-	fields, err := der.Sequence(v, 1, 2)
+	fields, err := der.Sequence(v, responseMinimumFields, responseMaximumFields)
 	if err != nil {
 		return nil, ErrEvidence
 	}
 
 	var status asn1.Enumerated
-	if der.Decode(fields[0], &status) != nil || status < 0 || status > 6 || status == 4 {
+	if der.Decode(fields[0], &status) != nil || status < 0 || status > responseStatusUnauthorized || status == responseStatusUnassigned {
 		return nil, ErrEvidence
 	}
 
-	if status != 0 {
-		if len(fields) != 1 {
+	if status != responseStatusSuccessful {
+		if len(fields) != responseMinimumFields {
 			return nil, ErrEvidence
 		}
 
 		return nil, fmt.Errorf("%w: OCSP response status %d", ErrUnavailable, status)
 	}
 
-	if len(fields) != 2 {
+	if len(fields) != responseMaximumFields {
 		return nil, ErrEvidence
 	}
 
@@ -315,12 +347,12 @@ func ocspResponseBytes(b []byte, maximum int) ([]byte, error) {
 		return nil, ErrEvidence
 	}
 
-	response, err := der.Sequence(x, 2, 2)
+	response, err := der.Sequence(x, responseBytesFields, responseBytesFields)
 	if err != nil || !der.OIDEqual(response[0], oidOCSPBasic()) {
 		return nil, ErrUnsupported
 	}
 
-	if !der.Is(response[1], 0, asn1.TagOctetString, false) {
+	if !der.Is(response[1], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		return nil, ErrEvidence
 	}
 
@@ -328,12 +360,18 @@ func ocspResponseBytes(b []byte, maximum int) ([]byte, error) {
 }
 
 func parseBasicOCSP(data []byte, maximum int) (parsedOCSP, asn1.RawValue, error) {
+	// BasicOCSPResponse has data, algorithm and signature fields, plus optional certificates.
+	const (
+		basicResponseRequiredFields = 3
+		basicResponseMaximumFields  = 4
+	)
+
 	v, err := der.Read(data, maximum)
 	if err != nil {
 		return parsedOCSP{}, asn1.RawValue{}, ErrEvidence
 	}
 
-	fields, err := der.Sequence(v, 3, 4)
+	fields, err := der.Sequence(v, basicResponseRequiredFields, basicResponseMaximumFields)
 	if err != nil {
 		return parsedOCSP{}, asn1.RawValue{}, ErrEvidence
 	}
@@ -344,12 +382,12 @@ func parseBasicOCSP(data []byte, maximum int) (parsedOCSP, asn1.RawValue, error)
 	}
 
 	var bits asn1.BitString
-	if der.Decode(fields[2], &bits) != nil || bits.BitLength%8 != 0 || len(bits.Bytes) == 0 {
+	if der.Decode(fields[2], &bits) != nil || bits.BitLength%certificateOctetBits != 0 || len(bits.Bytes) == 0 {
 		return parsedOCSP{}, asn1.RawValue{}, ErrEvidence
 	}
 
 	p := parsedOCSP{tbs: fields[0].FullBytes, alg: algorithm, sig: bits.Bytes}
-	if len(fields) == 4 {
+	if len(fields) == basicResponseMaximumFields {
 		if err := p.parseCertificates(fields[3]); err != nil {
 			return p, asn1.RawValue{}, err
 		}

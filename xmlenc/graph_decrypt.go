@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
@@ -114,7 +115,7 @@ func graphPlainError(ctx context.Context) error {
 
 func decryptGraph(ctx context.Context, doc *document.Document, selected document.Element, options KeyGraphOptions, typ string) ([]byte, profile, error) {
 	node, err := selectedNode(doc, selected)
-	if err != nil || node.Name != elementName(Namespace, "EncryptedData") {
+	if err != nil || node.Name != elementName(Namespace, nameEncryptedData) {
 		return nil, profile{}, ErrFormat
 	}
 
@@ -133,12 +134,12 @@ func decryptGraph(ctx context.Context, doc *document.Document, selected document
 
 	p := g.profile
 
-	if typ != "" && attributeValue(selected, "Type") != typ {
+	if typ != "" && attributeValue(selected, lexicon.SecurityAttrType) != typ {
 		return nil, profile{}, ErrFormat
 	}
 
 	if fields.method.Valid() {
-		if err := checkEncryptionMethod(ctx, fields.method, p.options.DataAlgorithm, p.keyBytes*8, false); err != nil {
+		if err := checkEncryptionMethod(ctx, fields.method, p.options.DataAlgorithm, p.keyBytes*keyOctetBits, false); err != nil {
 			return nil, profile{}, err
 		}
 	}

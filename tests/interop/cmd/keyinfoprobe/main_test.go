@@ -22,7 +22,9 @@ func TestKeyInfoBuildParseAndPinnedVerification(t *testing.T) {
 	}
 	defer clear(private)
 	built, err := run(task{Mode: "build", SPKI: spki, Format: string(keyinfo.DERKeyValue)})
-	if err != nil || !bytes.Contains(built.Data, []byte("  exact key name  ")) {
+	if err != nil {
+		t.Fatal(err)
+	} else if !bytes.Contains(built.Data, []byte("  exact key name  ")) {
 		t.Fatalf("build lost exact name: %q %v", built.Data, err)
 	}
 	parsed, err := run(task{Mode: "parse", Input: built.Data})
@@ -43,7 +45,9 @@ func TestKeyInfoBuildParseAndPinnedVerification(t *testing.T) {
 		t.Fatalf("pinned verification: %+v %v", verified, err)
 	}
 	certificateInfo, err := run(task{Mode: "build", SPKI: spki, Certificate: chain.Leaf.Raw})
-	if err != nil || !bytes.Contains(certificateInfo.Data, []byte("X509Certificate")) || bytes.Contains(certificateInfo.Data, []byte("DEREncodedKeyValue")) {
+	if err != nil {
+		t.Fatal(err)
+	} else if !bytes.Contains(certificateInfo.Data, []byte("X509Certificate")) || bytes.Contains(certificateInfo.Data, []byte("DEREncodedKeyValue")) {
 		t.Fatalf("certificate projection lost its shape: %q %v", certificateInfo.Data, err)
 	}
 	certificateKeys, err := run(task{Mode: "parse", Input: certificateInfo.Data})
@@ -55,11 +59,15 @@ func TestKeyInfoBuildParseAndPinnedVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	rejected, err := run(task{Mode: "verify", Input: signed.Data, SPKI: other})
+	// Failure assertions inspect the probe's diagnostic payload.
+	//noinspection GoDfaErrorMayBeNotNil
 	if err == nil || rejected.Valid {
 		t.Fatal("untrusted KeyInfo candidate accepted")
 	}
 	for _, request := range []task{{Mode: "unknown"}, {Mode: "parse", Input: []byte(`<broken`)}, {Mode: "verify", Input: []byte(`<r/>`), SPKI: spki}, {Mode: "build", SPKI: []byte("invalid")}} {
 		answer, err := run(request)
+		// Failure assertions inspect the probe's diagnostic payload.
+		//noinspection GoDfaErrorMayBeNotNil
 		if err == nil || answer.Valid || len(answer.Data) != 0 {
 			t.Fatalf("invalid request leaked a success: %+v %v", request, err)
 		}

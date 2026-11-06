@@ -20,7 +20,12 @@ type serializationSequence struct {
 }
 
 func (s *serializationSequence) items(seq xdm.Sequence) iter.Seq2[xdm.XMLItem, error] {
-	coalesce := s.definition.NormalizationForm != "" && s.definition.NormalizationForm != "none" && s.definition.NormalizationForm != "NONE"
+	const (
+		normalizationFormNoneLower = "none"
+	)
+
+	coalesce := s.definition.NormalizationForm != "" && s.definition.NormalizationForm != normalizationFormNoneLower && s.definition.NormalizationForm != normalizationFormNone
+
 	return xpath.SerializationItems(s.ctx, seq, s.definition.ItemSeparator, coalesce)
 }
 
@@ -66,9 +71,14 @@ func streamXMLValue(ctx context.Context, w io.Writer, result ValueResult, defini
 }
 
 func writeXMLProlog(w io.Writer, definition *OutputDef) error {
+	const (
+		xmlDeclarationFormat = "<?xml version=\"%s\" encoding=\"%s\""
+		xmlStandalonePrefix  = " standalone=\""
+	)
+
 	version := validOutputXMLVersion(definition.Version)
 	if version == "" {
-		version = lexicon.XSLTVersion10
+		version = lexicon.XMLVersion10
 	}
 
 	if !definition.OmitDeclaration {
@@ -77,9 +87,9 @@ func writeXMLProlog(w io.Writer, definition *OutputDef) error {
 			name = lexicon.EncodingUTF8U
 		}
 
-		declaration := fmt.Sprintf("<?xml version=\"%s\" encoding=\"%s\"", version, name)
+		declaration := fmt.Sprintf(xmlDeclarationFormat, version, name)
 		if definition.Standalone == lexicon.ValueYes || definition.Standalone == lexicon.ValueNo {
-			declaration += " standalone=\"" + definition.Standalone + "\""
+			declaration += xmlStandalonePrefix + definition.Standalone + "\""
 		}
 
 		declaration += "?>"
@@ -98,12 +108,12 @@ func writeXMLProlog(w io.Writer, definition *OutputDef) error {
 func streamXMLWriteOptions(definition *OutputDef, encoding string) tree.XMLWriteOptions {
 	version := validOutputXMLVersion(definition.Version)
 	if version == "" {
-		version = lexicon.XSLTVersion10
+		version = lexicon.XMLVersion10
 	}
 
 	options := tree.XMLWriteOptions{EscapeControlChars: true, CanEncode: definition.canEncode, Version: version, Indent: definition.Indent, ASCII: encoding == encodingASCII, CharacterMap: definition.ResolvedCharMap, Normalization: definition.NormalizationForm, PrefixUndeclarations: definition.UndeclarePrefixes}
 	if options.Normalization == lexicon.NormFullyNormalized {
-		options.Normalization = "NFC"
+		options.Normalization = lexicon.NormalizationFormNFC
 	}
 
 	if len(definition.CDATASections) > 0 {

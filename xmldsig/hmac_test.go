@@ -73,7 +73,7 @@ func TestLegacyHMACSHA1(t *testing.T) {
 	}
 
 	d := coreParse(t, string(raw))
-	opt := xmldsig.SignatureOptions{Policy: xmldsig.LegacyHMACPolicy(), ExpectedURIs: []string{"#root", nameData}, RequiredElements: []document.Element{d.Root()}}
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.LegacyHMACPolicy(), ExpectedURIs: []string{"#root", dataReferenceURI}, RequiredElements: []document.Element{d.Root()}}
 
 	result, err := xmldsig.VerifyHMACSignature(t.Context(), d, xmldsig.Signatures(d)[0], secret, opt)
 	if err != nil || result == nil || len(result.References()) != 2 || !result.CoversElement(d.Root()) {
@@ -213,6 +213,8 @@ func TestHMACTemplateChecksAllReferences(t *testing.T) {
 			o.RequiredElements = nil
 
 			r, report, e = xmldsig.VerifyHMACSignatureDetailed(ctx, bad, bad.Root(), key, o)
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if r != nil || !errors.Is(e, xmldsig.ErrDigest) || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Invalid {
 				t.Fatalf("bad second ref %v %+v", e, report)
 			}
@@ -287,6 +289,8 @@ func TestHMACExternalAuthenticationGate(t *testing.T) {
 	calls = 0
 
 	r, report, e := xmldsig.VerifyHMACSignatureDetailed(ctx, out, out.Root(), wrong, opt)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r != nil || !errors.Is(e, xmldsig.ErrSignature) || calls != 0 || report.References[0].Status != xmldsig.NotChecked {
 		t.Fatalf("read before MAC %v calls=%d %+v", e, calls, report)
 	}
@@ -300,7 +304,7 @@ func TestHMACPreservationAndManifests(t *testing.T) {
 	ctx := t.Context()
 	key := testMACKey()
 	root := coreParse(t, `<root><item ID="data">value</item></root>`)
-	template := xmldsig.SignatureTemplate{SignatureMethod: xmldsig.HMACSHA256, References: []xmldsig.ReferenceTemplate{{URI: nameData, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}}
+	template := xmldsig.SignatureTemplate{SignatureMethod: xmldsig.HMACSHA256, References: []xmldsig.ReferenceTemplate{{URI: dataReferenceURI, Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}}
 
 	d, s, e := xmldsig.BuildTemplate(ctx, root, root.Root(), template)
 	if e != nil {
@@ -441,6 +445,8 @@ func TestHMACRequiresExplicitCoverageAndTrustKind(t *testing.T) {
 	o := xmldsig.SignatureOptions{Policy: p, RequiredElements: []document.Element{signed.Root()}}
 
 	r, report, e := xmldsig.VerifyHMACSignatureDetailed(ctx, signed, signed.Root(), key, o)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r != nil || !errors.Is(e, xmldsig.ErrPolicy) || report.FailureStage != "coverage" {
 		t.Fatalf("root was trusted %v", e)
 	}

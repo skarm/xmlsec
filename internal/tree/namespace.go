@@ -68,8 +68,11 @@ type namespaceUndo struct {
 // records restore shadowed prefixes without copying or rescanning ancestors.
 // It is operation-local and must not be confused with C14N's rendered bindings.
 type namespaceContext struct {
+	// bindings contains source namespace bindings in the current traversal scope.
 	bindings map[string]string
-	undo     []namespaceUndo
+	// undo records shadowed bindings so pop can restore scope without copying the
+	// map.
+	undo []namespaceUndo
 }
 
 func newNamespaceContext(parent *Node) namespaceContext {
@@ -92,6 +95,8 @@ func (s *namespaceContext) push(declarations []Namespace) int {
 }
 
 func (s *namespaceContext) pop(mark int) {
+	// Restore in reverse order because one scope may shadow the same prefix
+	// more than once. Forward restoration would leave an intermediate binding.
 	for i := len(s.undo) - 1; i >= mark; i-- {
 		u := s.undo[i]
 		if u.existed {

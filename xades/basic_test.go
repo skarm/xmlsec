@@ -46,7 +46,7 @@ func (s baselineRecordingSigner) Sign(random io.Reader, digest []byte, options c
 }
 
 func TestBasicRoundTrip(t *testing.T) {
-	d, r, _, der := sign(t)
+	d, r, _, dr := sign(t)
 	if len(r.Signature().References()) != 2 || !r.Signature().CoversElement(d.Root()) || !r.Signature().CoversElement(r.SignedProperties()) {
 		t.Fatal("coverage")
 	}
@@ -55,12 +55,12 @@ func TestBasicRoundTrip(t *testing.T) {
 		t.Fatal("properties")
 	}
 
-	if !bytes.Equal(r.CertificateDER(), der) {
+	if !bytes.Equal(r.CertificateDER(), dr) {
 		t.Fatal("cert")
 	}
 
 	r.CertificateDER()[0] ^= 1
-	if !bytes.Equal(r.CertificateDER(), der) {
+	if !bytes.Equal(r.CertificateDER(), dr) {
 		t.Fatal("mutable cert")
 	}
 
@@ -71,12 +71,15 @@ func TestBasicRoundTrip(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	r, e = xades.VerifyBasicEnveloped(t.Context(), parsed, xmldsig.Signatures(parsed)[0], der, xades.VerifyOptions{})
+	r, e = xades.VerifyBasicEnveloped(t.Context(), parsed, xmldsig.Signatures(parsed)[0], dr, xades.VerifyOptions{})
 	if e != nil || r == nil {
 		t.Fatal(e)
 	}
 	// Expired at the claimed time is intentionally not a trust check here.
-	cert, _ := x509.ParseCertificate(der)
+	cert, err := x509.ParseCertificate(dr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !r.ClaimedSigningTime().After(cert.NotAfter) {
 		t.Fatal("fixture")
 	}
@@ -87,7 +90,7 @@ func TestBasicRoundTrip(t *testing.T) {
 }
 
 func TestBasicProfileRejects(t *testing.T) {
-	d, _, k, der := sign(t)
+	d, _, k, dr := sign(t)
 	raw, _ := d.XML(t.Context())
 	other := certificate(t, k, 2)
 
@@ -97,14 +100,14 @@ func TestBasicProfileRejects(t *testing.T) {
 		to   string
 		cert []byte
 	}{
-		{"target", `Target="#signature"`, `Target="#other"`, der},
-		{"wrong-type", `Type="` + xades.SignedPropertiesType + `"`, `Type="urn:wrong"`, der},
-		{"format", `ObjectReference="#data-reference"`, `ObjectReference="#signed-properties"`, der},
-		{"unsigned-augmentation", `</xades:QualifyingProperties>`, `<xades:UnsignedProperties/></xades:QualifyingProperties>`, der},
+		{"target", `Target="#signature"`, `Target="#other"`, dr},
+		{"wrong-type", `Type="` + xades.SignedPropertiesType + `"`, `Type="urn:wrong"`, dr},
+		{"format", `ObjectReference="#data-reference"`, `ObjectReference="#signed-properties"`, dr},
+		{"unsigned-augmentation", `</xades:QualifyingProperties>`, `<xades:UnsignedProperties/></xades:QualifyingProperties>`, dr},
 		{"wrong-certificate", "", "", other},
-		{"swap-keyinfo", base64.StdEncoding.EncodeToString(der), base64.StdEncoding.EncodeToString(other), der},
-		{"payload", `>123<`, `>999<`, der},
-		{"no-utc", "13:30:15.000123456Z", "13:30:15.000123456+00:00", der},
+		{"swap-keyinfo", base64.StdEncoding.EncodeToString(dr), base64.StdEncoding.EncodeToString(other), dr},
+		{"payload", `>123<`, `>999<`, dr},
+		{"no-utc", "13:30:15.000123456Z", "13:30:15.000123456+00:00", dr},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -259,96 +262,6 @@ func TestAuthenticatedSigningTimeLexicalForm(t *testing.T) {
 	}
 }
 
-func signingTimeTemplate(t *testing.T, d *document.Document, lexical string) *document.Document {
-	t.Helper()
-
-	draft, err := tree.Clone(t.Context(), d)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	clearSignatureValues(xmldsig.Signatures(draft)[0])
-	changeSigningTime(tree.Root(draft), lexical)
-
-	raw, err := draft.XML(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	template, err := document.Parse(t.Context(), raw, document.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return template
-}
-
-func clearSignatureValues(sig document.Element) {
-	_, value := tree.Unwrap(sig.Children()[1])
-	value.Children = nil
-
-	for _, ref := range sig.Children()[0].Children()[2:] {
-		fields := ref.Children()
-		_, digest := tree.Unwrap(fields[len(fields)-1])
-		digest.Children = nil
-	}
-}
-
-func changeSigningTime(n *tree.Node, value string) {
-	if n.Name == (document.Name{Space: xades.Namespace, Local: "SigningTime"}) {
-		n.Children = []*tree.Node{{Kind: tree.TextNode, Data: value, Parent: n}}
-
-		return
-	}
-
-	for _, child := range n.Children {
-		changeSigningTime(child, value)
-	}
-}
-
-func certificate(t testing.TB, key *ecdsa.PrivateKey, serial int64) []byte {
-	t.Helper()
-
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	c := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "xades test"}, NotBefore: at, NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
-
-	der, e := x509.CreateCertificate(rand.Reader, c, c, &key.PublicKey, key)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return der
-}
-
-func input(t testing.TB) *document.Document {
-	t.Helper()
-
-	d, e := document.Parse(t.Context(), []byte(`<invoice xmlns="urn:test:invoice" ID="invoice-1"><Amount>123</Amount></invoice>`), document.DefaultLimits())
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return d
-}
-
-func sign(t testing.TB) (*document.Document, *xades.BasicResult, *ecdsa.PrivateKey, []byte) {
-	t.Helper()
-
-	k, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	der := certificate(t, k, 1)
-
-	d, r, e := xades.SignBasicEnveloped(t.Context(), input(t), k, der, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: time.Date(2026, 10, 7, 18, 30, 15, 123456, time.FixedZone("+05", 5*3600))})
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return d, r, k, der
-}
-
 func TestCertificateEncodingConsistency(t *testing.T) {
 	chain := testcert.New(t)
 	for _, test := range testcert.CertificateEncodings(t, chain) {
@@ -453,7 +366,11 @@ func TestBaselineSignedProperties(t *testing.T) {
 		}
 	}
 
-	if result.ProductionPlace().StreetAddress != "Main street" || len(result.ClaimedRoles()) != 2 || len(result.Commitments()) != 2 || len(result.CertificateReferences()) != 2 || result.SignaturePolicy().DigestMethod != xmldsig.SHA384 {
+	place, signaturePolicy := result.ProductionPlace(), result.SignaturePolicy()
+	if place == nil || signaturePolicy == nil {
+		t.Fatal("production place or signature policy missing")
+	}
+	if place.StreetAddress != "Main street" || len(result.ClaimedRoles()) != 2 || len(result.Commitments()) != 2 || len(result.CertificateReferences()) != 2 || signaturePolicy.DigestMethod != xmldsig.SHA384 {
 		t.Fatal("properties missing")
 	}
 	if !bytes.Equal(result.CertificateReferences()[1].CertificateDER(), extra) || len(result.CertificateReferences()[1].IssuerSerialV2()) == 0 {
@@ -462,9 +379,10 @@ func TestBaselineSignedProperties(t *testing.T) {
 	// Public accessors own mutable collections and bytes; XML handles are immutable.
 	result.CertificateReferences()[0].Digest()[0] ^= 1
 	result.DataObjects()[0].ObjectIdentifier.Documentation[0] = "changed"
-	result.SignaturePolicy().Digest[0] ^= 1
-	result.SignaturePolicy().Qualifiers[1].Notice.NoticeNumbers[0] = "999"
-	if result.DataObjects()[0].ObjectIdentifier.Documentation[0] != "https://example.test/format" || result.SignaturePolicy().Qualifiers[1].Notice.NoticeNumbers[0] != "-1" {
+	signaturePolicy.Digest[0] ^= 1
+	signaturePolicy.Qualifiers[1].Notice.NoticeNumbers[0] = "999"
+	retainedPolicy := result.SignaturePolicy()
+	if retainedPolicy == nil || result.DataObjects()[0].ObjectIdentifier.Documentation[0] != "https://example.test/format" || retainedPolicy.Qualifiers[1].Notice.NoticeNumbers[0] != "-1" {
 		t.Fatal("mutable result")
 	}
 	for _, wrong := range []xades.BaselineVerifyOptions{{PolicyDocument: []byte("different")}, {}} {
@@ -502,15 +420,6 @@ func TestBaselineIndependentSignatures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-}
-
-func baselineDocument(t testing.TB, source string) *document.Document {
-	t.Helper()
-	doc, err := document.Parse(t.Context(), []byte(source), document.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return doc
 }
 
 func TestBaselineAuthenticatedPropertyRejects(t *testing.T) {
@@ -650,43 +559,6 @@ func TestBaselineTypedPropertyReferenceCoverage(t *testing.T) {
 			}
 		})
 	}
-}
-
-func baselineTestNode(root *tree.Node, namespace, local string) *tree.Node {
-	if root.Name == (document.Name{Space: namespace, Local: local}) {
-		return root
-	}
-	for _, child := range root.Children {
-		if found := baselineTestNode(child, namespace, local); found != nil {
-			return found
-		}
-	}
-	return nil
-}
-
-func baselineResign(t *testing.T, source *document.Document, key *ecdsa.PrivateKey, mutate func(*tree.Node), validation xmldsig.SignatureOptions) (*document.Document, document.Element, xmldsig.SignatureOptions) {
-	t.Helper()
-	draft, err := tree.Clone(t.Context(), source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mutate(tree.Root(draft))
-	selected := xmldsig.Signatures(draft)[0]
-	clearSignatureValues(selected)
-	raw, err := draft.XML(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft, err = document.Parse(t.Context(), raw, document.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validation.AdditionalIDRules = append(validation.AdditionalIDRules, reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}})
-	signed, err := xmldsig.SignTemplate(t.Context(), draft, xmldsig.Signatures(draft)[0], key, xmldsig.TemplateSignOptions{Validation: validation})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signed, xmldsig.Signatures(signed)[0], validation
 }
 
 func TestBaselineSigningTimePrecision(t *testing.T) {
@@ -871,6 +743,9 @@ func TestBaselineCounterSignatureBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	signatureValue := baselineTestNode(tree.Root(draft), xmldsig.Namespace, "SignatureValue")
+	if signatureValue == nil {
+		t.Fatal("parent signature value missing")
+	}
 	signatureValue.Attrs = append(signatureValue.Attrs, tree.Attribute{Name: document.Name{Local: "Id"}, Value: "parent-value"})
 	qp := baselineTestNode(tree.Root(draft), xades.Namespace, "QualifyingProperties")
 	unsigned := baselineTestAppend(qp, xades.Namespace, "UnsignedProperties", "xades")
@@ -912,6 +787,9 @@ func TestBaselineCounterSignatureBinding(t *testing.T) {
 	counterHandle := xmldsig.Signatures(changed)[1]
 	_, counterNode := tree.Unwrap(counterHandle)
 	si := baselineTestNode(counterNode, xmldsig.Namespace, "SignedInfo")
+	if si == nil {
+		t.Fatal("counter-signature SignedInfo missing")
+	}
 	for i, a := range si.Children[2].Attrs {
 		if a.Name.Local == "URI" {
 			si.Children[2].Attrs[i].Value = "#signed-properties"
@@ -962,44 +840,6 @@ func TestBaselineThirdPartyRoleContainers(t *testing.T) {
 			t.Fatal("invalid certified-role envelope accepted")
 		}
 	}
-}
-
-func baselineTestAppend(parent *tree.Node, namespace, local, prefix string) *tree.Node {
-	node := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: namespace, Local: local}, Prefix: prefix, Parent: parent}
-	parent.Children = append(parent.Children, node)
-	return node
-}
-
-func baselineAttributeCertificate(t *testing.T, chain testcert.Chain) []byte {
-	t.Helper()
-	algorithm := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}))
-	holderName := der.Wrap(2, 4, true, chain.Leaf.RawSubject)
-	holder := der.Seq(der.Wrap(2, 1, true, holderName))
-	issuerName := der.Seq(der.Wrap(2, 4, true, chain.Root.RawSubject))
-	issuer := der.Wrap(2, 0, true, issuerName)
-	before, err := asn1.MarshalWithParams(testcert.Now().Add(-time.Hour), "generalized")
-	if err != nil {
-		t.Fatal(err)
-	}
-	after, err := asn1.MarshalWithParams(testcert.Now().Add(time.Hour), "generalized")
-	if err != nil {
-		t.Fatal(err)
-	}
-	attributeValue, err := asn1.MarshalWithParams("director", "utf8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	info := der.Seq(der.Int(1), holder, issuer, algorithm, der.Int(42), der.Seq(before, after), der.Seq(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), der.Set(attributeValue))))
-	digest := sha256.Sum256(info)
-	signature, err := ecdsa.SignASN1(rand.Reader, chain.RootKey, digest[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err := asn1.Marshal(asn1.BitString{Bytes: signature, BitLength: len(signature) * 8})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return der.Seq(info, algorithm, value)
 }
 
 func TestBaselineAttributeCertificateSchema(t *testing.T) {
@@ -1222,4 +1062,178 @@ func BenchmarkVerifyBasic(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func signingTimeTemplate(t *testing.T, d *document.Document, lexical string) *document.Document {
+	t.Helper()
+
+	draft, err := tree.Clone(t.Context(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clearSignatureValues(xmldsig.Signatures(draft)[0])
+	changeSigningTime(tree.Root(draft), lexical)
+
+	raw, err := draft.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	template, err := document.Parse(t.Context(), raw, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return template
+}
+
+func clearSignatureValues(sig document.Element) {
+	_, value := tree.Unwrap(sig.Children()[1])
+	value.Children = nil
+
+	for _, ref := range sig.Children()[0].Children()[2:] {
+		fields := ref.Children()
+		_, digest := tree.Unwrap(fields[len(fields)-1])
+		digest.Children = nil
+	}
+}
+
+func changeSigningTime(n *tree.Node, value string) {
+	if n.Name == (document.Name{Space: xades.Namespace, Local: "SigningTime"}) {
+		n.Children = []*tree.Node{{Kind: tree.TextNode, Data: value, Parent: n}}
+
+		return
+	}
+
+	for _, child := range n.Children {
+		changeSigningTime(child, value)
+	}
+}
+
+func certificate(t testing.TB, key *ecdsa.PrivateKey, serial int64) []byte {
+	t.Helper()
+
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "xades test"}, NotBefore: at, NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
+
+	der, e := x509.CreateCertificate(rand.Reader, c, c, &key.PublicKey, key)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return der
+}
+
+func input(t testing.TB) *document.Document {
+	t.Helper()
+
+	d, e := document.Parse(t.Context(), []byte(`<invoice xmlns="urn:test:invoice" ID="invoice-1"><Amount>123</Amount></invoice>`), document.DefaultLimits())
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return d
+}
+
+func sign(t testing.TB) (*document.Document, *xades.BasicResult, *ecdsa.PrivateKey, []byte) {
+	t.Helper()
+
+	k, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	der := certificate(t, k, 1)
+
+	d, r, e := xades.SignBasicEnveloped(t.Context(), input(t), k, der, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: time.Date(2026, 10, 7, 18, 30, 15, 123456, time.FixedZone("+05", 5*3600))})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return d, r, k, der
+}
+
+func baselineDocument(t testing.TB, source string) *document.Document {
+	t.Helper()
+	doc, err := document.Parse(t.Context(), []byte(source), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+func baselineTestNode(root *tree.Node, namespace, local string) *tree.Node {
+	if root.Name == (document.Name{Space: namespace, Local: local}) {
+		return root
+	}
+	for _, child := range root.Children {
+		if found := baselineTestNode(child, namespace, local); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func baselineResign(t *testing.T, source *document.Document, key *ecdsa.PrivateKey, mutate func(*tree.Node), validation xmldsig.SignatureOptions) (*document.Document, document.Element, xmldsig.SignatureOptions) {
+	t.Helper()
+	draft, err := tree.Clone(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(tree.Root(draft))
+	selected := xmldsig.Signatures(draft)[0]
+	clearSignatureValues(selected)
+	raw, err := draft.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err = document.Parse(t.Context(), raw, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation.AdditionalIDRules = append(validation.AdditionalIDRules, reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}})
+	signed, err := xmldsig.SignTemplate(t.Context(), draft, xmldsig.Signatures(draft)[0], key, xmldsig.TemplateSignOptions{Validation: validation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed, xmldsig.Signatures(signed)[0], validation
+}
+
+func baselineTestAppend(parent *tree.Node, namespace, local, prefix string) *tree.Node {
+	node := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: namespace, Local: local}, Prefix: prefix, Parent: parent}
+	parent.Children = append(parent.Children, node)
+	return node
+}
+
+func baselineAttributeCertificate(t *testing.T, chain testcert.Chain) []byte {
+	t.Helper()
+	algorithm := der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}))
+	holderName := der.Wrap(2, 4, true, chain.Leaf.RawSubject)
+	holder := der.Seq(der.Wrap(2, 1, true, holderName))
+	issuerName := der.Seq(der.Wrap(2, 4, true, chain.Root.RawSubject))
+	issuer := der.Wrap(2, 0, true, issuerName)
+	before, err := asn1.MarshalWithParams(testcert.Now().Add(-time.Hour), "generalized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := asn1.MarshalWithParams(testcert.Now().Add(time.Hour), "generalized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributeValue, err := asn1.MarshalWithParams("director", "utf8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := der.Seq(der.Int(1), holder, issuer, algorithm, der.Int(42), der.Seq(before, after), der.Seq(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), der.Set(attributeValue))))
+	digest := sha256.Sum256(info)
+	signature, err := ecdsa.SignASN1(rand.Reader, chain.RootKey, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := asn1.Marshal(asn1.BitString{Bytes: signature, BitLength: len(signature) * 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der.Seq(info, algorithm, value)
 }

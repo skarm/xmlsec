@@ -171,16 +171,14 @@ func TestStateMassExpiryPreservesPendingRequests(t *testing.T) {
 	}
 	p := requests[0]
 	p.IssuedAt, p.ExpiresAt = later, later.Add(time.Minute)
-	if err := m.Put(t.Context(), p, later); err != nil || m.Len() != count/4+1 {
+	if err := m.Put(t.Context(), p, later); err != nil {
+		t.Fatal(err)
+	} else if m.Len() != count/4+1 {
 		t.Fatal("expired key or capacity not reusable", err, m.Len())
 	}
 	if _, err := m.Get(t.Context(), p.SP, p.RelayState, p.ExpiresAt); !errors.Is(err, state.ErrMissing) || m.Len() != 0 {
 		t.Fatal("final expiry did not empty store", err, m.Len())
 	}
-}
-
-func pending(at time.Time) state.Pending {
-	return state.Pending{SP: "https://sp.test", IDP: "https://idp.test", RequestID: nameRequest, RelayState: "abcdefghijklmnop", ACS: uriHTTPSSpTestAcs, IssuedAt: at, ExpiresAt: at.Add(time.Minute), RequestedContexts: []string{uriUrnTest}}
 }
 
 func BenchmarkPutAndExpire(b *testing.B) {
@@ -228,4 +226,8 @@ func BenchmarkGetParallel(b *testing.B) {
 			}
 		}
 	})
+}
+
+func pending(at time.Time) state.Pending {
+	return state.Pending{SP: "https://sp.test", IDP: "https://idp.test", RequestID: nameRequest, RelayState: "abcdefghijklmnop", ACS: uriHTTPSSpTestAcs, IssuedAt: at, ExpiresAt: at.Add(time.Minute), RequestedContexts: []string{uriUrnTest}}
 }

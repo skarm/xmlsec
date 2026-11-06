@@ -14,6 +14,16 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Implicit xsl:catch variable local names in the errors namespace; static scope visibility and runtime bindings must agree.
+const (
+	catchVariableCode        = "code"
+	catchVariableColumn      = "column-number"
+	catchVariableDescription = "description"
+	catchVariableLine        = "line-number"
+	catchVariableModule      = "module"
+	catchVariableValue       = "value"
+)
+
 func (ec *execContext) execMessage(ctx context.Context, inst *messageInst) error {
 	return ec.execMessageWithDefaults(ctx, inst, false, errCodeXTMM9000)
 }
@@ -51,7 +61,7 @@ func (ec *execContext) execMessageWithDefaults(ctx context.Context, inst *messag
 
 		var valid bool
 
-		terminate, valid = parseMessageTerminate(termStr, ec.stylesheet.processorLanguage() >= 30)
+		terminate, valid = parseMessageTerminate(termStr, ec.stylesheet.processorLanguage() >= processorXSLT30)
 		if !valid {
 			return dynamicError(errCodeXTDE0030, "invalid xsl:message/@terminate value %q", termStr)
 		}
@@ -95,7 +105,7 @@ func (ec *execContext) messageErrorCode(ctx context.Context, inst *messageInst, 
 		return defaultName, preserveControlFailure(ctx, err)
 	}
 
-	value = strings.Trim(value, " \t\r\n")
+	value = strings.Trim(value, lexicon.XMLWhitespace)
 	if isValidEQName(value) {
 		uri, local, _ := strings.Cut(value[2:], "}")
 		if !strings.ContainsAny(uri, "{}") {
@@ -123,7 +133,7 @@ func (ec *execContext) messageDocument(ctx context.Context, inst *messageInst) (
 		body = append([]instruction{&copyOfInst{Select: inst.Select, CopyNamespaces: true}}, body...)
 	}
 
-	temporary := ec.stylesheet.processorLanguage() < 30
+	temporary := ec.stylesheet.processorLanguage() < processorXSLT30
 	if temporary {
 		ec.temporaryOutputDepth++
 		defer func() { ec.temporaryOutputDepth-- }()
@@ -182,7 +192,7 @@ func (ec *execContext) execTryCatch(ctx context.Context, inst *tryCatchInst) err
 	}
 
 	if tryErr != nil && (errors.Is(tryErr, errBreak) || errors.Is(tryErr, errNextIter)) {
-		if err := ec.copyTryChildren(root); err != nil {
+		if err := ec.commitTryOutput(root, tryFrame); err != nil {
 			return err
 		}
 
@@ -199,9 +209,13 @@ func (ec *execContext) execTryCatch(ctx context.Context, inst *tryCatchInst) err
 }
 
 func (ec *execContext) beginTryOutput() (*xdm.Element, error) {
+	const (
+		tryOutputWrapper = "_try"
+	)
+
 	doc := xdm.NewDefaultDocument()
 
-	root, err := doc.CreateElement("_try")
+	root, err := doc.CreateElement(tryOutputWrapper)
 	if err != nil {
 		return nil, err
 	}
@@ -210,9 +224,13 @@ func (ec *execContext) beginTryOutput() (*xdm.Element, error) {
 		return nil, err
 	}
 
-	// Inherit capture so maps, arrays and function items can flow through.
-	capture := ec.currentOutput().captureItems
-	ec.outputStack = append(ec.outputStack, &outputFrame{doc: doc, current: root, captureItems: capture, implicitPrimary: ec.currentOutput().implicitPrimary})
+	// A captured transaction keeps all items in one ordered sequence.
+	parent := ec.currentOutput()
+	ec.outputStack = append(ec.outputStack, &outputFrame{
+		doc: doc, current: root, captureItems: parent.captureItems,
+		sequenceMode:  parent.captureItems || parent.sequenceMode,
+		itemSeparator: parent.itemSeparator, implicitPrimary: parent.implicitPrimary,
+	})
 
 	return root, nil
 }
@@ -231,13 +249,7 @@ func (ec *execContext) executeTryBody(ctx context.Context, inst *tryCatchInst) e
 		return ec.checkImplicitPrimaryOutput()
 	}
 
-	for _, child := range inst.Try {
-		if err := ec.executeInstruction(ctx, child); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return ec.executeSequenceConstructor(ctx, inst.Try)
 }
 
 func (ec *execContext) commitTryOutput(root *xdm.Element, frame *outputFrame) error {
@@ -283,9 +295,9 @@ func (ec *execContext) executeMatchedCatch(ctx context.Context, clauses []*catch
 }
 
 func (ec *execContext) bindCatchVariables(namespace, description string, code xdm.QNameValue, value xdm.Sequence) {
-	ec.setVar(xdm.ClarkName(namespace, "code"), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeQName, Value: code}})
-	ec.setVar(xdm.ClarkName(namespace, "description"), xdm.SingleString(description))
-	ec.setVar(xdm.ClarkName(namespace, "value"), value)
+	ec.setVar(xdm.ClarkName(namespace, catchVariableCode), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeQName, Value: code}})
+	ec.setVar(xdm.ClarkName(namespace, catchVariableDescription), xdm.SingleString(description))
+	ec.setVar(xdm.ClarkName(namespace, catchVariableValue), value)
 
 	var module, line xdm.Sequence
 	if ec.errSourceModule != "" {
@@ -296,9 +308,9 @@ func (ec *execContext) bindCatchVariables(namespace, description string, code xd
 		line = xdm.SingleInteger(int64(ec.errSourceLine))
 	}
 
-	ec.setVar(xdm.ClarkName(namespace, "module"), module)
-	ec.setVar(xdm.ClarkName(namespace, "line-number"), line)
-	ec.setVar(xdm.ClarkName(namespace, "column-number"), xdm.EmptySequence())
+	ec.setVar(xdm.ClarkName(namespace, catchVariableModule), module)
+	ec.setVar(xdm.ClarkName(namespace, catchVariableLine), line)
+	ec.setVar(xdm.ClarkName(namespace, catchVariableColumn), xdm.EmptySequence())
 }
 
 // execTryCatchNoRollback writes directly to the parent output and rejects
@@ -381,15 +393,15 @@ func preserveControlFailure(ctx context.Context, err error) error {
 // Boolean synonyms are introduced by the XSLT 3.0 processor. XML whitespace
 // stripping must not silently admit NBSP or other non-XML separators.
 func parseMessageTerminate(value string, modern bool) (bool, bool) {
-	value = strings.Trim(value, " \t\r\n")
+	value = strings.Trim(value, lexicon.XMLWhitespace)
 	switch value {
 	case lexicon.ValueYes:
 		return true, true
 	case lexicon.ValueNo:
 		return false, true
-	case lexicon.ValueTrue, "1":
+	case lexicon.ValueTrue, booleanDigitTrue:
 		return true, modern
-	case lexicon.ValueFalse, "0":
+	case lexicon.ValueFalse, booleanDigitFalse:
 		return false, modern
 	default:
 		return false, false

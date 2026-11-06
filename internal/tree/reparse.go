@@ -14,6 +14,10 @@ func Reparse(ctx context.Context, draft *Document, limits Limits) (*Document, er
 		return nil, ErrMalformed
 	}
 
+	if draft.contextual {
+		return reparseContextual(ctx, draft, limits)
+	}
+
 	return ParseProduced(ctx, func(dst io.Writer) error {
 		_, err := draft.WriteXML(ctx, dst, limits.MaxBytes)
 		return err
@@ -63,7 +67,7 @@ func ReplaceDraft(ctx context.Context, doc *Document, selected, replacement *Nod
 	imported := replacement
 
 	original := selected
-	for original.Parent != nil {
+	for original != doc.root && original.Parent != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -95,6 +99,9 @@ func ReplaceDraft(ctx context.Context, doc *Document, selected, replacement *Nod
 	}
 
 	imported.Parent = nil
+	if doc.contextual {
+		imported.Parent = doc.root.Parent
+	}
 
 	children := append([]*Node(nil), doc.children...)
 	for i, node := range children {
@@ -108,7 +115,12 @@ func ReplaceDraft(ctx context.Context, doc *Document, selected, replacement *Nod
 		return nil, err
 	}
 
-	return FromNodes(children, doc.limits), nil
+	out := FromNodes(children, doc.limits)
+	out.contextual = doc.contextual
+	out.contextSource = doc.contextSource
+	out.contextAnchor = doc.contextAnchor
+
+	return out, nil
 }
 
 type snapshotWriter struct {

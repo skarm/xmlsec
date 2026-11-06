@@ -22,7 +22,7 @@ import (
 // leaking through the document.Document alias. New public methods must be
 // deliberately added here after reviewing their ownership contract.
 func TestDocumentPublicMethods(t *testing.T) {
-	want := []string{"AllNodes", "Node", "Root", "WriteXML", "XML"}
+	want := []string{"AllNodes", "DTD", "Node", "Root", "WriteXML", "XML"}
 	typ := reflect.TypeFor[*document.Document]()
 	got := make([]string, typ.NumMethod())
 	for i := range got {
@@ -30,6 +30,26 @@ func TestDocumentPublicMethods(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Document method set exposes unreviewed operations: got %v, want %v", got, want)
+	}
+}
+
+func TestNonValidatingDocumentAPI(t *testing.T) {
+	options := document.ParseOptions{NonValidating: true}
+	d, err := options.ParseText(t.Context(), `<!DOCTYPE r [<!ENTITY e "value"><!ATTLIST r words NMTOKENS " one   two "><!NOTATION png SYSTEM "image/png">]><r>&e;</r>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if words, ok := d.Root().Attribute(document.Name{Local: "words"}); !ok || words != "one two" || d.Root().Text() != "value" {
+		t.Fatal("public parser lost XML DTD semantics")
+	}
+	info, ok := d.DTD()
+	if !ok || info.Name != "r" || info.Notations["png"].SystemID != "image/png" {
+		t.Fatal("public notation information unavailable")
+	}
+	delete(info.Notations, "png")
+	info, _ = d.DTD()
+	if len(info.Notations) != 1 {
+		t.Fatal("public DTD metadata is mutable")
 	}
 }
 

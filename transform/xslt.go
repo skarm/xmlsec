@@ -77,15 +77,43 @@ type XSLTContext struct {
 	// BaseOutputURI resolves secondary result URIs. Without a base, relative
 	// result URIs remain relative. No file is written implicitly.
 	BaseOutputURI string
-	selection     *Sequence
-	function      Name
-	arguments     []Sequence
+	// selection optionally replaces the initial match selection independently of
+	// global context.
+	selection *Sequence
+	// function identifies a named function entry point when selected by the
+	// invocation API.
+	function Name
+	// arguments retains positional arguments for the named function entry point.
+	arguments []Sequence
+}
+
+// Message retains xsl:message output without publishing it to a global stream.
+type Message struct {
+	// Text is the serialized xsl:message content.
+	Text string
+	// Terminate reports whether the message requested termination.
+	Terminate bool
+}
+
+// Output contains owned serialized primary and secondary result bytes and messages.
+// The application receives secondary documents; serialization does not write files
+// for them.
+type Output struct {
+	// Primary contains the owned serialized principal result bytes.
+	Primary []byte
+	// Secondary maps resolved result URIs to owned bytes. Entries never write files.
+	Secondary map[string][]byte
+	// Messages contains xsl:message output in execution order.
+	Messages []Message
 }
 
 // Stylesheet retains immutable compiled XSLT and supports concurrent transformations.
 type Stylesheet struct {
-	engine  *Engine
-	native  *xslt.Stylesheet
+	// engine retains immutable execution policy and application adapters.
+	engine *Engine
+	// native is the reusable compiled stylesheet.
+	native *xslt.Stylesheet
+	// version records the selected XSLT processor language.
 	version XSLTVersion
 }
 
@@ -290,34 +318,6 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 	return invocation, nil
 }
 
-func traceWriter(w io.Writer) io.Writer {
-	if w == nil {
-		return io.Discard
-	}
-
-	return w
-}
-
-// Message retains xsl:message output without publishing it to a global stream.
-type Message struct {
-	// Text is the serialized xsl:message content.
-	Text string
-	// Terminate reports whether the message requested termination.
-	Terminate bool
-}
-
-// Output contains owned serialized primary and secondary result bytes and messages.
-// The application receives secondary documents; serialization does not write files
-// for them.
-type Output struct {
-	// Primary contains the owned serialized principal result bytes.
-	Primary []byte
-	// Secondary maps resolved result URIs to owned bytes. Entries never write files.
-	Secondary map[string][]byte
-	// Messages contains xsl:message output in execution order.
-	Messages []Message
-}
-
 // CompileXSLT compiles a stylesheet under the same policy as CompileXPath.
 func (e *Engine) CompileXSLT(ctx context.Context, source []byte, options XSLTOptions) (*Stylesheet, error) {
 	ctx, cancel, err := e.invocation(ctx)
@@ -337,18 +337,19 @@ func (e *Engine) CompileXSLT(ctx context.Context, source []byte, options XSLTOpt
 
 	native, err := parse.Parse(ctx, source)
 	if err != nil {
-		return nil, err
+		return nil, wrap("compile XSLT", err)
 	}
 
 	return e.compileStylesheet(ctx, native, options)
 }
 
-// CompileXSLTReader incrementally reads a stylesheet under the program byte limit.
+// CompileXSLTReader reads a stylesheet under the program byte limit. Language
+// parsing can retain decoded and DTD-expanded input alongside the parsed tree.
 // It does not close src. The compiled stylesheet can be reused concurrently.
 func (e *Engine) CompileXSLTReader(ctx context.Context, src io.Reader, options XSLTOptions) (*Stylesheet, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, err
+		return nil, wrap("compile XSLT", err)
 	}
 	defer cancel()
 
@@ -374,7 +375,7 @@ func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, optio
 		return nil, xsltError("compile XSLT", err)
 	}
 
-	if len(options.StaticParameters) > 0 && version < 30 {
+	if len(options.StaticParameters) > 0 && version < int(XSLT30) {
 		return nil, wrap("compile XSLT", ErrUnsupported)
 	}
 
@@ -402,7 +403,15 @@ func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, optio
 		return nil, xsltError("compile XSLT", err)
 	}
 
-	return &Stylesheet{engine: e, native: sheet, version: map[int]XSLTVersion{10: XSLT10, 20: XSLT20, 30: XSLT30}[version]}, nil
+	return &Stylesheet{engine: e, native: sheet, version: map[int]XSLTVersion{int(XSLT10): XSLT10, int(XSLT20): XSLT20, int(XSLT30): XSLT30}[version]}, nil
+}
+
+func traceWriter(w io.Writer) io.Writer {
+	if nilcheck.IsNil(w) {
+		return io.Discard
+	}
+
+	return w
 }
 
 func xsltError(operation string, err error) error {

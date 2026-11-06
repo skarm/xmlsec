@@ -12,9 +12,27 @@ import (
 
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/x509cert"
+)
+
+const (
+	// Caps issued accuracy and the configurable verifier accuracy bound. Received
+	// TSTInfo components have separate parsing bounds; MaxAccuracy zero is unlimited.
+	maximumAccuracy = 24 * time.Hour
+)
+
+// DER framing of the streamed CMS token and its response SEQUENCE. These wire
+// widths do not change the separate maximumResponseBytes policy.
+const (
+	responseSequenceTag         = 0x30
+	responseLongLengthFlag      = 0x80
+	responseLengthCountMask     = 0x7f
+	responseMinimumHeaderBytes  = 2
+	responseMaximumLengthOctets = 8
+	responseLengthRadix         = 256
 )
 
 // IssueOptions uses a caller-supplied clock/serial. A real TSA must independently
@@ -61,7 +79,7 @@ func WriteResponse(ctx context.Context, dst io.Writer, requestDER []byte, signer
 		return 0, ErrPolicy
 	}
 
-	if ctx == nil || o.SerialNumber == nil || o.SerialNumber.Sign() <= 0 || o.SerialNumber.BitLen() > 160 || len(der.OID(o.Policy)) == 0 || len(tsaCertificateDER) > 1<<20 {
+	if ctx == nil || o.SerialNumber == nil || o.SerialNumber.Sign() <= 0 || o.SerialNumber.BitLen() > maximumSerialBits || len(der.OID(o.Policy)) == 0 || len(tsaCertificateDER) > maximumCertificateBytes {
 		return 0, ErrPolicy
 	}
 
@@ -98,7 +116,7 @@ func WriteResponse(ctx context.Context, dst io.Writer, requestDER []byte, signer
 		return 0, e
 	}
 
-	f := [][]byte{der.Int(1), der.OID(o.Policy), encodeImprint(q.imprint), serial, gen}
+	f := [][]byte{der.Int(timestampVersion), der.OID(o.Policy), encodeImprint(q.imprint), serial, gen}
 	if o.Accuracy != nil {
 		a, e := encodeAccuracy(*o.Accuracy)
 		if e != nil {
@@ -119,7 +137,7 @@ func WriteResponse(ctx context.Context, dst io.Writer, requestDER []byte, signer
 	}
 
 	if !o.OmitTSAName {
-		f = append(f, der.Ctx(0, der.Ctx(4, c.RawSubject)))
+		f = append(f, der.Ctx(infoTSANameTag, der.Ctx(lexicon.GeneralNameDirectory, c.RawSubject)))
 	}
 
 	opt := cms.SignOptions{ContentType: TSTInfoOID(), OmitCertificates: !q.certReq}
@@ -127,7 +145,7 @@ func WriteResponse(ctx context.Context, dst io.Writer, requestDER []byte, signer
 		opt.ExtraCertificates = o.ExtraCertificates
 	}
 
-	writer := &streamio.Writer{Context: ctx, Target: dst, Limit: 16 << 20, LimitError: ErrPolicy}
+	writer := &streamio.Writer{Context: ctx, Target: dst, Limit: maximumResponseBytes, LimitError: ErrPolicy}
 	envelope := responseWriter{target: writer}
 
 	_, e = cms.SignReader(ctx, &envelope, bytes.NewBuffer(der.Seq(f...)), []cms.Signer{{Key: signer, CertificateDER: c.Raw, Hash: o.Hash, RSAPSS: o.RSAPSS}}, opt)
@@ -139,7 +157,9 @@ func WriteResponse(ctx context.Context, dst io.Writer, requestDER []byte, signer
 }
 
 func encodeAccuracy(d time.Duration) ([]byte, error) {
-	if d < 0 || d > 24*time.Hour || d%time.Microsecond != 0 {
+	const maximumEncodedAccuracyIntegerBytes = 16
+
+	if d < 0 || d > maximumAccuracy || d%time.Microsecond != 0 {
 		return nil, ErrPolicy
 	}
 
@@ -149,13 +169,13 @@ func encodeAccuracy(d time.Duration) ([]byte, error) {
 	}
 
 	if ms := d % time.Second / time.Millisecond; ms > 0 {
-		x, _ := der.Read(der.Int(int(ms)), 16)
-		f = append(f, der.Wrap(2, 0, false, x.Bytes))
+		x, _ := der.Read(der.Int(int(ms)), maximumEncodedAccuracyIntegerBytes)
+		f = append(f, der.Wrap(asn1.ClassContextSpecific, accuracyMillisTag, false, x.Bytes))
 	}
 
 	if us := d % time.Millisecond / time.Microsecond; us > 0 {
-		x, _ := der.Read(der.Int(int(us)), 16)
-		f = append(f, der.Wrap(2, 1, false, x.Bytes))
+		x, _ := der.Read(der.Int(int(us)), maximumEncodedAccuracyIntegerBytes)
+		f = append(f, der.Wrap(asn1.ClassContextSpecific, accuracyMicrosTag, false, x.Bytes))
 	}
 
 	return der.Seq(f...), nil
@@ -167,7 +187,7 @@ type responseWriter struct {
 	target   *streamio.Writer
 	used     int
 	expected int64
-	header   [10]byte
+	header   [responseMinimumHeaderBytes + responseMaximumLengthOctets]byte
 	started  bool
 }
 
@@ -186,19 +206,19 @@ func (w *responseWriter) Write(p []byte) (int, error) {
 		w.used++
 		consumed++
 
-		if w.used < 2 {
+		if w.used < responseMinimumHeaderBytes {
 			continue
 		}
 
-		if w.header[0] != 0x30 {
+		if w.header[0] != responseSequenceTag {
 			return consumed, ErrFormat
 		}
 
-		need := 2
+		need := responseMinimumHeaderBytes
 
-		if w.header[1]&0x80 != 0 {
-			count := int(w.header[1] & 0x7f)
-			if count == 0 || count > len(w.header)-2 {
+		if w.header[1]&responseLongLengthFlag != 0 {
+			count := int(w.header[1] & responseLengthCountMask)
+			if count == 0 || count > len(w.header)-responseMinimumHeaderBytes {
 				return consumed, ErrFormat
 			}
 
@@ -223,30 +243,30 @@ func (w *responseWriter) Write(p []byte) (int, error) {
 
 func (w *responseWriter) start() error {
 	length := int(w.header[1])
-	if length >= 128 {
-		if w.header[2] == 0 {
+	if length >= responseLongLengthFlag {
+		if w.header[responseMinimumHeaderBytes] == 0 {
 			return ErrFormat
 		}
 
 		length = 0
-		for _, b := range w.header[2:w.used] {
-			if length > (16<<20)/256 {
+		for _, b := range w.header[responseMinimumHeaderBytes:w.used] {
+			if length > maximumResponseBytes/responseLengthRadix {
 				return ErrPolicy
 			}
 
-			length = length*256 + int(b)
+			length = length*responseLengthRadix + int(b)
 		}
 
-		if length < 128 {
+		if length < responseLongLengthFlag {
 			return ErrFormat
 		}
 	}
 
-	status := der.Seq(der.Int(0))
+	status := der.Seq(der.Int(statusGranted))
 	body := len(status) + w.used + length
 
-	header := der.Header(0x30, body)
-	if body > 16<<20-len(header) {
+	header := der.Header(responseSequenceTag, body)
+	if body > maximumResponseBytes-len(header) {
 		return ErrPolicy
 	}
 

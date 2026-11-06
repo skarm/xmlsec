@@ -12,6 +12,13 @@ import (
 	"github.com/skarm/xmlsec/keys"
 )
 
+// Password-line input allows the password plus CRLF, then rejects embedded line breaks. Certificate vectors are counted separately from each DER file limit.
+const (
+	cliMaxPasswordBytes     = 1024
+	cliMaxPasswordLineBytes = cliMaxPasswordBytes + 2
+	cliMaxCertificateFiles  = 128
+)
+
 type privateKeyFlags struct {
 	format        string
 	passwordFile  string
@@ -28,10 +35,10 @@ func registerPrivateKeyFlags(fs *flag.FlagSet) *privateKeyFlags {
 	f := &privateKeyFlags{}
 	fs.StringVar(&f.format, "key-format", namePlain, "private key format: plain, pkcs8 (encrypted), pkcs12")
 	fs.StringVar(&f.passwordFile, "password-file", "", "trusted regular file with one password line; no password in arguments")
-	fs.IntVar(&f.maxKDFWork, "key-max-kdf-work", 3000000, "aggregate private key KDF iteration budget")
+	fs.IntVar(&f.maxKDFWork, "key-max-kdf-work", keys.DefaultLimits().MaxKDFWork, "aggregate private key KDF iteration budget")
 
-	fs.IntVar(&f.minIterations, "key-min-iterations", 1000, "minimum permitted import KDF iterations")
-	fs.IntVar(&f.maxIterations, "key-max-iterations", 1000000, "maximum permitted iterations per KDF")
+	fs.IntVar(&f.minIterations, "key-min-iterations", keys.DefaultLimits().MinIterations, "minimum permitted import KDF iterations")
+	fs.IntVar(&f.maxIterations, "key-max-iterations", keys.DefaultLimits().MaxIterations, "maximum permitted iterations per KDF")
 
 	return f
 }
@@ -45,7 +52,7 @@ func loadPrivateConfigured(ctx context.Context, path string, flags *privateKeyFl
 		return loadPrivateContext(ctx, path)
 	}
 
-	if flags.format != namePkcs8 && flags.format != namePKCS12 {
+	if flags.format != namePKCS8 && flags.format != namePKCS12 {
 		return nil, errors.New("-key-format must be plain, pkcs8 or pkcs12")
 	}
 
@@ -62,7 +69,7 @@ func loadPrivateConfigured(ctx context.Context, path string, flags *privateKeyFl
 		return nil, errors.New("password file must be a trusted regular file")
 	}
 
-	password, err := readInputContext(ctx, flags.passwordFile, nil, 1026)
+	password, err := readInputContext(ctx, flags.passwordFile, nil, cliMaxPasswordLineBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +82,7 @@ func loadPrivateConfigured(ctx context.Context, path string, flags *privateKeyFl
 		}
 	}
 
-	if len(password) > 1024 || bytes.ContainsAny(password, "\r\n\x00") {
+	if len(password) > cliMaxPasswordBytes || bytes.ContainsAny(password, "\r\n\x00") {
 		return nil, errors.New("password file requires one line of at most 1024 bytes")
 	}
 
@@ -86,7 +93,7 @@ func loadPrivateConfigured(ctx context.Context, path string, flags *privateKeyFl
 	defer clear(raw)
 
 	limits := flags.limits()
-	if flags.format == namePkcs8 {
+	if flags.format == namePKCS8 {
 		return keys.ParseEncryptedPrivate(ctx, raw, password, limits)
 	}
 
@@ -135,7 +142,7 @@ func readCertificate(ctx context.Context, path string) (*x509.Certificate, error
 }
 
 func readCertificates(ctx context.Context, base string, paths []string) ([][]byte, error) {
-	if len(paths) > 128 {
+	if len(paths) > cliMaxCertificateFiles {
 		return nil, errors.New("too many certificate files")
 	}
 
@@ -157,7 +164,7 @@ func passwordFromFile(ctx context.Context, path string) ([]byte, error) {
 		return nil, usageError("password requires a trusted regular file")
 	}
 
-	password, err := readInputContext(ctx, path, nil, 1026)
+	password, err := readInputContext(ctx, path, nil, cliMaxPasswordLineBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +176,7 @@ func passwordFromFile(ctx context.Context, path string) ([]byte, error) {
 		}
 	}
 
-	if len(password) > 1024 || bytes.ContainsAny(password, "\r\n\x00") {
+	if len(password) > cliMaxPasswordBytes || bytes.ContainsAny(password, "\r\n\x00") {
 		clear(password)
 		return nil, usageError("password file requires one line of at most 1024 bytes")
 	}

@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-func sameFloat(a, b float64) bool {
-	return (math.IsNaN(a) && math.IsNaN(b)) || (a == b && math.Signbit(a) == math.Signbit(b))
-}
-
 func TestFloatRoundingAndNegation(t *testing.T) {
 	t.Parallel()
 
@@ -64,4 +60,8 @@ func TestFloatCloneDetachesBigFloat(t *testing.T) {
 	if absent.clone() != nil {
 		t.Fatal("nil clone did not preserve nil")
 	}
+}
+
+func sameFloat(a, b float64) bool {
+	return (math.IsNaN(a) && math.IsNaN(b)) || (a == b && math.Signbit(a) == math.Signbit(b))
 }

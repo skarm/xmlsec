@@ -3,6 +3,7 @@ package transform_test
 import (
 	"testing"
 
+	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
 )
 
@@ -195,4 +196,12 @@ func comparisonErrorCode(value string) bool {
 	}
 
 	return true
+}
+
+func requireInvalidReferenceResult(t *testing.T, result reference.Data) {
+	t.Helper()
+
+	if result.Kind() != reference.Invalid {
+		t.Fatal("failed transform returned a partial result", result.Kind())
+	}
 }

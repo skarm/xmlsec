@@ -6,6 +6,7 @@ package lexical
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"math/big"
 	"net/netip"
 	"strings"
@@ -13,6 +14,42 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+)
+
+// XML Schema booleans admit these numeric spellings as well as true and false.
+const (
+	booleanTrueDigit  = "1"
+	booleanFalseDigit = "0"
+)
+
+// Calendar fields are scanned as decimal integers.
+const decimalFieldScanFormat = "%d"
+
+// Calendar day validation first applies the largest possible Gregorian month bound.
+const maxGregorianDay = 31
+
+// Lexical shape limits count IPv4 octets, decimal digits and QName fields.
+// The timezone mode requires a zone for dateTimeStamp and permits its omission otherwise.
+const (
+	ipv4OctetCount     = 4
+	maxIPv4OctetDigits = 3
+	qnameFieldCount    = 2
+	timezoneRequired   = true
+	timezoneOptional   = false
+)
+
+// Inclusive XML Schema integer-subtype bounds remain independent of host int width.
+// String bounds preserve the existing big.Int construction; each subtype keeps its own role.
+const (
+	longLowerBound            = "-9223372036854775808"
+	longUpperBound            = "9223372036854775807"
+	unsignedIntUpperBound     = "4294967295"
+	unsignedLongUpperBound    = "18446744073709551615"
+	unsignedIntegerLowerBound = 0
+	nonNegativeIntegerMin     = 0
+	nonPositiveIntegerMax     = 0
+	positiveIntegerMin        = 1
+	negativeIntegerMax        = -1
 )
 
 // Version selects the XSD specification version for the version-sensitive
@@ -55,7 +92,7 @@ func ValidateBuiltin(value, builtinLocal string, version Version) error {
 		return validateDate(value, version)
 	case lexicon.TypeBoolean:
 		return validateBoolean(value)
-	case "language":
+	case lexicon.TypeLanguage:
 		return validateLanguage(value)
 	case lexicon.TypeFloat, lexicon.TypeDouble:
 		return validateFloat(value, version)
@@ -95,25 +132,25 @@ func ValidateBuiltin(value, builtinLocal string, version Version) error {
 
 func validateStringBuiltin(value, builtinLocal string, version Version) error {
 	switch builtinLocal {
-	case "NCName", "ID", "IDREF", "ENTITY":
+	case lexicon.TypeNCName, lexicon.TypeID, lexicon.TypeIDREF, lexicon.TypeENTITY:
 		return validateNCName(value)
-	case "Name":
+	case lexicon.TypeName:
 		return validateName(value)
-	case "NMTOKEN":
+	case lexicon.TypeNMToken:
 		return validateNMTOKEN(value)
-	case "QName", "NOTATION":
+	case lexicon.TypeQName, lexicon.TypeNotation:
 		return validateQName(value)
 	case lexicon.TypeBase64Binary:
 		return validateBase64Binary(value)
 	case lexicon.TypeNormalizedString:
 		return validateNormalizedString(value)
-	case "token":
+	case lexicon.TypeToken:
 		return validateToken(value)
 	case lexicon.TypeIDREFS, lexicon.TypeENTITIES:
 		return validateSpaceSeparatedList(value, validateNCName)
 	case lexicon.TypeNMTokens:
 		return validateSpaceSeparatedList(value, validateNMTOKEN)
-	case "anyURI":
+	case lexicon.TypeAnyURI:
 		return validateAnyURI(value, version)
 	}
 
@@ -144,29 +181,29 @@ func validateInteger(value string) error {
 func lookupIntegerRange(key string) (integerRange, bool) {
 	switch key {
 	case lexicon.TypeByte:
-		return integerRange{big.NewInt(-128), big.NewInt(127)}, true
+		return integerRange{big.NewInt(math.MinInt8), big.NewInt(math.MaxInt8)}, true
 	case lexicon.TypeShort:
-		return integerRange{big.NewInt(-32768), big.NewInt(32767)}, true
+		return integerRange{big.NewInt(math.MinInt16), big.NewInt(math.MaxInt16)}, true
 	case lexicon.TypeInt:
-		return integerRange{big.NewInt(-2147483648), big.NewInt(2147483647)}, true
+		return integerRange{big.NewInt(math.MinInt32), big.NewInt(math.MaxInt32)}, true
 	case lexicon.TypeLong:
-		return integerRange{newBigInt("-9223372036854775808"), newBigInt("9223372036854775807")}, true
+		return integerRange{newBigInt(longLowerBound), newBigInt(longUpperBound)}, true
 	case lexicon.TypeUnsignedByte:
-		return integerRange{big.NewInt(0), big.NewInt(255)}, true
+		return integerRange{big.NewInt(unsignedIntegerLowerBound), big.NewInt(math.MaxUint8)}, true
 	case lexicon.TypeUnsignedShort:
-		return integerRange{big.NewInt(0), big.NewInt(65535)}, true
+		return integerRange{big.NewInt(unsignedIntegerLowerBound), big.NewInt(math.MaxUint16)}, true
 	case lexicon.TypeUnsignedInt:
-		return integerRange{big.NewInt(0), newBigInt("4294967295")}, true
+		return integerRange{big.NewInt(unsignedIntegerLowerBound), newBigInt(unsignedIntUpperBound)}, true
 	case lexicon.TypeUnsignedLong:
-		return integerRange{big.NewInt(0), newBigInt("18446744073709551615")}, true
+		return integerRange{big.NewInt(unsignedIntegerLowerBound), newBigInt(unsignedLongUpperBound)}, true
 	case lexicon.TypeNonNegativeInteger:
-		return integerRange{big.NewInt(0), nil}, true
+		return integerRange{big.NewInt(nonNegativeIntegerMin), nil}, true
 	case lexicon.TypeNonPositiveInteger:
-		return integerRange{nil, big.NewInt(0)}, true
+		return integerRange{nil, big.NewInt(nonPositiveIntegerMax)}, true
 	case lexicon.TypePositiveInteger:
-		return integerRange{big.NewInt(1), nil}, true
+		return integerRange{big.NewInt(positiveIntegerMin), nil}, true
 	case lexicon.TypeNegativeInteger:
-		return integerRange{nil, big.NewInt(-1)}, true
+		return integerRange{nil, big.NewInt(negativeIntegerMax)}, true
 	}
 
 	var zero integerRange
@@ -175,7 +212,7 @@ func lookupIntegerRange(key string) (integerRange, bool) {
 }
 
 func newBigInt(s string) *big.Int {
-	n, _ := new(big.Int).SetString(s, 10)
+	n, _ := new(big.Int).SetString(s, decimalRadix)
 	return n
 }
 
@@ -189,7 +226,7 @@ func validateIntegerWithRange(value, typeName string) error {
 		return nil
 	}
 
-	n, ok := new(big.Int).SetString(value, 10)
+	n, ok := new(big.Int).SetString(value, decimalRadix)
 	if !ok {
 		return fmt.Errorf("invalid integer")
 	}
@@ -219,7 +256,7 @@ func validateHexBinary(value string) error {
 // validateDate checks for xs:date: YYYY-MM-DD with optional timezone.
 
 func validateDate(value string, version Version) error {
-	if !calendarLexical(value, lexicon.TypeDate, false) {
+	if !calendarLexical(value, lexicon.TypeDate, timezoneOptional) {
 		return fmt.Errorf("invalid date")
 	}
 
@@ -244,7 +281,7 @@ func validateLanguage(value string) error {
 
 func validateBoolean(value string) error {
 	switch value {
-	case lexicon.ValueTrue, "false", "1", "0":
+	case lexicon.ValueTrue, lexicon.ValueFalse, booleanTrueDigit, booleanFalseDigit:
 		return nil
 	}
 
@@ -271,7 +308,7 @@ func validateFloat(value string, version Version) error {
 // validateDateTime checks xs:dateTime.
 
 func validateDateTime(value string, version Version) error {
-	if !calendarLexical(value, lexicon.TypeDateTime, false) {
+	if !calendarLexical(value, lexicon.TypeDateTime, timezoneOptional) {
 		return fmt.Errorf("invalid dateTime")
 	}
 
@@ -290,7 +327,7 @@ func validateDateTime(value string, version Version) error {
 // validateTime checks xs:time.
 
 func validateTime(value string) error {
-	if !calendarLexical(value, lexicon.TypeTime, false) {
+	if !calendarLexical(value, lexicon.TypeTime, timezoneOptional) {
 		return fmt.Errorf("invalid time")
 	}
 
@@ -324,33 +361,33 @@ func validateTimeComponents(value string) error {
 	}
 
 	var hour, minute, sec int
-	if _, err := fmt.Sscanf(hourStr, "%d", &hour); err != nil {
+	if _, err := fmt.Sscanf(hourStr, decimalFieldScanFormat, &hour); err != nil {
 		return fmt.Errorf("invalid time")
 	}
 
-	if _, err := fmt.Sscanf(minStr, "%d", &minute); err != nil {
+	if _, err := fmt.Sscanf(minStr, decimalFieldScanFormat, &minute); err != nil {
 		return fmt.Errorf("invalid time")
 	}
 
 	intSecStr, fracStr, _ := strings.Cut(secStr, ".")
-	if _, err := fmt.Sscanf(intSecStr, "%d", &sec); err != nil {
+	if _, err := fmt.Sscanf(intSecStr, decimalFieldScanFormat, &sec); err != nil {
 		return fmt.Errorf("invalid time")
 	}
 
-	if minute < 0 || minute > 59 {
+	if minute < 0 || minute > minutesPerHour-1 {
 		return fmt.Errorf("invalid time: minute %d out of range", minute)
 	}
 
-	if sec < 0 || sec > 59 {
+	if sec < 0 || sec > secondsPerMinute-1 {
 		return fmt.Errorf("invalid time: second %d out of range", sec)
 	}
 
-	if hour < 0 || hour > 24 {
+	if hour < 0 || hour > hoursPerDay {
 		return fmt.Errorf("invalid time: hour %d out of range", hour)
 	}
 	// 24:00:00 (with zero minutes, seconds, and fractional seconds) is the only
 	// permitted use of hour 24; it denotes midnight at the end of the day.
-	if hour == 24 && (minute != 0 || sec != 0 || !isZeroFraction(fracStr)) {
+	if hour == hoursPerDay && (minute != 0 || sec != 0 || !isZeroFraction(fracStr)) {
 		return fmt.Errorf("invalid time: 24:00:00 is the only allowed value with hour 24")
 	}
 
@@ -403,32 +440,29 @@ func validateTimezone(tz string) error {
 	}
 
 	var hour, minute int
-	if _, err := fmt.Sscanf(hourStr, "%d", &hour); err != nil {
+	if _, err := fmt.Sscanf(hourStr, decimalFieldScanFormat, &hour); err != nil {
 		return fmt.Errorf("invalid timezone")
 	}
 
-	if _, err := fmt.Sscanf(minStr, "%d", &minute); err != nil {
+	if _, err := fmt.Sscanf(minStr, decimalFieldScanFormat, &minute); err != nil {
 		return fmt.Errorf("invalid timezone")
 	}
 
-	if minute < 0 || minute > 59 {
+	if minute < 0 || minute > minutesPerHour-1 {
 		return fmt.Errorf("invalid timezone: minute %d out of range", minute)
 	}
 
-	if hour < 0 || hour > 14 {
+	if hour < 0 || hour > maxTimezoneHours {
 		return fmt.Errorf("invalid timezone: hour %d out of range", hour)
 	}
 
-	if hour == 14 && minute != 0 {
+	if hour == maxTimezoneHours && minute != 0 {
 		return fmt.Errorf("invalid timezone: offset exceeds 14:00")
 	}
 
 	return nil
 }
 
-// validateDateComponents parses YYYY-MM-DD from a date/dateTime string and
-// checks month (1-12) and day (1-maxDay) ranges. The value must already have
-// passed the lexical check.
 // yearForbiddenInXSD10 reports whether yearStr (the digits-only year field, sign
 // already stripped) is the year "0000". XSD 1.0 has no year zero; XSD 1.1 adds
 // it. yearStr is assumed to have passed its lexical check (all digits).
@@ -436,6 +470,8 @@ func yearForbiddenInXSD10(yearStr string) bool {
 	return strings.Trim(yearStr, "0") == ""
 }
 
+// validateDateComponents checks the year, month and day against the selected
+// XSD edition. The value must already have passed its lexical check.
 func validateDateComponents(value string, version Version) error {
 	s := value
 	if len(s) > 0 && s[0] == '-' {
@@ -467,25 +503,25 @@ func validateDateComponents(value string, version Version) error {
 	// (e.g. "999999999999999999999999"), so do not parse it into a fixed-width
 	// int; leap-year status is computed from the digit string directly.
 	var month, day int
-	if _, err := fmt.Sscanf(monthStr, "%d", &month); err != nil {
+	if _, err := fmt.Sscanf(monthStr, decimalFieldScanFormat, &month); err != nil {
 		return fmt.Errorf("invalid date")
 	}
 
-	if _, err := fmt.Sscanf(dayStr, "%d", &day); err != nil {
+	if _, err := fmt.Sscanf(dayStr, decimalFieldScanFormat, &day); err != nil {
 		return fmt.Errorf("invalid date")
 	}
 
-	if month < 1 || month > 12 {
+	if month < calendarFirstMonth || month > monthsPerYear {
 		return fmt.Errorf("invalid date: month %d out of range", month)
 	}
 	// Maximum days per month. February's length depends on whether the year is
 	// a leap year in the proleptic Gregorian calendar.
-	maxDays := [13]int{0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+	maxDays := [monthsPerYear + 1]int{0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
 	if month == 2 && isLeapYearStr(yearStr) {
 		maxDays[2] = 29
 	}
 
-	if day < 1 || day > maxDays[month] {
+	if day < calendarFirstDay || day > maxDays[month] {
 		return fmt.Errorf("invalid date: day %d out of range for month %d", day, month)
 	}
 
@@ -506,15 +542,15 @@ func isLeapYearStr(year string) bool {
 
 		return v
 	}
-	if mod(year, 4) != 0 {
+	if mod(year, gregorianLeapInterval) != 0 {
 		return false
 	}
 
-	if mod(year, 100) != 0 {
+	if mod(year, gregorianCenturyYears) != 0 {
 		return true
 	}
 
-	return mod(year, 400) == 0
+	return mod(year, gregorianEraYears) == 0
 }
 
 // validateDuration checks xs:duration. When the time designator 'T' is present it
@@ -552,7 +588,7 @@ func validateDuration(value string) error {
 // validateDateTimeStamp validates xs:dateTimeStamp: an xs:dateTime value that
 // must carry a timezone. Year-0000 gating follows the dateTime rules.
 func validateDateTimeStamp(value string, version Version) error {
-	if !calendarLexical(value, lexicon.TypeDateTime, true) {
+	if !calendarLexical(value, lexicon.TypeDateTime, timezoneRequired) {
 		return fmt.Errorf("invalid dateTimeStamp")
 	}
 
@@ -564,7 +600,7 @@ func validateDateTimeStamp(value string, version Version) error {
 // be present.
 
 func validateDayTimeDuration(value string) error {
-	if !durationLexical(value, "dayTimeDuration") {
+	if !durationLexical(value, lexicon.TypeDayTimeDuration) {
 		return fmt.Errorf("invalid dayTimeDuration")
 	}
 	// Reuse the shared duration body checks (at least one component, no dangling
@@ -577,7 +613,7 @@ func validateDayTimeDuration(value string) error {
 // be present.
 
 func validateYearMonthDuration(value string) error {
-	if !durationLexical(value, "yearMonthDuration") {
+	if !durationLexical(value, lexicon.TypeYearMonthDuration) {
 		return fmt.Errorf("invalid yearMonthDuration")
 	}
 	// "P" with no component is invalid.
@@ -591,7 +627,7 @@ func validateYearMonthDuration(value string) error {
 // validateGYear checks xs:gYear.
 
 func validateGYear(value string, version Version) error {
-	if !calendarLexical(value, lexicon.TypeGYear, false) {
+	if !calendarLexical(value, lexicon.TypeGYear, timezoneOptional) {
 		return fmt.Errorf("invalid gYear")
 	}
 
@@ -625,11 +661,11 @@ func stripAndCheckTimezone(value string) (string, error) {
 
 func gMonthRange(s, typeName string) error {
 	var month int
-	if _, err := fmt.Sscanf(s, "%d", &month); err != nil {
+	if _, err := fmt.Sscanf(s, decimalFieldScanFormat, &month); err != nil {
 		return fmt.Errorf("invalid %s", typeName)
 	}
 
-	if month < 1 || month > 12 {
+	if month < calendarFirstMonth || month > monthsPerYear {
 		return fmt.Errorf("invalid %s: month %d out of range", typeName, month)
 	}
 
@@ -638,11 +674,11 @@ func gMonthRange(s, typeName string) error {
 
 func gDayRange(s, typeName string) error {
 	var day int
-	if _, err := fmt.Sscanf(s, "%d", &day); err != nil {
+	if _, err := fmt.Sscanf(s, decimalFieldScanFormat, &day); err != nil {
 		return fmt.Errorf("invalid %s", typeName)
 	}
 
-	if day < 1 || day > 31 {
+	if day < calendarFirstDay || day > maxGregorianDay {
 		return fmt.Errorf("invalid %s: day %d out of range", typeName, day)
 	}
 
@@ -652,7 +688,7 @@ func gDayRange(s, typeName string) error {
 // validateGYearMonth checks xs:gYearMonth.
 
 func validateGYearMonth(value string, version Version) error {
-	if !calendarLexical(value, lexicon.TypeGYearMonth, false) {
+	if !calendarLexical(value, lexicon.TypeGYearMonth, timezoneOptional) {
 		return fmt.Errorf("invalid gYearMonth")
 	}
 
@@ -674,7 +710,7 @@ func validateGYearMonth(value string, version Version) error {
 // validateGMonth checks xs:gMonth.
 
 func validateGMonth(value string) error {
-	if !calendarLexical(value, lexicon.TypeGMonth, false) {
+	if !calendarLexical(value, lexicon.TypeGMonth, timezoneOptional) {
 		return fmt.Errorf("invalid gMonth")
 	}
 
@@ -689,7 +725,7 @@ func validateGMonth(value string) error {
 // validateGDay checks xs:gDay.
 
 func validateGDay(value string) error {
-	if !calendarLexical(value, lexicon.TypeGDay, false) {
+	if !calendarLexical(value, lexicon.TypeGDay, timezoneOptional) {
 		return fmt.Errorf("invalid gDay")
 	}
 
@@ -704,7 +740,7 @@ func validateGDay(value string) error {
 // validateGMonthDay checks xs:gMonthDay.
 
 func validateGMonthDay(value string) error {
-	if !calendarLexical(value, lexicon.TypeGMonthDay, false) {
+	if !calendarLexical(value, lexicon.TypeGMonthDay, timezoneOptional) {
 		return fmt.Errorf("invalid gMonthDay")
 	}
 
@@ -722,15 +758,15 @@ func validateGMonthDay(value string) error {
 	}
 	// Reject month/day combinations that never occur (e.g. --02-30, --04-31).
 	var month, day int
-	if _, err := fmt.Sscanf(body[2:4], "%d", &month); err != nil {
+	if _, err := fmt.Sscanf(body[2:4], decimalFieldScanFormat, &month); err != nil {
 		return fmt.Errorf("invalid gMonthDay")
 	}
 
-	if _, err := fmt.Sscanf(body[5:7], "%d", &day); err != nil {
+	if _, err := fmt.Sscanf(body[5:7], decimalFieldScanFormat, &day); err != nil {
 		return fmt.Errorf("invalid gMonthDay")
 	}
 	// gMonthDay is year-agnostic, so February permits its maximal length (29).
-	maxDays := [13]int{0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+	maxDays := [monthsPerYear + 1]int{0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
 	if day > maxDays[month] {
 		return fmt.Errorf("invalid gMonthDay: day %d out of range for month %d", day, month)
 	}
@@ -924,13 +960,13 @@ func validXSD10IPv6(host string) bool {
 		// RFC 2732 uses RFC 2373's 1*3DIGIT IPv4 octets. Unlike netip,
 		// that grammar permits leading zeroes, interpreted as decimal.
 		// Normalize only this validation copy; retain the original anyURI value.
-		octets := strings.SplitN(host[colon+1:], ".", 5)
-		if len(octets) != 4 {
+		octets := strings.SplitN(host[colon+1:], ".", ipv4OctetCount+1)
+		if len(octets) != ipv4OctetCount {
 			return false
 		}
 
 		for i, octet := range octets {
-			if octet == "" || len(octet) > 3 {
+			if octet == "" || len(octet) > maxIPv4OctetDigits {
 				return false
 			}
 
@@ -959,7 +995,7 @@ func isHexDigit(ch byte) bool {
 }
 
 func validateQName(value string) error {
-	parts := strings.SplitN(value, ":", 2)
+	parts := strings.SplitN(value, ":", qnameFieldCount)
 	if len(parts) == 1 {
 		return validateNCName(value)
 	}

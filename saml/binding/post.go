@@ -17,6 +17,19 @@ import (
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
 
+// Fixed HTML form template shared by POST and Artifact output; dynamic endpoint and relay data still require escaping and preflight validation.
+const (
+	htmlFormSuffix        = "<button type=\"submit\">Continue</button></form></body></html>"
+	htmlHiddenInputPrefix = `"><input type="hidden" name="`
+	htmlInputValuePrefix  = `" value="`
+	htmlRelayInputPrefix  = `<input type="hidden" name="` + fieldRelayState + `" value="`
+)
+
+// Fixed scratch bytes for streaming form Base64 escaping; temporary buffer retention is bounded independently of the complete message size.
+const (
+	postEscapeBufferBytes = 4096
+)
+
 // ErrBinding reports invalid SAML POST binding.
 var ErrBinding = errors.New("invalid SAML POST binding")
 
@@ -104,7 +117,7 @@ func WritePOST(ctx context.Context, dst io.Writer, doc *document.Document, p Par
 
 	writer := &streamio.Writer{Context: ctx, Target: dst, Limit: int64(l.MaxFormBytes), LimitError: ErrBinding}
 	if relay != nil {
-		if _, err := writer.WriteString("RelayState=" + url.QueryEscape(*relay) + "&"); err != nil {
+		if _, err := writer.WriteString(fieldRelayState + "=" + url.QueryEscape(*relay) + "&"); err != nil {
 			return writer.Written, err
 		}
 	}
@@ -133,20 +146,12 @@ func RenderPOSTForm(ctx context.Context, endpoint string, doc *document.Document
 // hidden field, without intermediate XML or encoded-message buffers. It leaves
 // dst open; errors may leave partial output which must be discarded.
 func WritePOSTForm(ctx context.Context, dst io.Writer, endpoint string, doc *document.Document, p Parameter, relay *string, limits POSTLimits) (int64, error) {
-	if !profile.Endpoint(endpoint, false) {
+	const (
+		htmlMessageFormPrefix = "<!doctype html><html><head><meta charset=\"utf-8\"><title>SAML message</title></head><body><form method=\"post\" action=\""
+	)
+
+	if !profile.Endpoint(endpoint, false) || !validHTMLRelay(relay) {
 		return 0, ErrBinding
-	}
-
-	if relay != nil {
-		if !utf8.ValidString(*relay) {
-			return 0, ErrBinding
-		}
-
-		for _, r := range *relay {
-			if r < 32 || r == 127 {
-				return 0, ErrBinding
-			}
-		}
 	}
 
 	l, err := postLimits(limits)
@@ -160,7 +165,7 @@ func WritePOSTForm(ctx context.Context, dst io.Writer, endpoint string, doc *doc
 
 	writer := &streamio.Writer{Context: ctx, Target: dst, Limit: int64(l.MaxFormBytes), LimitError: ErrBinding}
 
-	prefix := `<!doctype html><html><head><meta charset="utf-8"><title>SAML message</title></head><body><form method="post" action="` + html.EscapeString(endpoint) + `"><input type="hidden" name="` + string(p) + `" value="`
+	prefix := htmlMessageFormPrefix + html.EscapeString(endpoint) + htmlHiddenInputPrefix + string(p) + htmlInputValuePrefix
 	if _, err := writer.WriteString(prefix); err != nil {
 		return writer.Written, err
 	}
@@ -171,25 +176,32 @@ func WritePOSTForm(ctx context.Context, dst io.Writer, endpoint string, doc *doc
 
 	suffix := `">`
 	if relay != nil {
-		suffix += `<input type="hidden" name="RelayState" value="` + html.EscapeString(*relay) + `">`
+		suffix += htmlRelayInputPrefix + html.EscapeString(*relay) + `">`
 	}
 
-	suffix += `<button type="submit">Continue</button></form></body></html>`
+	suffix += htmlFormSuffix
 	_, err = writer.WriteString(suffix)
 
 	return writer.Written, errors.Join(err, ctx.Err())
 }
 
 func postLimits(l POSTLimits) (POSTLimits, error) {
+	const (
+		defaultPOSTFormBytes = 2 << 20
+		defaultPOSTXMLBytes  = 1 << 20
+		maximumPOSTFormBytes = 16 << 20
+		maximumPOSTXMLBytes  = 8 << 20
+	)
+
 	if l.MaxFormBytes == 0 {
-		l.MaxFormBytes = 2 << 20
+		l.MaxFormBytes = defaultPOSTFormBytes
 	}
 
 	if l.MaxXMLBytes == 0 {
-		l.MaxXMLBytes = 1 << 20
+		l.MaxXMLBytes = defaultPOSTXMLBytes
 	}
 
-	if l.MaxFormBytes < 1 || l.MaxFormBytes > 16<<20 || l.MaxXMLBytes < 1 || l.MaxXMLBytes > 8<<20 {
+	if l.MaxFormBytes < 1 || l.MaxFormBytes > maximumPOSTFormBytes || l.MaxXMLBytes < 1 || l.MaxXMLBytes > maximumPOSTXMLBytes {
 		return l, ErrBinding
 	}
 
@@ -199,11 +211,36 @@ func postLimits(l POSTLimits) (POSTLimits, error) {
 }
 
 func postArguments(ctx context.Context, dst io.Writer, doc *document.Document, p Parameter, relay *string) error {
-	if ctx == nil || nilcheck.IsNil(dst) || doc == nil || p != Request && p != Response || relay != nil && len(*relay) > 80 {
+	if ctx == nil || nilcheck.IsNil(dst) || doc == nil || p != Request && p != Response || relay != nil && len(*relay) > profile.HTTPRelayStateMaxBytes {
 		return ErrBinding
 	}
 
 	return ctx.Err()
+}
+
+// HTML parsing and form submission can replace NUL and normalize line endings.
+// Reject control characters instead of silently changing opaque correlation data.
+func validHTMLRelay(relay *string) bool {
+	const (
+		deleteControlRune   = 127
+		firstPrintableASCII = 32
+	)
+
+	if relay == nil {
+		return true
+	}
+
+	if len(*relay) > profile.HTTPRelayStateMaxBytes || !utf8.ValidString(*relay) {
+		return false
+	}
+
+	for _, r := range *relay {
+		if r < firstPrintableASCII || r == deleteControlRune {
+			return false
+		}
+	}
+
+	return true
 }
 
 func writePOSTXML(ctx context.Context, dst io.Writer, doc *document.Document, maximum int) error {
@@ -222,7 +259,7 @@ func writePOSTXML(ctx context.Context, dst io.Writer, doc *document.Document, ma
 // queryBase64Writer URL-escapes the Base64 alphabet in fixed storage.
 type queryBase64Writer struct {
 	dst    io.Writer
-	buffer [4096]byte
+	buffer [postEscapeBufferBytes]byte
 }
 
 func (w *queryBase64Writer) Write(source []byte) (int, error) {

@@ -12,6 +12,15 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	maximumOAEPLabelBytes = 1024
+)
+
+const (
+	nameMGF        = "MGF"
+	nameOAEPparams = "OAEPparams"
+)
+
 func normalizeOAEP(parameters *OAEPParameters) (OAEPParameters, error) {
 	p := OAEPParameters{}
 	if parameters != nil {
@@ -34,7 +43,7 @@ func normalizeOAEP(parameters *OAEPParameters) (OAEPParameters, error) {
 	}
 
 	if !rsaOAEPAlgorithm(p.Algorithm) || p.Algorithm == RSAOAEP10 && p.MGFHash != crypto.SHA1 ||
-		!oaepHash(p.Hash) || !oaepHash(p.MGFHash) || len(p.Label) > 1024 {
+		!oaepHash(p.Hash) || !oaepHash(p.MGFHash) || len(p.Label) > maximumOAEPLabelBytes {
 		return OAEPParameters{}, ErrPolicy
 	}
 
@@ -72,21 +81,21 @@ func oaepURIs(hash crypto.Hash) (string, string) {
 
 func encodeOAEP(method *tree.Node, p OAEPParameters) {
 	if len(p.Label) != 0 {
-		label := encryptedElement("OAEPparams")
+		label := encryptedElement(nameOAEPparams)
 		appendChild(label, &tree.Node{Kind: tree.TextNode, Data: base64.StdEncoding.EncodeToString(p.Label)})
 		appendChild(method, label)
 	}
 
 	digestURI, _ := oaepURIs(p.Hash)
-	digest := newElement(SignatureNamespace, "ds", lexicon.DSigElementDigestMethod)
-	setAttribute(digest, "Algorithm", digestURI)
+	digest := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementDigestMethod)
+	setAttribute(digest, lexicon.SecurityAttrAlgorithm, digestURI)
 
 	appendChild(method, digest)
 
 	if p.Algorithm == RSAOAEP {
 		_, mgfURI := oaepURIs(p.MGFHash)
-		mgf := newElement(Namespace11, "xenc11", "MGF")
-		setAttribute(mgf, "Algorithm", mgfURI)
+		mgf := newElement(Namespace11, prefixXEnc11, nameMGF)
+		setAttribute(mgf, lexicon.SecurityAttrAlgorithm, mgfURI)
 		appendChild(method, mgf)
 	}
 }
@@ -107,7 +116,7 @@ func checkOAEP(ctx context.Context, method document.Element, expected OAEPParame
 
 	for _, child := range method.Children() {
 		switch child.Name() {
-		case elementName(Namespace, "KeySize"):
+		case elementName(Namespace, nameKeySize):
 			// The common EncryptionMethod checker validated value and order.
 			continue
 		case elementName(SignatureNamespace, lexicon.DSigElementDigestMethod):
@@ -116,13 +125,13 @@ func checkOAEP(ctx context.Context, method document.Element, expected OAEPParame
 			}
 
 			digest = true
-		case elementName(Namespace11, "MGF"):
+		case elementName(Namespace11, nameMGF):
 			if expected.Algorithm == RSAOAEP10 || mgf || !matchesMethod(child, mgfURI, true) {
 				return ErrFormat
 			}
 
 			mgf = true
-		case elementName(Namespace, "OAEPparams"):
+		case elementName(Namespace, nameOAEPparams):
 			if label || digest || mgf {
 				return ErrFormat
 			}
@@ -149,7 +158,7 @@ func checkOAEPLabel(ctx context.Context, child document.Element, expected []byte
 		return ErrFormat
 	}
 
-	value, err := decodeBase64Text(ctx, child, 1024)
+	value, err := decodeBase64Text(ctx, child, maximumOAEPLabelBytes)
 	if err != nil {
 		return err
 	}

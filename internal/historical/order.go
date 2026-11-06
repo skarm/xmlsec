@@ -3,12 +3,13 @@ package historical
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"slices"
 )
 
-func (g *graph) covered(ctx context.Context, candidate Candidate) (map[[32]byte]struct{}, error) {
-	seen := make(map[[32]byte]struct{})
+func (g *graph) covered(ctx context.Context, candidate Candidate) (map[[sha256.Size]byte]struct{}, error) {
+	seen := make(map[[sha256.Size]byte]struct{})
 
 	stack := slices.Clone(candidate.Covered)
 	for len(stack) > 0 {

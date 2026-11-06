@@ -94,7 +94,7 @@ func (e *Expression) ValidateWithSchema(namespaces map[string]string, decls Sche
 		return err
 	}
 
-	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == 10, decls, e.version)
+	return e.prefixPlan.Validate(namespaces, e.staticNamespaces != nil || e.version == xpathVersion10, decls, e.version)
 }
 
 // String returns the original XPath expression string.
@@ -395,7 +395,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 		}
 	}
 
-	if c.cfg != nil && c.cfg.version != 0 {
+	if c.cfg != nil && c.cfg.version != xpathVersionDefault {
 		if err := validateVersionTokens(l.tokens, c.cfg.version); err != nil {
 			return nil, err
 		}
@@ -409,7 +409,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 			return nil, err
 		}
 
-		if version == 10 {
+		if version == xpathVersion10 {
 			ast = xpath10Literals(ast)
 		}
 
@@ -451,7 +451,7 @@ func (c Compiler) CompileExpr(ast Expr) (*Expression, error) {
 		version = c.cfg.version
 	}
 
-	if version == 10 {
+	if version == xpathVersion10 {
 		if err := validateXPath10Expr(ast); err != nil {
 			return nil, err
 		}

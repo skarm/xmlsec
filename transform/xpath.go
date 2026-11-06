@@ -83,12 +83,18 @@ type XPathContext struct {
 // XPath retains an immutable compiled expression and the engine policy that governs
 // its execution.
 type XPath struct {
-	namespaces    map[string]string
+	// namespaces retains the compiled expression's static prefix bindings.
+	namespaces map[string]string
+	// freeVariables lists external variables required by the compiled expression.
 	freeVariables []string
-	engine        *Engine
-	expression    *xpath.Expression
-	evaluator     xpath.Evaluator
-	version       XPathVersion
+	// engine retains immutable policy and application adapters for evaluation.
+	engine *Engine
+	// expression is the compiled XPath program.
+	expression *xpath.Expression
+	// evaluator retains the evaluation strategy selected for this program.
+	evaluator xpath.Evaluator
+	// version selects the expression's XPath language semantics.
+	version XPathVersion
 }
 
 // Version reports the compiled language version.
@@ -271,7 +277,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 		}
 	}
 
-	namespaces["xml"] = lexicon.NamespaceXML
+	namespaces[lexicon.PrefixXML] = lexicon.NamespaceXML
 	if version == XPath10 && namespaces[""] != "" {
 		return nil, wrapXPath("compile XPath", fmt.Errorf("%w: XPath 1.0 has no default element namespace", ErrInput), options.Version)
 	}

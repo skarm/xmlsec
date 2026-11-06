@@ -430,6 +430,10 @@ func (ec *execContext) executeInitialFunction(ctx context.Context, cfg *transfor
 }
 
 func (ec *execContext) initialTemplateName(cfg *transformConfig) string {
+	const (
+		initialTemplateLexicalName = "xsl:initial-template"
+	)
+
 	initialTemplateName := ""
 	if cfg != nil && cfg.initialTemplate != "" {
 		initialTemplateName = resolveQName(cfg.initialTemplate, ec.stylesheet.namespaces)
@@ -437,11 +441,11 @@ func (ec *execContext) initialTemplateName(cfg *transformConfig) string {
 
 	// XSLT 3.0: if no explicit initial template, check for xsl:initial-template
 	if initialTemplateName == "" {
-		xsltInitial := xdm.ClarkName(lexicon.NamespaceXSLT, "initial-template")
+		xsltInitial := xdm.ClarkName(lexicon.NamespaceXSLT, initialTemplateLocalName)
 		if _, ok := ec.stylesheet.namedTemplates[xsltInitial]; ok {
 			initialTemplateName = xsltInitial
-		} else if _, ok := ec.stylesheet.namedTemplates["xsl:initial-template"]; ok {
-			initialTemplateName = "xsl:initial-template"
+		} else if _, ok := ec.stylesheet.namedTemplates[initialTemplateLexicalName]; ok {
+			initialTemplateName = initialTemplateLexicalName
 		}
 	}
 
@@ -606,13 +610,17 @@ func (ec *execContext) applyInitialSelection(ctx context.Context, selection xdm.
 }
 
 func (ec *execContext) checkInitialTemplateParameters(tmpl *template) error {
-	if ec.stylesheet.processorLanguage() != 20 {
+	const (
+		errCodeXTDE0060 = "XTDE0060"
+	)
+
+	if ec.stylesheet.processorLanguage() != processorXSLT20 {
 		return nil
 	}
 
 	for _, parameter := range tmpl.Params {
 		if parameter.Required {
-			return dynamicError("XTDE0060", "XSLT 2.0 initial template must not declare required parameter $%s", parameter.Name)
+			return dynamicError(errCodeXTDE0060, "XSLT 2.0 initial template must not declare required parameter $%s", parameter.Name)
 		}
 	}
 
@@ -772,7 +780,7 @@ func (ec *execContext) resolvePrimaryOutputDef() *OutputDef {
 		}
 	}
 
-	if outDef == nil && ss.processorLanguage() <= 20 {
+	if outDef == nil && ss.processorLanguage() <= processorXSLT20 {
 		outDef = defaultOutputDef()
 	}
 

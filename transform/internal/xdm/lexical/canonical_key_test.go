@@ -48,6 +48,10 @@ func TestCanonicalKeyValueEquivalenceClasses(t *testing.T) {
 		{"negative duration", "duration", []string{"-P1Y2M3DT4H5M6.7S", "-P14MT273906.7S"}, "P14MT273906.7S"},
 		{"dayTime duration", "dayTimeDuration", []string{"P1DT1H", "PT25H"}, "PT24H"},
 		{"yearMonth duration", "yearMonthDuration", []string{"P1Y", "P12M"}, "P11M"},
+		{"dayTime negative zero", "dayTimeDuration", []string{"-PT0S", "P0D"}, "-PT0.001S"},
+		{"dayTime negative fraction", "dayTimeDuration", []string{"-PT0.10S", "-PT0.100S"}, "-PT0.101S"},
+		{"yearMonth negative", "yearMonthDuration", []string{"-P1Y", "-P12M"}, "-P13M"},
+		{"yearMonth negative zero", "yearMonthDuration", []string{"-P0M", "P0Y"}, "-P1M"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -89,6 +93,14 @@ func TestCanonicalKeyRejectsStrictInvalidValues(t *testing.T) {
 		{"gDay", "---00"},
 		{"gMonthDay", "--02-30"},
 		{"duration", "PT1.5"},
+		{"dateTimeStamp", "2000-01-01T00:00:00"},
+		{"dayTimeDuration", "P1Y"},
+		{"dayTimeDuration", "P0Y"},
+		{"dayTimeDuration", "PT-1S"},
+		{"yearMonthDuration", "P1D"},
+		{"yearMonthDuration", "PT0S"},
+		{"yearMonthDuration", "P1Y-1M"},
+		{"yearMonthDuration", "P0.5M"},
 	} {
 		if _, ok := lexicalpkg.CanonicalKey(test.invalid, test.kind); ok {
 			t.Fatalf("invalid %s %q acquired a value key", test.kind, test.invalid)

@@ -5,12 +5,31 @@ package xpath
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+)
+
+// Initial focus defaults are independent position/count values. Positive
+// configured positions override their default; size zero selects its default,
+// while a negative size retains the host's absent-context-size convention.
+const (
+	defaultFocusPosition     = 1
+	defaultFocusSize         = 1
+	configuredPositionFloor  = 0
+	defaultFocusSizeSelector = 0
+)
+
+// Only positive configured node limits override the package default. This zero
+// threshold selects a default, unlike the disabled-bound convention in append
+// helpers. Static reference analysis retains at least one logical work operation.
+const (
+	configuredNodeLimitFloor   = 0
+	minimumStaticReferenceWork = 1
 )
 
 // DefaultEvaluatorOptions is the zero value — all setters clone by default.
@@ -498,6 +517,36 @@ func (e Evaluator) TraceWriter(w io.Writer) Evaluator {
 // Evaluate evaluates the compiled expression against the given context node.
 // ctx is used for cancellation/deadlines only, not for configuration.
 func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node) (*Result, error) {
+	if expr == nil {
+		return nil, fmt.Errorf("xpath: expression has no compiled program")
+	}
+
+	// A bare context item needs no variable scopes, document caches or runtime
+	// state. XSLT evaluates it once per selected item. Keep annotated nodes on
+	// the normal path, where nodeItemFor supplies their complete type metadata.
+	if expr.deferred == nil && expr.program != nil && expr.program.stream.isContextItem && (e.cfg == nil || e.cfg.typeAnnotations == nil) {
+		var item xdm.Item
+		if e.cfg != nil {
+			item = e.cfg.contextItem
+		}
+
+		if item == nil {
+			if xdm.IsNilNode(node) {
+				return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
+			}
+
+			item = xdm.NodeItem{Node: node}
+		}
+
+		if value, ok := item.(xdm.AtomicValue); ok {
+			if err := ChargeNumber(ctx, value); err != nil {
+				return nil, err
+			}
+		}
+
+		return &Result{seq: xdm.ItemSlice{item}}, nil
+	}
+
 	ec, err := e.prepareEvaluation(ctx, expr, node)
 	if err != nil {
 		return nil, err
@@ -549,7 +598,7 @@ func (e Evaluator) ValidateExpression(ctx context.Context, expr *Expression) err
 	collector := staticRefCollector{bound: map[string]int{}, namespaces: ec.namespaces}
 	collector.walk(expr.astExpr())
 
-	if err := ec.countOps(ctx, max(1, collector.visits)); err != nil {
+	if err := ec.countOps(ctx, max(minimumStaticReferenceWork, collector.visits)); err != nil {
 		return err
 	}
 
@@ -619,13 +668,13 @@ func (e Evaluator) prepareEvaluation(ctx context.Context, expr *Expression, node
 		ec.namespaces = expr.staticNamespaces
 	}
 
-	if expr.version == 10 {
+	if expr.version == xpathVersion10 {
 		ec.xpath10Compat = true
 	}
 
 	applyBudget(ctx, ec)
 
-	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == 10, ec.schemaDeclarations, ec.version); err != nil {
+	if err := expr.prefixPlan.Validate(ec.namespaces, expr.staticNamespaces != nil || ec.strictPrefixes || ec.version == xpathVersion10, ec.schemaDeclarations, ec.version); err != nil {
 		return nil, err
 	}
 
@@ -655,7 +704,7 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 	}
 
 	maxNodes := maxNodeSetLength
-	if cfg.maxNodes > 0 {
+	if cfg.maxNodes > configuredNodeLimitFloor {
 		maxNodes = cfg.maxNodes
 	}
 
@@ -663,8 +712,8 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 		node:              node,
 		runtime:           cfg.runtime,
 		invocation:        &invocationState{},
-		position:          1,
-		size:              1,
+		position:          defaultFocusPosition,
+		size:              defaultFocusSize,
 		opCount:           &opCount,
 		maxNodes:          maxNodes,
 		docCache:          make(map[string]xdm.Node),
@@ -735,11 +784,11 @@ func (e Evaluator) newEvalCtx(node xdm.Node) *evalContext {
 	ec.xpath10Compat = cfg.xpath10Compat
 
 	// dynamic focus overrides
-	if cfg.position > 0 {
+	if cfg.position > configuredPositionFloor {
 		ec.position = cfg.position
 	}
 
-	if cfg.size != 0 {
+	if cfg.size != defaultFocusSizeSelector {
 		ec.size = cfg.size
 	}
 

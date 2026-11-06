@@ -346,3 +346,92 @@ func TestSelectACSPriorityAndBinding(t *testing.T) {
 		t.Fatal("missing index accepted", err)
 	}
 }
+
+func TestMetadataExpiryAttributesRequireValues(t *testing.T) {
+	t.Parallel()
+	at := testcert.Now()
+	for _, level := range []string{"aggregate", "entity", "role"} {
+		for _, attribute := range []string{"validUntil", "cacheDuration"} {
+			for _, value := range []string{"", " ", "valid"} {
+				t.Run(level+"/"+attribute+"/"+value, func(t *testing.T) {
+					t.Parallel()
+					valid := value == "valid"
+					if valid {
+						value = "PT60S"
+						if attribute == "validUntil" {
+							value = at.Add(time.Minute).Format(time.RFC3339Nano)
+						}
+					}
+					attrs := map[string]string{level: fmt.Sprintf(` %s="%s"`, attribute, value)}
+					raw := fmt.Sprintf(`<md:EntitiesDescriptor xmlns:md="%s"%s><md:EntityDescriptor entityID="urn:test:sp"%s><md:SPSSODescriptor protocolSupportEnumeration="%s"%s><md:AssertionConsumerService Binding="%s" Location="https://sp.test/acs" index="0"/></md:SPSSODescriptor></md:EntityDescriptor></md:EntitiesDescriptor>`, metadata.Namespace, attrs["aggregate"], attrs["entity"], metadata.Protocol, attrs["role"], metadata.HTTPPost)
+					snapshot, err := metadata.ParseTrusted(t.Context(), []byte(raw), at, metadata.Options{})
+					if !valid {
+						if err == nil || snapshot != nil {
+							t.Fatal("empty expiry constraint accepted as absent")
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					entity, err := snapshot.Find("urn:test:sp", at)
+					if err != nil {
+						t.Fatal(err)
+					}
+					role, err := entity.Role(metadata.ServiceProvider, at)
+					if err != nil {
+						t.Fatal(err)
+					} else if !role.ExpiresAt().Equal(at.Add(time.Minute)) {
+						t.Fatalf("effective role expiry = %v, %v; want %v", role.ExpiresAt(), err, at.Add(time.Minute))
+					}
+					if _, err := entity.Role(metadata.ServiceProvider, at.Add(time.Minute)); err == nil {
+						t.Fatal("expiry boundary was inclusive")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMetadataProtocolEnumerationUsesXMLWhitespace(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name, value string
+		accept      bool
+	}{
+		{"exact", metadata.Protocol, true},
+		{"XML space", "urn:unsupported " + metadata.Protocol, true},
+		{"XML tab CR LF", "urn:unsupported&#x9;&#xD;&#xA;" + metadata.Protocol, true},
+		{"unsupported only", "urn:unsupported", false},
+		{"NBSP between", "urn:unsupported&#xA0;" + metadata.Protocol, false},
+		{"EMSPACE between", "urn:unsupported&#x2003;" + metadata.Protocol, false},
+		{"NBSP prefix", "&#xA0;" + metadata.Protocol, false},
+		{"NBSP suffix", metadata.Protocol + "&#xA0;", false},
+		{"opaque NBSP item then XML space", "urn:opaque&#xA0;value " + metadata.Protocol, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			raw := fmt.Sprintf(`<md:EntityDescriptor xmlns:md="%s" entityID="urn:test:protocol-list"><md:SPSSODescriptor protocolSupportEnumeration="%s"><md:AssertionConsumerService Binding="%s" Location="https://sp.test/acs" index="0"/></md:SPSSODescriptor></md:EntityDescriptor>`, metadata.Namespace, test.value, metadata.HTTPPost)
+			snapshot, err := metadata.ParseTrusted(t.Context(), []byte(raw), at, metadata.Options{})
+			if !test.accept {
+				if err == nil || snapshot != nil {
+					t.Fatal("SAML2 role selected without an exact XML-list item")
+				}
+				return
+			}
+			if err != nil || snapshot == nil {
+				t.Fatalf("XML-list supported role rejected: %v", err)
+			}
+			entity, err := snapshot.Find("urn:test:protocol-list", at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := entity.Role(metadata.ServiceProvider, at); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

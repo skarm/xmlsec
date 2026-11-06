@@ -3,6 +3,7 @@ GOLANGCI_LINT ?= golangci-lint
 GOLANGCI_LINT_CONFIG ?= build/.golangci.yml
 DOCKER ?= docker
 INTEROP_DOCKER_IMAGE ?= xmlsec-interop:local
+INTEROP_INPUT_CACHE ?= /tmp/xmlsec-interop-inputs
 FUZZ_ARGS ?=
 BENCH_ARGS ?=
 INTEROP_ARGS ?=
@@ -53,8 +54,7 @@ suites:
 
 # Optional independent engines; never part of ordinary Go checks.
 interop:
-	$(GO) test -tags=interop -count=1 -v -timeout=20m ./transform -run=Compare
-	$(GO) test -tags=interop -count=1 -v -timeout=15m ./tests/interop -args $(INTEROP_ARGS)
+	GO="$(GO)" bash build/interop.sh $(INTEROP_ARGS)
 
 # The same complete Linux run used by the Docker image.
 interop-full:
@@ -64,8 +64,10 @@ interop-full:
 	java -version
 	pkg-config --modversion xmlsec1-openssl libxml-2.0
 	$(GO) test -race -count=1 ./...
-	$(MAKE) interop INTEROP_ARGS="-suite=all"
+	XMLSEC_P7_EXPORT_FIXTURES=/tmp/xmlsec-interop-history $(GO) test -count=1 ./xades -run '^TestHistoricalExpiredTSAArchiveEvidence$$'
+	XMLSEC_DSS_FIXTURE_DIR=/tmp/xmlsec-interop-history XMLSEC_DSS_CA_PEM=root.pem sh build/dss.sh --inside-all
 
 interop-docker:
-	$(DOCKER) build --file build/interop.Dockerfile --tag "$(INTEROP_DOCKER_IMAGE)" .
+	sh build/prepare-interop.sh "$(INTEROP_INPUT_CACHE)"
+	$(DOCKER) build --build-context "interop-downloads=$(INTEROP_INPUT_CACHE)" --file build/interop.Dockerfile --tag "$(INTEROP_DOCKER_IMAGE)" .
 	$(DOCKER) run --rm --network=none "$(INTEROP_DOCKER_IMAGE)"

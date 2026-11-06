@@ -36,6 +36,14 @@ const roundMaxComputeScale = 1 << 20
 // an astronomically large exponent to Exp.
 const ratFracDigitNonTerminating = 1 << 30
 
+// Exact-binary rounding uses 256-bit math/big.Float intermediates. This
+// working precision is independent of decimal operand scales and their caps.
+const roundFloatPrecisionBits = 256
+
+// XPath position arguments round to an integer (zero fractional decimal places).
+// Shared by substring and subsequence, independently of their one-based positions.
+const positionRoundPrecision = 0
+
 // compatArgString applies the XPath 1.0 function-conversion rule for an
 // xs:string argument: fn:string of its first item. Used for format-number's
 // picture and decimal-format-name arguments under compatibility mode.
@@ -67,7 +75,7 @@ func fnFormatNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 			return nil, err
 		}
 	default:
-		if xdm.SequenceLen(args[0]) != 1 {
+		if xdm.SequenceLen(args[0]) != singletonFunctionArgument {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "format-number() first argument must be a singleton numeric value"}
 		}
 
@@ -105,7 +113,7 @@ func fnFormatNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 	// Optional decimal-format-name argument (xs:string), coerced the same way.
 	df := defaultDecimalFormat(ctx)
 
-	if len(args) > 2 && xdm.SequenceLen(args[2]) > 0 {
+	if len(args) > builtinArityTwo && xdm.SequenceLen(args[2]) > 0 {
 		var formatName string
 		if compat {
 			formatName, err = compatArgString(args[2])
@@ -131,21 +139,23 @@ func fnFormatNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 }
 
 func lookupFunctionsNumeric(name string) (*builtinFunc, bool) {
+	const fnNameAbs = "abs" // standard numeric function local name
+
 	switch name {
-	case "abs":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnAbs}, true
+	case fnNameAbs:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnAbs}, true
 	case nameCeiling:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnCeiling}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnCeiling}, true
 	case nameFloor:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnFloor}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnFloor}, true
 	case nameRound:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnRound}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnRound}, true
 	case nameRoundHalfToEven:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnRoundHalfToEven}, true
-	case "format-integer":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnFormatInteger}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnRoundHalfToEven}, true
+	case fnNameFormatInteger:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnFormatInteger}, true
 	case lexicon.FnFormatNumber:
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnFormatNumber}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnFormatNumber}, true
 	}
 
 	return nil, false
@@ -180,7 +190,7 @@ func promoteSeqToNumeric(seq xdm.Sequence) (xdm.AtomicValue, bool, error) {
 	switch xdm.SequenceLen(seq) {
 	case 0:
 		return xdm.AtomicValue{}, false, nil
-	case 1:
+	case singletonFunctionArgument:
 		a, err := promoteToNumeric(seq.Get(0))
 		if err != nil {
 			return xdm.AtomicValue{}, false, err
@@ -349,6 +359,12 @@ func resolveRoundScale(precision *big.Int, intDigits, fracDigits int) (int, roun
 // intDigitCount returns the number of base-10 digits in |n|, with 0 counted as
 // a single digit. Used as the integer-magnitude input to resolveRoundScale.
 func intDigitCount(n *big.Int) int {
+	// This rational upper bound estimates log10(2) from a bit count.
+	const (
+		binaryToDecimalEstimateNumerator   = 30103
+		binaryToDecimalEstimateDenominator = 100000
+	)
+
 	if n.Sign() == 0 {
 		return 1
 	}
@@ -356,14 +372,14 @@ func intDigitCount(n *big.Int) int {
 	// Estimate from BitLen, then compare magnitudes; do not allocate a decimal
 	// string just to count its digits. 30103/100000 bounds log10(2) above.
 	b := n.BitLen()
-	digits := b/100000*30103 + int(int64(b%100000)*30103/100000) + 1
-	power := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(digits-1)), nil)
+	digits := b/binaryToDecimalEstimateDenominator*binaryToDecimalEstimateNumerator + int(int64(b%binaryToDecimalEstimateDenominator)*binaryToDecimalEstimateNumerator/binaryToDecimalEstimateDenominator) + 1
+	power := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(digits-1)), nil)
 
 	abs := new(big.Int).Abs(n)
 	for digits > 1 && abs.Cmp(power) < 0 {
 		digits--
 
-		power.Quo(power, big.NewInt(10))
+		power.Quo(power, big.NewInt(numericDecimalRadix))
 	}
 
 	return digits
@@ -434,14 +450,21 @@ func fnRoundHalfToEven(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, 
 // large 10^|precision| is never materialised: cases whose result is determined
 // trivially (rounds to 0, or operand unchanged) short-circuit before any Exp.
 func roundImpl(ctx context.Context, args []xdm.Sequence, halfToEven bool) (xdm.Sequence, error) {
+	// The binary64 fractional bound selects an unchanged-result shortcut; it
+	// is independent of the cap for non-terminating decimal computations.
+	const (
+		defaultRoundPrecision         = 0 // absent $precision requests integral rounding
+		binary64MaximumFractionDigits = 324
+	)
+
 	// When the 2-arg form is used, $precision is a required "exactly one
 	// xs:integer" parameter and must be validated whether or not $arg is empty:
 	// the empty first argument does not excuse an absent or ill-typed precision.
 	// round((), "bad") and round(1, ()) both raise XPTY0004; round((), 3) and
 	// round((), 1) are () only because the precision itself is valid.
-	precision := big.NewInt(0)
+	precision := big.NewInt(defaultRoundPrecision)
 
-	if len(args) > 1 {
+	if len(args) > builtinArityOne {
 		p, err := roundPrecisionArg(ctx, args[1])
 		if err != nil {
 			return nil, err
@@ -460,7 +483,7 @@ func roundImpl(ctx context.Context, args []xdm.Sequence, halfToEven bool) (xdm.S
 	}
 
 	if size, numeric := NumericSize(a); numeric {
-		if err := preflightNumeric(ctx, size*8); err != nil {
+		if err := preflightNumeric(ctx, size*bitsPerByte); err != nil {
 			return nil, err
 		}
 	}
@@ -482,7 +505,7 @@ func roundImpl(ctx context.Context, args []xdm.Sequence, halfToEven bool) (xdm.S
 	// without ever computing a huge scale.
 	intDigits := floatIntDigitCount(n)
 
-	scale, decision, err := resolveRoundScale(precision, intDigits, 324)
+	scale, decision, err := resolveRoundScale(precision, intDigits, binary64MaximumFractionDigits)
 	if err != nil {
 		return nil, err
 	}
@@ -561,13 +584,11 @@ func floatIntDigitCount(n float64) int {
 		return 1
 	}
 
-	intPart, _ := new(big.Float).SetPrec(256).SetFloat64(m).Int(nil)
+	intPart, _ := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(m).Int(new(big.Int))
 
 	return intDigitCount(intPart)
 }
 
-// roundHalfToEvenFloat rounds a float64 to the given precision using
-// half-to-even (banker's rounding). It uses big.Float to scale the value
 // roundHalfUpFloat rounds a float64 using "half towards positive infinity"
 // semantics (XPath fn:round). Uses big.Float to preserve precision.
 func roundHalfUpFloat(n float64, precision int) float64 {
@@ -576,16 +597,16 @@ func roundHalfUpFloat(n float64, precision int) float64 {
 	}
 
 	if precision >= 0 {
-		bf := new(big.Float).SetPrec(256).SetFloat64(n)
+		bf := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(n)
 		scale := bigPow10(precision)
-		scaled := new(big.Float).SetPrec(256).Mul(bf, scale)
+		scaled := new(big.Float).SetPrec(roundFloatPrecisionBits).Mul(bf, scale)
 
 		// XPath round: floor(x + 0.5) — rounds half towards +∞
-		half := new(big.Float).SetPrec(256).SetFloat64(0.5)
-		shifted := new(big.Float).SetPrec(256).Add(scaled, half)
+		half := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(0.5)
+		shifted := new(big.Float).SetPrec(roundFloatPrecisionBits).Add(scaled, half)
 
 		intPart := bigFloatFloor(shifted)
-		result := new(big.Float).SetPrec(256).SetInt(intPart)
+		result := new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(intPart)
 		result.Quo(result, scale)
 		f, _ := result.Float64()
 
@@ -594,15 +615,15 @@ func roundHalfUpFloat(n float64, precision int) float64 {
 
 	// F&O requires rounding the actual binary value, including at coarse scales.
 	// Its shortest decimal representation can fall on the other side of a tie.
-	bf := new(big.Float).SetPrec(256).SetFloat64(n)
+	bf := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(n)
 	divisor := bigPow10(-precision)
-	scaled := new(big.Float).SetPrec(256).Quo(bf, divisor)
+	scaled := new(big.Float).SetPrec(roundFloatPrecisionBits).Quo(bf, divisor)
 
-	half := new(big.Float).SetPrec(256).SetFloat64(0.5)
-	shifted := new(big.Float).SetPrec(256).Add(scaled, half)
+	half := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(0.5)
+	shifted := new(big.Float).SetPrec(roundFloatPrecisionBits).Add(scaled, half)
 
 	intPart := bigFloatFloor(shifted)
-	result := new(big.Float).SetPrec(256).SetInt(intPart)
+	result := new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(intPart)
 	result.Mul(result, divisor)
 	f, _ := result.Float64()
 
@@ -611,15 +632,15 @@ func roundHalfUpFloat(n float64, precision int) float64 {
 
 // bigPow10 returns 10^n as a big.Float with 256-bit precision.
 func bigPow10(n int) *big.Float {
-	p := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
-	return new(big.Float).SetPrec(256).SetInt(p)
+	p := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(n)), nil)
+	return new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(p)
 }
 
 // bigFloatFloor returns the floor of a big.Float as a big.Int.
 func bigFloatFloor(bf *big.Float) *big.Int {
-	intPart, _ := bf.Int(nil)
+	intPart, _ := bf.Int(new(big.Int))
 	if bf.Sign() < 0 {
-		frac := new(big.Float).SetPrec(256).Sub(bf, new(big.Float).SetPrec(256).SetInt(intPart))
+		frac := new(big.Float).SetPrec(roundFloatPrecisionBits).Sub(bf, new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(intPart))
 		if frac.Sign() != 0 {
 			intPart.Sub(intPart, big.NewInt(1))
 		}
@@ -635,13 +656,13 @@ func bigFloatFloor(bf *big.Float) *big.Int {
 // scale factor.
 func roundHalfToEvenFloat(n float64, precision int) float64 {
 	if precision >= 0 {
-		bf := new(big.Float).SetPrec(256).SetFloat64(n)
+		bf := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(n)
 		scale := bigPow10(precision)
-		scaled := new(big.Float).SetPrec(256).Mul(bf, scale)
+		scaled := new(big.Float).SetPrec(roundFloatPrecisionBits).Mul(bf, scale)
 
 		rounded := roundScaledHalfToEven(scaled)
 
-		result := new(big.Float).SetPrec(256).SetInt(rounded)
+		result := new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(rounded)
 		result.Quo(result, scale)
 		f, _ := result.Float64()
 		// Preserve negative zero per IEEE 754
@@ -653,11 +674,11 @@ func roundHalfToEvenFloat(n float64, precision int) float64 {
 	}
 
 	// Negative precision: round to 10^(-precision)
-	bf := new(big.Float).SetPrec(256).SetFloat64(n)
+	bf := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(n)
 	divisor := bigPow10(-precision)
-	scaled := new(big.Float).SetPrec(256).Quo(bf, divisor)
+	scaled := new(big.Float).SetPrec(roundFloatPrecisionBits).Quo(bf, divisor)
 	rounded := roundScaledHalfToEven(scaled)
-	result := new(big.Float).SetPrec(256).SetInt(rounded)
+	result := new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(rounded)
 
 	result.Mul(result, divisor)
 
@@ -672,19 +693,19 @@ func roundHalfToEvenFloat(n float64, precision int) float64 {
 
 func roundScaledHalfToEven(scaled *big.Float) *big.Int {
 	// Determine floor and the fractional part
-	intPart, _ := scaled.Int(nil) // truncates towards zero
+	intPart, _ := scaled.Int(new(big.Int)) // truncates towards zero
 	if scaled.Sign() < 0 {
 		// For negative numbers, Int truncates towards zero (ceiling);
 		// we want the floor.
-		frac := new(big.Float).SetPrec(256).Sub(scaled, new(big.Float).SetPrec(256).SetInt(intPart))
+		frac := new(big.Float).SetPrec(roundFloatPrecisionBits).Sub(scaled, new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(intPart))
 		if frac.Sign() != 0 {
 			intPart.Sub(intPart, big.NewInt(1))
 		}
 	}
 
-	floor := new(big.Float).SetPrec(256).SetInt(intPart)
-	frac := new(big.Float).SetPrec(256).Sub(scaled, floor)
-	half := new(big.Float).SetPrec(256).SetFloat64(0.5)
+	floor := new(big.Float).SetPrec(roundFloatPrecisionBits).SetInt(intPart)
+	frac := new(big.Float).SetPrec(roundFloatPrecisionBits).Sub(scaled, floor)
+	half := new(big.Float).SetPrec(roundFloatPrecisionBits).SetFloat64(0.5)
 
 	var rounded *big.Int
 
@@ -750,7 +771,7 @@ func ratRound(r *big.Rat) *big.Rat {
 
 // roundIntegerHalfToEven rounds a *big.Int to 10^scale using half-to-even.
 func roundIntegerHalfToEven(n *big.Int, scale int) *big.Int {
-	pow := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+	pow := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(scale)), nil)
 	q, r := new(big.Int).QuoRem(n, pow, new(big.Int))
 	half := new(big.Int).Quo(pow, big.NewInt(2))
 	absR := new(big.Int).Abs(r)
@@ -785,7 +806,7 @@ func roundIntegerHalfToEven(n *big.Int, scale int) *big.Int {
 
 // roundIntegerHalfUp rounds a *big.Int to 10^scale using half-up (towards positive infinity).
 func roundIntegerHalfUp(n *big.Int, scale int) *big.Int {
-	pow := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+	pow := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(scale)), nil)
 	q, r := new(big.Int).QuoRem(n, pow, new(big.Int))
 	half := new(big.Int).Quo(pow, big.NewInt(2))
 	absR := new(big.Int).Abs(r)
@@ -810,7 +831,7 @@ func roundIntegerHalfUp(n *big.Int, scale int) *big.Int {
 // using half-up rounding (towards positive infinity on tie).
 func ratRoundPrecision(r *big.Rat, precision int) *big.Rat {
 	if precision >= 0 {
-		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
+		scale := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(precision)), nil)
 		// Multiply by scale, round, divide by scale
 		shifted := new(big.Rat).Mul(r, new(big.Rat).SetInt(scale))
 		half := new(big.Rat).SetFrac64(1, 2)
@@ -823,7 +844,7 @@ func ratRoundPrecision(r *big.Rat, precision int) *big.Rat {
 	// integer first — flooring discards the fractional part and
 	// can push the value past the rounding boundary (e.g. -249.9 floors to -250
 	// or even -251, landing on the wrong multiple of 100).
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-precision)), nil)
+	scale := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(-precision)), nil)
 	scaleRat := new(big.Rat).SetInt(scale)
 	divided := new(big.Rat).Quo(r, scaleRat)
 	rounded := ratRound(divided)
@@ -838,7 +859,7 @@ func ratRoundPrecision(r *big.Rat, precision int) *big.Rat {
 // so 10^|precision| is bounded by the operand and never astronomically large.
 func ratRoundPrecisionHalfToEven(r *big.Rat, precision int) *big.Rat {
 	if precision >= 0 {
-		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
+		scale := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(precision)), nil)
 		scaleRat := new(big.Rat).SetInt(scale)
 		shifted := new(big.Rat).Mul(r, scaleRat)
 		rounded := number.RatRoundHalfToEvenInt(shifted)
@@ -850,7 +871,7 @@ func ratRoundPrecisionHalfToEven(r *big.Rat, precision int) *big.Rat {
 	// integer first — flooring would discard the fractional part that can
 	// break a tie at the rounding boundary (e.g. ...896.5...123 must round up,
 	// not be treated as an exact half that lands on the even digit).
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-precision)), nil)
+	scale := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(-precision)), nil)
 	scaleRat := new(big.Rat).SetInt(scale)
 	divided := new(big.Rat).Quo(r, scaleRat)
 	rounded := number.RatRoundHalfToEvenInt(divided)

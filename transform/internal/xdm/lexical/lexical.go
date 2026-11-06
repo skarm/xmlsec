@@ -11,12 +11,19 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// Language subtags are bounded in ASCII bytes. Expanded calendar years require
+// at least four digits; this minimum does not impose a maximum year magnitude.
+const (
+	maxLanguageSubtagBytes = 8
+	minExpandedYearDigits  = 4
+)
+
 // ValidLanguage checks the ASCII subtag grammar of xs:language directly.
 func ValidLanguage(s string) bool {
 	first := true
 
 	for part := range strings.SplitSeq(s, "-") {
-		if len(part) < 1 || len(part) > 8 {
+		if len(part) < 1 || len(part) > maxLanguageSubtagBytes {
 			return false
 		}
 
@@ -69,7 +76,7 @@ func decimalLexical(s string) bool {
 }
 
 func floatLexical(s string, version Version) bool {
-	if s == lexicon.FloatNaN || s == lexicon.FloatINF || s == lexicon.FloatNegINF || s == "+INF" && version == Version11 {
+	if s == lexicon.FloatNaN || s == lexicon.FloatINF || s == lexicon.FloatNegINF || s == lexicon.FloatPosINF && version == Version11 {
 		return true
 	}
 
@@ -115,7 +122,7 @@ func timezoneBody(s string, required bool) (string, bool) {
 
 func yearLexical(s string) bool {
 	s = strings.TrimPrefix(s, "-")
-	return len(s) >= 4 && digits(s) && (len(s) == 4 || s[0] != '0')
+	return len(s) >= minExpandedYearDigits && digits(s) && (len(s) == minExpandedYearDigits || s[0] != '0')
 }
 
 func dateBody(s string) bool {
@@ -177,7 +184,7 @@ func durationLexical(s, kind string) bool {
 
 	for len(s) > 0 {
 		if s[0] == 'T' {
-			if inTime || kind == "yearMonthDuration" {
+			if inTime || kind == lexicon.TypeYearMonthDuration {
 				return false
 			}
 
@@ -269,5 +276,5 @@ func durationTimeOrder(unit byte, fraction bool, previous int) (int, bool) {
 
 func durationDateOrder(unit byte, fraction bool, kind string, previous int) (int, bool) {
 	order := strings.IndexByte("YMD", unit) + 1
-	return order, !(order <= previous || fraction || kind == "dayTimeDuration" && unit != 'D' || kind == "yearMonthDuration" && unit == 'D')
+	return order, !(order <= previous || fraction || kind == lexicon.TypeDayTimeDuration && unit != 'D' || kind == lexicon.TypeYearMonthDuration && unit == 'D')
 }

@@ -1,5 +1,7 @@
 package html
 
+// These case-sensitive spelling tokens are shared by HTML element descriptors
+// and serialization rules. Entity-table values keep their established spelling.
 const (
 	nameBig        = "big"
 	nameBlockquote = "blockquote"

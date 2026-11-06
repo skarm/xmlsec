@@ -19,6 +19,11 @@ import (
 	"time"
 )
 
+// This is the reviewed conformance-register schema, not a language or report version.
+const (
+	conformanceSchemaVersion = 4
+)
+
 const (
 	conformanceFull     = "full"
 	conformancePartial  = "partial"
@@ -755,18 +760,18 @@ func (c *conformanceCheck) test(id string, test conformanceTest) {
 		return
 	}
 
-	path, err := localPath(c.root, c.root, filepath.FromSlash(test.File))
+	p, err := localPath(c.root, c.root, filepath.FromSlash(test.File))
 	if err != nil {
 		c.problem(id, "invalid test path: "+err.Error())
 		return
 	}
 
-	symbols, parsed := c.symbols[path]
+	symbols, parsed := c.symbols[p]
 	if !parsed {
 		symbols = make(map[string]struct{})
-		c.symbols[path] = symbols
+		c.symbols[p] = symbols
 
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		file, err := parser.ParseFile(token.NewFileSet(), p, nil, 0)
 		if err != nil {
 			c.problem(id, "cannot parse test: "+err.Error())
 			return
@@ -808,12 +813,12 @@ func (c *conformanceCheck) api(id, reference string) {
 			return
 		}
 
-		for _, path := range paths {
-			if strings.HasSuffix(path, "_test.go") {
+		for _, p := range paths {
+			if strings.HasSuffix(p, "_test.go") {
 				continue
 			}
 
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			file, err := parser.ParseFile(token.NewFileSet(), p, nil, 0)
 			if err != nil {
 				c.problem(id, "cannot parse API: "+err.Error())
 				return
@@ -878,7 +883,7 @@ func checkConformanceRegister(root string, data []byte) (int, []error, error) {
 		return 0, nil, errors.New("conformance register has trailing JSON")
 	}
 
-	if register.SchemaVersion != 4 || len(register.Requirements) == 0 || len(register.Normative) == 0 || len(register.Profiles) == 0 || len(register.Documents) == 0 {
+	if register.SchemaVersion != conformanceSchemaVersion || len(register.Requirements) == 0 || len(register.Normative) == 0 || len(register.Profiles) == 0 || len(register.Documents) == 0 {
 		return 0, nil, errors.New("conformance register requires schema 4 and nonempty scope, normative, profile and document inventories")
 	}
 

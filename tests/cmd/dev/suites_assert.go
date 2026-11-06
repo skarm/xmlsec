@@ -20,6 +20,12 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+// Mismatch diagnostics retain bounded byte excerpts on both sides of the first difference.
+const (
+	reportExcerptBeforeBytes = 8
+	reportExcerptAfterBytes  = 24
+)
+
 const (
 	suiteUTF16BE = "utf-16be"
 	suiteUTF16LE = "utf-16le"
@@ -323,7 +329,7 @@ func suitePermutationAssertion(ctx context.Context, evaluation *suiteEvaluation,
 }
 
 func suiteExpectedBytes(e *suiteEvaluation, assertion *suiteNode) ([]byte, error) {
-	if file := assertion.attr("file"); file != "" {
+	if file := assertion.attr(suiteFile); file != "" {
 		raw, _, err := readSuiteReferencedFile(e.options.directory, e.item.base, assertion)
 		if err != nil {
 			return nil, suiteHarness("expected result file: %w", err)
@@ -657,7 +663,7 @@ func suiteSerializationAssertion(ctx context.Context, e *suiteEvaluation, assert
 	}
 
 	if assertion.XMLName.Local == "serialization-matches" {
-		encoding := "UTF-8"
+		encoding := lexicon.EncodingUTF8U
 		if e.result != nil {
 			encoding, err = e.result.OutputEncoding(e.secondaryURI)
 			if err != nil {
@@ -677,8 +683,8 @@ func suiteSerializationAssertion(ctx context.Context, e *suiteEvaluation, assert
 	// bare CR data and every byte of the serializer's actual output.
 	encoding := strings.ToLower(assertion.attr("encoding"))
 
-	textFile := encoding == "" || encoding == "utf-8" || encoding == "utf8" || encoding == "iso-8859-1" || encoding == "us-ascii"
-	if assertion.attr(suiteFile) != "" && textFile && !bytes.HasPrefix(expected, []byte{0xff, 0xfe}) && !bytes.HasPrefix(expected, []byte{0xfe, 0xff}) {
+	textFile := encoding == "" || encoding == lexicon.EncodingUTF8 || encoding == lexicon.EncodingUTF8Alt || encoding == "iso-8859-1" || encoding == "us-ascii"
+	if assertion.attr(suiteFile) != "" && textFile && !bytes.HasPrefix(expected, []byte(lexicon.BOMUTF16LE)) && !bytes.HasPrefix(expected, []byte(lexicon.BOMUTF16BE)) {
 		expected = bytes.ReplaceAll(expected, []byte("\r\n"), []byte("\n"))
 	}
 
@@ -693,9 +699,9 @@ func compareSuiteBytes(kind string, actual, expected []byte) error {
 			offset++
 		}
 
-		start := max(0, offset-8)
+		start := max(0, offset-reportExcerptBeforeBytes)
 
-		return fmt.Errorf("%s bytes differ at offset %d (actual %d bytes, expected %d): got %q, want %q", kind, offset, len(actual), len(expected), actual[start:min(len(actual), offset+24)], expected[start:min(len(expected), offset+24)])
+		return fmt.Errorf("%s bytes differ at offset %d (actual %d bytes, expected %d): got %q, want %q", kind, offset, len(actual), len(expected), actual[start:min(len(actual), offset+reportExcerptAfterBytes)], expected[start:min(len(expected), offset+reportExcerptAfterBytes)])
 	}
 
 	return nil
@@ -709,7 +715,7 @@ func suiteSerializedText(data []byte, encoding string) (string, error) {
 		return suiteSerializedUTF16(data, label)
 	}
 
-	if label == "" || label == "utf-8" || label == "utf8" {
+	if label == "" || label == lexicon.EncodingUTF8 || label == lexicon.EncodingUTF8Alt {
 		if !utf8.Valid(data) {
 			return "", errors.New("serialized text is not UTF-8")
 		}
@@ -750,8 +756,8 @@ func suiteSerializedText(data []byte, encoding string) (string, error) {
 }
 
 func suiteSerializedUTF16(data []byte, encoding string) (string, error) {
-	littleBOM := bytes.HasPrefix(data, []byte{0xff, 0xfe})
-	bigBOM := bytes.HasPrefix(data, []byte{0xfe, 0xff})
+	littleBOM := bytes.HasPrefix(data, []byte(lexicon.BOMUTF16LE))
+	bigBOM := bytes.HasPrefix(data, []byte(lexicon.BOMUTF16BE))
 
 	little := encoding == suiteUTF16LE
 	switch encoding {

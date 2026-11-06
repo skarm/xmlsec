@@ -10,6 +10,15 @@ import (
 )
 
 const (
+	defaultMaxPlaintextBytes = 8 << 20
+	maximumPlaintextBytes    = 32 << 20
+	maximumRSAExponent       = 1<<31 - 1
+	maximumRSAKeyBits        = 16384
+	minimumRSAExponent       = 3
+	minimumRSAKeyBits        = 2048
+)
+
+const (
 	gcmNonceBytes = 12
 	gcmTagBytes   = 16
 )
@@ -53,10 +62,10 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 	}
 
 	if options.MaxPlaintextBytes == 0 {
-		options.MaxPlaintextBytes = 8 << 20
+		options.MaxPlaintextBytes = defaultMaxPlaintextBytes
 	}
 
-	if options.MaxPlaintextBytes < 1 || options.MaxPlaintextBytes > 32<<20 {
+	if options.MaxPlaintextBytes < 1 || options.MaxPlaintextBytes > maximumPlaintextBytes {
 		return profile{}, ErrPolicy
 	}
 
@@ -85,7 +94,7 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 }
 
 func validateRSAKey(key *rsa.PublicKey) error {
-	if key == nil || key.N == nil || key.N.Sign() <= 0 || key.N.Bit(0) == 0 || key.N.BitLen() < 2048 || key.N.BitLen() > 16384 || key.E < 3 || key.E%2 == 0 || key.E > 0x7fffffff {
+	if key == nil || key.N == nil || key.N.Sign() <= 0 || key.N.Bit(0) == 0 || key.N.BitLen() < minimumRSAKeyBits || key.N.BitLen() > maximumRSAKeyBits || key.E < minimumRSAExponent || key.E%2 == 0 || key.E > maximumRSAExponent {
 		return ErrPolicy
 	}
 

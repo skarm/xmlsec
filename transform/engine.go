@@ -17,6 +17,20 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Zero engine limit fields select these per-invocation defaults; maximumDepth is a validation ceiling. Resource loads, aggregate bytes and intermediate work have independent budgets.
+const (
+	defaultInputBytes    = 8 << 20
+	defaultResourceBytes = 32 << 20
+	defaultResourceLoads = 128
+	defaultProgramBytes  = 64 << 10
+	defaultOutputBytes   = 8 << 20
+	defaultNodes         = 100_000
+	defaultOperations    = 2_000_000
+	defaultDepth         = 128
+	defaultTimeout       = 3 * time.Second
+	maximumDepth         = 512
+)
+
 var (
 	// ErrInput reports invalid API input or an invalid zero-value handle.
 	ErrInput = errors.New("transform: invalid input")
@@ -55,12 +69,29 @@ type Limits struct {
 	MaxDepth int
 	// Timeout bounds each compilation or invocation; the default is three seconds.
 	// Zero selects that default and does not disable the deadline.
+	// Trusted AllowedPrograms compilation uses at least three seconds per program;
+	// the configured timeout still applies to each runtime invocation.
 	Timeout time.Duration
+	// MaxAttributesPerElement bounds attributes and namespace declarations per
+	// element when parsing XML or checking an existing snapshot; the default is 128.
+	MaxAttributesPerElement int
+	// MaxInScopeNamespaces bounds namespace bindings visible on each XML
+	// element, including the implicit xml binding; the default is 256.
+	MaxInScopeNamespaces int
 }
 
 // DefaultLimits returns an independent set of bounded defaults.
 func DefaultLimits() Limits {
-	return Limits{MaxInputBytes: 8 << 20, MaxResourceBytes: 32 << 20, MaxResources: 128, MaxProgramBytes: 64 << 10, MaxOutputBytes: 8 << 20, MaxNodes: 100_000, MaxOperations: 2_000_000, MaxDepth: 128, Timeout: 3 * time.Second}
+	xmlLimits := document.DefaultLimits()
+
+	return Limits{
+		MaxInputBytes: defaultInputBytes, MaxResourceBytes: defaultResourceBytes,
+		MaxResources: defaultResourceLoads, MaxProgramBytes: defaultProgramBytes,
+		MaxOutputBytes: defaultOutputBytes, MaxNodes: defaultNodes,
+		MaxOperations: defaultOperations, MaxDepth: defaultDepth, Timeout: defaultTimeout,
+		MaxAttributesPerElement: xmlLimits.MaxAttributesPerElement,
+		MaxInScopeNamespaces:    xmlLimits.MaxInScopeNamespaces,
+	}
 }
 
 // Config supplies immutable engine policy and explicit resource adapters.
@@ -99,6 +130,8 @@ type Config struct {
 	Environment map[string]string
 	// AllowedPrograms authorizes exact XMLDSig 1.0 transform programs. This application
 	// allowlist is independent of Functions registration.
+	// NewEngine compiles each program with a timeout of max(Limits.Timeout, 3s),
+	// sharing its compilation budget across all expressions in that program.
 	AllowedPrograms []reference.Transform
 }
 
@@ -114,18 +147,50 @@ type ResolverFunc = resource.ResolverFunc
 // Engine retains immutable policy for compilation and execution. Construct it with
 // NewEngine; its zero value is invalid.
 type Engine struct {
-	packages                      PackageResolver
-	collections                   CollectionResolver
-	functions                     map[xpath.QualifiedName]xpath.Function
-	functionNames                 map[string]xpath.Function
-	limits                        Limits
-	resolver                      Resolver
-	environment                   map[string]string
-	v1                            *v1Processor
-	xmlSchemaVersion              XMLSchemaVersion
-	xsltAssertions                bool
+	// packages is the application adapter for explicitly enabled stylesheet
+	// packages.
+	packages PackageResolver
+	// collections is the application adapter for XPath collections.
+	collections CollectionResolver
+	// functions indexes snapshotted callbacks by expanded function name.
+	functions map[xpath.QualifiedName]xpath.Function
+	// functionNames indexes callbacks by their expanded-name string representation.
+	functionNames map[string]xpath.Function
+	// limits retains normalized compilation and invocation budgets.
+	limits Limits
+	// resolver is the explicit external-resource adapter; nil grants no resource
+	// access.
+	resolver Resolver
+	// environment is the snapshotted environment exposed to transformations.
+	environment map[string]string
+	// v1 retains the compatibility processor for version 1.0 semantics.
+	v1 *v1Processor
+	// xmlSchemaVersion selects builtin datatype and regular-expression rules.
+	xmlSchemaVersion XMLSchemaVersion
+	// xsltAssertions enables xsl:assert for direct invocations.
+	xsltAssertions bool
+	// xsltDynamicEvaluationDisabled statically disables xsl:evaluate, including
+	// nested transforms.
 	xsltDynamicEvaluationDisabled bool
-	allowSingleByteEncodings      bool
+	// allowSingleByteEncodings permits the configured legacy XML input encodings.
+	allowSingleByteEncodings bool
+}
+
+// Error identifies a failed operation and retains its XPath, XSLT or application
+// error code when available. errors.Is preserves underlying cancellation and
+// resource-limit errors.
+type Error struct {
+	// Operation identifies the library operation that failed.
+	Operation string
+	// Code is the local part of the XPath, XSLT or application error code,
+	// or empty when none is available. CodeName also preserves its namespace.
+	Code string
+	// name retains the expanded XPath or XSLT error code.
+	name Name
+	// cause retains the wrapped execution or policy error.
+	cause error
+	// messages retains xsl:message diagnostics produced before failure.
+	messages []Message
 }
 
 // NewEngine validates policy and returns a reusable engine. Config{} is valid.
@@ -177,6 +242,14 @@ func NewEngine(config Config) (*Engine, error) {
 			value:    &limits.MaxDepth,
 			fallback: d.MaxDepth,
 		},
+		{
+			value:    &limits.MaxAttributesPerElement,
+			fallback: d.MaxAttributesPerElement,
+		},
+		{
+			value:    &limits.MaxInScopeNamespaces,
+			fallback: d.MaxInScopeNamespaces,
+		},
 	}
 
 	for _, field := range fields {
@@ -189,7 +262,7 @@ func NewEngine(config Config) (*Engine, error) {
 		}
 	}
 
-	if limits.Timeout < 0 || limits.MaxDepth > 512 {
+	if limits.Timeout < 0 || limits.MaxDepth > maximumDepth {
 		return nil, wrap("configure", ErrInput)
 	}
 
@@ -224,88 +297,6 @@ func NewEngine(config Config) (*Engine, error) {
 	}
 
 	return e, nil
-}
-
-func (e *Engine) invocation(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if e == nil || e.limits.MaxNodes == 0 || ctx == nil {
-		return nil, nil, ErrInput
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
-	}
-
-	// Keep the deadline outside the invocation values: hot cancellation checks
-	// can read it directly instead of traversing every value wrapper. Capture
-	// its start first so policy setup still counts toward the same timeout.
-	deadline := time.Now().Add(e.limits.Timeout)
-	ctx = xpath.WithFunctions(ctx, nil)
-	ctx = context.WithValue(ctx, resourceBudgetKey{}, &resourceBudget{bytes: e.limits.MaxResourceBytes, loads: e.limits.MaxResources})
-	ctx = xpath.WithEnvironment(ctx, e.environment)
-	ctx = xpath.WithBudget(ctx, e.limits.MaxOperations, e.limits.MaxNodes, e.limits.MaxOutputBytes, e.limits.MaxDepth)
-	ctx, cancel := context.WithDeadline(ctx, deadline)
-
-	return ctx, cancel, nil
-}
-
-func (e *Engine) parseOptions() xdm.ParseOptions {
-	limits := document.DefaultLimits()
-	limits.MaxBytes = e.limits.MaxInputBytes
-	limits.MaxDepth = e.limits.MaxDepth
-	limits.MaxNodes = e.limits.MaxNodes
-
-	return xdm.ParseOptions{Limits: limits, AllowSingleByteEncodings: e.allowSingleByteEncodings, AllowRelativeNamespaces: true}
-}
-
-// Language parsing supports DTD semantics; security snapshots and approved
-// XMLDSig transforms keep parseOptions' DTD-free input policy.
-func (e *Engine) languageParseOptions() xdm.ParseOptions {
-	options := e.parseOptions()
-	options.AllowDTD = true
-	options.DTDOpen = resourceAdapter{engine: e}.Resolve
-
-	return options
-}
-
-// executionControlCause carries public limits across the internal callback and
-// resource interfaces, where language handlers must not recover from exhaustion.
-func executionControlCause(err error) error {
-	if errors.Is(err, ErrLimit) && !errors.Is(err, xpath.ErrBudget) {
-		return errors.Join(xpath.ErrBudget, err)
-	}
-
-	return err
-}
-
-func wrap(operation string, err error) error {
-	if err == nil {
-		return nil
-	}
-
-	code := ""
-	if xp, ok := errors.AsType[*xdm.Error](err); ok {
-		code = xp.CodeQName().Local
-	}
-
-	if errors.Is(err, pattern.ErrLimit) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrRecursionLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, document.ErrLimit) {
-		err = errors.Join(ErrLimit, err)
-	}
-
-	return &Error{Operation: operation, Code: code, cause: err}
-}
-
-// Error identifies a failed operation and retains its XPath, XSLT or application
-// error code when available. errors.Is preserves underlying cancellation and
-// resource-limit errors.
-type Error struct {
-	// Operation identifies the library operation that failed.
-	Operation string
-	// Code is the local part of the XPath, XSLT or application error code,
-	// or empty when none is available. CodeName also preserves its namespace.
-	Code     string
-	name     Name
-	cause    error
-	messages []Message
 }
 
 // Messages returns an owned copy of XSLT diagnostics emitted before failure.
@@ -350,4 +341,80 @@ func (e *Error) CodeName() Name {
 	}
 
 	return Name{Space: xpath.NSErr, Local: e.Code}
+}
+
+func (e *Engine) invocation(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	if e == nil || e.limits.MaxNodes == 0 || ctx == nil {
+		return nil, nil, ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	// Keep the deadline outside the invocation values: hot cancellation checks
+	// can read it directly instead of traversing every value wrapper. Capture
+	// its start first so policy setup still counts toward the same timeout.
+	deadline := time.Now().Add(e.limits.Timeout)
+	ctx = xpath.WithFunctions(ctx, nil)
+	ctx = context.WithValue(ctx, resourceBudgetKey{}, &resourceBudget{bytes: e.limits.MaxResourceBytes, loads: e.limits.MaxResources})
+	ctx = xpath.WithEnvironment(ctx, e.environment)
+	ctx = xpath.WithBudget(ctx, e.limits.MaxOperations, e.limits.MaxNodes, e.limits.MaxOutputBytes, e.limits.MaxDepth)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+
+	return ctx, cancel, nil
+}
+
+// xmlLimits projects normalized engine policy onto the shared XML parser and
+// immutable snapshot checker. Other XML limits keep their document defaults.
+func (l Limits) xmlLimits() document.Limits {
+	limits := document.DefaultLimits()
+	limits.MaxBytes = l.MaxInputBytes
+	limits.MaxDepth = l.MaxDepth
+	limits.MaxNodes = l.MaxNodes
+	limits.MaxAttributesPerElement = l.MaxAttributesPerElement
+	limits.MaxInScopeNamespaces = l.MaxInScopeNamespaces
+
+	return limits
+}
+
+func (e *Engine) parseOptions() xdm.ParseOptions {
+	return xdm.ParseOptions{Limits: e.limits.xmlLimits(), AllowSingleByteEncodings: e.allowSingleByteEncodings, AllowRelativeNamespaces: true}
+}
+
+// Language parsing supports DTD semantics; security snapshots and approved
+// XMLDSig transforms keep parseOptions' DTD-free input policy.
+func (e *Engine) languageParseOptions() xdm.ParseOptions {
+	options := e.parseOptions()
+	options.AllowDTD = true
+	options.DTDOpen = resourceAdapter{engine: e}.Resolve
+
+	return options
+}
+
+// executionControlCause carries public limits across the internal callback and
+// resource interfaces, where language handlers must not recover from exhaustion.
+func executionControlCause(err error) error {
+	if errors.Is(err, ErrLimit) && !errors.Is(err, xpath.ErrBudget) {
+		return errors.Join(xpath.ErrBudget, err)
+	}
+
+	return err
+}
+
+func wrap(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	code := ""
+	if xp, ok := errors.AsType[*xdm.Error](err); ok {
+		code = xp.CodeQName().Local
+	}
+
+	if errors.Is(err, pattern.ErrLimit) || errors.Is(err, xpath.ErrBudget) || errors.Is(err, xpath.ErrOpLimit) || errors.Is(err, xpath.ErrRecursionLimit) || errors.Is(err, xpath.ErrNodeSetLimit) || errors.Is(err, document.ErrLimit) {
+		err = errors.Join(ErrLimit, err)
+	}
+
+	return &Error{Operation: operation, Code: code, cause: err}
 }

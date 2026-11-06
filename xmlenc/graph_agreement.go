@@ -98,21 +98,21 @@ func (g *keyGraph) agreementEncryptedPlan(node graphNode, fields graphEncryptedF
 }
 
 func graphAgreementName(info document.Element) (string, error) {
-	if !graphAttributes(info, "Id") || !graphStructuralText(info) {
+	if !graphAttributes(info, lexicon.SecurityAttrID) || !graphStructuralText(info) {
 		return "", ErrFormat
 	}
 
-	methods, err := childElements(info, elementName(Namespace, "AgreementMethod"))
+	methods, err := childElements(info, elementName(Namespace, nameAgreementMethod))
 	if err != nil {
 		return "", err
 	}
 
-	if attributeValue(methods[0], "Algorithm") != ECDHES {
+	if attributeValue(methods[0], lexicon.SecurityAttrAlgorithm) != ECDHES {
 		return "", ErrPolicy
 	}
 
 	for _, child := range methods[0].Children() {
-		if child.Name() != elementName(Namespace, "RecipientKeyInfo") {
+		if child.Name() != elementName(Namespace, nameRecipientKeyInfo) {
 			continue
 		}
 
@@ -128,7 +128,7 @@ func graphAgreementName(info document.Element) (string, error) {
 
 func graphHasAgreement(info document.Element) bool {
 	for _, child := range info.Children() {
-		if child.Name() == elementName(Namespace, "AgreementMethod") {
+		if child.Name() == elementName(Namespace, nameAgreementMethod) {
 			return true
 		}
 	}
@@ -141,7 +141,7 @@ func graphHasAgreement(info document.Element) bool {
 // supported schema attributes removed; caller nodes and namespaces are retained.
 func graphAgreementInfo(info document.Element) (document.Element, error) {
 	owner, node := tree.Unwrap(info)
-	if !graphAttributes(info, "Id") || len(info.Children()) != 1 {
+	if !graphAttributes(info, lexicon.SecurityAttrID) || len(info.Children()) != 1 {
 		return document.Element{}, ErrFormat
 	}
 
@@ -158,11 +158,11 @@ func graphAgreementInfo(info document.Element) (document.Element, error) {
 
 		cloned.Children = append([]*tree.Node(nil), method.Children...)
 		for j, child := range cloned.Children {
-			if child.Name != elementName(Namespace, "OriginatorKeyInfo") && child.Name != elementName(Namespace, "RecipientKeyInfo") {
+			if child.Name != elementName(Namespace, nameOriginatorKeyInfo) && child.Name != elementName(Namespace, nameRecipientKeyInfo) {
 				continue
 			}
 
-			if !graphAttributes(tree.Wrap(owner, child), "Id") {
+			if !graphAttributes(tree.Wrap(owner, child), lexicon.SecurityAttrID) {
 				return document.Element{}, ErrFormat
 			}
 

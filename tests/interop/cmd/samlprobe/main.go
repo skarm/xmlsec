@@ -21,6 +21,8 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const outputFileMode = 0o600
+
 func main() {
 	mode := flag.String("mode", "", "mode")
 	in := flag.String("in", "", "input")
@@ -41,6 +43,7 @@ func main() {
 		p, _ := pem.Decode(read(*keyPath))
 		if p == nil {
 			must(errors.New("key"))
+			return
 		}
 
 		k, e := x509.ParsePKCS8PrivateKey(p.Bytes)
@@ -73,7 +76,7 @@ func main() {
 			must(err)
 		}
 
-		must(os.WriteFile(*out, encoded, 0o600))
+		must(os.WriteFile(*out, encoded, outputFileMode))
 	}
 
 	fmt.Println("OK", *mode)

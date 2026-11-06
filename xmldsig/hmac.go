@@ -13,6 +13,11 @@ import (
 	"github.com/skarm/xmlsec/internal/streamio"
 )
 
+const (
+	// Hard byte ceiling for an explicitly supplied HMAC key.
+	maximumHMACKeyBytes = 1 << 20
+)
+
 // HMACResult authenticates references with a shared secret. Every holder of the
 // secret can produce the same MAC; it does NOT identify a unique signer or
 // provide non-repudiation. No key fingerprint, key bytes or key-derived identifier
@@ -236,13 +241,17 @@ func (c signatureCredential) validate(s signatureSpec, p Policy) error {
 	return s.validatePublicKey(c.public, p)
 }
 
-func (c signatureCredential) validateSigner(s signatureSpec) error {
+func (c signatureCredential) validateSigner(s signatureSpec, p Policy) error {
 	if c.mac {
 		return nil
 	}
 
 	if nilcheck.IsNil(c.signer) {
 		return ErrKey
+	}
+
+	if s.algorithm == RSASHA1 && !p.AllowLegacySigning {
+		return fmt.Errorf("%w: RSA-SHA1 generation requires AllowLegacySigning", ErrPolicy)
 	}
 
 	return s.validateSigner(c.signer)
@@ -262,7 +271,7 @@ func (c signatureCredential) prepareInput(ctx context.Context, s signatureSpec, 
 		}
 
 		full := mac.Sum(nil)
-		n := s.hmacBits / 8
+		n := s.hmacBits / signatureOctetBits
 		clear(full[n:])
 
 		return full[:n:n], ctx.Err()
@@ -331,7 +340,11 @@ func (c signatureCredential) verifyPrepared(s signatureSpec, digest, value []byt
 	return s.verifyPrepared(c.public, digest, value)
 }
 
-func (c signatureCredential) signPrepared(ctx context.Context, s signatureSpec, digest []byte) ([]byte, error) {
+func (c signatureCredential) signPrepared(ctx context.Context, s signatureSpec, p Policy, digest []byte) ([]byte, error) {
+	if err := c.validateSigner(s, p); err != nil {
+		return nil, err
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -357,7 +370,7 @@ func (s signatureSpec) hash() crypto.Hash {
 // copySecret bounds allocation before cloning, independently of caller policy.
 // Key length is not a test of entropy. Applications must generate random secrets.
 func copySecret(secret []byte) ([]byte, error) {
-	if len(secret) < 32 || len(secret) > 1<<20 {
+	if len(secret) < minimumHMACKeyBytes || len(secret) > maximumHMACKeyBytes {
 		return nil, fmt.Errorf("%w: HMAC secret length", ErrKey)
 	}
 

@@ -11,6 +11,16 @@ import (
 	"unicode/utf8"
 )
 
+// Character-class parsing bounds nested subtraction and parses Unicode escapes as 32-bit hexadecimal values.
+const (
+	maxCharacterClassDepth = 128
+	hexadecimalRadix       = 16
+	codepointParseBits     = 32
+)
+
+// Range search adds this fixed work weight to its size-dependent charge.
+const rangeSearchWorkWeight = 4
+
 type (
 	interval struct {
 		lo rune
@@ -55,7 +65,7 @@ func (s *characterSet) contains(r rune) bool {
 // complexity charges the binary searches, property predicates and subtraction
 // depth before evaluation. Large unions cannot consume unaccounted match work.
 func (s *characterSet) complexity() int {
-	cost := 1 + 4*bits.Len(uint(len(s.ranges)))
+	cost := 1 + rangeSearchWorkWeight*bits.Len(uint(len(s.ranges)))
 	for _, p := range s.properties {
 		cost += 1 + bits.Len(uint(len(p.table.R16)+len(p.table.R32)))
 	}
@@ -150,7 +160,7 @@ type classParser struct {
 }
 
 func (p *classParser) bracket(depth int) (*characterSet, error) {
-	if depth > 128 {
+	if depth > maxCharacterClassDepth {
 		return nil, ErrLimit
 	}
 
@@ -310,7 +320,7 @@ func (p *classParser) hexRune() (rune, error) {
 		return 0, errors.New("unterminated hex escape")
 	}
 
-	n, err := strconv.ParseUint(p.src[p.pos+1:p.pos+end], 16, 32)
+	n, err := strconv.ParseUint(p.src[p.pos+1:p.pos+end], hexadecimalRadix, codepointParseBits)
 	if err != nil || n > unicode.MaxRune {
 		return 0, errors.New("invalid codepoint")
 	}

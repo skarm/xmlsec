@@ -9,6 +9,12 @@ import (
 	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
+const (
+	// Caps explicitly configured issuer-scoped OCSP signing authorities.
+	maxOCSPAuthorities        = 8
+	maximumOCSPAuthorityBytes = 8 << 20
+)
+
 // OCSPAuthority pins one OCSP signing certificate for one exact issuer certificate.
 // The application establishes this trust out of band. Verification still checks
 // certificate validity and signing usage. Received names or certificates cannot
@@ -24,17 +30,17 @@ type OCSPAuthority struct {
 }
 
 func normalizeOCSPAuthorities(input []OCSPAuthority) ([]OCSPAuthority, error) {
-	if len(input) > 8 {
+	if len(input) > maxOCSPAuthorities {
 		return nil, ErrPolicy
 	}
 
-	remaining := 8 << 20
+	remaining := maximumOCSPAuthorityBytes
 	seen := make(map[[2][sha256.Size]byte]struct{})
 
 	output := make([]OCSPAuthority, 0, len(input))
 	for _, authority := range input {
 		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
-			if len(raw) < 1 || len(raw) > 1<<20 || len(raw) > remaining {
+			if len(raw) < 1 || len(raw) > certificateDERBytes || len(raw) > remaining {
 				return nil, ErrPolicy
 			}
 

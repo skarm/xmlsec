@@ -11,6 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 	"github.com/skarm/xmlsec/xmlenc"
@@ -18,7 +19,7 @@ import (
 
 func selectElement(doc *document.Document, idName document.Name, id string, index int, name document.Name) (document.Element, error) {
 	if idName.Local == "" {
-		idName.Local = "ID"
+		idName.Local = cliDefaultIDAttribute
 	}
 
 	var (
@@ -71,7 +72,7 @@ func runCoreHMAC(ctx context.Context, cmd string, doc *document.Document, select
 		return usageError("HMAC preservation entries use a separate trust model and are not accepted by -preserve")
 	}
 
-	secret, err := readInputContext(ctx, secretFile, nil, 1<<20)
+	secret, err := readInputContext(ctx, secretFile, nil, cliMaxHMACKeyBytes)
 	if err != nil {
 		return err
 	}
@@ -119,7 +120,7 @@ func runSignatureBuild(ctx context.Context, args []string, stdin io.Reader, stdo
 	input := fs.String("in", "", "existing XML document; empty creates a standalone Signature")
 	out := fs.String("out", "-", "output template XML")
 	parentID := fs.String("parent-id", "", "explicit parent ID; empty selects root")
-	idAttr := fs.String("id-attr", "ID", "application ID attribute local name")
+	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "application ID attribute local name")
 	idNS := fs.String("id-ns", "", "application ID namespace")
 
 	fs = commandFlags(fs, "config in out parent-id id-attr id-ns", false)
@@ -230,7 +231,7 @@ func runInspect(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	input := fs.String("in", "-", "input XML")
 	out := fs.String("out", "-", "diagnostic JSON")
 
-	fs = commandFlags(fs, "in out", false)
+	fs = commandFlags(fs, ioFlagNames, false)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -261,20 +262,20 @@ func runInspect(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	for i, sig := range xmldsig.Signatures(doc) {
 		v := signature{Index: i, References: []string{}}
 
-		v.ID, _ = sig.Attribute(document.Name{Local: "Id"})
+		v.ID, _ = sig.Attribute(document.Name{Local: lexicon.SecurityAttrID})
 		for _, si := range sig.Children() {
-			if si.Name() != (document.Name{Space: xmldsig.Namespace, Local: "SignedInfo"}) {
+			if si.Name() != (document.Name{Space: xmldsig.Namespace, Local: lexicon.DSigElementSignedInfo}) {
 				continue
 			}
 
 			for _, n := range si.Children() {
 				switch n.Name().Local {
-				case "SignatureMethod":
-					v.Method, _ = n.Attribute(document.Name{Local: "Algorithm"})
-				case "CanonicalizationMethod":
-					v.Canonicalization, _ = n.Attribute(document.Name{Local: "Algorithm"})
-				case "Reference":
-					u, _ := n.Attribute(document.Name{Local: "URI"})
+				case lexicon.DSigElementSignatureMethod:
+					v.Method, _ = n.Attribute(document.Name{Local: lexicon.SecurityAttrAlgorithm})
+				case lexicon.DSigElementCanonicalizationMethod:
+					v.Canonicalization, _ = n.Attribute(document.Name{Local: lexicon.SecurityAttrAlgorithm})
+				case lexicon.DSigElementReference:
+					u, _ := n.Attribute(document.Name{Local: lexicon.SecurityAttrURI})
 					v.References = append(v.References, u)
 				}
 			}
@@ -289,10 +290,10 @@ func runInspect(ctx context.Context, args []string, stdin io.Reader, stdout, std
 func algorithmInfo() any {
 	return map[string]any{
 		"signature_policies": map[string]any{
-			nameDefault: xmldsig.DefaultPolicy().AllowedSignatureMethods,
-			"modern":    xmldsig.ModernPolicy().AllowedSignatureMethods,
-			"pss":       xmldsig.ParameterizedPolicy().AllowedSignatureMethods,
-			nameHMAC:    xmldsig.HMACPolicy().AllowedSignatureMethods,
+			nameDefault:     xmldsig.DefaultPolicy().AllowedSignatureMethods,
+			cliPolicyModern: xmldsig.ModernPolicy().AllowedSignatureMethods,
+			cliPolicyPSS:    xmldsig.ParameterizedPolicy().AllowedSignatureMethods,
+			nameHMAC:        xmldsig.HMACPolicy().AllowedSignatureMethods,
 		},
 		"digests":          xmldsig.DefaultPolicy().AllowedDigestMethods,
 		"canonicalization": []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments},
@@ -314,7 +315,7 @@ func resultReport(operation, trust string, detail any, err error) map[string]any
 		}
 	}
 
-	v := map[string]any{"schema_version": 1, fieldStatus: status, "operation": operation, "trust": trust}
+	v := map[string]any{"schema_version": cliReportSchemaVersion, fieldStatus: status, "operation": operation, "trust": trust}
 	if detail != nil {
 		v["details"] = detail
 	}
@@ -334,6 +335,8 @@ func requiredFlag(name, value string) error {
 	return nil
 }
 
+// Check before and after payload publication: creating the first file exposes
+// aliases of missing paths on filesystems that ignore filename case.
 func separateOutput(path, report, flagName string) error {
 	if path == "-" || report != "-" && samePath(path, report) {
 		return usageError("-%s requires a local file distinct from report output", flagName)

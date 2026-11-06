@@ -18,58 +18,160 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Standard function local names shared by dispatch and document/motion lookup.
+const (
+	fnNameBaseURI    = "base-uri"
+	fnNameDoc        = "doc"
+	fnNameCollection = "collection"
+)
+
+// Collection identity conflicts use the standard FODC0003 category. Visiting an
+// owner, collection item or document snapshot charges one logical operation.
+const (
+	errCodeFODC0003       = "FODC0003"
+	nodeFunctionVisitWork = 1
+)
+
+// fn:path sibling predicates number matching siblings from one, independently
+// of the zero-based backing child/index representation.
+const nodePathFirstSiblingPosition = 1
+
+// NodeBaseURI applies the XDM base-uri accessor, including xml:base and
+// construction-time bases. Parentless non-element nodes have no base URI.
+func NodeBaseURI(n xdm.Node) string {
+	if xdm.IsNilNode(n) {
+		return ""
+	}
+	// Namespace nodes have no base URI per the XPath data model.
+	if n.Type() == xdm.NamespaceNode {
+		return ""
+	}
+	// Per XDM: attribute, text, comment, and PI nodes derive their base URI
+	// from their parent element. If they have no parent, their base URI is
+	// the empty sequence.
+	nodeType := n.Type()
+	if nodeType == xdm.AttributeNode || nodeType == xdm.TextNode ||
+		nodeType == xdm.CommentNode || nodeType == xdm.ProcessingInstructionNode {
+		if n.Parent() == nil {
+			return ""
+		}
+	}
+	// Walk up the parent chain to find the actual document the node lives
+	// in. OwnerDocument() may return a different document when nodes are
+	// created in one document and then moved to another (e.g. in XSLT
+	// xsl:result-document).
+	var doc *xdm.Document
+	if d, ok := n.(*xdm.Document); ok {
+		doc = d
+	} else {
+		cur := n
+		for cur.Parent() != nil {
+			cur = cur.Parent()
+		}
+
+		if d, ok := cur.(*xdm.Document); ok {
+			doc = d
+		} else {
+			doc = n.OwnerDocument()
+		}
+	}
+
+	return xdm.NodeGetBase(doc, n)
+}
+
+// DocumentLoadSnapshot retains an available-document outcome in one host
+// invocation. scope identifies the host's document pool; key includes its
+// package/preprocessing view. Callers must check live read policy before this
+// function, including on a hit. Controls and policy failures are never retained.
+func DocumentLoadSnapshot(ctx context.Context, scope any, key string, load func() (*xdm.Document, error)) (*xdm.Document, error) {
+	store, _ := InvocationState(ctx, documentSnapshotKey{scope: scope}, func() any {
+		return &documentSnapshotStore{}
+	}).(*documentSnapshotStore)
+
+	return loadDocumentSnapshot(ctx, store, key, load)
+}
+
+// ResolveDocumentURI applies fn:doc's URI rules in the calling static context.
+// Hosts overriding retrieval must retain these rules, including fragment rejection.
+func ResolveDocumentURI(ctx context.Context, uri string) (string, error) {
+	if strings.Contains(uri, "#") {
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
+	}
+
+	resolved, err := resolveDocURI(ctx, uri)
+	if err != nil {
+		return "", err
+	}
+	// An empty argument resolves to the base URI verbatim, which may itself
+	// carry a fragment identifier. Re-check the resolved URI so doc("") with a
+	// fragmented base URI is rejected the same as a fragmented argument.
+	if strings.Contains(resolved, "#") {
+		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
+	}
+
+	return resolved, nil
+}
+
 func lookupFunctionsNode(name string) (*builtinFunc, bool) {
+	// These names complete the node-function signatures in the standard fn: namespace.
+	const (
+		fnNameRoot          = "root"
+		fnNameDocAvailable  = "doc-available"
+		fnNameIDRef         = "idref"
+		fnNameElementWithID = "element-with-id"
+	)
+
 	switch name {
 	case nameNodeName:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNodeName}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnNodeName}, true
 	case fnNameNilled:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNilled}, true
-	case "data":
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnData}, true
-	case "base-uri":
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnBaseURI}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnNilled}, true
+	case fnNameData:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnData}, true
+	case fnNameBaseURI:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnBaseURI}, true
 	case fnNameDocumentURI:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnDocumentURI}, true
-	case "root":
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnRoot}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnDocumentURI}, true
+	case fnNameRoot:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnRoot}, true
 	case namePath:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnPath}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnPath}, true
 	case nameHasChildren:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnHasChildren}, true
-	case "innermost":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnInnermost}, true
-	case "outermost":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnOutermost}, true
-	case lexicon.AttrLang:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnLang}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnHasChildren}, true
+	case fnNameInnermost:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnInnermost}, true
+	case fnNameOutermost:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnOutermost}, true
+	case fnNameLang:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnLang}, true
 	case nameLocalName:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnLocalName}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnLocalName}, true
 	case lexicon.FnName:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnName}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnName}, true
 	case nameNamespaceURI:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNamespaceURI}, true
-	case lexicon.TypeNumber:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnNumber}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnNamespaceURI}, true
+	case fnNameNumber:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnNumber}, true
 	case lexicon.FnGenerateID:
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnGenerateID}, true
-	case "parse-xml":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnParseXML}, true
-	case "parse-xml-fragment":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnParseXMLFragment}, true
-	case "doc":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnDoc}, true
-	case "doc-available":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnDocAvailable}, true
-	case "id":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnID}, true
-	case "idref":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnIDRef}, true
-	case "element-with-id":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnElementWithID}, true
-	case "collection":
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnCollection}, true
-	case "uri-collection":
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnURICollection}, true
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnGenerateID}, true
+	case fnNameParseXML:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnParseXML}, true
+	case fnNameParseXMLFragment:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnParseXMLFragment}, true
+	case fnNameDoc:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnDoc}, true
+	case fnNameDocAvailable:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnDocAvailable}, true
+	case fnNameID:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnID}, true
+	case fnNameIDRef:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnIDRef}, true
+	case fnNameElementWithID:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnElementWithID}, true
+	case fnNameCollection:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnCollection}, true
+	case fnNameURICollection:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnURICollection}, true
 	}
 
 	return nil, false
@@ -150,7 +252,7 @@ func nodeIsNilled(ctx context.Context, n xdm.Node) bool {
 }
 
 func fnData(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		fc := getFnContext(ctx)
 		if fc == nil {
 			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: "data() requires a context item"}
@@ -370,49 +472,6 @@ func (ec *evalContext) isElementOnlyContent(n xdm.Node, provider ContentTypeKind
 	return ok && kind == ContentTypeElementOnly
 }
 
-// NodeBaseURI applies the XDM base-uri accessor, including xml:base and
-// construction-time bases. Parentless non-element nodes have no base URI.
-func NodeBaseURI(n xdm.Node) string {
-	if xdm.IsNilNode(n) {
-		return ""
-	}
-	// Namespace nodes have no base URI per the XPath data model.
-	if n.Type() == xdm.NamespaceNode {
-		return ""
-	}
-	// Per XDM: attribute, text, comment, and PI nodes derive their base URI
-	// from their parent element. If they have no parent, their base URI is
-	// the empty sequence.
-	nodeType := n.Type()
-	if nodeType == xdm.AttributeNode || nodeType == xdm.TextNode ||
-		nodeType == xdm.CommentNode || nodeType == xdm.ProcessingInstructionNode {
-		if n.Parent() == nil {
-			return ""
-		}
-	}
-	// Walk up the parent chain to find the actual document the node lives
-	// in. OwnerDocument() may return a different document when nodes are
-	// created in one document and then moved to another (e.g. in XSLT
-	// xsl:result-document).
-	var doc *xdm.Document
-	if d, ok := n.(*xdm.Document); ok {
-		doc = d
-	} else {
-		cur := n
-		for cur.Parent() != nil {
-			cur = cur.Parent()
-		}
-
-		if d, ok := cur.(*xdm.Document); ok {
-			doc = d
-		} else {
-			doc = n.OwnerDocument()
-		}
-	}
-
-	return xdm.NodeGetBase(doc, n)
-}
-
 // isInsignificantWhitespaceText reports whether n is a text or CDATA-section node,
 // or an entity reference expanding to text, whose content is entirely XSD
 // whitespace (space, tab, CR, LF). XSD treats whitespace-only text and CDATA
@@ -606,7 +665,7 @@ func buildNodePath(n xdm.Node) string {
 func elementPosition(n xdm.Node) int {
 	local := xdm.LocalNameOf(n)
 	uri := xdm.NodeNamespaceURI(n)
-	pos := 1
+	pos := nodePathFirstSiblingPosition
 
 	for sib := n.PrevSibling(); sib != nil; sib = sib.PrevSibling() {
 		if sib.Type() == xdm.ElementNode &&
@@ -620,7 +679,7 @@ func elementPosition(n xdm.Node) int {
 }
 
 func textPosition(n xdm.Node) int {
-	pos := 1
+	pos := nodePathFirstSiblingPosition
 
 	for sib := n.PrevSibling(); sib != nil; sib = sib.PrevSibling() {
 		if sib.Type() == xdm.TextNode || sib.Type() == xdm.CDATASectionNode {
@@ -632,7 +691,7 @@ func textPosition(n xdm.Node) int {
 }
 
 func commentPosition(n xdm.Node) int {
-	pos := 1
+	pos := nodePathFirstSiblingPosition
 
 	for sib := n.PrevSibling(); sib != nil; sib = sib.PrevSibling() {
 		if sib.Type() == xdm.CommentNode {
@@ -644,7 +703,7 @@ func commentPosition(n xdm.Node) int {
 }
 
 func processingInstructionPosition(n xdm.Node) int {
-	pos := 1
+	pos := nodePathFirstSiblingPosition
 
 	for sibling := n.PrevSibling(); sibling != nil; sibling = sibling.PrevSibling() {
 		if sibling.Type() == xdm.ProcessingInstructionNode && sibling.Name() == n.Name() {
@@ -753,7 +812,7 @@ func fnLang(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	var n xdm.Node
 
-	if len(args) > 1 {
+	if len(args) > builtinArityOne {
 		nodes, ok := xdm.NodesFrom(args[1])
 		if !ok || len(nodes) == 0 {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:lang second argument must be a node"}
@@ -774,7 +833,7 @@ func fnLang(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	for owner := n; owner != nil; owner = owner.Parent() {
-		if err := Charge(ctx, 1); err != nil {
+		if err := Charge(ctx, nodeFunctionVisitWork); err != nil {
 			return nil, err
 		}
 
@@ -840,7 +899,7 @@ func fnNamespaceURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 }
 
 func fnNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		fc := getFnContext(ctx)
 		if fc == nil || (fc.contextItem == nil && fc.node == nil) {
 			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
@@ -1064,7 +1123,7 @@ func idElementsFromTypeAnnotations(doc *xdm.Document, tokens []string, ec *evalC
 func idNodeResult(node xdm.Node, wanted map[string]struct{}, elementWithID bool) (xdm.Node, bool) {
 	switch typed := node.(type) {
 	case *xdm.Attribute:
-		if _, ok := wanted[strings.Trim(xdm.StringValue(typed), " \t\r\n")]; !ok {
+		if _, ok := wanted[strings.Trim(xdm.StringValue(typed), lexicon.XMLWhitespace)]; !ok {
 			return nil, false
 		}
 
@@ -1075,7 +1134,7 @@ func idNodeResult(node xdm.Node, wanted map[string]struct{}, elementWithID bool)
 
 		return parent, true
 	case *xdm.Element:
-		if _, ok := wanted[strings.Trim(xdm.StringValue(typed), " \t\r\n")]; !ok {
+		if _, ok := wanted[strings.Trim(xdm.StringValue(typed), lexicon.XMLWhitespace)]; !ok {
 			return nil, false
 		}
 
@@ -1160,7 +1219,7 @@ func (l *idRefLookup) visit(node xdm.Node) error {
 	l.collectAttributes(element)
 
 	if l.ec != nil && nodeHasIDRefAnnotation(l.ec, element) {
-		if hasIDRefToken(strings.Trim(xdm.StringValue(element), " \t\r\n"), l.wanted) {
+		if hasIDRefToken(strings.Trim(xdm.StringValue(element), lexicon.XMLWhitespace), l.wanted) {
 			l.nodes = append(l.nodes, element)
 		}
 	}
@@ -1231,7 +1290,7 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	}
 
 	if hasURI {
-		uri, err = resolveCollectionURI(ctx, uri, "fn:collection")
+		uri, err = resolveCollectionURI(ctx, uri, prefixFn+":"+fnNameCollection)
 		if err != nil {
 			return nil, err
 		}
@@ -1258,14 +1317,14 @@ func fnCollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	seq, err := ec.collectionResolver.ResolveCollection(ctx, uri)
 	if err != nil {
 		var detail *xdm.Error
-		if errors.As(err, &detail) && detail.Code == "FODC0003" {
+		if errors.As(err, &detail) && detail.Code == errCodeFODC0003 {
 			return nil, err
 		}
 
 		return nil, &xdm.Error{Code: lexicon.ErrFODC0002, Message: fmt.Sprintf("fn:collection: cannot resolve collection: %v", err), Cause: err}
 	}
 
-	if ec.version == 20 || ec.version == 30 {
+	if ec.version == xpathVersion20 || ec.version == xpathVersion30 {
 		required := xdm.SequenceType{ItemTest: xdm.TypeTest{Kind: xdm.NodeKindNode}, Occurrence: xdm.OccurrenceZeroOrMore}
 
 		seq, err = coerceFuncallArg(ctx, seq, required, "collection result", 0, ec)
@@ -1304,7 +1363,7 @@ func collectionInvocationCacheKey(resolver CollectionResolver, uris bool) collec
 // Reject inconsistent identities instead of silently substituting different data.
 func registerCollectionDocuments(ctx context.Context, ec *evalContext, seq xdm.Sequence) error {
 	for item := range xdm.SequenceItems(seq) {
-		if err := Charge(ctx, 1); err != nil {
+		if err := Charge(ctx, nodeFunctionVisitWork); err != nil {
 			return err
 		}
 
@@ -1326,7 +1385,7 @@ func registerCollectionDocuments(ctx context.Context, ec *evalContext, seq xdm.S
 		}
 
 		if previous, found := ec.docCache[uri]; found && previous != doc {
-			return &xdm.Error{Code: "FODC0003", Message: "collection supplied conflicting document identities for " + uri}
+			return &xdm.Error{Code: errCodeFODC0003, Message: "collection supplied conflicting document identities for " + uri}
 		}
 
 		ec.docCache[uri] = doc
@@ -1342,7 +1401,7 @@ func fnURICollection(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 	}
 
 	if hasURI {
-		uri, err = resolveCollectionURI(ctx, uri, "fn:uri-collection")
+		uri, err = resolveCollectionURI(ctx, uri, prefixFn+":"+fnNameURICollection)
 		if err != nil {
 			return nil, err
 		}
@@ -1418,7 +1477,7 @@ func fnDocAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 		return nil, err
 	}
 
-	if ec := getFnContext(ctx); ec != nil && (ec.version == 20 || ec.version == 30) {
+	if ec := getFnContext(ctx); ec != nil && (ec.version == xpathVersion20 || ec.version == xpathVersion30) {
 		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == errCodeFODC0005 {
 			return nil, err
 		}
@@ -1431,7 +1490,7 @@ func availableDocument(ctx context.Context, uri string) (xdm.Sequence, error) {
 	if ec := getFnContext(ctx); ec != nil {
 		// A host's fn:doc supplies its available-documents component, including
 		// package-specific whitespace views. Availability must use that same pool.
-		if fn := ec.fnsNS[QualifiedName{URI: NSFn, Name: "doc"}]; fn != nil {
+		if fn := ec.fnsNS[QualifiedName{URI: NSFn, Name: fnNameDoc}]; fn != nil {
 			return fn.Call(ctx, []xdm.Sequence{xdm.SingleString(uri)})
 		}
 	}
@@ -1455,41 +1514,8 @@ type documentSnapshotStore struct {
 
 type documentSnapshotKey struct{ scope any }
 
-// DocumentLoadSnapshot retains an available-document outcome in one host
-// invocation. scope identifies the host's document pool; key includes its
-// package/preprocessing view. Callers must check live read policy before this
-// function, including on a hit. Controls and policy failures are never retained.
-func DocumentLoadSnapshot(ctx context.Context, scope any, key string, load func() (*xdm.Document, error)) (*xdm.Document, error) {
-	store, _ := InvocationState(ctx, documentSnapshotKey{scope: scope}, func() any {
-		return &documentSnapshotStore{}
-	}).(*documentSnapshotStore)
-
-	return loadDocumentSnapshot(ctx, store, key, load)
-}
-
-// ResolveDocumentURI applies fn:doc's URI rules in the calling static context.
-// Hosts overriding retrieval must retain these rules, including fragment rejection.
-func ResolveDocumentURI(ctx context.Context, uri string) (string, error) {
-	if strings.Contains(uri, "#") {
-		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
-	}
-
-	resolved, err := resolveDocURI(ctx, uri)
-	if err != nil {
-		return "", err
-	}
-	// An empty argument resolves to the base URI verbatim, which may itself
-	// carry a fragment identifier. Re-check the resolved URI so doc("") with a
-	// fragmented base URI is rejected the same as a fragmented argument.
-	if strings.Contains(resolved, "#") {
-		return "", &xdm.Error{Code: errCodeFODC0005, Message: "fn:doc: URI must not contain a fragment identifier"}
-	}
-
-	return resolved, nil
-}
-
 func loadDocumentSnapshot(ctx context.Context, store *documentSnapshotStore, key string, load func() (*xdm.Document, error)) (*xdm.Document, error) {
-	if err := Charge(ctx, 1); err != nil {
+	if err := Charge(ctx, nodeFunctionVisitWork); err != nil {
 		return nil, err
 	}
 
@@ -1619,7 +1645,7 @@ func retrieveDocument(ctx context.Context, resolved string, options xdm.ParseOpt
 }
 
 func collectionURIArg(ctx context.Context, args []xdm.Sequence) (string, bool, error) {
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		return "", false, nil
 	}
 	// xs:string? URI: atomize FIRST, then apply the singleton-or-empty
@@ -1702,8 +1728,8 @@ func resolveDocURI(ctx context.Context, uri string) (string, error) {
 func resolveIDLookupDocument(ctx context.Context, args []xdm.Sequence) (*xdm.Document, error) {
 	var node xdm.Node
 
-	if len(args) > 1 {
-		if xdm.SequenceLen(args[1]) != 1 {
+	if len(args) > builtinArityOne {
+		if xdm.SequenceLen(args[1]) != singletonFunctionArgument {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:id second argument must be a single node"}
 		}
 
@@ -1801,7 +1827,7 @@ func sequenceFromDocOrderedNodes(ctx context.Context, nodes []xdm.Node) (xdm.Seq
 
 // nodeArgOrCtx extracts a node from the first argument or falls back to the context node.
 func nodeArgOrCtx(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
-	if len(args) == 0 {
+	if len(args) == builtinArityZero {
 		fc := getFnContext(ctx)
 		if fc == nil || fc.node == nil && fc.contextItem == nil {
 			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
@@ -1818,7 +1844,7 @@ func nodeArgOrCtx(ctx context.Context, args []xdm.Sequence) (xdm.Node, error) {
 		return nil, nil //nolint:nilnil // An empty optional node argument has no node.
 	}
 
-	if xdm.SequenceLen(args[0]) > 1 {
+	if xdm.SequenceLen(args[0]) > singletonFunctionArgument {
 		// XPath 1.0 compatibility mode uses the first node; otherwise a >1 node
 		// argument is a type error.
 		if !getFnContext(ctx).xpath10CompatMode() {

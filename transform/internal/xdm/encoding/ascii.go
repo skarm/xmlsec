@@ -12,6 +12,7 @@ package encoding
 
 import (
 	"errors"
+	"unicode/utf8"
 
 	enc "golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/unicode"
@@ -44,7 +45,7 @@ func (asciiDecoder) Reset() {}
 func (asciiDecoder) Transform(dst, src []byte, _ bool) (nDst, nSrc int, err error) {
 	for nSrc < len(src) {
 		b := src[nSrc]
-		if b >= 0x80 {
+		if b >= utf8.RuneSelf {
 			return nDst, nSrc, ErrInvalidASCII
 		}
 

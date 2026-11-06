@@ -136,6 +136,7 @@ func (*elementInst) instructionTag() {}
 
 type attributeInst struct {
 	sourceInfo
+	Namespaces map[string]string // immutable declaration-site namespace bindings
 	Name       *avt
 	Namespace  *avt
 	Select     *xpath.Expression

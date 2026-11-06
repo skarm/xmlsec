@@ -21,6 +21,30 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+// Execution defaults and validation ceilings are distinct: callers select bounded work/output and signature policy. A zero command timeout leaves the outer context untimed; language engines retain their own invocation timeout.
+const (
+	cliDefaultMinimumPSSSaltBytes = 0
+	cliDefaultOperationTimeout    = 0
+	cliDefaultOutputBytes         = 32 << 20
+	cliDefaultReferences          = 16
+	cliMaxReferences              = 64
+	cliDefaultCanonicalBytes      = 32 << 20
+	cliDefaultNodeVisits          = 2_000_000
+	cliDefaultTransforms          = 8
+	cliMaxTransforms              = 64
+	cliDefaultMaxRSABits          = 8192
+	cliMaxRSABits                 = 16384
+	cliMaxPSSSaltBytes            = 2048
+	cliDefaultMaxPSSSaltBytes     = 1024
+	cliMinHMACKeyBytes            = 32
+	cliDefaultMaxHMACKeyBytes     = 4096
+	cliMinHMACOutputBits          = 128
+	cliMaxHMACOutputBits          = 512
+	cliMaxConfigBytes             = 4 << 20
+	cliMaxConfigDepth             = 256
+	cliOutputBufferBytes          = 32 << 10
+)
+
 type executionFlags struct {
 	xml                 document.Limits
 	output              int
@@ -48,7 +72,7 @@ func (e *executionFlags) start(ctx context.Context) (context.Context, context.Ca
 		return ctx, func() {}, usageError("%v", err)
 	}
 
-	if e.output < 1 || e.output > 64<<20 || e.xml.MaxBytes > 64<<20 || e.timeout < 0 || e.references < 1 || e.references > 64 || e.canonical < 1 || e.canonical > 64<<20 || e.nodeVisits < 1 || e.transforms < 1 || e.transforms > 64 {
+	if e.output < 1 || e.output > cliMaxBytes || e.xml.MaxBytes > cliMaxBytes || e.timeout < 0 || e.references < 1 || e.references > cliMaxReferences || e.canonical < 1 || e.canonical > cliMaxBytes || e.nodeVisits < 1 || e.transforms < 1 || e.transforms > cliMaxTransforms {
 		return ctx, func() {}, usageError("invalid execution limits (byte limits cannot exceed 64 MiB)")
 	}
 
@@ -78,9 +102,9 @@ func (e *executionFlags) signaturePolicy(modern bool) (xmldsig.Policy, error) {
 		if modern {
 			p = xmldsig.ModernPolicy()
 		}
-	case "modern":
+	case cliPolicyModern:
 		p = xmldsig.ModernPolicy()
-	case "pss":
+	case cliPolicyPSS:
 		p = xmldsig.ParameterizedPolicy()
 	case nameHMAC:
 		p = xmldsig.HMACPolicy()
@@ -128,7 +152,12 @@ func (e *executionFlags) processing(ctx context.Context, maxResource int, allowe
 			return opt, usageError("-allowed-programs requires 1..64 explicit programs")
 		}
 
-		engine, err := transform.NewEngine(transform.Config{AllowedPrograms: programs, Limits: transform.Limits{MaxInputBytes: opt.MaxInputBytes, MaxOutputBytes: e.output, MaxNodes: e.xml.MaxNodes, MaxDepth: e.xml.MaxDepth, MaxOperations: e.nodeVisits}})
+		engine, err := transform.NewEngine(transform.Config{AllowedPrograms: programs, Limits: transform.Limits{
+			MaxInputBytes: opt.MaxInputBytes, MaxOutputBytes: e.output,
+			MaxNodes: e.xml.MaxNodes, MaxDepth: e.xml.MaxDepth, MaxOperations: e.nodeVisits,
+			MaxAttributesPerElement: e.xml.MaxAttributesPerElement,
+			MaxInScopeNamespaces:    e.xml.MaxInScopeNamespaces,
+		}})
 		if err != nil {
 			return opt, err
 		}
@@ -146,19 +175,19 @@ func (e *executionFlags) processing(ctx context.Context, maxResource int, allowe
 }
 
 func (e *executionFlags) validateCryptoLimits() error {
-	if e.minRSABits < 2048 || e.maxRSABits < e.minRSABits || e.maxRSABits > 16384 {
+	if e.minRSABits < cliMinRSABits || e.maxRSABits < e.minRSABits || e.maxRSABits > cliMaxRSABits {
 		return usageError("RSA bounds require 2048 <= min <= max <= 16384")
 	}
 
-	if e.minPSSSalt < 0 || e.maxPSSSalt < e.minPSSSalt || e.maxPSSSalt > 2048 {
+	if e.minPSSSalt < 0 || e.maxPSSSalt < e.minPSSSalt || e.maxPSSSalt > cliMaxPSSSaltBytes {
 		return usageError("invalid PSS salt limits")
 	}
 
-	if e.minHMACKey < 32 || e.maxHMACKey < e.minHMACKey || e.maxHMACKey > 1<<20 {
+	if e.minHMACKey < cliMinHMACKeyBytes || e.maxHMACKey < e.minHMACKey || e.maxHMACKey > cliMaxHMACKeyBytes {
 		return usageError("invalid HMAC key bounds")
 	}
 
-	if e.minHMACBits < 128 || e.minHMACBits > 512 || e.minHMACBits%8 != 0 {
+	if e.minHMACBits < cliMinHMACOutputBits || e.minHMACBits > cliMaxHMACOutputBits || e.minHMACBits%8 != 0 {
 		return usageError("HMAC output floor must be 128..512 bits in multiples of 8")
 	}
 
@@ -187,7 +216,7 @@ func consumeInput(ctx context.Context, path string, stdin io.Reader, maximum int
 		return err
 	}
 
-	if maximum < 1 || maximum > 64<<20 {
+	if maximum < 1 || maximum > cliMaxBytes {
 		return usageError("input byte limit must be 1..67108864")
 	}
 
@@ -245,15 +274,15 @@ func openRegular(path string) (*os.File, error) {
 		return nil, err
 	}
 
-	stat, err = f.Stat()
-	if err != nil || !stat.Mode().IsRegular() {
+	openedStat, statErr := f.Stat()
+	if statErr != nil || !openedStat.Mode().IsRegular() {
 		_ = f.Close()
 
-		if err == nil {
-			err = errors.New("input must be a regular file")
+		if statErr == nil {
+			statErr = errors.New("input must be a regular file")
 		}
 
-		return nil, err
+		return nil, statErr
 	}
 
 	return f, nil
@@ -280,7 +309,7 @@ func readJSONFile(ctx context.Context, path string, target any) error {
 		return usageError("configuration must be a trusted local JSON file")
 	}
 
-	raw, err := readInputContext(ctx, path, nil, 4<<20)
+	raw, err := readInputContext(ctx, path, nil, cliMaxConfigBytes)
 	if err != nil {
 		return err
 	}
@@ -307,7 +336,7 @@ func decodeJSON(raw []byte, target any) error {
 }
 
 func uniqueJSON(d *json.Decoder, depth int) error {
-	if depth > 256 {
+	if depth > cliMaxConfigDepth {
 		return errors.New("JSON nesting exceeds 256")
 	}
 
@@ -380,23 +409,23 @@ func registerExecutionFlags(fs *flag.FlagSet) *executionFlags {
 	fs.IntVar(&e.xml.MaxAttributesPerElement, "max-attributes", e.xml.MaxAttributesPerElement, "maximum attributes/namespaces per XML element")
 	fs.IntVar(&e.xml.MaxNodeSetNodes, "max-nodeset-nodes", e.xml.MaxNodeSetNodes, "maximum expanded node-set nodes")
 	fs.IntVar(&e.xml.MaxInScopeNamespaces, "max-namespaces", e.xml.MaxInScopeNamespaces, "maximum in-scope namespaces")
-	fs.IntVar(&e.output, "max-output-bytes", 32<<20, "maximum output and transform output bytes")
-	fs.IntVar(&e.references, "max-references", 16, "maximum direct signature references (1..64)")
-	fs.IntVar(&e.canonical, "max-canonical-bytes", 32<<20, "aggregate signature digest/canonical byte budget")
-	fs.IntVar(&e.nodeVisits, "max-node-visits", 2_000_000, "aggregate signature transform node visits")
-	fs.IntVar(&e.transforms, "max-transforms", 8, "maximum transforms per reference (1..64)")
-	fs.DurationVar(&e.timeout, "timeout", 0, "operation deadline, e.g. 30s; 0 has no deadline")
+	fs.IntVar(&e.output, "max-output-bytes", cliDefaultOutputBytes, "maximum output and transform output bytes")
+	fs.IntVar(&e.references, "max-references", cliDefaultReferences, "maximum direct signature references (1..64)")
+	fs.IntVar(&e.canonical, "max-canonical-bytes", cliDefaultCanonicalBytes, "aggregate signature digest/canonical byte budget")
+	fs.IntVar(&e.nodeVisits, "max-node-visits", cliDefaultNodeVisits, "aggregate signature transform node visits")
+	fs.IntVar(&e.transforms, "max-transforms", cliDefaultTransforms, "maximum transforms per reference (1..64)")
+	fs.DurationVar(&e.timeout, "timeout", cliDefaultOperationTimeout, "operation deadline, e.g. 30s; 0 has no deadline")
 	fs.StringVar(&e.policy, "policy", nameDefault, "signature policy: default, modern, pss or hmac (explicit shared secret)")
 	fs.StringVar(&e.methods, "allowed-methods", "", "comma-separated signature method allowlist; overrides selected policy")
 	fs.StringVar(&e.digests, "allowed-digests", "", "comma-separated digest method allowlist")
 	fs.StringVar(&e.programs, "allowed-programs", "", "trusted local JSON array of exact approved XPath/Filter2/XSLT transforms")
-	fs.IntVar(&e.minRSABits, "min-rsa-bits", 2048, "minimum RSA modulus size")
-	fs.IntVar(&e.maxRSABits, "max-rsa-bits", 8192, "maximum RSA modulus size (up to 16384)")
-	fs.IntVar(&e.minPSSSalt, "min-pss-salt-bytes", 0, "minimum generic RSA-PSS salt length")
-	fs.IntVar(&e.maxPSSSalt, "max-pss-salt-bytes", 1024, "maximum generic RSA-PSS salt length")
-	fs.IntVar(&e.minHMACKey, "min-hmac-key-bytes", 32, "minimum HMAC key bytes")
-	fs.IntVar(&e.maxHMACKey, "max-hmac-key-bytes", 4096, "maximum HMAC key bytes")
-	fs.IntVar(&e.minHMACBits, "min-hmac-output-bits", 128, "minimum explicitly permitted HMAC tag size")
+	fs.IntVar(&e.minRSABits, "min-rsa-bits", cliMinRSABits, "minimum RSA modulus size")
+	fs.IntVar(&e.maxRSABits, "max-rsa-bits", cliDefaultMaxRSABits, "maximum RSA modulus size (up to 16384)")
+	fs.IntVar(&e.minPSSSalt, "min-pss-salt-bytes", cliDefaultMinimumPSSSaltBytes, "minimum generic RSA-PSS salt length")
+	fs.IntVar(&e.maxPSSSalt, "max-pss-salt-bytes", cliDefaultMaxPSSSaltBytes, "maximum generic RSA-PSS salt length")
+	fs.IntVar(&e.minHMACKey, "min-hmac-key-bytes", cliMinHMACKeyBytes, "minimum HMAC key bytes")
+	fs.IntVar(&e.maxHMACKey, "max-hmac-key-bytes", cliDefaultMaxHMACKeyBytes, "maximum HMAC key bytes")
+	fs.IntVar(&e.minHMACBits, "min-hmac-output-bits", cliMinHMACOutputBits, "minimum explicitly permitted HMAC tag size")
 	fs.BoolVar(&e.allowHMACTruncation, "allow-hmac-truncation", false, "explicitly allow bounded truncated HMAC tags")
 
 	return e
@@ -407,7 +436,7 @@ func execution(ctx context.Context) *executionFlags {
 		return e
 	}
 
-	return &executionFlags{xml: document.DefaultLimits(), output: 32 << 20, references: 16, canonical: 32 << 20, nodeVisits: 2_000_000, transforms: 8, policy: nameDefault}
+	return &executionFlags{xml: document.DefaultLimits(), output: cliDefaultOutputBytes, references: cliDefaultReferences, canonical: cliDefaultCanonicalBytes, nodeVisits: cliDefaultNodeVisits, transforms: cliDefaultTransforms, policy: nameDefault}
 }
 
 func writeOutputContext(ctx context.Context, path string, w io.Writer, b []byte) error {
@@ -460,7 +489,7 @@ func parseFlags(fs *flag.FlagSet, args []string) (bool, error) {
 
 func parseHash(s string) (crypto.Hash, error) {
 	switch strings.ToLower(s) {
-	case "sha256", "sha-256":
+	case cliHashSHA256, "sha-256":
 		return crypto.SHA256, nil
 	case "sha384", "sha-384":
 		return crypto.SHA384, nil
@@ -523,7 +552,7 @@ func produceOutput(ctx context.Context, path string, w io.Writer, produce func(i
 	err := writeAtomicOutputFunc(ctx, path, w, func(target io.Writer) error {
 		// Serializers emit short markup and 4 KiB escaped text fragments. Batch
 		// disk writes without collecting the complete serialized document.
-		buffered := bufio.NewWriterSize(target, 32<<10)
+		buffered := bufio.NewWriterSize(target, cliOutputBufferBytes)
 		if err := produce(&streamio.Writer{Context: ctx, Target: buffered, Limit: int64(limit), LimitError: limitErr}); err != nil {
 			return err
 		}

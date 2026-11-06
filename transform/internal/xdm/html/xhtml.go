@@ -34,7 +34,7 @@ func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool, serial
 				return false, nil
 			}
 
-			return true, writeURIAttribute(ctx, out, attribute.Value, false)
+			return true, writeURIAttribute(ctx, out, attribute.Value, xmlAttributeMode)
 		}
 	}
 
@@ -48,7 +48,7 @@ func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool, serial
 
 		local := LowerASCII(name.Local)
 
-		return xhtmlInline(local) || local == "pre" || local == nameScript || local == "style" || local == "title" || local == "textarea"
+		return xhtmlInline(local) || local == elemPre || local == nameScript || local == nameStyle || local == elemTitle || local == elemTextarea
 	}
 }
 
@@ -72,7 +72,7 @@ func PrepareXHTML(ctx context.Context, doc *xdm.Document, html5 bool, contentTyp
 			return err
 		}
 
-		if element, ok := node.(*xdm.Element); ok && XHTMLIsElement(element.URI(), element.LocalName(), html5) && EqualFoldASCII(element.LocalName(), "head") {
+		if element, ok := node.(*xdm.Element); ok && XHTMLIsElement(element.URI(), element.LocalName(), html5) && EqualFoldASCII(element.LocalName(), elemHead) {
 			heads = append(heads, element)
 		}
 
@@ -96,7 +96,7 @@ func html5ElementName(local string) bool {
 	}
 
 	switch local {
-	case "article", "aside", elemAudio, "bdi", "canvas", "command", elemData, "datalist", "details", "dialog", elemEmbed, "figcaption", "figure", "footer", "header", "hgroup", elemKeygen, "main", "mark", "math", "menuitem", "meter", "nav", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "section", "slot", elemSource, "summary", "svg", "template", "time", elemTrack, elemVideo, elemWbr:
+	case elemArticle, elemAside, elemAudio, elemBdi, elemCanvas, elemCommand, elemData, elemDatalist, elemDetails, elemDialog, elemEmbed, elemFigcaption, elemFigure, elemFooter, elemHeader, elemHgroup, elemKeygen, elemMain, elemMark, elemMath, elemMenuitem, elemMeter, elemNav, elemOutput, elemPicture, elemProgress, elemRb, elemRp, elemRt, elemRtc, elemRuby, elemSection, elemSlot, elemSource, elemSummary, elemSVG, elemTemplate, elemTime, elemTrack, elemVideo, elemWbr:
 		return true
 	}
 
@@ -104,12 +104,12 @@ func html5ElementName(local string) bool {
 }
 
 func xhtmlInline(local string) bool {
-	if descriptor := lookupElement(local); descriptor != nil && descriptor.inline != 0 {
+	if descriptor := lookupElement(local); descriptor != nil && descriptor.inline != blockLayout {
 		return true
 	}
 
 	switch local {
-	case elemAudio, "bdi", "canvas", elemData, "datalist", elemEmbed, elemKeygen, "mark", "math", "meter", "output", "picture", "progress", "rb", "rp", "rt", "rtc", "ruby", "svg", "template", "time", elemVideo, elemWbr:
+	case elemAudio, elemBdi, elemCanvas, elemData, elemDatalist, elemEmbed, elemKeygen, elemMark, elemMath, elemMeter, elemOutput, elemPicture, elemProgress, elemRb, elemRp, elemRt, elemRtc, elemRuby, elemSVG, elemTemplate, elemTime, elemVideo, elemWbr:
 		return true
 	}
 
@@ -146,23 +146,23 @@ func replaceXHTMLMetadata(doc *xdm.Document, head *xdm.Element, html5 bool, cont
 		xdm.UnlinkNode(mutable)
 
 		meta, ok := child.(*xdm.Element)
-		if !ok || !XHTMLIsElement(meta.URI(), meta.LocalName(), html5) || !EqualFoldASCII(meta.LocalName(), "meta") || !isContentTypeMeta(meta) {
+		if !ok || !XHTMLIsElement(meta.URI(), meta.LocalName(), html5) || !EqualFoldASCII(meta.LocalName(), elemMeta) || !isContentTypeMeta(meta) {
 			children = append(children, child)
 		}
 
 		child = next
 	}
 
-	meta, err := doc.CreateElementNS("meta", xdm.NewNamespace(head.Prefix(), head.URI()))
+	meta, err := doc.CreateElementNS(elemMeta, xdm.NewNamespace(head.Prefix(), head.URI()))
 	if err != nil {
 		return err
 	}
 
-	if err = meta.SetAttribute("http-equiv", "Content-Type"); err != nil {
+	if err = meta.SetAttribute(attrHTTPEquiv, lexicon.HeaderContentType); err != nil {
 		return err
 	}
 
-	if err = meta.SetAttribute("content", contentType); err != nil {
+	if err = meta.SetAttribute(attrContent, contentType); err != nil {
 		return err
 	}
 

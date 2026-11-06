@@ -17,17 +17,27 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	attrFilter               = "Filter"
+	maximumInclusivePrefixes = 128
+)
+
+const (
+	nameXPath         = "XPath"
+	prefixXPathFilter = "xf"
+)
+
 const Namespace = lexicon.NamespaceDSig
 
 func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (reference.Transform, error) {
 	var t reference.Transform
 
-	children, err := structure(n, lexicon.DSigElementTransform, "Algorithm")
+	children, err := structure(n, lexicon.DSigElementTransform, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return t, err
 	}
 
-	t.Algorithm, err = requiredAttribute(n, "Algorithm")
+	t.Algorithm, err = requiredAttribute(n, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return t, err
 	}
@@ -60,16 +70,16 @@ func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) err
 	}
 
 	for _, x := range t.XPath {
-		ns, prefix := Namespace, "ds"
+		ns, prefix := Namespace, lexicon.PrefixDSig
 		if t.Algorithm == reference.XPathFilter2 {
-			ns, prefix = reference.XPathFilter2, "xf"
+			ns, prefix = reference.XPathFilter2, prefixXPathFilter
 		}
 
 		if u, ok := x.Namespaces[prefix]; ok && u != ns {
 			return fmt.Errorf("%w: reserved transform prefix %s", reference.ErrPolicy, prefix)
 		}
 
-		child := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: ns, Local: "XPath"}, Prefix: prefix}
+		child := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: ns, Local: nameXPath}, Prefix: prefix}
 		bindings := make(map[string]string, len(x.Namespaces)+1)
 		maps.Copy(bindings, x.Namespaces)
 		bindings[prefix] = ns
@@ -82,13 +92,13 @@ func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) err
 		sort.Strings(keys)
 
 		for _, p := range keys {
-			if p != "xml" {
+			if p != lexicon.PrefixXML {
 				child.NS = append(child.NS, tree.Namespace{Prefix: p, URI: bindings[p]})
 			}
 		}
 
 		if x.Filter != "" {
-			setAttr(child, "Filter", x.Filter)
+			setAttr(child, attrFilter, x.Filter)
 		}
 
 		text(child, x.Expression)
@@ -99,12 +109,12 @@ func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) err
 }
 
 func ParseCanonical(n *tree.Node, local string) (reference.Transform, error) {
-	children, err := structure(n, local, "Algorithm")
+	children, err := structure(n, local, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return reference.Transform{}, err
 	}
 
-	uri, err := requiredAttribute(n, "Algorithm")
+	uri, err := requiredAttribute(n, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return reference.Transform{}, err
 	}
@@ -121,12 +131,12 @@ func ParseCanonical(n *tree.Node, local string) (reference.Transform, error) {
 		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", reference.ErrInput)
 	}
 
-	if len(children) != 1 || children[0].Name != (document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}) {
+	if len(children) != 1 || children[0].Name != (document.Name{Space: c14n.Exclusive, Local: lexicon.C14NElementInclusiveNamespaces}) {
 		return reference.Transform{}, fmt.Errorf("%w: canonicalization parameters", reference.ErrInput)
 	}
 
 	child := children[0]
-	if err := attributes(child, "PrefixList"); err != nil {
+	if err := attributes(child, lexicon.C14NAttrPrefixList); err != nil {
 		return reference.Transform{}, err
 	}
 
@@ -139,18 +149,18 @@ func ParseCanonical(n *tree.Node, local string) (reference.Transform, error) {
 		return reference.Transform{}, fmt.Errorf("%w: InclusiveNamespaces must be empty", reference.ErrInput)
 	}
 
-	list, err := requiredAttribute(child, "PrefixList")
+	list, err := requiredAttribute(child, lexicon.C14NAttrPrefixList)
 	if err != nil {
 		return reference.Transform{}, err
 	}
 
 	prefixes := strings.FieldsFunc(list, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
-	if len(prefixes) > 128 {
+	if len(prefixes) > maximumInclusivePrefixes {
 		return reference.Transform{}, fmt.Errorf("%w: too many inclusive prefixes", reference.ErrLimit)
 	}
 
 	for _, p := range prefixes {
-		if p != "#default" && (!tree.NCName(p) || p == "xmlns") {
+		if p != lexicon.C14NDefaultPrefixToken && (!tree.NCName(p) || p == lexicon.PrefixXMLNS) {
 			return reference.Transform{}, fmt.Errorf("%w: inclusive prefix", reference.ErrInput)
 		}
 	}
@@ -168,7 +178,7 @@ func Parse(ctx context.Context, doc *document.Document, n *tree.Node) (reference
 		return reference.Transform{}, err
 	}
 
-	algorithm, err := requiredAttribute(n, "Algorithm")
+	algorithm, err := requiredAttribute(n, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return reference.Transform{}, err
 	}
@@ -181,7 +191,7 @@ func Parse(ctx context.Context, doc *document.Document, n *tree.Node) (reference
 		return ParseCanonical(n, lexicon.DSigElementTransform)
 	}
 
-	children, err := structure(n, lexicon.DSigElementTransform, "Algorithm")
+	children, err := structure(n, lexicon.DSigElementTransform, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
 		return reference.Transform{}, err
 	}
@@ -206,12 +216,12 @@ func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) 
 
 		child := &tree.Node{
 			Kind:   tree.ElementNode,
-			Name:   document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"},
-			Prefix: "ec",
-			NS:     []tree.Namespace{{Prefix: "ec", URI: c14n.Exclusive}},
+			Name:   document.Name{Space: c14n.Exclusive, Local: lexicon.C14NElementInclusiveNamespaces},
+			Prefix: lexicon.PrefixExclusiveC14N,
+			NS:     []tree.Namespace{{Prefix: lexicon.PrefixExclusiveC14N, URI: c14n.Exclusive}},
 		}
 
-		setAttr(child, "PrefixList", strings.Join(t.InclusivePrefixes, " "))
+		setAttr(child, lexicon.C14NAttrPrefixList, strings.Join(t.InclusivePrefixes, " "))
 		add(n, child)
 
 		if _, err := ParseCanonical(n, lexicon.DSigElementTransform); err != nil {
@@ -231,10 +241,12 @@ func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) 
 }
 
 func standaloneTransformXML(ctx context.Context, doc *document.Document, n *tree.Node) ([]byte, error) {
+	const maximumStylesheetXMLBytes = 1 << 20
+
 	d := tree.FromNodes([]*tree.Node{tree.ImportSubtree(n)}, tree.Policy(doc))
 
 	var output bytes.Buffer
-	if _, err := d.WriteXML(ctx, &output, 1<<20); err != nil {
+	if _, err := d.WriteXML(ctx, &output, maximumStylesheetXMLBytes); err != nil {
 		return nil, err
 	}
 
@@ -267,12 +279,14 @@ func parseTransformContent(ctx context.Context, t *reference.Transform, children
 }
 
 func parseXPathParameter(ctx context.Context, n *tree.Node, doc *document.Document, algorithm string) (reference.XPathExpression, error) {
+	const maximumXPathTextBytes = 16 << 10
+
 	ns := Namespace
 	if algorithm == reference.XPathFilter2 {
 		ns = reference.XPathFilter2
 	}
 
-	if n.Name != (document.Name{Space: ns, Local: "XPath"}) {
+	if n.Name != (document.Name{Space: ns, Local: nameXPath}) {
 		return reference.XPathExpression{}, fmt.Errorf("%w: XPath element namespace", reference.ErrInput)
 	}
 
@@ -280,8 +294,8 @@ func parseXPathParameter(ctx context.Context, n *tree.Node, doc *document.Docume
 
 	var err error
 	if algorithm == reference.XPathFilter2 {
-		err = attributes(n, "Filter")
-		x.Filter, _ = getAttr(n, document.Name{Local: "Filter"})
+		err = attributes(n, attrFilter)
+		x.Filter, _ = getAttr(n, document.Name{Local: attrFilter})
 	} else {
 		err = attributes(n)
 	}
@@ -299,7 +313,7 @@ func parseXPathParameter(ctx context.Context, n *tree.Node, doc *document.Docume
 
 		switch child.Kind {
 		case tree.TextNode:
-			if len(child.Data) > (16<<10)-length {
+			if len(child.Data) > maximumXPathTextBytes-length {
 				return x, reference.ErrLimit
 			}
 

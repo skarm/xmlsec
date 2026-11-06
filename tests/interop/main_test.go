@@ -11,12 +11,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	suites := flag.String("suite", "portable", "comma-separated optional suites: portable,xmlsec,all")
+	suites := flag.String("suite", "portable", "comma-separated optional suites: portable,xmlsec,opensaml,shibboleth,authority-http,all")
 	flag.String("xmlsec1", envDefault("XMLSEC1", "xmlsec1"), "external xmlsec1 executable")
 	flag.Parse()
 
 	for _, s := range strings.Split(*suites, ",") {
-		if s != "portable" && s != "xmlsec" && s != "all" {
+		if s != "portable" && s != "xmlsec" && s != "opensaml" && s != "shibboleth" && s != "authority-http" && s != "all" {
 			fmt.Fprintln(os.Stderr, "unknown -suite:", s)
 			os.Exit(2)
 		}

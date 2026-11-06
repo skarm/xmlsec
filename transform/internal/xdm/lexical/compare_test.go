@@ -31,6 +31,12 @@ func TestComparisonValueSpacesAndPrecision(t *testing.T) {
 		{"negative and positive", "decimal", "-0.001", "0", -1},
 		{"significantly different lengths", "integer", "999", "1000", -1},
 		{"unbounded integer", "integer", "999999999999999999999999999999", "1000000000000000000000000000000", -1},
+		{"timestamp UTC aliases", "dateTimeStamp", "2000-01-01T01:00:00+01:00", "2000-01-01T00:00:00Z", 0},
+		{"dayTime negative zero", "dayTimeDuration", "-PT0S", "P0D", 0},
+		{"dayTime negative aliases", "dayTimeDuration", "-P1DT1H", "-PT25H", 0},
+		{"dayTime fractional precision", "dayTimeDuration", "PT0.0001S", "PT0S", 1},
+		{"yearMonth negative aliases", "yearMonthDuration", "-P1Y", "-P12M", 0},
+		{"yearMonth negative zero", "yearMonthDuration", "-P0M", "P0Y", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -65,11 +71,19 @@ func TestComparisonRejectsEitherInvalidOperand(t *testing.T) {
 		{"gDay", "---01", "---32"},
 		{"gMonthDay", "--02-29", "--02-30"},
 		{"duration", "PT1S", "PT1.0"},
+		{"dateTimeStamp", "2000-01-01T00:00:00Z", "2000-01-01T00:00:00"},
+		{"dayTimeDuration", "PT1S", "P1Y"},
+		{"dayTimeDuration", "PT0S", "P0Y"},
+		{"dayTimeDuration", "PT0S", "PT-1S"},
+		{"yearMonthDuration", "P1M", "P1D"},
+		{"yearMonthDuration", "P0Y", "PT0S"},
+		{"yearMonthDuration", "P0Y", "P1Y-1M"},
+		{"yearMonthDuration", "P0Y", "P0.5M"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
 			t.Parallel()
 
-			for _, operands := range [][2]string{{test.valid, test.invalid}, {test.invalid, test.valid}} {
+			for _, operands := range [][2]string{{test.valid, test.invalid}, {test.invalid, test.valid}, {test.invalid, test.invalid}} {
 				if _, ok := lexicalpkg.Compare(operands[0], operands[1], test.kind); ok {
 					t.Fatalf("invalid operand accepted: %q vs %q", operands[0], operands[1])
 				}

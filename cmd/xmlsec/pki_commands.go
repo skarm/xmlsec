@@ -11,6 +11,14 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+// OCSP input uses a bounded nonce and response size. Zero freshness/skew values are passed to the existing PKI default policy.
+const (
+	cliDefaultOCSPMaxAge    = 0
+	cliDefaultOCSPClockSkew = 0
+	cliGeneratedNonceBytes  = 32
+	cliMaxOCSPResponseBytes = 8 << 20
+)
+
 func runPKI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := args[0]
 	fs := flag.NewFlagSet("pki "+cmd, flag.ContinueOnError)
@@ -22,13 +30,13 @@ func runPKI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	issuer := fs.String(fieldIssuer, "", "explicit issuer certificate PEM/DER")
 	trustFile := fs.String("trust", "", "trusted local JSON trust/evidence configuration")
 	atValue := fs.String("at", "", "explicit verification time, RFC3339")
-	hashName := fs.String("hash", "sha256", "OCSP CertID hash")
+	hashName := fs.String("hash", cliDefaultHashName, "OCSP CertID hash")
 	nonceFile := fs.String("nonce-file", "", "exact expected/request nonce file; request generates random nonce if omitted")
 	responder := fs.String("responder", "", "OCSP responder certificate")
 	keyFile := fs.String("key", "", "responder private key")
 	config := fs.String("config", "", "trusted JSON pki.OCSPResponseTemplate for issuance")
-	maxAge := fs.Duration("max-age", 0, "OCSP freshness maximum age; 0 uses library default")
-	skew := fs.Duration("clock-skew", 0, "OCSP clock skew tolerance")
+	maxAge := fs.Duration("max-age", cliDefaultOCSPMaxAge, "OCSP freshness maximum age; 0 uses library default")
+	skew := fs.Duration("clock-skew", cliDefaultOCSPClockSkew, "OCSP clock skew tolerance")
 	flags := registerPrivateKeyFlags(fs)
 
 	specific := "out certificate"
@@ -73,7 +81,7 @@ func runPKI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 
 	var nonce []byte
 	if *nonceFile != "" {
-		nonce, err = readInputContext(ctx, *nonceFile, nil, 128)
+		nonce, err = readInputContext(ctx, *nonceFile, nil, cliMaxNonceBytes)
 		if err != nil {
 			return err
 		}
@@ -86,7 +94,7 @@ func runPKI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		}
 
 		if nonce == nil {
-			nonce = make([]byte, 32)
+			nonce = make([]byte, cliGeneratedNonceBytes)
 			if _, err := rand.Read(nonce); err != nil {
 				return err
 			}
@@ -170,7 +178,7 @@ func verifyOCSPCLI(ctx context.Context, raw, certificate, issuer, nonce []byte, 
 		crls = evidence.CRLs
 	}
 
-	_, report, verifyErr := pki.VerifyOCSP(ctx, raw, certificate, issuer, at, pki.OCSPOptions{ExpectedNonce: nonce, MaxAge: maxAge, ClockSkew: skew, MaxBytes: min(execution(ctx).xml.MaxBytes, 8<<20), ResponderCRLs: crls})
+	_, report, verifyErr := pki.VerifyOCSP(ctx, raw, certificate, issuer, at, pki.OCSPOptions{ExpectedNonce: nonce, MaxAge: maxAge, ClockSkew: skew, MaxBytes: min(execution(ctx).xml.MaxBytes, cliMaxOCSPResponseBytes), ResponderCRLs: crls})
 
 	return errors.Join(verifyErr, jsonOutput(ctx, output, stdout, resultReport("pki ocsp-verify", "explicit-issuer", report, verifyErr)))
 }

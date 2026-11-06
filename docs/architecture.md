@@ -36,10 +36,20 @@ trust separate. [usage](usage.md) explains their composition.
 
 ## SAML
 
-`binding`, `metadata` and `protocol` handle wire formats, trusted role descriptions
-and message validation. `sp` and `idp` compose solicited WebSSO; `state` and
-`replay` provide bounded single-process memory stores. Multiple instances need
+Packages under `saml/` separate transport, protocol validation and stateful flows:
+
+- `binding`, `metadata` and `protocol`: wire formats, trusted role descriptions
+  and authenticated message validation.
+- `sp` and `idp`: solicited WebSSO, including encrypted claims, Artifact and ECP.
+- `ecp` and `proof`: PAOS routing, channel bindings and X.509 holder-of-key proof.
+- `artifact`: recipient-bound single-use SOAP artifact resolution.
+- `session`: logout and NameID management with application-owned session state.
+- `authority`: queries, assertion-ID/URI retrieval and NameID Mapping.
+- `state` and `replay`: pending WebSSO requests and atomic replay rejection.
+
+The supplied memory stores coordinate one process. Multiple instances need
 shared atomic storage. Authentication, cookies and HTTP handlers belong to callers.
+See [SAML integration](saml.md) and [authority integration](saml-authority.md).
 
 ## Resources and ownership
 

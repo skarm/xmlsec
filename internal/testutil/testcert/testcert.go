@@ -16,6 +16,15 @@ import (
 	"github.com/skarm/xmlsec/internal/signature"
 )
 
+const (
+	fixtureCRLBackdate         = time.Minute
+	fixtureCRLLifetime         = time.Hour
+	fixtureLeafValidity        = 24 * time.Hour
+	fixtureMaxCertificateBytes = 1 << 20
+	fixtureMaxExtensions       = 256
+	fixtureRootValidity        = 365 * 24 * time.Hour
+)
+
 // Chain contains disposable test identities and their private keys.
 type Chain struct {
 	Root         *x509.Certificate
@@ -32,14 +41,14 @@ type Chain struct {
 func New(t testing.TB) Chain {
 	t.Helper()
 	c := Chain{RootKey: Key(t), LeafKey: Key(t), TSAKey: Key(t), ResponderKey: Key(t)}
-	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "iteration 6 test root"}, NotBefore: Now().Add(-365 * 24 * time.Hour), NotAfter: Now().Add(365 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
+	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "iteration 6 test root"}, NotBefore: Now().Add(-fixtureRootValidity), NotAfter: Now().Add(fixtureRootValidity), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 	c.Root = Issue(t, root, root, &c.RootKey.PublicKey, c.RootKey)
-	leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "test signer"}, NotBefore: Now().Add(-24 * time.Hour), NotAfter: Now().Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}, SubjectKeyId: []byte{5, 6, 7, 8}}
+	leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "test signer"}, NotBefore: Now().Add(-fixtureLeafValidity), NotAfter: Now().Add(fixtureLeafValidity), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}, SubjectKeyId: []byte{5, 6, 7, 8}}
 	c.Leaf = Issue(t, leaf, c.Root, &c.LeafKey.PublicKey, c.RootKey)
 	eku, _ := asn1.Marshal([]asn1.ObjectIdentifier{{1, 3, 6, 1, 5, 5, 7, 3, 8}})
-	tsa := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "test TSA"}, NotBefore: Now().Add(-24 * time.Hour), NotAfter: Now().Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}}
+	tsa := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "test TSA"}, NotBefore: Now().Add(-fixtureLeafValidity), NotAfter: Now().Add(fixtureLeafValidity), KeyUsage: x509.KeyUsageDigitalSignature, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}}
 	c.TSA = Issue(t, tsa, c.Root, &c.TSAKey.PublicKey, c.RootKey)
-	responder := &x509.Certificate{SerialNumber: big.NewInt(4), Subject: pkix.Name{CommonName: "test responder"}, NotBefore: Now().Add(-24 * time.Hour), NotAfter: Now().Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}
+	responder := &x509.Certificate{SerialNumber: big.NewInt(4), Subject: pkix.Name{CommonName: "test responder"}, NotBefore: Now().Add(-fixtureLeafValidity), NotAfter: Now().Add(fixtureLeafValidity), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}
 	c.Responder = Issue(t, responder, c.Root, &c.ResponderKey.PublicKey, c.RootKey)
 
 	return c
@@ -81,7 +90,7 @@ func Issue(t testing.TB, template, parent *x509.Certificate, public crypto.Publi
 func CRL(t testing.TB, c Chain, revoked ...*x509.Certificate) []byte {
 	t.Helper()
 
-	template := &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: Now().Add(-time.Minute), NextUpdate: Now().Add(time.Hour)}
+	template := &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: Now().Add(-fixtureCRLBackdate), NextUpdate: Now().Add(fixtureCRLLifetime)}
 	for _, cert := range revoked {
 		template.RevokedCertificateEntries = append(template.RevokedCertificateEntries, x509.RevocationListEntry{SerialNumber: cert.SerialNumber, RevocationTime: Now().Add(-time.Hour)})
 	}
@@ -99,7 +108,7 @@ func CRLV1(t testing.TB, c Chain, revoked ...*x509.Certificate) []byte {
 	t.Helper()
 	original := CRL(t, c, revoked...)
 
-	value, err := der.Read(original, 1<<20)
+	value, err := der.Read(original, fixtureMaxCertificateBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +126,7 @@ func CRLV1(t testing.TB, c Chain, revoked ...*x509.Certificate) []byte {
 	var parts [][]byte
 
 	for index, field := range tbs {
-		if index == 0 || field.Class == 2 && field.Tag == 0 {
+		if index == 0 || field.Class == asn1.ClassContextSpecific && field.Tag == 0 {
 			continue
 		}
 
@@ -198,7 +207,7 @@ func CertificateEncodings(t testing.TB, c Chain) []CertificateEncoding {
 	var v1 [][]byte
 
 	for _, field := range body {
-		if field.Class == 2 && (field.Tag == 0 || field.Tag == 3) {
+		if field.Class == asn1.ClassContextSpecific && (field.Tag == 0 || field.Tag == 3) {
 			continue
 		}
 
@@ -210,8 +219,8 @@ func CertificateEncodings(t testing.TB, c Chain) []CertificateEncoding {
 	criticalParts := certificateCriticalFalse(t, body)
 
 	template := *c.Leaf
-	attribute := der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(0, asn1.TagUTF8String, false, []byte("relative partition")))
-	point := der.Seq(der.Ctx(0, der.Wrap(2, 1, true, attribute)))
+	attribute := der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(asn1.ClassUniversal, asn1.TagUTF8String, false, []byte("relative partition")))
+	point := der.Seq(der.Ctx(0, der.Wrap(asn1.ClassContextSpecific, 1, true, attribute)))
 	template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: der.Seq(point)}}
 
 	relative, err := x509.CreateCertificate(rand.Reader, &template, c.Root, &c.LeafKey.PublicKey, c.RootKey)
@@ -238,7 +247,7 @@ func certificateCriticalFalse(t testing.TB, body []asn1.RawValue) [][]byte {
 
 	for i, field := range body {
 		criticalParts[i] = field.FullBytes
-		if field.Class != 2 || field.Tag != 3 {
+		if field.Class != asn1.ClassContextSpecific || field.Tag != 3 {
 			continue
 		}
 
@@ -247,7 +256,7 @@ func certificateCriticalFalse(t testing.TB, body []asn1.RawValue) [][]byte {
 			t.Fatal(err)
 		}
 
-		extensions, err := der.Sequence(v, 1, 256)
+		extensions, err := der.Sequence(v, 1, fixtureMaxExtensions)
 		if err != nil {
 			t.Fatal(err)
 		}

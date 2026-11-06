@@ -30,6 +30,14 @@ import (
 )
 
 const (
+	defaultDataReferenceID = "data-reference"
+	defaultIDAttribute     = "ID"
+	base64CancellationMask = 4095
+	base64LexicalReadBytes = 4096
+	maximumIDBytes         = 256
+)
+
+const (
 	// Namespace is the XAdES 1.3.2 namespace URI.
 	Namespace = "http://uri.etsi.org/01903/v1.3.2#"
 	// SignedPropertiesType is the XAdES SignedProperties reference type URI.
@@ -79,11 +87,17 @@ type VerifyOptions struct {
 // supplied certificate's key. It does not check certificate dates, PKIX trust,
 // revocation, claimed time, legal status or other AdES evidence.
 type BasicResult struct {
-	signature   *xmldsig.SignatureResult
-	properties  document.Element
+	// signature retains the verified XML signature and reference results.
+	signature *xmldsig.SignatureResult
+	// properties identifies the authenticated SignedProperties element.
+	properties document.Element
+	// certificate retains the exact signer certificate bound by signed properties.
 	certificate []byte
+	// claimedTime is the signed signing-time claim, not an independently trusted
+	// time.
 	claimedTime time.Time
-	mimeType    string
+	// mimeType retains the authenticated data format claim when unambiguous.
+	mimeType string
 }
 
 type basicPropertySet struct {
@@ -166,7 +180,7 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 		return nil, nil, err
 	}
 
-	if len(xmldsig.Signatures(doc)) != 0 || o.ClaimedSigningTime.IsZero() || o.ClaimedSigningTime.UTC().Year() < 1 || o.ClaimedSigningTime.UTC().Year() > 9999 {
+	if len(xmldsig.Signatures(doc)) != 0 || o.ClaimedSigningTime.IsZero() || o.ClaimedSigningTime.UTC().Year() < 1 || o.ClaimedSigningTime.UTC().Year() > maximumTimeYear {
 		return nil, nil, ErrProfile
 	}
 	// Use a DER pin rather than relying on a provider-specific key representation.
@@ -184,15 +198,15 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 	}
 
 	if o.SignatureID == "" {
-		o.SignatureID = "signature"
+		o.SignatureID = defaultBaselineSignatureID
 	}
 
 	if o.SignedPropertiesID == "" {
-		o.SignedPropertiesID = "signed-properties"
+		o.SignedPropertiesID = defaultSignedPropertiesID
 	}
 
 	if o.DataReferenceID == "" {
-		o.DataReferenceID = "data-reference"
+		o.DataReferenceID = defaultDataReferenceID
 	}
 
 	for _, id := range []string{o.SignatureID, o.SignedPropertiesID, o.DataReferenceID} {
@@ -202,7 +216,7 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 	}
 
 	if o.MIMEType == "" {
-		o.MIMEType = "application/xml"
+		o.MIMEType = lexicon.MediaTypeXML
 	}
 
 	if !validMime(o.MIMEType) {
@@ -216,26 +230,26 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 		return nil, nil, ErrProfile
 	}
 
-	qp := xnode("QualifyingProperties")
-	qp.NS = []tree.Namespace{{Prefix: nameXades, URI: Namespace}, {Prefix: "ds", URI: xmldsig.Namespace}}
-	attr(qp, "Target", "#"+o.SignatureID)
+	qp := xnode(nameQualifyingProperties)
+	qp.NS = []tree.Namespace{{Prefix: prefixXAdES, URI: Namespace}, {Prefix: lexicon.PrefixDSig, URI: xmldsig.Namespace}}
+	attr(qp, lexicon.SecurityAttrTarget, "#"+o.SignatureID)
 
-	sp := xnode("SignedProperties")
-	attr(sp, "Id", o.SignedPropertiesID)
+	sp := xnode(nameSignedProperties)
+	attr(sp, lexicon.SecurityAttrID, o.SignedPropertiesID)
 	add(qp, sp)
 
-	ssp := xnode("SignedSignatureProperties")
+	ssp := xnode(nameSignedSignatureProperties)
 	add(sp, ssp)
 
-	st := xnode("SigningTime")
+	st := xnode(nameSigningTime)
 	text(st, o.ClaimedSigningTime.UTC().Format(time.RFC3339Nano))
 	add(ssp, st)
 
-	sc := xnode("SigningCertificateV2")
-	ce := xnode("Cert")
-	cd := xnode("CertDigest")
+	sc := xnode(nameSigningCertificateV2)
+	ce := xnode(nameCert)
+	cd := xnode(nameCertDigest)
 	dm := dsnode(lexicon.DSigElementDigestMethod)
-	attr(dm, "Algorithm", xmldsig.SHA256)
+	attr(dm, lexicon.SecurityAttrAlgorithm, xmldsig.SHA256)
 
 	dv := dsnode(lexicon.DSigElementDigestValue)
 	sum := sha256.Sum256(c.Raw)
@@ -246,11 +260,11 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 	add(sc, ce)
 	add(ssp, sc)
 
-	sdop := xnode("SignedDataObjectProperties")
-	dof := xnode("DataObjectFormat")
-	attr(dof, "ObjectReference", "#"+o.DataReferenceID)
+	sdop := xnode(nameSignedDataObjectProperties)
+	dof := xnode(nameDataObjectFormat)
+	attr(dof, attrObjectReference, "#"+o.DataReferenceID)
 
-	mt := xnode("MimeType")
+	mt := xnode(lexicon.SecurityAttrMimeType)
 	text(mt, o.MIMEType)
 	add(dof, mt)
 	add(sdop, dof)
@@ -271,17 +285,17 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 		return nil, nil, err
 	}
 
-	object, err := childNamed(selected, ds("Object"))
+	object, err := childNamed(selected, ds(lexicon.DSigElementObject))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	properties, err := childNamed(object, name("QualifyingProperties"))
+	properties, err := childNamed(object, name(nameQualifyingProperties))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	props, err := childNamed(properties, name("SignedProperties"))
+	props, err := childNamed(properties, name(nameSignedProperties))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -426,6 +440,10 @@ func decodeElementBase64(ctx context.Context, element document.Element, encodedL
 // unsigned=true is only used by higher profiles which MUST validate every
 // unsigned property before returning their result. The public basic API stays closed.
 func verifyBasicEnveloped(ctx context.Context, doc *document.Document, selected document.Element, trustedCertificateDER []byte, o VerifyOptions, unsigned bool) (*BasicResult, error) {
+	// This profile requires canonicalization, signature method, and exactly
+	// two references: the data object and SignedProperties.
+	const basicSignedInfoChildren = 4
+
 	if ctx == nil || doc == nil || !selected.Valid() {
 		return nil, ErrProfile
 	}
@@ -449,16 +467,16 @@ func verifyBasicEnveloped(ctx context.Context, doc *document.Document, selected 
 		return nil, err
 	}
 
-	if attrs(selected, "Id") != nil {
+	if attrs(selected, lexicon.SecurityAttrID) != nil {
 		return nil, ErrProfile
 	}
 
-	sigID := localAttribute(selected, "Id")
+	sigID := localAttribute(selected, lexicon.SecurityAttrID)
 	if !tree.NCName(sigID) {
 		return nil, ErrProfile
 	}
 
-	sc, err := children(selected, ds(lexicon.DSigElementSignedInfo), ds(lexicon.DSigElementSignatureValue), ds(lexicon.DSigElementKeyInfo), ds("Object"))
+	sc, err := children(selected, ds(lexicon.DSigElementSignedInfo), ds(lexicon.DSigElementSignatureValue), ds(lexicon.DSigElementKeyInfo), ds(lexicon.DSigElementObject))
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +492,7 @@ func verifyBasicEnveloped(ctx context.Context, doc *document.Document, selected 
 
 	sp, spID := properties.signed, properties.id
 
-	ssp, err := children(properties.signature, name("SigningTime"), name("SigningCertificateV2"))
+	ssp, err := children(properties.signature, name(nameSigningTime), name(nameSigningCertificateV2))
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +512,7 @@ func verifyBasicEnveloped(ctx context.Context, doc *document.Document, selected 
 	}
 
 	siChildren := sc[0].Children()
-	if len(siChildren) != 4 {
+	if len(siChildren) != basicSignedInfoChildren {
 		return nil, ErrProfile
 	}
 
@@ -505,12 +523,12 @@ func verifyBasicEnveloped(ctx context.Context, doc *document.Document, selected 
 
 	refs := siChildren[2:]
 
-	dataID := localAttribute(refs[0], "Id")
+	dataID := localAttribute(refs[0], lexicon.SecurityAttrID)
 	if !tree.NCName(dataID) || fmtRef != "#"+dataID {
 		return nil, ErrProfile
 	}
 
-	if localAttribute(refs[0], "URI") != "#"+rootID || localAttribute(refs[0], "Type") != "" || localAttribute(refs[1], "URI") != "#"+spID || localAttribute(refs[1], "Type") != SignedPropertiesType {
+	if localAttribute(refs[0], lexicon.SecurityAttrURI) != "#"+rootID || localAttribute(refs[0], lexicon.SecurityAttrType) != "" || localAttribute(refs[1], lexicon.SecurityAttrURI) != "#"+spID || localAttribute(refs[1], lexicon.SecurityAttrType) != SignedPropertiesType {
 		return nil, ErrProfile
 	}
 	// Exact transforms preserve original-node coverage and exclude only our Signature.
@@ -542,9 +560,12 @@ func xmlSpace(s string) bool {
 }
 
 func validateBasicTransforms(refs []tree.Element) error {
+	// Each Reference has Transforms, DigestMethod and DigestValue.
+	const basicReferenceChildren = 3
+
 	for i, r := range refs {
 		a := r.Children()
-		if len(a) != 3 || a[0].Name() != ds(lexicon.DSigElementTransforms) {
+		if len(a) != basicReferenceChildren || a[0].Name() != ds(lexicon.DSigElementTransforms) {
 			return ErrProfile
 		}
 
@@ -560,7 +581,7 @@ func validateBasicTransforms(refs []tree.Element) error {
 		}
 
 		for j, t := range trs {
-			if t.Name() != ds(lexicon.DSigElementTransform) || attrs(t, "Algorithm") != nil || len(t.Children()) != 0 || localAttribute(t, "Algorithm") != want[j] {
+			if t.Name() != ds(lexicon.DSigElementTransform) || attrs(t, lexicon.SecurityAttrAlgorithm) != nil || len(t.Children()) != 0 || localAttribute(t, lexicon.SecurityAttrAlgorithm) != want[j] {
 				return ErrProfile
 			}
 		}
@@ -599,12 +620,12 @@ func verifyEmbeddedCertificate(ctx context.Context, keyInfo document.Element, ce
 }
 
 func verifySigningCertificate(ctx context.Context, property document.Element, certificate *x509.Certificate) error {
-	cv, err := children(property, name("Cert"))
+	cv, err := children(property, name(nameCert))
 	if err != nil || attrs(property) != nil {
 		return ErrProfile
 	}
 
-	cd, err := children(cv[0], name("CertDigest"))
+	cd, err := children(cv[0], name(nameCertDigest))
 	if err != nil || attrs(cv[0]) != nil {
 		return ErrProfile
 	}
@@ -614,7 +635,7 @@ func verifySigningCertificate(ctx context.Context, property document.Element, ce
 		return ErrProfile
 	}
 
-	if attrs(cvd[0], "Algorithm") != nil || len(cvd[0].Children()) != 0 || !xmlSpace(cvd[0].Text()) || localAttribute(cvd[0], "Algorithm") != xmldsig.SHA256 {
+	if attrs(cvd[0], lexicon.SecurityAttrAlgorithm) != nil || len(cvd[0].Children()) != 0 || !xmlSpace(cvd[0].Text()) || localAttribute(cvd[0], lexicon.SecurityAttrAlgorithm) != xmldsig.SHA256 {
 		return ErrProfile
 	}
 
@@ -652,19 +673,19 @@ func parseClaimedSigningTime(property document.Element) (time.Time, error) {
 }
 
 func parseBasicProperties(object document.Element, sigID string, unsigned bool) (basicPropertySet, error) {
-	ob, err := children(object, name("QualifyingProperties"))
+	ob, err := children(object, name(nameQualifyingProperties))
 	if err != nil || attrs(object) != nil {
 		return basicPropertySet{}, ErrProfile
 	}
 
 	qp := ob[0]
-	if attrs(qp, "Target") != nil || localAttribute(qp, "Target") != "#"+sigID {
+	if attrs(qp, lexicon.SecurityAttrTarget) != nil || localAttribute(qp, lexicon.SecurityAttrTarget) != "#"+sigID {
 		return basicPropertySet{}, ErrProfile
 	}
 
-	qpNames := []document.Name{name("SignedProperties")}
+	qpNames := []document.Name{name(nameSignedProperties)}
 	if unsigned && len(qp.Children()) == 2 {
-		qpNames = append(qpNames, name("UnsignedProperties"))
+		qpNames = append(qpNames, name(nameUnsignedProperties))
 	}
 
 	qpChildren, err := children(qp, qpNames...)
@@ -673,16 +694,16 @@ func parseBasicProperties(object document.Element, sigID string, unsigned bool) 
 	}
 
 	sp := qpChildren[0]
-	if attrs(sp, "Id") != nil {
+	if attrs(sp, lexicon.SecurityAttrID) != nil {
 		return basicPropertySet{}, ErrProfile
 	}
 
-	spID := localAttribute(sp, "Id")
+	spID := localAttribute(sp, lexicon.SecurityAttrID)
 	if !tree.NCName(spID) {
 		return basicPropertySet{}, ErrProfile
 	}
 
-	spChildren, err := children(sp, name("SignedSignatureProperties"), name("SignedDataObjectProperties"))
+	spChildren, err := children(sp, name(nameSignedSignatureProperties), name(nameSignedDataObjectProperties))
 	if err != nil {
 		return basicPropertySet{}, err
 	}
@@ -695,18 +716,18 @@ func parseBasicProperties(object document.Element, sigID string, unsigned bool) 
 }
 
 func parseBasicDataFormat(data document.Element) (string, string, error) {
-	formats, err := children(data, name("DataObjectFormat"))
+	formats, err := children(data, name(nameDataObjectFormat))
 	if err != nil {
 		return "", "", err
 	}
 
-	if attrs(formats[0], "ObjectReference") != nil {
+	if attrs(formats[0], attrObjectReference) != nil {
 		return "", "", ErrProfile
 	}
 
-	fmtRef := localAttribute(formats[0], "ObjectReference")
+	fmtRef := localAttribute(formats[0], attrObjectReference)
 
-	mts, err := children(formats[0], name("MimeType"))
+	mts, err := children(formats[0], name(lexicon.SecurityAttrMimeType))
 	if err != nil {
 		return "", "", err
 	}
@@ -737,7 +758,7 @@ func base64TextLength(ctx context.Context, nodes []*tree.Node, encodedLimit int)
 
 		remaining -= len(child.Data)
 		for i := range len(child.Data) {
-			if i&4095 == 0 {
+			if i&base64CancellationMask == 0 {
 				if err := ctx.Err(); err != nil {
 					return 0, err
 				}
@@ -753,11 +774,11 @@ func base64TextLength(ctx context.Context, nodes []*tree.Node, encodedLimit int)
 }
 
 func xnode(local string) *tree.Node {
-	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: Namespace, Local: local}, Prefix: nameXades}
+	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: Namespace, Local: local}, Prefix: prefixXAdES}
 }
 
 func dsnode(local string) *tree.Node {
-	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: xmldsig.Namespace, Local: local}, Prefix: "ds"}
+	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: xmldsig.Namespace, Local: local}, Prefix: lexicon.PrefixDSig}
 }
 
 func add(p, c *tree.Node) { p.Children = append(p.Children, c); c.Parent = p }
@@ -790,14 +811,14 @@ func childNamed(e document.Element, n document.Name) (document.Element, error) {
 
 func normalizeID(n document.Name) document.Name {
 	if n == (document.Name{}) {
-		return document.Name{Local: "ID"}
+		return document.Name{Local: defaultIDAttribute}
 	}
 
 	return n
 }
 
 func cert(der []byte) (*x509.Certificate, error) {
-	if len(der) == 0 || len(der) > 1<<20 {
+	if len(der) == 0 || len(der) > maximumCertificateBytes {
 		return nil, ErrCertificate
 	}
 
@@ -810,7 +831,7 @@ func cert(der []byte) (*x509.Certificate, error) {
 }
 
 func validMime(s string) bool {
-	if len(s) == 0 || len(s) > 256 {
+	if len(s) == 0 || len(s) > maximumIDBytes {
 		return false
 	}
 
@@ -822,7 +843,7 @@ func validMime(s string) bool {
 func profileOptions(id document.Name, policy xmldsig.Policy, root, props document.Element, rootID, propsID string) xmldsig.SignatureOptions {
 	return xmldsig.SignatureOptions{
 		IDAttribute: normalizeID(id), Policy: policy,
-		AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: Namespace, Local: "SignedProperties"}}}},
+		AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: lexicon.SecurityAttrID}, Elements: []document.Name{{Space: Namespace, Local: nameSignedProperties}}}},
 		RequiredElements:  []document.Element{root, props}, ExpectedURIs: []string{"#" + rootID, "#" + propsID},
 	}
 }
@@ -868,7 +889,7 @@ func (r *base64TextReader) Read(dst []byte) (int, error) {
 			}
 		}
 
-		span := r.text[:min(len(r.text), 4096)]
+		span := r.text[:min(len(r.text), base64LexicalReadBytes)]
 
 		taken := 0
 		for taken < len(span) && used < len(dst) {

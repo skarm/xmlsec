@@ -86,12 +86,16 @@ func FunctionsFromContext(ctx context.Context) map[QualifiedName]Function {
 
 // ChargeTree bounds constructed trees, including temporary variable trees.
 func ChargeTree(ctx context.Context, node xdm.Node) error {
+	// One operation starts the whole tree walk; node and byte limits below
+	// charge individual nodes separately.
+	const constructedTreeBaseWork = 1
+
 	b := getBudget(ctx)
 	if b == nil || node == nil {
 		return nil
 	}
 
-	if err := Charge(ctx, 1); err != nil {
+	if err := Charge(ctx, constructedTreeBaseWork); err != nil {
 		return err
 	}
 

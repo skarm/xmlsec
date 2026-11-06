@@ -12,6 +12,11 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Fallback recursive depth used only without a caller-provided XPath depth limit; each traversal retains its existing boundary comparison.
+const (
+	simpleContentDepthFallback = 128
+)
+
 // avt is a compiled Attribute Value template. It consists of alternating
 // literal strings and XPath expressions enclosed in curly braces.
 type avt struct {
@@ -67,7 +72,7 @@ func (a *avt) evaluate(ctx context.Context, node xdm.Node) (string, error) {
 			// XSLT 1.0 behavior (backwards-compatible processing): when converting
 			// the AVT expression value to a string, all items after the first are
 			// discarded (§5.6.1).
-			if ec != nil && ec.stylesheet.processorLanguage() == 10 {
+			if ec != nil && ec.stylesheet.processorLanguage() == processorXSLT10 {
 				s, err := xpath.XPath10String(result.Sequence())
 				if err != nil {
 					return "", err
@@ -232,7 +237,7 @@ func stringifySimpleContent(ctx context.Context, seq xdm.Sequence, sep string) (
 		}
 	}
 
-	state := simpleContentState{ctx: ctx, separator: sep, depthLimit: xpath.DepthLimit(ctx, 128)}
+	state := simpleContentState{ctx: ctx, separator: sep, depthLimit: xpath.DepthLimit(ctx, simpleContentDepthFallback)}
 	if err := state.appendSequence(seq, 0, true); err != nil {
 		return "", err
 	}
@@ -245,7 +250,7 @@ func stringifyAVTContent(ctx context.Context, seq xdm.Sequence, backwards bool) 
 		return stringifySimpleContent(ctx, seq, " ")
 	}
 
-	state := simpleContentState{ctx: ctx, depthLimit: xpath.DepthLimit(ctx, 128), firstOnly: true}
+	state := simpleContentState{ctx: ctx, depthLimit: xpath.DepthLimit(ctx, simpleContentDepthFallback), firstOnly: true}
 	if err := state.appendSequence(seq, 0, false); err != nil {
 		return "", err
 	}
@@ -568,8 +573,8 @@ func appendLiteral(parts []avtPart, s string) []avtPart {
 
 func compileAVTIsXPathCommentOnly(trimmed string, c *compiler, parts *[]avtPart, exprStr string, nsBindings map[string]string) (returned1 error, matchedBranch bool) {
 	if trimmed == "" || isXPathCommentOnly(trimmed) {
-		if c.stylesheet.processorLanguage() == 10 {
-			return staticError("XTSE0370", "empty XPath 1.0 AVT expression"), true
+		if c.stylesheet.processorLanguage() == processorXSLT10 {
+			return staticError(errCodeXTSE0370, "empty XPath 1.0 AVT expression"), true
 		}
 
 		*parts = appendLiteral(*parts, "")

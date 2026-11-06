@@ -130,3 +130,32 @@ func BenchmarkHTTPCollect(b *testing.B) {
 		}
 	}
 }
+
+func TestCollectorRejectsMalformedQueryEscapes(t *testing.T) {
+	calls := 0
+	wantURI := "https://evidence.test/status?x=%23%2f%25+value;other=yes"
+	client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.String() != wantURI {
+			t.Errorf("URI changed: %q", req.URL.String())
+		}
+
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("body")), Request: req}, nil
+	})}
+	for _, query := range []string{"x=%zz", "x=%", "x=%0"} {
+		collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{"https://evidence.test/status?" + query}})
+		if collector != nil || !errors.Is(err, evidence.ErrInput) || calls != 0 {
+			t.Errorf("malformed query %q: collector=%v, err=%v, calls=%d", query, collector, err, calls)
+		}
+	}
+
+	collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{wantURI}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := collector.Collect(t.Context(), []collect.Request{{Kind: evidence.CRL, URI: wantURI}})
+	if err != nil || len(items) != 1 || string(items[0].Bytes()) != "body" || calls != 1 {
+		t.Fatalf("valid encoded query rejected: %v, calls=%d", err, calls)
+	}
+}

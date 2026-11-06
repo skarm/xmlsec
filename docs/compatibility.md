@@ -7,8 +7,9 @@ audit have not been established. [standards](standards.md) lists primary sources
 ## Supported scope
 
 - XML 1.0 Fifth Edition, UTF-8/UTF-16, immutable namespace-aware snapshots and
-  explicit ID typing. The security parser rejects DTDs/entities. XML 1.1,
-  UTF-32, schema defaults and XSD validation are unsupported.
+  explicit ID typing. The default security parser rejects DTDs and external
+  entities; character references and the five predefined entities are accepted.
+  XML 1.1, UTF-32, schema defaults and XSD validation are unsupported.
 - Exclusive C14N and Canonical XML 1.0/1.1, with/without comments, over documents,
   subtrees and node sets. Sparse selections can produce fragments.
 - XMLDSig enveloped/enveloping/detached signatures, Objects, multiple signatures
@@ -17,8 +18,9 @@ audit have not been established. [standards](standards.md) lists primary sources
   Complete fragment URIs are allowlisted and resolvers supply identified octets.
   Base-URI resolution is opt-in; arbitrary LEIRI/fragment selection is unsupported.
 - RSA/ECDSA SHA-2, RSA-PSS, Ed25519/Ed25519ph and separate HMAC profiles.
-  Legacy verification/HMAC policies explicitly permit SHA-1; legacy public-key
-  signing remains disabled. Compatibility algorithms are disabled in FIPS mode.
+  Legacy verification/HMAC policies explicitly permit SHA-1; RSA-SHA1 generation
+  additionally requires `Policy.AllowLegacySigning`. DSA signing is unsupported.
+  Compatibility algorithms are disabled in FIPS mode.
 - KeyInfo candidates, X509Data groups/selectors and explicitly authorized
   retrieval/processing. KeyInfo has its own resources/base URI. Omitted DSA
   parameters need an explicit bounded application context. Descriptions and
@@ -27,10 +29,13 @@ audit have not been established. [standards](standards.md) lists primary sources
   and W3C streamable execution are unsupported. Streaming annotations operate on
   trees; independent-record processing is separate. Complete Basic XSLT remains
   open; see [validation profiles](language-baseline.md).
-- Language XML supports bounded nonvalidating DTD processing and explicitly
-  enabled single-byte encodings. External entities require configured resources.
-  Language input preserves relative namespace names; the security parser and
-  C14N reject them. See [input profiles](transforms.md#xml-input-profiles).
+- `document.ParseOptions{NonValidating: true}` and language XML support bounded
+  nonvalidating DTD processing. `NonValidating` also enables supported
+  single-byte encodings; language input requires `AllowSingleByteEncodings`
+  for those encodings. External entities require configured resources. Engine
+  input, including DTD-free `Engine.Parse` and stylesheet records, preserves
+  relative namespace names, as does `NonValidating`. The default document parser
+  and C14N reject them. See [input profiles](transforms.md#xml-input-profiles).
 - PKIX with explicit roots/time and offline complete/scoped/indirect/base-delta
   CRLs. OCSP selects an exact CertID and authorized responder. Required missing
   evidence fails without fetching. Acquisition metadata grants no trust or PoE.
@@ -45,11 +50,23 @@ audit have not been established. [standards](standards.md) lists primary sources
   EN 319 102-1 V1.4.1 workflow, not full historical validation. Evidence records,
   historical countersignature/attribute-authority workflows and remaining
   indication branches are outside that subset. Unknown unsigned properties fail.
-- Signed SAML metadata, POST/Redirect and solicited WebSSO. SLO, Artifact/ECP,
-  queries, unsolicited SSO and encrypted assertions/names/attributes are unsupported.
-  SAML/closed XAdES use positive four-digit UTC years and up to nine fractional
-  digits. The separate baseline API retains extended dateTime lexical values;
-  use `CompareSigningTime` when `time.Time` cannot represent them.
+- Signed SAML metadata and solicited WebSSO over POST/Redirect/Artifact or PAOS,
+  with encrypted assertions, NameIDs and attributes. SLO and NameID management
+  use application-owned atomic session state; type 0x0004 artifacts are
+  recipient-bound and single-use. Bearer ECP follows the 2005 profile with
+  Approved Errata 05; selected CS01 channel-binding and X.509 HoK flows support
+  TLS client or whole-SOAP XML proof. XML proof has distinct W3C-transform and
+  CS01-compatibility APIs; full CS01 conformance remains unresolved. See
+  [SAML integration](saml.md) for metadata, key, transport and state contracts.
+  Authentication/attribute/authorization queries, assertion-ID/URI retrieval and
+  NameID Mapping use separate [authority APIs](saml-authority.md). Custom BaseID
+  schemas, proxying and unsolicited SSO are unsupported. Independent test coverage
+  and peer limitations are in [testing](testing.md#saml-interoperability).
+  Protocol-level HMAC requires separately provisioned `SharedSecret` credentials;
+  SP/IdP metadata helpers use public keys.
+- SAML/closed XAdES use positive four-digit UTC years and up to nine fractional
+  digits. The separate XAdES baseline API retains extended dateTime lexical
+  values; use `CompareSigningTime` when `time.Time` cannot represent them.
 - PEM/DER PKCS#8, PKCS#1, SEC1, SPKI, certificates and CRLs. Protected PKCS#8
   uses PBES2/PBKDF2/SHA-2/AES-CBC. PKCS#12 requires a MAC and matching key/certificate;
   selected BER/nested/multiple-identity imports require explicit options.
@@ -64,7 +81,10 @@ audit have not been established. [standards](standards.md) lists primary sources
 - CBC/TripleDES data encryption and TripleDES Key Wrap are explicit legacy modes,
   disabled by default and in FIPS mode. CBC plaintext is unauthenticated.
   Bounded key graphs can resolve nested/retrieved/derived keys; key-document and
-  ciphertext resources have separate policies. RSA PKCS#1 v1.5, finite-field DH,
+  ciphertext resources have separate policies. RSA PKCS#1 v1.5 requires explicit
+  `KeyTransportAlgorithm: xmlenc.RSA15`, `AllowLegacy` and prior ciphertext
+  authentication; this transport is available in the RSA APIs, not key graphs.
+  Finite-field DH,
   XMLENC PBKDF2, EXI and padded AES key wrap remain unsupported.
 
 General key-manager/HSM management, XMLDSig decryption transforms, arbitrary

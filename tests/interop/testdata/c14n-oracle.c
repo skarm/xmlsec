@@ -8,6 +8,8 @@
 #include <libxml/xpath.h>
 #include <libxml/c14n.h>
 
+#define MAX_INPUT_BYTES (8 * 1024 * 1024)
+
 static xmlParserInputPtr deny_external(const char *url, const char *id, xmlParserCtxtPtr ctx) {
     (void)url; (void)id; (void)ctx; return NULL;
 }
@@ -18,7 +20,7 @@ int main(int argc, char **argv) {
     if (!f) { perror("fopen"); return 2; }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 2; }
     long size = ftell(f);
-    if (size < 0 || size > 8 * 1024 * 1024) { fclose(f); return 2; }
+    if (size < 0 || size > MAX_INPUT_BYTES) { fclose(f); return 2; }
     rewind(f);
     char *data = malloc((size_t)size + 1);
     if (!data || fread(data, 1, (size_t)size, f) != (size_t)size) { free(data); fclose(f); return 2; }

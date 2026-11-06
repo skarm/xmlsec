@@ -113,7 +113,7 @@ func CountFractionDigits(value string) int {
 // String lengths count characters; binary lengths count octets.
 func lengthApplicableTypes(key string) bool {
 	switch key {
-	case lexicon.TypeString, lexicon.TypeNormalizedString, lexicon.TypeToken, "language", "Name", "NCName", "ID", lexicon.TypeIDREF, lexicon.TypeIDREFS, "ENTITY", lexicon.TypeENTITIES, "NMTOKEN", lexicon.TypeNMTokens, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation, lexicon.TypeHexBinary, lexicon.TypeBase64Binary:
+	case lexicon.TypeString, lexicon.TypeNormalizedString, lexicon.TypeToken, lexicon.TypeLanguage, lexicon.TypeName, lexicon.TypeNCName, lexicon.TypeID, lexicon.TypeIDREF, lexicon.TypeIDREFS, lexicon.TypeENTITY, lexicon.TypeENTITIES, lexicon.TypeNMToken, lexicon.TypeNMTokens, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation, lexicon.TypeHexBinary, lexicon.TypeBase64Binary:
 		return true
 	}
 

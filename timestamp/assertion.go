@@ -13,6 +13,11 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+const (
+	// Caps raw provenance entries before timestamp observations are filtered out.
+	maximumSourceObservations = 1024
+)
+
 // VerifiedAssertion is an immutable authenticated TSA assertion minted only by
 // successful token/response verification. A caller-created zero value is invalid.
 // It binds the exact token, imprint and asserted GenTime to the TSA and explicit
@@ -20,18 +25,32 @@ import (
 // TSA expiration/revocation or authenticate an arbitrary caller-supplied time.
 // Trust retains whether revocation was required or explicitly left unchecked.
 type VerifiedAssertion struct {
-	generation       time.Time
-	validation       time.Time
-	trust            *pki.Result
+	// generation is the TSA's authenticated generation-time assertion.
+	generation time.Time
+	// validation is the explicit time at which TSA trust policy passed.
+	validation time.Time
+	// trust retains the successful TSA certificate and revocation result.
+	trust *pki.Result
+	// tokenFingerprint is the hexadecimal SHA-256 of the exact authenticated token.
 	tokenFingerprint string
-	tsaFingerprint   string
-	imprint          Imprint
-	sources          []*evidence.Observation
-	policy           asn1.ObjectIdentifier
-	accuracy         time.Duration
-	authenticated    bool
-	hasAccuracy      bool
-	ordering         bool
+	// tsaFingerprint is the hexadecimal SHA-256 of the exact TSA certificate DER.
+	tsaFingerprint string
+	// imprint owns the authenticated message digest and its algorithm.
+	imprint Imprint
+	// sources retains acquisition observations without granting historical
+	// existence or trust.
+	sources []*evidence.Observation
+	// policy retains the accepted TSA policy OID.
+	policy asn1.ObjectIdentifier
+	// accuracy is the authenticated uncertainty around generation when hasAccuracy
+	// is true.
+	accuracy time.Duration
+	// authenticated marks completion of the configured verification policy.
+	authenticated bool
+	// hasAccuracy distinguishes absent accuracy from an explicit zero uncertainty.
+	hasAccuracy bool
+	// ordering retains the TSA's authenticated within-TSA ordering assertion.
+	ordering bool
 }
 
 // Valid reports whether this value came from a complete configured-policy check.
@@ -163,7 +182,7 @@ func (v *Verifier) timestampSources(ctx context.Context, token *Token, response 
 		return input, nil, nil
 	}
 
-	if len(input.Sources) > 1024 {
+	if len(input.Sources) > maximumSourceObservations {
 		return pki.Evidence{}, nil, ErrPolicy
 	}
 

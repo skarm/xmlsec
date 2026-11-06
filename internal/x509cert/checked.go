@@ -19,7 +19,7 @@ func checkedSequence(value asn1.RawValue, minimum int, fields []asn1.RawValue) (
 }
 
 func checkedExplicit(value asn1.RawValue, tag int) (asn1.RawValue, error) {
-	if !der.Is(value, 2, tag, true) || len(value.Bytes) == 0 {
+	if !der.Is(value, asn1.ClassContextSpecific, tag, true) || len(value.Bytes) == 0 {
 		return asn1.RawValue{}, der.ErrInvalidDER
 	}
 

@@ -16,14 +16,14 @@ import (
 )
 
 const (
-	programTrueXPath = "true()"
-	nameData         = "#data"
-	namePayload      = "#payload"
-	nameObject       = "Object"
-	nameRoot         = "root"
-	uriUrnAttachment = "urn:attachment"
-	uriUrnData       = "urn:data"
-	nameData2        = "data"
+	programTrueXPath    = "true()"
+	dataReferenceURI    = "#data"
+	payloadReferenceURI = "#payload"
+	nameObject          = "Object"
+	nameRoot            = "root"
+	uriUrnAttachment    = "urn:attachment"
+	uriUrnData          = "urn:data"
+	dataLiteral         = "data"
 )
 
 func parse(t testing.TB, s string) *document.Document {

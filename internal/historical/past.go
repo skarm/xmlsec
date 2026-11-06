@@ -10,10 +10,20 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
 )
 
+// Report decisions retain the normative clause and action vocabulary.
+const (
+	clause56247                  = "5.6.2.4(7)"
+	stagePastSignatureValidation = "past-signature-validation"
+	// Sub-indication used when certificate validity has not begun at the selected validation time.
+	codeNotYetValid = "NOT_YET_VALID"
+)
+
+// Recovery branches use these EN 319 102-1 sub-indications, not arbitrary errors.
 const (
 	noChain          = "NO_CERTIFICATE_CHAIN_FOUND_NO_POE"
 	outOfBounds      = "OUT_OF_BOUNDS_NO_POE"
@@ -28,7 +38,7 @@ const (
 )
 
 type signedMaterial struct {
-	digest      [32]byte
+	digest      [sha256.Size]byte
 	certificate []byte
 	algorithm   x509.SignatureAlgorithm
 	hashes      []crypto.Hash
@@ -84,7 +94,7 @@ func (e *pastSignatureEvaluation) evaluatePath(ctx context.Context, session *pki
 	}
 
 	out.indication, out.sub, out.result, out.err = Passed, "", past, nil
-	out.steps = append(out.steps, Step{Clause: "5.6.2.4(7)", Action: "past-signature-validation", Object: e.material.digest, Before: e.proofs.Now(), After: past.ValidationTime()})
+	out.steps = append(out.steps, Step{Clause: clause56247, Action: stagePastSignatureValidation, Object: e.material.digest, Before: e.proofs.Now(), After: past.ValidationTime()})
 
 	return true
 }
@@ -212,7 +222,7 @@ func rejectBeforeIssuance(out *pastOutcome, certificate *x509.Certificate) bool 
 		return false
 	}
 
-	out.indication, out.sub = Failed, "NOT_YET_VALID"
+	out.indication, out.sub = Failed, codeNotYetValid
 
 	return true
 }
@@ -384,7 +394,7 @@ func suspended(target []byte, claims []*pki.VerifiedEvidence) bool {
 
 	for _, claim := range claims {
 		reason, ok := claim.RevocationReason()
-		if ok && reason == 6 && claim.AssertedStatus() == assertedRevoked && decodeDigest(claim.TargetCertificateSHA256()) == targetHash {
+		if ok && reason == lexicon.RevocationReasonCertificateHold && claim.AssertedStatus() == assertedRevoked && decodeDigest(claim.TargetCertificateSHA256()) == targetHash {
 			return true
 		}
 	}
@@ -392,11 +402,11 @@ func suspended(target []byte, claims []*pki.VerifiedEvidence) bool {
 	return false
 }
 
-func decodeDigest(value string) [32]byte {
-	var digest [32]byte
-	if len(value) == 64 {
+func decodeDigest(value string) [sha256.Size]byte {
+	var digest [sha256.Size]byte
+	if len(value) == hex.EncodedLen(sha256.Size) {
 		if _, err := hex.Decode(digest[:], []byte(value)); err != nil {
-			return [32]byte{}
+			return [sha256.Size]byte{}
 		}
 	}
 

@@ -59,6 +59,10 @@ type textValueWriter struct {
 }
 
 func (w *textValueWriter) plain(value string) error {
+	const (
+		textSerializationChunkBytes = 4096
+	)
+
 	target := w.destination
 	if w.form != nil {
 		if err := xpath.ChargeString(w.ctx, len(value)); err != nil {
@@ -73,7 +77,7 @@ func (w *textValueWriter) plain(value string) error {
 	}
 
 	for len(value) > 0 {
-		end := min(4096, len(value))
+		end := min(textSerializationChunkBytes, len(value))
 		if err := writeFullString(target, value[:end]); err != nil {
 			return err
 		}

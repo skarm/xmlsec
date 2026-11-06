@@ -9,6 +9,8 @@ package xmlchar
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // IsChar reports whether r is a valid XML 1.0 §2.2 Char.
@@ -164,7 +166,7 @@ func IsValidPITarget(target string) bool {
 		return false
 	}
 
-	if strings.EqualFold(target, "xml") {
+	if strings.EqualFold(target, lexicon.ReservedXMLPITarget) {
 		return false
 	}
 	// Ranging over an invalid byte yields utf8.RuneError (U+FFFD), which is

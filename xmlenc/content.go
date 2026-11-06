@@ -90,7 +90,7 @@ func contentParent(doc *document.Document, parent document.Element) (*tree.Node,
 		return nil, err
 	}
 
-	if node.Name.Space == Namespace && (node.Name.Local == "EncryptedData" || node.Name.Local == "EncryptedKey") {
+	if node.Name.Space == Namespace && (node.Name.Local == nameEncryptedData || node.Name.Local == nameEncryptedKey) {
 		return nil, ErrFormat
 	}
 

@@ -137,36 +137,6 @@ func TestIdentityProviderPolicyBoundariesAndSnapshots(t *testing.T) {
 	}
 }
 
-func trustedRoleEntity(t *testing.T, id string, kind metadata.RoleType) *metadata.Entity {
-	t.Helper()
-	role := &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: testcert.New(t).Leaf.Raw}}}
-	spec := metadata.EntityDescriptor{ID: "_metadata", EntityID: id, ValidUntil: testcert.Now().Add(time.Hour)}
-	if kind == metadata.IdentityProvider {
-		role.Endpoints = map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPPost, Location: singleSignOnURL}, {Binding: metadata.HTTPRedirect, Location: singleSignOnURL}}}
-		spec.IDP = role
-	} else {
-		role.Endpoints = map[string][]metadata.Endpoint{metadata.AssertionConsumerService: {{Binding: metadata.HTTPPost, Location: assertionConsumerURL, Index: 7}}}
-		spec.SP = role
-	}
-	doc, err := metadata.Build(t.Context(), spec, testcert.Now(), metadata.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := doc.XML(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entity, err := snapshot.Find(id, testcert.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return entity
-}
-
 func TestRequestPolicyTrustLookupAndBinding(t *testing.T) {
 	t.Parallel()
 
@@ -246,20 +216,6 @@ func TestRequestPolicyTrustLookupAndBinding(t *testing.T) {
 			t.Fatal("wrong metadata role accepted", replace, err)
 		}
 	}
-}
-
-func signedAndVerifiedRequest(t *testing.T, force, passive, create bool) *protocol.VerifiedRequest {
-	t.Helper()
-	key := testcert.Key(t)
-	doc, err := protocol.SignAuthnRequest(t.Context(), protocol.AuthnRequest{ID: "_policy", Issuer: spEntityID, Destination: singleSignOnURL, ACS: assertionConsumerURL, IssueInstant: testcert.Now(), ForceAuthn: force, IsPassive: passive, AllowCreateNameID: create, RequestedContexts: []string{authenticationContext}}, protocol.SigningKey{Key: key})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := protocol.VerifyAuthnRequest(t.Context(), doc, []crypto.PublicKey{key.Public()}, protocol.RequestOptions{Issuer: spEntityID, Destination: singleSignOnURL, ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: assertionConsumerURL}}, At: testcert.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return request
 }
 
 func TestAuthenticationPolicyIndependentConditions(t *testing.T) {
@@ -454,4 +410,48 @@ func TestIssuedBindingWritersPropagatePartialFailures(t *testing.T) {
 			}
 		}
 	}
+}
+
+func trustedRoleEntity(t *testing.T, id string, kind metadata.RoleType) *metadata.Entity {
+	t.Helper()
+	role := &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{CertificateDER: testcert.New(t).Leaf.Raw}}}
+	spec := metadata.EntityDescriptor{ID: "_metadata", EntityID: id, ValidUntil: testcert.Now().Add(time.Hour)}
+	if kind == metadata.IdentityProvider {
+		role.Endpoints = map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPPost, Location: singleSignOnURL}, {Binding: metadata.HTTPRedirect, Location: singleSignOnURL}}}
+		spec.IDP = role
+	} else {
+		role.Endpoints = map[string][]metadata.Endpoint{metadata.AssertionConsumerService: {{Binding: metadata.HTTPPost, Location: assertionConsumerURL, Index: 7}}}
+		spec.SP = role
+	}
+	doc, err := metadata.Build(t.Context(), spec, testcert.Now(), metadata.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := doc.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entity, err := snapshot.Find(id, testcert.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entity
+}
+
+func signedAndVerifiedRequest(t *testing.T, force, passive, create bool) *protocol.VerifiedRequest {
+	t.Helper()
+	key := testcert.Key(t)
+	doc, err := protocol.SignAuthnRequest(t.Context(), protocol.AuthnRequest{ID: "_policy", Issuer: spEntityID, Destination: singleSignOnURL, ACS: assertionConsumerURL, IssueInstant: testcert.Now(), ForceAuthn: force, IsPassive: passive, AllowCreateNameID: create, RequestedContexts: []string{authenticationContext}}, protocol.SigningKey{Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := protocol.VerifyAuthnRequest(t.Context(), doc, []crypto.PublicKey{key.Public()}, protocol.RequestOptions{Issuer: spEntityID, Destination: singleSignOnURL, ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: assertionConsumerURL}}, At: testcert.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
 }

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/transform"
@@ -65,20 +66,6 @@ const processingInstructionTypeXML = "<r><?p first?><?if keyword?><?é unicode?>
 const namespaceNodeTypeXML = `<p:r xmlns:p="urn:node" a="1" p:a="2"/>`
 
 const basicAccessorXML = `<r xmlns="urn:default" xmlns:p="urn:p"><n xml:id="a"/><n xml:id="b"/><n/></r>`
-
-// publishedProofVector records the fixture's literal reference value, rather
-// than the implementation's observed output, for the executable proof ledger.
-func publishedProofVector(t *testing.T, want string) {
-	t.Helper()
-	if os.Getenv("XMLSEC_PROOF_CAPTURE") != "1" {
-		return
-	}
-	raw, err := json.Marshal(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("P3_VECTOR " + string(raw))
-}
 
 func TestXPathCalendarOverflowCodes(t *testing.T) {
 	e := engine(t, transform.Config{})
@@ -2141,7 +2128,9 @@ func TestSubsequenceWorkBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
-		if err != nil || result.Len() != 5 {
+		if err != nil {
+			t.Fatal(err)
+		} else if result.Len() != 5 {
 			t.Fatal("skipped range prefix must require no traversal", result.Len(), err)
 		}
 		for i := range result.Len() {
@@ -3820,6 +3809,1030 @@ func TestXPathErrorCodeNamespaceContracts(t *testing.T) {
 				var detail *transform.Error
 				if !errors.As(err, &detail) || detail.CodeName() != (transform.Name{Space: space, Local: errCodeXPTY0004}) {
 					t.Fatal(expression, err)
+				}
+			})
+		}
+	}
+}
+
+// publishedProofVector records the fixture's literal reference value, rather
+// than the implementation's observed output, for the executable proof ledger.
+func publishedProofVector(t *testing.T, want string) {
+	t.Helper()
+	if os.Getenv("XMLSEC_PROOF_CAPTURE") != "1" {
+		return
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("P3_VECTOR " + string(raw))
+}
+
+func TestFormatNumberRetainsLargeExactValues(t *testing.T) {
+	e := engine(t, transform.Config{})
+	large := "1" + strings.Repeat("0", 400)
+	for expression, want := range map[string]string{
+		`format-number(xs:integer('` + large + `'), '0')`:  large,
+		`format-number(xs:decimal('` + large + `'), '0')`:  large,
+		`format-number(xs:integer('-` + large + `'), '0')`: "-" + large,
+		`format-number(xs:decimal('` + large + `'), '0%')`: large + "00%",
+		`format-number(xs:double('1e308'), '0%')`:          "Infinity%",
+		`format-number(xs:double('-0'), '0.0')`:            "-0.0",
+		`format-number(1 div 7, '0.0000')`:                 "0.1429",
+	} {
+		if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != want {
+			t.Fatalf("formatted value as %q; want %q", got, want)
+		}
+	}
+	value := "0." + strings.Repeat("0", 1000) + "59"
+	picture := "0." + strings.Repeat("0", 1001)
+	want := "0." + strings.Repeat("0", 1000) + "6"
+	expression := `format-number(xs:decimal('` + value + `'), '` + picture + `')`
+	if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != want {
+		t.Fatalf("wide picture rounded to %q; want %q", got, want)
+	}
+}
+
+func TestFormatNumberRejectsUnboundedPictureWork(t *testing.T) {
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 1024, MaxNodes: 1024}})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	// fn:round-half-to-even takes an arbitrary integer precision, and decides
+	// that this already finite decimal is unchanged without exponentiation.
+	value, err := query(t, e, `round-half-to-even(1 div 3, 9223372036854775806) eq (1 div 3)`, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
+	if err != nil || text(t, value) != nameTrue {
+		t.Fatal("huge precision changed the finite quotient", err)
+	}
+	// format-number's precision instead comes from a materialized picture.
+	// Both a huge dynamic construction and an existing oversized binding must
+	// hit the invocation budget before decimal powers can be allocated.
+	for _, expression := range []string{
+		`format-number(1 div 3, string-join((1 to 9223372036854775806) ! '0', ''))`,
+		`format-number(1 div 3, $picture)`,
+	} {
+		program := query(t, e, expression, transform.XPath31)
+		invocation := transform.XPathContext{}
+		if strings.Contains(expression, "$picture") {
+			invocation.Variables = transform.Bindings{
+				{Local: "picture"}: transform.Values(transform.String("0." + strings.Repeat("0", 4096))),
+			}
+		}
+		_, err := program.Evaluate(ctx, nil, invocation)
+		if !errors.Is(err, transform.ErrLimit) {
+			t.Fatalf("unbounded picture: %v; want resource limit", err)
+		}
+	}
+}
+
+func TestRegexCharacterClassGroupLookalikes(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for expression, want := range map[string]string{
+			`matches('(', '[(?]')`:     nameTrue,
+			`matches('?', '[(?]')`:     nameTrue,
+			`matches('a', '[(?]')`:     nameFalse,
+			`matches('(', '[(?-[?]]')`: nameTrue,
+			`matches('?', '[(?-[?]]')`: nameFalse,
+		} {
+			if got := text(t, evaluate(t, e, expression, version)); got != want {
+				t.Fatal(version, expression, got, want)
+			}
+		}
+		for _, expression := range []string{`matches('a', '[a](?=b)')`, `matches('a', '\[(?=a)')`} {
+			_, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "FORX0002" {
+				t.Fatal("lookaround was accepted", version, expression, err)
+			}
+		}
+	}
+}
+
+func TestUCAMalformedBindingSubstringBoundaries(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := make(map[string]*transform.XPath, 2)
+	for _, fn := range []string{"substring-before", "substring-after"} {
+		query, err := engine.CompileXPath(t.Context(), fn+"($s,$needle,$uri)", transform.XPathOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		queries[fn] = query
+	}
+	const base = "http://www.w3.org/2013/collation/UCA"
+	profiles := []struct {
+		name, uri string
+		projected bool
+	}{
+		{"Default", base, false},
+		{"Numeric", base + "?numeric=yes", false},
+		{"ShiftedPrimary", base + "?strength=primary;alternate=shifted", true},
+		{"BlankedPrimary", base + "?strength=primary;alternate=blanked", true},
+		{"ShiftedIdentical", base + "?strength=identical;alternate=shifted", false},
+	}
+	cases := []struct{ name, source, needle, before, after, projectedBefore, projectedAfter string }{
+		{"InvalidPrefix", "\xffa", "a", "\xff", "", "\xff", ""},
+		{"InvalidMiddle", "L\xffaR", "a", "L\xff", "R", "L\xff", "R"},
+		{"TruncatedPrefix", "\xe2\x82a", "a", "\xe2\x82", "", "\xe2\x82", ""},
+		{"OverlongPrefix", "\xc0\xafaR", "a", "\xc0\xaf", "R", "\xc0\xaf", "R"},
+		{"SurrogatePrefix", "\xed\xa0\x80a", "a", "\xed\xa0\x80", "", "\xed\xa0\x80", ""},
+		{"InvalidMatch", "L\xffR", "\ufffd", "L", "R", "", "L\xffR"},
+		{"InvalidMatchAtEnd", "a\xff", "\ufffd", "a", "", "", "a\xff"},
+		{"InvalidSuffixPreserved", "La\xff", "a", "L", "\xff", "L", "\xff"},
+		{"InvalidNeedleMiss", "aé", "\xff", "", "", "", "aé"},
+		{"InvalidNeedleAndMatch", "L\xffR", "\xff", "", "", "", "L\xffR"},
+		{"InvalidAlternateMatch", "-.L\xffR.-", "\ufffd", "-.L", "R.-", "", "-.L\xffR.-"},
+		{"LiteralReplacementControl", "L\ufffdR", "\ufffd", "L", "R", "", "L\ufffdR"},
+		{"ComposedControl", "😀éZ", "e\u0301", "😀", "Z", "😀", "Z"},
+		{"DecomposedControl", "😀e\u0301Z", "é", "😀", "Z", "😀", "\u0301Z"},
+		{"EmptyNeedleControl", "\xffa", "", "", "\xffa", "", "\xffa"},
+		{"EmptySourceControl", "", "\xff", "", "", "", ""},
+	}
+	for _, profile := range profiles {
+		for _, tc := range cases {
+			for _, fn := range []string{"substring-before", "substring-after"} {
+				t.Run(profile.name+"/"+tc.name+"/"+fn, func(t *testing.T) {
+					// A panic is always a failed public evaluation, never an accepted legacy result.
+					defer func() {
+						if p := recover(); p != nil {
+							t.Fatalf("Evaluate panicked: %v", p)
+						}
+					}()
+					want := tc.before
+					if profile.projected {
+						want = tc.projectedBefore
+					}
+					if fn == "substring-after" {
+						want = tc.after
+						if profile.projected {
+							want = tc.projectedAfter
+						}
+					}
+					seq, err := queries[fn].Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+						{Local: "s"}:      transform.Values(transform.String(tc.source)),
+						{Local: "needle"}: transform.Values(transform.String(tc.needle)),
+						{Local: "uri"}:    transform.Values(transform.String(profile.uri)),
+					}})
+					if err != nil {
+						t.Fatalf("Evaluate: %v", err)
+					}
+					text, err := seq.Text()
+					if err != nil {
+						t.Fatal(err)
+					} else if seq.Len() != 1 || text != want {
+						t.Fatalf("got %q count%d error%v; want %q", text, seq.Len(), err, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestUCAMalformedBindingInputAndErrorControls(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := engine.CompileXPath(t.Context(), "$s", transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := transform.XPathContext{Variables: transform.Bindings{{Local: "s"}: transform.Values(transform.String("\xffa"))}}
+	seq, err := query.Evaluate(t.Context(), nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := seq.Text()
+	if err != nil {
+		t.Fatal(err)
+	} else if seq.Len() != 1 || text != "\xffa" {
+		t.Fatalf("public binding changed bytes: %q count%d err%v", text, seq.Len(), err)
+	}
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{"NilContext", nil, transform.ErrInput},
+		{"Canceled", func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }(), context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := query.Evaluate(tc.ctx, nil, options)
+			if !errors.Is(err, tc.want) || value != (transform.Sequence{}) {
+				t.Fatalf("got result %+v error%v; want no result/%v", value, err, tc.want)
+			}
+		})
+	}
+	limited, err := transform.NewEngine(transform.Config{Limits: transform.Limits{MaxOutputBytes: 256}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	limitedQuery, err := limited.CompileXPath(t.Context(), "substring-after($s,'a','http://www.w3.org/2013/collation/UCA')", transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := limitedQuery.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "s"}: transform.Values(transform.String(strings.Repeat("\xff", 257)))}})
+	if !errors.Is(err, transform.ErrLimit) || value != (transform.Sequence{}) {
+		t.Fatalf("limit got result %+v error%v", value, err)
+	}
+}
+
+func TestUCAMalformedBindingConcurrentQueryAndStylesheetReuse(t *testing.T) {
+	t.Parallel()
+
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := engine.CompileXPath(t.Context(), "(substring-before($s,$needle,$uri),substring-after($s,$needle,$uri))", transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err := engine.CompileXSLT(t.Context(), []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:param name="s"/><xsl:param name="needle"/><xsl:param name="uri"/><xsl:template name="run"><xsl:sequence select="substring-before($s,$needle,$uri),substring-after($s,$needle,$uri)"/></xsl:template></xsl:stylesheet>`), transform.XSLTOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const base = "http://www.w3.org/2013/collation/UCA"
+	cases := []struct{ source, needle, uri, before, after string }{
+		{"\xffa", "a", base, "\xff", ""},
+		{"L\xffR", "\ufffd", base, "L", "R"},
+		{"\xffaR", "a", base + "?strength=primary;alternate=shifted", "\xff", "R"},
+		{"L\xffR", "\xff", base + "?strength=primary;alternate=shifted", "", "L\xffR"},
+	}
+	for worker := range 8 {
+		t.Run(strconv.Itoa(worker), func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if p := recover(); p != nil {
+					t.Fatalf("concurrent public invocation panicked: %v", p)
+				}
+			}()
+			for _, tc := range cases {
+				bindings := transform.Bindings{
+					{Local: "s"}:      transform.Values(transform.String(tc.source)),
+					{Local: "needle"}: transform.Values(transform.String(tc.needle)),
+					{Local: "uri"}:    transform.Values(transform.String(tc.uri)),
+				}
+				value, err := query.Evaluate(t.Context(), nil, transform.XPathContext{Variables: bindings})
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkUCAMalformedSequencePair(t, value, tc.before, tc.after)
+				result, err := style.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: "run"}, Parameters: bindings, ResultMode: transform.ResultRaw})
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkUCAMalformedSequencePair(t, result.Primary(), tc.before, tc.after)
+			}
+		})
+	}
+}
+
+func checkUCAMalformedSequencePair(t *testing.T, value transform.Sequence, before, after string) {
+	t.Helper()
+	if value.Len() != 2 {
+		t.Fatalf("got count%d; want2", value.Len())
+	}
+	for i, want := range []string{before, after} {
+		item, ok := value.At(i)
+		if !ok {
+			t.Fatal("missing pair item")
+		}
+		text, err := item.Text()
+		if err != nil || text != want {
+			t.Fatalf("pair item%d got%q err%v want%q", i, text, err, want)
+		}
+	}
+}
+
+func FuzzUCAMalformedBindingSubstrings(f *testing.F) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		f.Fatal(err)
+	}
+	query, err := engine.CompileXPath(context.Background(), "(substring-before($s,'a',$uri),substring-after($s,'a',$uri))", transform.XPathOptions{})
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, seed := range []string{"", "a", "abc", "\xffa", "L\xffaR", "a\xff", "\xe2\x82a", "\xc0\xafa", "\xed\xa0\x80a", "😀éa", "ae\u0301", "\x00a"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, source string) {
+		if len(source) > 64 {
+			t.Skip("bounded raw string representation")
+		}
+		for _, uri := range []string{
+			"http://www.w3.org/2013/collation/UCA",
+			"http://www.w3.org/2013/collation/UCA?numeric=yes",
+			"http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted",
+		} {
+			value, err := query.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+				{Local: "s"}:   transform.Values(transform.String(source)),
+				{Local: "uri"}: transform.Values(transform.String(uri)),
+			}})
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if value.Len() != 2 {
+				t.Fatalf("got count%d; want2", value.Len())
+			}
+			for i := range 2 {
+				item, ok := value.At(i)
+				if !ok {
+					t.Fatal("missing substring result")
+				}
+				text, err := item.Text()
+				if err != nil || len(text) > len(source) {
+					t.Fatalf("substring%d %q err%v exceeds raw input%q", i, text, err, source)
+				}
+				if i == 0 && !strings.HasPrefix(source, text) || i == 1 && !strings.HasSuffix(source, text) {
+					t.Fatalf("substring%d %q is not original prefix/suffix of%q", i, text, source)
+				}
+			}
+		}
+	})
+}
+
+func TestUCACandidatePublicProfilesAndOriginalOffsets(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := engine.CompileXPath(t.Context(), "(contains($s,$n,$uri),starts-with($s,$n,$uri),ends-with($s,$n,$uri),substring-before($s,$n,$uri),substring-after($s,$n,$uri))", transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const base = "http://www.w3.org/2013/collation/UCA"
+	cases := []struct {
+		name, source, needle, uri string
+		contains, prefix, suffix  bool
+		before, after             string
+	}{
+		{"EarlyASCII", "zaaaa", "z", base, true, true, false, "", "aaaa"},
+		{"LateASCII", "aaaaz", "z", base, true, false, true, "aaaa", ""},
+		{"MissASCII", "aaaa", "z", base, false, false, false, "", ""},
+		{"Composed", "😀éZ", "e\u0301", base, true, false, false, "😀", "Z"},
+		{"Decomposed", "😀e\u0301Z", "é", base, true, false, false, "😀", "Z"},
+		{"NumericSplit", "100", "10", base + "?numeric=yes", false, false, false, "", ""},
+		{"NonNumericSplit", "100", "10", base, true, true, false, "", "0"},
+		{"NumericWhole", "x10y", "10", base + "?numeric=yes", true, false, false, "x", "y"},
+		{"ProjectedBothEnds", "-.a.-", "a", base + "?strength=primary;alternate=shifted", true, true, true, "-.", ".-"},
+		{"ProjectedOriginalOffsets", "-a é.-z", "e\u0301", base + "?strength=primary;alternate=shifted", true, false, false, "-a ", ".-z"},
+		{"ProjectedIgnorable", "abc", "\u0301", base + "?strength=primary;alternate=shifted", true, true, true, "", "abc"},
+		{"MalformedSource", "\xffa", "a", base, true, false, true, "\xff", ""},
+		{"MalformedNeedle", "abc", "\xff", base, false, false, false, "", ""},
+		{"MalformedProjectedNeedle", "abc", "\xff", base + "?strength=primary;alternate=shifted", true, true, true, "", "abc"},
+		{"ValidReplacement", "\ufffda", "a", base, true, false, true, "\ufffd", ""},
+		{"EmptyNeedle", "abc", "", base, true, true, true, "", "abc"},
+		{"EmptySource", "", "a", base, false, false, false, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := query.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+				{Local: "s"}:   transform.Values(transform.String(tc.source)),
+				{Local: "n"}:   transform.Values(transform.String(tc.needle)),
+				{Local: "uri"}: transform.Values(transform.String(tc.uri)),
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.Len() != 5 {
+				t.Fatalf("got%d items; want5", value.Len())
+			}
+			wants := []string{strconv.FormatBool(tc.contains), strconv.FormatBool(tc.prefix), strconv.FormatBool(tc.suffix), tc.before, tc.after}
+			for i, want := range wants {
+				item, ok := value.At(i)
+				if !ok {
+					t.Fatal("missing string operation result")
+				}
+				text, err := item.Text()
+				if err != nil || text != want {
+					t.Fatalf("item%d got%q err%v; want%q", i, text, err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestXPathComprehensiveSemantics(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, source, want    string
+		compileCode, evalCode string
+	}{
+		{name: "JSON placeholder escaped supplementary", source: `string-join(string-to-codepoints(parse-json('"\u0000\uDB80\uDC00"')) ! string(.),' ')`, want: "65533 983040"},
+		{name: "JSON placeholder literal supplementary control", source: `string-join(string-to-codepoints(parse-json(concat('"\u0000',codepoints-to-string(983040),'"'))) ! string(.),' ')`, want: "65533 983040"},
+		{name: "JSON escaped supplementary alone control", source: `string-join(string-to-codepoints(parse-json('"\uDB80\uDC00"')) ! string(.),' ')`, want: "983040"},
+		{name: "JSON XML duplicates retain", source: `count(json-to-xml('{"a":1,"a":2}')/*/*)`, want: "2"},
+		{name: "JSON XML duplicates usefirst control", source: `count(json-to-xml('{"a":1,"a":2}',map{'duplicates':'use-first'})/*/*)`, want: "1"},
+		{name: "XML JSON invalid plus", source: `xml-to-json(parse-xml('<number xmlns="http://www.w3.org/2005/xpath-functions">+</number>'))`, evalCode: "FOJS0006"},
+		{name: "XML JSON invalid dot", source: `xml-to-json(parse-xml('<number xmlns="http://www.w3.org/2005/xpath-functions">.</number>'))`, evalCode: "FOJS0006"},
+		{name: "XML JSON valid plus integer control", source: `xml-to-json(parse-xml('<number xmlns="http://www.w3.org/2005/xpath-functions">+2</number>'))`, want: "2"},
+		{name: "EQName function local name", source: `local-name-from-QName(function-name(Q{http://www.w3.org/2005/xpath-functions/math}sqrt#1))`, want: "sqrt"},
+		{name: "EQName function namespace", source: `namespace-uri-from-QName(function-name(Q{http://www.w3.org/2005/xpath-functions/math}sqrt#1))`, want: "http://www.w3.org/2005/xpath-functions/math"},
+		{name: "prefixed function name control", source: `local-name-from-QName(function-name(math:sqrt#1))`, want: "sqrt"},
+		{name: "dynamic array conversion", source: `[10]([(),1])`, want: "10"},
+		{name: "array get conversion control", source: `array:get([10],[(),1])`, want: "10"},
+		{name: "dynamic map conversion", source: `map{1:'v'}([(),1])`, want: "v"},
+		{name: "map get conversion control", source: `map:get(map{1:'v'},[(),1])`, want: "v"},
+		{name: "arrow local whitespace", source: `1 => fn: string()`, compileCode: "XPST0003"},
+		{name: "arrow local comment", source: `1 => fn:(:x:)string()`, compileCode: "XPST0003"},
+		{name: "arrow joined control", source: `1 => fn:string()`, want: "1"},
+		{name: "keyword element type", source: `parse-xml('<map/>')/* instance of element(map)`, want: "true"},
+		{name: "function without return grammar", source: `1 instance of function()`, compileCode: "XPST0003"},
+		{name: "function with return control", source: `1 instance of function() as item()*`, want: "false"},
+		{name: "reverse path order", source: `string-join(reverse(parse-xml('<r><a id="1"/><a id="2"/></r>')/*/*)/@id,',')`, want: "1,2"},
+		{name: "reverse sequence control", source: `string-join(reverse(parse-xml('<r><a id="1"/><a id="2"/></r>')/*/*/@id),',')`, want: "2,1"},
+		{name: "UCA prefix compressed", source: `starts-with('é','é','http://www.w3.org/2013/collation/UCA')`, want: "true"},
+		{name: "UCA suffix compressed", source: `ends-with('é','é','http://www.w3.org/2013/collation/UCA')`, want: "true"},
+		{name: "UCA ignorable empty prefix", source: `starts-with('',codepoints-to-string(769),'http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted')`, want: "true"},
+		{name: "UCA ignorable empty suffix", source: `ends-with('',codepoints-to-string(769),'http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted')`, want: "true"},
+		{name: "UCA ignorable punctuation prefix", source: `starts-with('-.',codepoints-to-string(769),'http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted')`, want: "true"},
+		{name: "UCA ignorable punctuation suffix", source: `ends-with('-.',codepoints-to-string(769),'http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted')`, want: "true"},
+		{name: "UCA empty compare control", source: `compare('',codepoints-to-string(769),'http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted')`, want: "0"},
+		{name: "UCA empty mismatch control", source: `starts-with('','a','http://www.w3.org/2013/collation/UCA?strength=primary;alternate=shifted')`, want: "false"},
+		{name: "UCA contains composed control", source: `contains('é','é','http://www.w3.org/2013/collation/UCA')`, want: "true"},
+		{name: "mathematical double struck", source: `format-integer(12,'𝟘𝟘')`, want: "𝟙𝟚"},
+		{name: "mathematical bold control", source: `format-integer(12,'𝟎𝟎')`, want: "𝟏𝟐"},
+		{name: "roman huge integer", source: `format-integer(18446744073709551616,'I')`, want: "18446744073709551616"},
+		{name: "roman small control", source: `format-integer(12,'I')`, want: "XII"},
+		{name: "JSON escaped supplementary first", source: `string-join(string-to-codepoints(parse-json('"\uDB80\uDC00\u0000"')) ! string(.),' ')`, want: "983040 65533"},
+		{name: "JSON placeholders consecutive", source: `string-join(string-to-codepoints(parse-json('"\u0000\uDB80\uDC00\u0001\uDB80\uDC01"')) ! string(.),' ')`, want: "65533 983040 65533 983041"},
+		{name: "JSON escape option", source: `parse-json('"\u0000\uDB80\uDC00"',map{'escape':true()}) eq concat('\u0000',codepoints-to-string(983040))`, want: "true"},
+		{name: "JSON fallback option", source: `string-join(string-to-codepoints(parse-json('"\u0000\uDB80\uDC00"',map{'fallback':function($s){'X'}})) ! string(.),' ')`, want: "88 983040"},
+		{name: "JSON invalid short and valid pair", source: `string-length(parse-json('"\b\f\uD800\uDFFF\u0000"'))`, want: "4"},
+		{name: "JSON invalid fallback raw case", source: `parse-json('"\b\f\uD80A\u0000"',map{'fallback':function($s){concat('[',$s,']')}})`, want: `[\b][\f][\uD80A][\u0000]`},
+		{name: "JSON invalid short escape control", source: `parse-json('"\b\f\u0000"',map{'escape':true()})`, want: `\b\f\u0000`},
+		{name: "JSON literal backslash control", source: `parse-json('"\\u0000"')`, want: `\u0000`},
+		{name: "JSON replacement duplicate key reject", source: `parse-json('{"\u0000":1,"\u0001":2}',map{'duplicates':'reject'})`, evalCode: "FOJS0003"},
+		{name: "JSON replacement duplicate key first", source: `map:size(parse-json('{"\u0000":1,"\u0001":2}'))`, want: "1"},
+		{name: "JSON escaped distinct keys control", source: `map:size(parse-json('{"\u0000":1,"\u0001":2}',map{'escape':true()}))`, want: "2"},
+		{name: "JSON invalid key control", source: `string-to-codepoints(map:keys(parse-json('{"\u0000":0}')))`, want: "65533"},
+		{name: "JSON liberal invalid fallback control", source: `parse-json('"\u0000"',map{'liberal':true(),'fallback':function($s){'X'}})`, want: "X"},
+		{name: "JSON XML placeholder", source: `string-join(string-to-codepoints(string(json-to-xml('"\u0000\uDB80\uDC00"')/*)) ! string(.),' ')`, want: "65533 983040"},
+		{name: "XML JSON invalid exponent mantissa", source: `xml-to-json(parse-xml('<number xmlns="http://www.w3.org/2005/xpath-functions">e2</number>'))`, evalCode: "FOJS0006"},
+		{name: "XML JSON valid leading point", source: `xml-to-json(parse-xml('<number xmlns="http://www.w3.org/2005/xpath-functions">.2</number>'))`, want: "0.2"},
+		{name: "XML JSON valid trailing point", source: `xml-to-json(parse-xml('<number xmlns="http://www.w3.org/2005/xpath-functions">2.</number>'))`, want: "2"},
+		{name: "partial array conversion", source: `let $f := [10](?) return $f([(),1])`, want: "10"},
+		{name: "apply array conversion", source: `apply([10],[[(),1]])`, want: "10"},
+		{name: "partial map conversion", source: `let $f := map{1:'v'}(?) return $f([(),1])`, want: "v"},
+		{name: "apply map conversion", source: `apply(map{1:'v'},[[(),1]])`, want: "v"},
+		{name: "array cardinality error", source: `[10]([1,2])`, evalCode: "XPTY0004"},
+		{name: "array atomization error", source: `[10](map{})`, evalCode: "FOTY0013"},
+		{name: "array type error", source: `[10]('1')`, evalCode: "XPTY0004"},
+		{name: "array put bound error", source: `array:put([10],0,())`, evalCode: "FOAY0001"},
+		{name: "array insert bound error", source: `array:insert-before([10],0,())`, evalCode: "FOAY0001"},
+		{name: "array bound error", source: `[10](0)`, evalCode: "FOAY0001"},
+		{name: "map cardinality error", source: `map{1:'v'}([1,2])`, evalCode: "XPTY0004"},
+		{name: "keyword attribute type", source: `parse-xml('<r if="v"/>')/*/@* instance of attribute(if)`, want: "true"},
+		{name: "prefixed keyword element type", source: `parse-xml('<p:map xmlns:p="urn:test"/>')/* instance of element(Q{urn:test}map)`, want: "true"},
+		{name: "wrong kind name control", source: `parse-xml('<map/>')/* instance of element(other)`, want: "false"},
+		{name: "sort path order", source: `string-join(sort(parse-xml('<r><a id="1"/><a id="2"/></r>')/*/*,(),function($x){-xs:integer($x/@id)})/@id,',')`, want: "1,2"},
+		{name: "atomic path order control", source: `string-join(reverse(parse-xml('<r><a id="1"/><a id="2"/></r>')/*/*)/string(@id),',')`, want: "2,1"},
+		{name: "UCA longer mismatch", source: `ends-with('é','xyz','http://www.w3.org/2013/collation/UCA')`, want: "false"},
+		{name: "mathematical date digits", source: `format-date(xs:date('2000-01-12'),'[D𝟘𝟘]')`, want: "𝟙𝟚"},
+		{name: "arabic decimal digits control", source: `format-integer(12,'٠٠')`, want: "١٢"},
+		{name: "roman negative huge", source: `format-integer(-18446744073709551616,'i')`, want: "-18446744073709551616"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, err := engine.CompileXPath(context.Background(), tc.source, transform.XPathOptions{Version: transform.XPath31})
+			if tc.compileCode != "" {
+				requireComprehensiveXPathCode(t, err, tc.compileCode)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := q.Evaluate(context.Background(), nil, transform.XPathContext{})
+			if tc.evalCode != "" {
+				requireComprehensiveXPathCode(t, err, tc.evalCode)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := value.Text()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if text != tc.want {
+				t.Errorf("got %q; want %q", text, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathComprehensiveIntermediateBudgets(t *testing.T) {
+	cases := []struct {
+		name, source string
+		limit        transform.Limits
+		vars         transform.Bindings
+	}{
+		{name: "quantified every operations", source: `every $i in 1 to 5000 satisfies true()`, limit: transform.Limits{MaxOperations: 1000}},
+		{name: "quantified some operations", source: `some $i in 1 to 5000 satisfies false()`, limit: transform.Limits{MaxOperations: 1000}},
+		{name: "FLWOR empty return operations", source: `count(for $i in 1 to 5000 return ())`, limit: transform.Limits{MaxOperations: 1000}},
+		{name: "FLWOR materialized return control", source: `count(for $i in 1 to 5000 return $i)`, limit: transform.Limits{MaxOperations: 1000}},
+		{name: "array put intermediate item cap", source: `array:size(array:put([1,2,3,4,5,6],1,1 to 6))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "array insert intermediate member cap", source: `array:size(array:insert-before(fold-left(1 to 10,[],function($a,$i){array:append($a,())}),1,()))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "array insert intermediate item cap", source: `array:size(array:insert-before([1,2,3,4,5],1,1 to 6))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "JSON string intermediate bytes", source: `count(for $i in 1 to 100 return string-length(parse-json('"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"')))`, limit: transform.Limits{MaxOutputBytes: 1024}},
+		{name: "JSON escaped string intermediate bytes", source: `count(for $i in 1 to 100 return string-length(parse-json('"\u0000\u0001"',map{'escape':true()})))`, limit: transform.Limits{MaxOutputBytes: 1024}},
+		{name: "JSON fallback string intermediate bytes", source: `count(for $i in 1 to 100 return string-length(parse-json('"\u0000"',map{'fallback':function($s){'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}})))`, limit: transform.Limits{MaxOutputBytes: 1024}},
+		{name: "format integer intermediate bytes", source: `count(for $i in 1 to 100 return string-length(format-integer($i,'00000000000000000000000000000000')))`, limit: transform.Limits{MaxOutputBytes: 1024}},
+		{name: "format number intermediate bytes control", source: `count(for $i in 1 to 100 return string-length(format-number($i,'00000000000000000000000000000000')))`, limit: transform.Limits{MaxOutputBytes: 1024}},
+		{name: "array append intermediate cap", source: `array:size(fold-left(1 to 10,[1],function($a,$i){array:append($a,())}))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "array join intermediate cap control", source: `array:size(array:join(([1,2,3,4,5,6],[7,8,9,10,11])))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "map constructor intermediate cap", source: `map:size(map{0:(),1:(),2:(),3:(),4:(),5:(),6:(),7:(),8:(),9:(),10:()})`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "map merge intermediate cap control", source: `map:size(map:merge((map{0:()},map{1:()},map{2:()},map{3:()},map{4:()},map{5:()},map{6:()},map{7:()},map{8:()},map{9:()},map{10:()})))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "general duration constructor intermediate bytes", source: `count(xs:duration('PT0.` + strings.Repeat("123456789", 100) + `S'))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "year month duration constructor cumulative bytes", source: `count(for $i in 1 to 300 return xs:yearMonthDuration('P1Y'))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "day time sum intermediate bytes", source: `let $d:=xs:dayTimeDuration('PT0.123456789S') return count(for $i in 1 to 100 return sum(($d,$d)))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "year month sum intermediate bytes", source: `let $d:=xs:yearMonthDuration('P1Y') return count(for $i in 1 to 300 return sum(($d,$d)))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "year month average intermediate bytes", source: `let $d:=xs:yearMonthDuration('P1Y') return count(for $i in 1 to 300 return avg(($d,$d)))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "day time average intermediate bytes", source: `let $d:=xs:dayTimeDuration('PT0.123456789S') return count(for $i in 1 to 100 return avg(($d,$d)))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "date time timezone intermediate bytes", source: `let $d:=xs:dateTime('2000-01-01T00:00:00+01:00') return count(for $i in 1 to 200 return timezone-from-dateTime($d))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "date timezone intermediate bytes", source: `let $d:=xs:date('2000-01-01+01:00') return count(for $i in 1 to 200 return timezone-from-date($d))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "time timezone intermediate bytes", source: `let $d:=xs:time('00:00:00+01:00') return count(for $i in 1 to 200 return timezone-from-time($d))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "implicit timezone intermediate bytes", source: `count(for $i in 1 to 200 return implicit-timezone())`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "day time addition intermediate bytes", source: `let $d:=xs:dayTimeDuration('PT0.123456789S') return count(for $i in 1 to 100 return $d+$d)`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "year month addition intermediate bytes", source: `let $d:=xs:yearMonthDuration('P1Y') return count(for $i in 1 to 300 return $d+$d)`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "duration multiply existing bytes control", source: `let $d:=xs:dayTimeDuration('PT0.123456789S') return count(for $i in 1 to 100 return $d*2)`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "duration divide existing bytes control", source: `let $d:=xs:dayTimeDuration('PT0.123456789S') return count(for $i in 1 to 100 return $d div 2)`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "duration constructor intermediate bytes", source: `count(xs:dayTimeDuration('PT0.` + strings.Repeat("123456789", 100) + `S'))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "duration constructor full result control", source: `xs:dayTimeDuration('PT0.` + strings.Repeat("123456789", 100) + `S')`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "duration constructor cumulative bytes", source: `count(for $i in 1 to 100 return xs:dayTimeDuration('PT0.123456789S'))`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "big integer range construction bytes", source: `count(100000000000000000000 to 100000000000000000099)`, limit: transform.Limits{MaxOutputBytes: 512}},
+		{name: "map put intermediate cap", source: `map:size(fold-left(1 to 10,map{0:0},function($m,$i){map:put($m,$i,())}))`, limit: transform.Limits{MaxNodes: 10}},
+		{name: "tokenize intermediate cap", source: `count(tokenize($s))`, limit: transform.Limits{MaxNodes: 10}, vars: transform.Bindings{{Local: "s"}: transform.Values(transform.String("a a a a a a a a a a a a a a a a a a a a"))}},
+		{name: "regex tokenize intermediate cap", source: `count(tokenize($s,' '))`, limit: transform.Limits{MaxNodes: 10}, vars: transform.Bindings{{Local: "s"}: transform.Values(transform.String("a a a a a a a a a a a a a a a a a a a a"))}},
+		{name: "RNG permute operations", source: `count(random-number-generator(1)?permute(1 to 2000))`, limit: transform.Limits{MaxOperations: 1000}},
+		{name: "reverse operations control", source: `count(reverse(1 to 2000))`, limit: transform.Limits{MaxOperations: 1000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := transform.NewEngine(transform.Config{Limits: tc.limit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := e.CompileXPath(context.Background(), tc.source, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal("compile", err)
+			}
+			got, err := q.Evaluate(context.Background(), nil, transform.XPathContext{Variables: tc.vars})
+			if err == nil {
+				text, _ := got.Text()
+				t.Errorf("accepted oversized intermediate/work: %s", text)
+			} else if !errors.Is(err, transform.ErrLimit) {
+				t.Fatal("limit category lost", err)
+			}
+		})
+	}
+}
+
+func TestXPathComprehensivePredicateCollation(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{`count(parse-xml('<r><a id="A"/></r>')/*/*[@id='a'])`, `count(parse-xml('<r><a id="A"/></r>')/*/*[string(@id)='a'])`, `count(parse-xml('<r><a id="A"/></r>')//*[@id='a'])`} {
+		t.Run(source, func(t *testing.T) {
+			q, err := e.CompileXPath(context.Background(), source, transform.XPathOptions{DefaultCollation: "http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := q.Evaluate(context.Background(), nil, transform.XPathContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, _ := got.Text()
+			if text != "1" {
+				t.Errorf("got %s, want 1", text)
+			}
+		})
+	}
+}
+
+func requireComprehensiveXPathCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var detail *transform.Error
+	if !errors.As(err, &detail) || detail.Code != code {
+		t.Fatalf("got %v; want %s", err, code)
+	}
+}
+
+func TestXPathComprehensiveBudgetBoundaries(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{Limits: transform.Limits{MaxNodes: 10, MaxOperations: 1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		`array:size(fold-left(1 to 10,[],function($a,$i){array:append($a,())}))=10`,
+		`array:size(array:put([1,2,3,4,5],1,1 to 6))=5`,
+		`array:size(array:insert-before([1,2,3,4],1,1 to 6))=5`,
+		`array:size(array:put(fold-left(1 to 10,[],function($a,$i){array:append($a,())}),1,()))=10`,
+		`format-integer(12,'0000')='0012'`,
+		`string-length(parse-json('"abcdefghij"'))=10`,
+		`map:size(map{0:(),1:(),2:(),3:(),4:(),5:(),6:(),7:(),8:(),9:()})=10`,
+		`map:size(fold-left(1 to 10,map:merge(for $i in 1 to 10 return map{$i:()}),function($m,$i){map:put($m,$i,())}))=10`,
+		`count(tokenize('a a a a a a a a a a'))=10`,
+		`count(tokenize('a a a a a a a a a a',' '))=10`,
+		`count(random-number-generator(1)?permute(1 to 10))=10`,
+		`every $i in 1 to 10 satisfies true()`,
+		`not(some $i in 1 to 10 satisfies false())`,
+		`count(for $i in 1 to 10 return ())=0`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			program, err := engine.CompileXPath(context.Background(), source, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := program.Evaluate(context.Background(), nil, transform.XPathContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := value.Text()
+			if err != nil || text != "true" {
+				t.Fatalf("got %q, %v", text, err)
+			}
+		})
+	}
+}
+
+func TestXPathComprehensiveJSONCapacity(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := engine.CompileXPath(context.Background(), `string-length(parse-json($s))`, transform.XPathOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var privateUse strings.Builder
+	for r := rune(0xF0000); r <= 0xFFFFD; r++ {
+		privateUse.WriteRune(r)
+	}
+	for _, tc := range []struct {
+		name, input string
+		want        int
+	}{
+		{"small replacement control", `"` + strings.Repeat(`\u0000`, 16) + `"`, 16},
+		{"repeated invalid escape", `"` + strings.Repeat(`\u0000`, 65535) + `"`, 65535},
+		{"all prior private use markers", `"` + privateUse.String() + `\u0000"`, 65535},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := program.Evaluate(context.Background(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "s"}: transform.Values(transform.String(tc.input))}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := value.Text()
+			if err != nil || text != strconv.Itoa(tc.want) {
+				t.Fatalf("got %q, %v; want %d", text, err, tc.want)
+			}
+		})
+	}
+	for _, liberal := range []bool{false, true} {
+		t.Run("raw control liberal="+strconv.FormatBool(liberal), func(t *testing.T) {
+			query, err := engine.CompileXPath(context.Background(), `parse-json($s,map{'liberal':$liberal})`, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = query.Evaluate(context.Background(), nil, transform.XPathContext{Variables: transform.Bindings{
+				{Local: "s"}:       transform.Values(transform.String("\"\x00\"")),
+				{Local: "liberal"}: transform.Values(transform.Boolean(liberal)),
+			}})
+			requireComprehensiveXPathCode(t, err, "FOJS0001")
+		})
+	}
+}
+
+func TestXPathComprehensiveStringBudgetBoundaries(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{Limits: transform.Limits{MaxOutputBytes: 1024}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ source, want string }{
+		{`count(100000000000000000000 to 100000000000000000002)`, "3"},
+		{`count(1 to 2000)`, "2000"},
+		{`string-length(parse-json('"` + strings.Repeat("a", 1000) + `"'))`, "1000"},
+		{`string-length(parse-json('"\u0000"',map{'fallback':function($s){'` + strings.Repeat("a", 1000) + `'}}))`, "1000"},
+		{`string-length(format-integer(12,'` + strings.Repeat("0", 500) + `'))`, "500"},
+	} {
+		t.Run(tc.want+tc.source[:min(24, len(tc.source))], func(t *testing.T) {
+			program, err := engine.CompileXPath(context.Background(), tc.source, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := program.Evaluate(context.Background(), nil, transform.XPathContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := value.Text()
+			if err != nil || text != tc.want {
+				t.Fatalf("got %q,%v; want %q", text, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathComprehensiveUCAIgnorable(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"?strength=primary", "?strength=primary;alternate=shifted"} {
+		uri := "http://www.w3.org/2013/collation/UCA" + suffix
+		for _, tc := range []struct{ source, want string }{
+			{`contains('',codepoints-to-string(769),'` + uri + `')`, "true"},
+			{`contains('abc',codepoints-to-string(769),'` + uri + `')`, "true"},
+			{`starts-with('abc',codepoints-to-string(769),'` + uri + `')`, "true"},
+			{`ends-with('abc',codepoints-to-string(769),'` + uri + `')`, "true"},
+			{`substring-before('abc',codepoints-to-string(769),'` + uri + `')`, ""},
+			{`substring-after('abc',codepoints-to-string(769),'` + uri + `')`, "abc"},
+			{`substring-after('-.',codepoints-to-string(769),'` + uri + `')`, "-."},
+			{`compare('',codepoints-to-string(769),'` + uri + `')`, "0"},
+			{`contains('abc',codepoints-to-string(769),'http://www.w3.org/2005/xpath-functions/collation/codepoint')`, "false"},
+			{`contains('abc',codepoints-to-string(769),'http://www.w3.org/2013/collation/UCA?strength=tertiary')`, "false"},
+		} {
+			t.Run(tc.source, func(t *testing.T) {
+				query, err := engine.CompileXPath(context.Background(), tc.source, transform.XPathOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				value, err := query.Evaluate(context.Background(), nil, transform.XPathContext{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				text, err := value.Text()
+				if err != nil || text != tc.want {
+					t.Fatalf("got %q,%v; want %q", text, err, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestXPathComprehensiveDurationConstructorBoundaries(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{Limits: transform.Limits{MaxOutputBytes: 512}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, source, want string }{
+		{"canonical short despite long input", `string(xs:dayTimeDuration('PT0.` + strings.Repeat("0", 900) + `S'))`, "PT0S"},
+		{"exact day time fraction", `string(xs:dayTimeDuration('PT0.1234567890123456789S'))`, "PT0.1234567890123456789S"},
+		{"day time exact addition", `let $d:=xs:dayTimeDuration('PT0.123456789S') return string($d+$d)`, "PT0.246913578S"},
+		{"year month addition", `let $d:=xs:yearMonthDuration('P1Y') return string($d+$d)`, "P2Y"},
+		{"duration ratio numeric type", `(xs:dayTimeDuration('PT1S') div xs:dayTimeDuration('PT2S')) instance of xs:decimal`, "true"},
+		{"duration result type", `(xs:dayTimeDuration('PT1S')+xs:dayTimeDuration('PT2S')) instance of xs:dayTimeDuration`, "true"},
+		{"date result type", `(xs:date('2000-01-01')+xs:dayTimeDuration('P1D')) instance of xs:date`, "true"},
+		{"day time exact sum", `string(sum((xs:dayTimeDuration('PT0.123456789S'),xs:dayTimeDuration('PT0.123456789S'))))`, "PT0.246913578S"},
+		{"day time exact average", `string(avg((xs:dayTimeDuration('PT0.123456789S'),xs:dayTimeDuration('PT0.123456789S'))))`, "PT0.123456789S"},
+		{"year month sum", `string(sum((xs:yearMonthDuration('P1Y'),xs:yearMonthDuration('P2Y'))))`, "P3Y"},
+		{"year month average", `string(avg((xs:yearMonthDuration('P1Y'),xs:yearMonthDuration('P2Y'))))`, "P1Y6M"},
+		{"negative date time timezone", `string(timezone-from-dateTime(xs:dateTime('2000-01-01T00:00:00-03:30')))`, "-PT3H30M"},
+		{"negative date timezone", `string(timezone-from-date(xs:date('2000-01-01-03:30')))`, "-PT3H30M"},
+		{"negative time timezone", `string(timezone-from-time(xs:time('00:00:00-03:30')))`, "-PT3H30M"},
+		{"absent timezone", `count(timezone-from-dateTime(xs:dateTime('2000-01-01T00:00:00')))`, "0"},
+		{"empty timezone argument", `count(timezone-from-dateTime(()))`, "0"},
+		{"implicit timezone default", `string(implicit-timezone())`, "PT0S"},
+		{"year month canonical", `string(xs:yearMonthDuration('P12M'))`, "P1Y"},
+		{"general duration fraction", `string(xs:duration('P1Y2MT0.1234567890123456789S'))`, "P1Y2MT0.1234567890123456789S"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query, err := engine.CompileXPath(context.Background(), tc.source, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, err := query.Evaluate(context.Background(), nil, transform.XPathContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := value.Text()
+			if err != nil || text != tc.want {
+				t.Fatalf("got %q,%v; want %q", text, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathComprehensiveReuseContext(t *testing.T) {
+	for _, tc := range []struct{ name, scope, sortAttr, sortKey, extraSort, want string }{
+		{"local sort static collation", "", `default-collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"`, `if ('A'='a') then xs:integer(@n) else -xs:integer(@n)`, "", "12"},
+		{"parent collation control", `default-collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"`, "", `if ('A'='a') then xs:integer(@n) else -xs:integer(@n)`, "", "12"},
+		{"codepoint control", "", "", `if ('A'='a') then xs:integer(@n) else -xs:integer(@n)`, "", "21"},
+		{"explicit codepoint override", `default-collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"`, `default-collation="http://www.w3.org/2005/xpath-functions/collation/codepoint"`, `if ('A'='a') then xs:integer(@n) else -xs:integer(@n)`, "", "21"},
+		{"restore base between sort keys", "", `default-collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"`, `if ('A'='a') then 0 else 0`, `<xsl:sort select="if ('A'='a') then xs:integer(@n) else -xs:integer(@n)" data-type="number"/>`, "21"},
+		{"pinned time control", "", "", `if (year-from-date(current-date())=2000) then xs:integer(@n) else -xs:integer(@n)`, "", "12"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, err := transform.NewEngine(transform.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="3.0" ` + tc.scope + `><xsl:output method="text"/><xsl:template match="/"><xsl:for-each select="r/a"><xsl:sort ` + tc.sortAttr + ` select="` + tc.sortKey + `" data-type="number"/>` + tc.extraSort + `<xsl:value-of select="@n"/></xsl:for-each></xsl:template></xsl:stylesheet>`
+			sheet, err := engine.CompileXSLT(context.Background(), []byte(source), transform.XSLTOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err := engine.Parse(context.Background(), []byte(`<r><a n="2"/><a n="1"/></r>`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := sheet.Transform(context.Background(), doc, transform.XSLTContext{Context: transform.DynamicContext{CurrentTime: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(result.Primary) != tc.want {
+				t.Fatalf("got %q; want %q", result.Primary, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathISOWeekWithinMonthCalendarDates(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, source, place string
+		want                int
+	}{
+		{"March3_NY", "2025-03-03T12:00:00-05:00", "America/New_York", 1},
+		{"March10_NY", "2025-03-10T12:00:00-04:00", "America/New_York", 2},
+		{"March17_NY", "2025-03-17T12:00:00-04:00", "America/New_York", 3},
+		{"March3_UTC", "2025-03-03T12:00:00-05:00", "UTC", 1},
+		{"March10_UTC", "2025-03-10T12:00:00-04:00", "UTC", 2},
+		{"March17_UTC", "2025-03-17T12:00:00-04:00", "UTC", 3},
+		{"March3_Fixed", "2025-03-03T12:00:00-05:00", "Etc/GMT+4", 1},
+		{"March10_Fixed", "2025-03-10T12:00:00-04:00", "Etc/GMT+4", 2},
+		{"March17_Fixed", "2025-03-17T12:00:00-04:00", "Etc/GMT+4", 3},
+		{"FallOctober27", "2025-10-27T12:00:00-04:00", "America/New_York", 5},
+		{"FallNovember3", "2025-11-03T12:00:00-05:00", "America/New_York", 1},
+		{"FallNovember10", "2025-11-10T12:00:00-05:00", "America/New_York", 2},
+		{"December30", "2024-12-30T12:00:00-05:00", "America/New_York", 1},
+		{"January1", "2025-01-01T12:00:00-05:00", "America/New_York", 1},
+		{"W3CJanuary29", "2013-01-29T12:00:00-05:00", "America/New_York", 5},
+		{"W3CFebruary1", "2013-02-01T12:00:00-05:00", "America/New_York", 5},
+		{"LeapFebruary29", "2024-02-29T12:00:00-05:00", "America/New_York", 5},
+		{"AfterLeapMarch1", "2024-03-01T12:00:00-05:00", "America/New_York", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := time.LoadLocation(tc.place); err != nil {
+				t.Fatal(err)
+			}
+			expression := `format-dateTime(xs:dateTime('` + tc.source + `'),'[w]','en','ISO','` + tc.place + `')`
+			query, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := result.Text()
+			if err != nil {
+				t.Fatal(err)
+			} else if result.Len() != 1 || text != strconv.Itoa(tc.want) {
+				t.Fatalf("got %q (length %d), %v; want %d", text, result.Len(), err, tc.want)
+			}
+		})
+	}
+}
+
+func TestXPathNameTestsEmptyNamespace(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := e.Parse(t.Context(), []byte(`<r xmlns:p="urn:other"><n>plain</n><p:n>namespaced</p:n></r>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, defaultNS := range []string{"", "urn:other"} {
+		bare := "plain"
+		if defaultNS != "" {
+			bare = "namespaced"
+		}
+		for _, tc := range []struct{ name, source, want string }{
+			{"explicit empty exact", `string-join(/*/Q{}n/string(), ',')`, "plain"},
+			{"explicit empty wildcard", `count(/*/Q{}*)`, "1"},
+			{"nonempty exact control", `string-join(/*/Q{urn:other}n/string(), ',')`, "namespaced"},
+			{"nonempty wildcard control", `count(/*/Q{urn:other}*)`, "1"},
+			{"missing namespace control", `count(/*/Q{urn:missing}*)`, "0"},
+			{"bare namespace control", `string-join(/*/n/string(), ',')`, bare},
+			{"universal wildcard control", `count(/*/*)`, "2"},
+		} {
+			t.Run(fmt.Sprintf("default=%s/%s", defaultNS, tc.name), func(t *testing.T) {
+				q, err := e.CompileXPath(t.Context(), tc.source, transform.XPathOptions{Version: transform.XPath31, Namespaces: map[string]string{"": defaultNS}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := q.Evaluate(t.Context(), d, transform.XPathContext{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				s, err := got.Text()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("source=%q defaultNS=%q actual=%q expected=%q", tc.source, defaultNS, s, tc.want)
+				if s != tc.want {
+					t.Errorf("actual %q; expected %q", s, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestXPathKindTestGrammar(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []transform.XPathVersion{transform.XPath20, transform.XPath30, transform.XPath31} {
+		for _, tc := range []struct{ source, code string }{
+			{`element(,xs:untyped)`, "XPST0003"},
+			{`element(n,)`, "XPST0003"},
+			{`element(*,)`, "XPST0003"},
+			{`attribute(,xs:untypedAtomic)`, "XPST0003"},
+			{`attribute(a,)`, "XPST0003"},
+			{`attribute(*,)`, "XPST0003"},
+			{`document-node(element(n,))`, "XPST0003"},
+			{`() instance of element(n,)`, "XPST0003"},
+			{`element(n,,xs:untyped)`, "XPST0003"},
+			{`element()`, ""},
+			{`element(n)`, ""},
+			{`element(*)`, ""},
+			{`element(*,xs:untyped)`, ""},
+			{`attribute()`, ""},
+			{`attribute(a)`, ""},
+			{`attribute(*)`, ""},
+			{`attribute(*,xs:untypedAtomic)`, ""},
+			{`document-node(element(n))`, ""},
+			{`() instance of element(n)`, ""},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", version, tc.source), func(t *testing.T) {
+				q, err := e.CompileXPath(t.Context(), tc.source, transform.XPathOptions{Version: version})
+				gotCode := ""
+				if detail, ok := errors.AsType[*transform.Error](err); ok {
+					gotCode = detail.Code
+				}
+				t.Logf("source=%q actualError=%v actualCode=%q expectedCode=%q queryNil=%t", tc.source, err, gotCode, tc.code, q == nil)
+				if tc.code == "" {
+					if err != nil || q == nil {
+						t.Errorf("valid control rejected: query=%v error=%v", q, err)
+					}
+				} else if err == nil || gotCode != tc.code || q != nil {
+					t.Errorf("actual queryNil=%t/code=%q/error=%v; expected nil query/%s", q == nil, gotCode, err, tc.code)
+				}
+			})
+		}
+	}
+}
+
+func TestXSLTNameTestsEmptyNamespace(t *testing.T) {
+	e, err := transform.NewEngine(transform.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := e.Parse(t.Context(), []byte(`<r xmlns:p="urn:other"><n>plain</n><p:n>namespaced</p:n></r>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, padding := range []int{0, 16} {
+		var extra strings.Builder
+		for i := range padding {
+			fmt.Fprintf(&extra, `<xsl:template match="Q{urn:unused}n%d">unused</xsl:template>`, i)
+		}
+		for _, tc := range []struct{ name, decl, body, want string }{
+			{"explicit empty exact", `<xsl:template match="*">wild|</xsl:template><xsl:template match="Q{urn:other}n">other|</xsl:template><xsl:template match="Q{}n">empty|</xsl:template>`, `<xsl:apply-templates select="/*/*"/>`, "empty|other|"},
+			{"explicit empty wildcard", `<xsl:template match="*">wild|</xsl:template><xsl:template match="Q{}*">empty|</xsl:template>`, `<xsl:apply-templates select="/*/*"/>`, "empty|wild|"},
+			{"wildcard default priority", `<xsl:template match="Q{}*">empty|</xsl:template><xsl:template match="*">wild|</xsl:template>`, `<xsl:apply-templates select="/*/*"/>`, "empty|wild|"},
+			{"key namespace", `<xsl:key name="k" match="Q{}n" use="string(.)"/>`, `<xsl:value-of select="count(key('k','plain'))"/><xsl:text>|</xsl:text><xsl:value-of select="count(key('k','namespaced'))"/>`, "1|0"},
+			{"nonempty exact control", `<xsl:template match="*">wild|</xsl:template><xsl:template match="Q{urn:other}n">other|</xsl:template>`, `<xsl:apply-templates select="/*/*"/>`, "wild|other|"},
+			{"universal wildcard control", `<xsl:template match="*">wild|</xsl:template>`, `<xsl:apply-templates select="/*/*"/>`, "wild|wild|"},
+		} {
+			t.Run(fmt.Sprintf("padding%d/%s", padding, tc.name), func(t *testing.T) {
+				style := `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xpath-default-namespace="urn:other"><xsl:output method="text"/>` + extra.String() + tc.decl + `<xsl:template match="/">` + tc.body + `</xsl:template></xsl:stylesheet>`
+				s, err := e.CompileXSLT(t.Context(), []byte(style), transform.XSLTOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				out, err := s.Transform(t.Context(), doc, transform.XSLTContext{})
+				if err != nil || out == nil {
+					t.Fatalf("output=%v error=%v", out, err)
+				}
+				t.Logf("actual=%q expected=%q", out.Primary, tc.want)
+				if string(out.Primary) != tc.want {
+					t.Errorf("actual %q; expected %q", out.Primary, tc.want)
 				}
 			})
 		}

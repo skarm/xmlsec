@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -214,23 +215,24 @@ func (ec *execContext) sortForEachItems(ctx context.Context, seq xdm.Sequence, k
 }
 
 func (ec *execContext) executeScopedSequenceConstructor(ctx context.Context, body []instruction) error {
-	ec.pushVarScope()
-	defer ec.popVarScope()
-
 	return ec.executeSequenceConstructor(ctx, body)
 }
 
 func (ec *execContext) selectGroupPopulation(ctx context.Context, inst *forEachGroupInst) (xdm.Sequence, error) {
+	const (
+		errCodeXTTE1120 = "XTTE1120"
+	)
+
 	result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
 	if err != nil {
 		return nil, err
 	}
 
 	seq := result.Sequence()
-	if ec.stylesheet.processorLanguage() == 20 && (inst.GroupStartingWith != nil || inst.GroupEndingWith != nil) {
+	if ec.stylesheet.processorLanguage() == processorXSLT20 && (inst.GroupStartingWith != nil || inst.GroupEndingWith != nil) {
 		for i := range xdm.SequenceLen(seq) {
 			if _, ok := seq.Get(i).(xdm.NodeItem); !ok {
-				return nil, dynamicError("XTTE1120", "XSLT 2.0 pattern grouping requires a population of nodes")
+				return nil, dynamicError(errCodeXTTE1120, "XSLT 2.0 pattern grouping requires a population of nodes")
 			}
 		}
 	}
@@ -414,7 +416,7 @@ func (ec *execContext) withSortGroupContext(groups []fegGroup, hasKey bool, fn f
 // groupBy compares atomized keys using deep-equal's atomic comparison rules.
 // Collations affect string-like values only, not numeric, QName or temporal keys.
 func (ec *execContext) groupBy(ctx context.Context, seq xdm.Sequence, groupByExpr *xpath.Expression, composite bool, collationKeyFn func(string) string) ([]fegGroup, error) {
-	groups := groupByAccumulator{byKey: make(map[string][]*groupByEntry), collationKey: collationKeyFn, limit: xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength)}
+	groups := groupByAccumulator{byKey: make(map[string][]*groupByEntry), collationKey: collationKeyFn, limit: xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength), int64Prefix: !composite}
 	groups.equal = func(a, b xdm.Sequence) (bool, error) {
 		return ec.groupingKeysEqual(ctx, a, b, collationKeyFn)
 	}
@@ -670,9 +672,9 @@ func (ec *execContext) evaluateVariableValue(ctx context.Context, inst *variable
 		return ec.evaluateVariableBody(ctx, inst)
 	}
 
-	// An empty constructor yields an empty sequence only when the declared
-	// type permits it; otherwise its default value is the empty string.
-	if inst.As != "" && (strings.HasSuffix(inst.As, "?") || strings.HasSuffix(inst.As, "*")) {
+	// An explicit type retains the empty constructor; the type check decides
+	// whether that empty sequence is permitted (XSLT 3.0 section 9.3).
+	if inst.As != "" {
 		return nil, nil
 	}
 
@@ -688,23 +690,7 @@ func (ec *execContext) evaluateVariableBody(ctx context.Context, inst *variableI
 		return ec.evaluateBodyAsDocument(ctx, inst.Body)
 	}
 
-	if !strings.HasPrefix(inst.As, "document-node") || strings.HasSuffix(inst.As, "*") || strings.HasSuffix(inst.As, "+") {
-		// Repeated document types retain individual documents; other declared
-		// types use a sequence constructor with separate node items.
-		return ec.evaluateBodyAsSequence(ctx, inst.Body)
-	}
-
-	val, err := ec.evaluateBodyAsDocument(ctx, inst.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// A filtered-away optional document is absent, rather than an empty tree.
-	if strings.HasSuffix(inst.As, "?") && isEmptyVariableDocument(val) {
-		return nil, nil
-	}
-
-	return val, nil
+	return ec.evaluateBodyAsSequence(ctx, inst.Body)
 }
 
 func (ec *execContext) execParam(ctx context.Context, inst *paramInst) error {
@@ -752,21 +738,6 @@ func appendAdjacentGroup(groups []fegGroup, keySeq xdm.Sequence, items xdm.ItemS
 	return append(groups, fegGroup{key: keySeq, items: items})
 }
 
-func isEmptyVariableDocument(val xdm.Sequence) bool {
-	if xdm.SequenceLen(val) != 1 {
-		return false
-	}
-
-	item, ok := val.Get(0).(xdm.NodeItem)
-	if !ok {
-		return false
-	}
-
-	doc, ok := item.Node.(*xdm.Document)
-
-	return ok && doc.FirstChild() == nil
-}
-
 type fegGroup struct {
 	key   xdm.Sequence
 	items xdm.ItemSlice
@@ -788,6 +759,8 @@ type groupByAccumulator struct {
 	limit        int
 	members      int
 	retainedKeys int
+	int64Prefix  bool
+	byInt64      map[int64]*groupByEntry
 }
 
 func (groups *groupByAccumulator) addComposite(ctx context.Context, item xdm.Item, keys xdm.Sequence) error {
@@ -800,6 +773,10 @@ func (groups *groupByAccumulator) addComposite(ctx context.Context, item xdm.Ite
 }
 
 func (groups *groupByAccumulator) addKeys(ctx context.Context, item xdm.Item, keys xdm.Sequence) error {
+	if groups.int64Prefix && xdm.SequenceLen(keys) != 1 {
+		groups.disableInt64Prefix()
+	}
+
 	added := make(map[int]struct{})
 
 	for key := range xdm.SequenceItems(keys) {
@@ -843,14 +820,38 @@ func (groups *groupByAccumulator) entryForKeys(ctx context.Context, keys xdm.Seq
 		return nil, err
 	}
 
-	for _, entry := range groups.byKey[bucket] {
-		equal, err := groups.equal(keys, entry.keySeq)
-		if err != nil {
-			return nil, err
-		}
+	integerKey, useInt64, err := groups.int64Key(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
 
-		if equal {
-			return entry, nil
+	if useInt64 {
+		if entry := groups.byInt64[integerKey]; entry != nil {
+			equal, err := groups.equal(keys, entry.keySeq)
+			if err != nil {
+				return nil, err
+			}
+
+			if equal {
+				return entry, nil
+			}
+
+			groups.disableInt64Prefix()
+
+			useInt64 = false
+		}
+	}
+
+	if !useInt64 {
+		for _, entry := range groups.byKey[bucket] {
+			equal, err := groups.equal(keys, entry.keySeq)
+			if err != nil {
+				return nil, err
+			}
+
+			if equal {
+				return entry, nil
+			}
 		}
 	}
 
@@ -862,9 +863,45 @@ func (groups *groupByAccumulator) entryForKeys(ctx context.Context, keys xdm.Seq
 	entry := &groupByEntry{keySeq: keys, orderIdx: len(groups.order)}
 	groups.retainedKeys += length
 	groups.byKey[bucket] = append(groups.byKey[bucket], entry)
+
 	groups.order = append(groups.order, entry)
 
+	if useInt64 {
+		if groups.byInt64 == nil {
+			groups.byInt64 = make(map[int64]*groupByEntry)
+		}
+
+		groups.byInt64[integerKey] = entry
+	}
+
 	return entry, nil
+}
+
+func (groups *groupByAccumulator) disableInt64Prefix() {
+	groups.int64Prefix = false
+	groups.byInt64 = nil
+}
+
+func (groups *groupByAccumulator) int64Key(ctx context.Context, keys xdm.Sequence) (int64, bool, error) {
+	if !groups.int64Prefix {
+		return 0, false, nil
+	}
+
+	if xdm.SequenceLen(keys) == 1 {
+		if value, ok := keys.Get(0).(xdm.AtomicValue); ok {
+			if key, eligible := indexInt64(value); eligible {
+				if err := xpath.Charge(ctx, 1); err != nil {
+					return 0, false, err
+				}
+
+				return key, true, nil
+			}
+		}
+	}
+
+	groups.disableInt64Prefix()
+
+	return 0, false, nil
 }
 
 func (groups *groupByAccumulator) result() []fegGroup {
@@ -877,12 +914,17 @@ func (groups *groupByAccumulator) result() []fegGroup {
 }
 
 func groupingBucket(ctx context.Context, keys xdm.Sequence, collationKey func(string) string) (string, error) {
+	const (
+		groupingNumericBucket = "N"
+		groupingStringPrefix  = "S:"
+	)
+
 	var bucket strings.Builder
 
 	for item := range xdm.SequenceItems(keys) {
 		value, ok := item.(xdm.AtomicValue)
 		if !ok {
-			return "", dynamicError("XPTY0004", "grouping key must be atomic")
+			return "", dynamicError(lexicon.ErrXPTY0004, "grouping key must be atomic")
 		}
 
 		value = xdm.PromoteSchemaType(value)
@@ -897,9 +939,9 @@ func groupingBucket(ctx context.Context, keys xdm.Sequence, collationKey func(st
 				text = collationKey(text)
 			}
 
-			part = "S:" + text
+			part = groupingStringPrefix + text
 		} else if value.IsNumeric() {
-			part = "N"
+			part = groupingNumericBucket
 		} else {
 			switch value.TypeName {
 			case xdm.TypeDateTimeStamp:

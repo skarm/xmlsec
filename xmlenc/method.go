@@ -6,7 +6,15 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+)
+
+const (
+	keySizeContextCheckInterval = 1024
+	// Declared key length in bits, compared with the selected key. Compare the expected XML Encryption
+	// namespace when matching it.
+	nameKeySize = "KeySize"
 )
 
 // KeySize is optional even for fixed-size algorithms, but never changes the
@@ -24,7 +32,7 @@ func checkEncryptionMethod(ctx context.Context, method document.Element, algorit
 	}
 
 	for i, child := range method.Children() {
-		if child.Name() == elementName(Namespace, "KeySize") {
+		if child.Name() == elementName(Namespace, nameKeySize) {
 			if i != 0 {
 				return ErrFormat
 			}
@@ -49,7 +57,7 @@ func checkMethodKeySize(ctx context.Context, element document.Element, bits int)
 		return ErrFormat
 	}
 
-	value := strings.Trim(element.Text(), " \t\r\n")
+	value := strings.Trim(element.Text(), lexicon.XMLWhitespace)
 
 	value = strings.TrimPrefix(value, "+")
 	if value == "" {
@@ -62,7 +70,7 @@ func checkMethodKeySize(ctx context.Context, element document.Element, bits int)
 			return ErrFormat
 		}
 
-		if i%1024 == 0 {
+		if i%keySizeContextCheckInterval == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}

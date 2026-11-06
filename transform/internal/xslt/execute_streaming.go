@@ -16,6 +16,17 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Implicit accumulator $value is unqualified and shared by declaration-scope visibility and rule evaluation; xsl:catch variables and XML value attributes use separate names.
+const (
+	accumulatorVariableValue = "value"
+)
+
+// Accumulator rule phases shared by compilation and execution: start observes the pre-descent value, end observes the post-descent value.
+const (
+	accumulatorPhaseEnd   = "end"
+	accumulatorPhaseStart = "start"
+)
+
 const (
 	mergeAttrOrder uint8 = 1 << iota
 	mergeAttrDataType
@@ -422,10 +433,7 @@ func (ec *execContext) execNextIteration(ctx context.Context, inst *nextIteratio
 	return errNextIter
 }
 
-// execMerge executes xsl:merge by loading, sorting, and merging items from
-// multiple sources, then executing the merge-action for each group of items
-// sharing the same key.
-// Each merge evaluates its five key attributes in the containing merge focus.
+// resolveMergeDefinitions evaluates merge-key attributes in the containing focus.
 // Resolve into private definitions so concurrent executions never mutate the
 // compiled stylesheet or compare unevaluated AVT source text.
 func (ec *execContext) resolveMergeDefinitions(ctx context.Context, definitions []*mergeSource) ([]*mergeSource, error) {
@@ -478,7 +486,7 @@ func (ec *execContext) resolveMergeKeyOptions(ctx context.Context, key *mergeKey
 			return err
 		}
 
-		value = strings.Trim(value, " \t\r\n")
+		value = strings.Trim(value, lexicon.XMLWhitespace)
 		if key.specified&mergeAttrCollation == 0 || option.name != lexicon.AttrLang && option.name != nameCaseOrder {
 			if err := validateLiteralSortOption(option.name, value); err != nil {
 				return dynamicError(errCodeXTDE0030, "invalid %s value %q in xsl:merge-key", option.name, value)
@@ -496,6 +504,8 @@ func (ec *execContext) resolveMergeKeyOptions(ctx context.Context, key *mergeKey
 	return nil
 }
 
+// execMerge loads, sorts and merges source items, executing merge-action
+// for each group sharing the same key.
 func (ec *execContext) execMerge(ctx context.Context, inst *mergeInst) error {
 	definitions, err := ec.resolveMergeDefinitions(ctx, inst.Sources)
 	if err != nil {
@@ -631,6 +641,7 @@ func (ec *execContext) resolveMergeCollations(ctx context.Context, keyDefs []*me
 
 func (ec *execContext) installMergeFunctions(sources []*mergeSource) (*mergeActionState, func()) {
 	ec.xsltFunctions()
+	ec.xsltFunctionsNS()
 	state := &mergeActionState{ec: ec, validSourceNames: make(map[string]struct{})}
 
 	for _, source := range sources {
@@ -641,10 +652,16 @@ func (ec *execContext) installMergeFunctions(sources []*mergeSource) (*mergeActi
 
 	savedGroup := ec.cachedFns[nameCurrentMergeGroup]
 	savedKey := ec.cachedFns[nameCurrentMergeKey]
+	groupName := xpath.QualifiedName{URI: lexicon.NamespaceFn, Name: nameCurrentMergeGroup}
+	keyName := xpath.QualifiedName{URI: lexicon.NamespaceFn, Name: nameCurrentMergeKey}
+	savedGroupNS, savedKeyNS := ec.cachedFnsNS[groupName], ec.cachedFnsNS[keyName]
 	ec.cachedFns[nameCurrentMergeGroup] = &xsltFunc{min: 0, max: 1, fn: state.currentGroup}
 	ec.cachedFns[nameCurrentMergeKey] = &xsltFunc{min: 0, max: 0, fn: state.currentKey}
+	ec.cachedFnsNS[groupName] = ec.cachedFns[nameCurrentMergeGroup]
+	ec.cachedFnsNS[keyName] = ec.cachedFns[nameCurrentMergeKey]
 
 	return state, func() {
+		ec.cachedFnsNS[groupName], ec.cachedFnsNS[keyName] = savedGroupNS, savedKeyNS
 		if savedGroup != nil {
 			ec.cachedFns[nameCurrentMergeGroup] = savedGroup
 		} else {
@@ -672,6 +689,8 @@ func (ec *execContext) setMergeFocus(item xdm.Item) {
 }
 
 func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, groups []mergeGroup) error {
+	const absentMergeContextSize = -1
+
 	state, restoreFunctions := ec.installMergeFunctions(inst.Sources)
 	defer restoreFunctions()
 
@@ -687,7 +706,7 @@ func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, 
 
 	for _, source := range inst.Sources {
 		if source.StreamableAttr {
-			ec.size = -1 // XSLT 3.0 §15.7: context size is absent.
+			ec.size = absentMergeContextSize // XSLT 3.0 §15.7: context size is absent.
 			break
 		}
 	}
@@ -762,7 +781,7 @@ func (ec *execContext) gatherMergeDocuments(ctx context.Context, src *mergeSourc
 		ctx,
 		uris.Sequence(),
 		xdm.SequenceType{
-			ItemTest:   xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}string"},
+			ItemTest:   xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeString},
 			Occurrence: xdm.OccurrenceZeroOrMore,
 		},
 	)
@@ -1002,6 +1021,16 @@ func (ec *execContext) prepareSourceDocumentAccumulators(ctx context.Context, in
 }
 
 func (ec *execContext) computeAccumulatorStates(ctx context.Context, doc xdm.Node, names []string) error {
+	// Accumulator declarations see globals, never the caller's local bindings.
+	locals := ec.localVars
+	ec.localVars = nil
+
+	ec.localVarsVer++
+	defer func() {
+		ec.localVars = locals
+		ec.localVarsVer++
+	}()
+
 	if ec.accumulatorBeforeByNode == nil {
 		ec.accumulatorBeforeByNode = make(map[xdm.Node]map[string]xdm.Sequence)
 	}
@@ -1099,7 +1128,7 @@ func (ec *execContext) walkAccumulatorTree(ctx context.Context, node xdm.Node, n
 	// Per XSLT 3.0 §14.1, accumulator-before() returns the value AFTER start-phase
 	// rules for the current node have fired (i.e., the value "before" descending into
 	// the node's children), not the value before the node's own rules run.
-	if err := ec.applyAccumulatorPhase(ctx, node, names, "start"); err != nil {
+	if err := ec.applyAccumulatorPhase(ctx, node, names, accumulatorPhaseStart); err != nil {
 		return err
 	}
 
@@ -1117,7 +1146,7 @@ func (ec *execContext) walkAccumulatorTree(ctx context.Context, node xdm.Node, n
 		}
 	}
 
-	if err := ec.applyAccumulatorPhase(ctx, node, names, "end"); err != nil {
+	if err := ec.applyAccumulatorPhase(ctx, node, names, accumulatorPhaseEnd); err != nil {
 		return err
 	}
 
@@ -1197,7 +1226,7 @@ func (ec *execContext) evaluateAccumulatorRule(ctx context.Context, node xdm.Nod
 	}
 
 	ec.pushVarScope()
-	ec.setVar("value", currentValue)
+	ec.setVar(accumulatorVariableValue, currentValue)
 	ec.temporaryOutputDepth++
 
 	defer func() {
@@ -1514,24 +1543,24 @@ func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, key *mer
 			return nil, "", err
 		}
 
-		collation = resolveAgainstBaseURI(strings.Trim(value, " \t\r\n"), key.BaseURI)
+		collation = resolveAgainstBaseURI(strings.Trim(value, lexicon.XMLWhitespace), key.BaseURI)
 	}
 
 	if key.specified&mergeAttrCollation == 0 {
 		var parameters []string
 		if key.Lang != "" {
-			parameters = append(parameters, "lang="+key.Lang)
+			parameters = append(parameters, ucaLanguageParameter+key.Lang)
 		}
 
 		switch key.CaseOrder {
 		case nameUpperFirst:
-			parameters = append(parameters, "caseFirst=upper")
+			parameters = append(parameters, ucaUpperFirstParameter)
 		case nameLowerFirst:
-			parameters = append(parameters, "caseFirst=lower")
+			parameters = append(parameters, ucaLowerFirstParameter)
 		}
 
 		if len(parameters) > 0 {
-			collation = "http://www.w3.org/2013/collation/UCA?" + strings.Join(parameters, ";")
+			collation = lexicon.CollationUCA + "?" + strings.Join(parameters, ";")
 		}
 	}
 

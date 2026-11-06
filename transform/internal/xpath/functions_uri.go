@@ -13,6 +13,26 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// URI helper dispatch and the absent-static-base error retain F&O spellings.
+const (
+	fnNameEncodeForURI  = "encode-for-uri"
+	fnNameIRIToURI      = "iri-to-uri"
+	fnNameEscapeHTMLURI = "escape-html-uri"
+	fnNameResolveURI    = "resolve-uri"
+	errCodeFONS0005     = "FONS0005"
+)
+
+// Percent escapes encode each byte as two hexadecimal nibbles. URI escaping
+// and IRI validation retain their distinct space/control boundary comparisons.
+const (
+	uriHexDigitBits      = 4
+	uriHexDigitMask      = 0x0F
+	uriEscapeHexDigits   = 2
+	uriPrintableASCIIMin = 0x20
+	uriPrintableASCIIMax = 0x7E
+	iriC1ControlEnd      = 0xA0
+)
+
 // ResolveURIReference applies fn:resolve-uri's IRI rules to explicit strings.
 // An absolute reference does not inspect the base. Hosts can share the standard
 // URI semantics without invoking an XPath evaluator or rewriting IRI characters.
@@ -35,14 +55,14 @@ func ResolveURIReference(relative, base string) (string, error) {
 
 func lookupFunctionsURI(name string) (*builtinFunc, bool) {
 	switch name {
-	case "encode-for-uri":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnEncodeForURI}, true
-	case "iri-to-uri":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnIRIToURI}, true
-	case "escape-html-uri":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnEscapeHTMLURI}, true
-	case "resolve-uri":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnResolveURI}, true
+	case fnNameEncodeForURI:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnEncodeForURI}, true
+	case fnNameIRIToURI:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnIRIToURI}, true
+	case fnNameEscapeHTMLURI:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnEscapeHTMLURI}, true
+	case fnNameResolveURI:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnResolveURI}, true
 	}
 
 	return nil, false
@@ -75,11 +95,11 @@ func encodeForURI(s string) string {
 }
 
 func writePercentEncodedByte(b *strings.Builder, c byte) {
-	const hex = "0123456789ABCDEF"
+	const percentEscapeHexAlphabet = "0123456789ABCDEF"
 
 	b.WriteByte('%')
-	b.WriteByte(hex[c>>4])
-	b.WriteByte(hex[c&0x0F])
+	b.WriteByte(percentEscapeHexAlphabet[c>>uriHexDigitBits])
+	b.WriteByte(percentEscapeHexAlphabet[c&uriHexDigitMask])
 }
 
 func isUnreservedChar(c byte) bool {
@@ -101,13 +121,13 @@ func fnIRIToURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 
 	for i := range len(s) {
 		c := s[i]
-		if c == '%' && i+2 < len(s) && xmlchar.IsHexDigit(s[i+1]) && xmlchar.IsHexDigit(s[i+2]) {
+		if c == '%' && i+uriEscapeHexDigits < len(s) && xmlchar.IsHexDigit(s[i+1]) && xmlchar.IsHexDigit(s[i+uriEscapeHexDigits]) {
 			// Already percent-encoded: pass through
 			b.WriteByte(c)
 			continue
 		}
 
-		if c > 0x7E || c <= 0x20 || c == '"' || c == '<' || c == '>' ||
+		if c > uriPrintableASCIIMax || c <= uriPrintableASCIIMin || c == '"' || c == '<' || c == '>' ||
 			c == '{' || c == '}' || c == '|' || c == '\\' || c == '^' || c == '`' {
 			writePercentEncodedByte(&b, c)
 		} else {
@@ -147,7 +167,7 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	}
 
 	base := ""
-	if len(args) == 2 {
+	if len(args) == builtinArityTwo {
 		base, err = coerceArgToString(ctx, args[1])
 		if err != nil {
 			return nil, err
@@ -155,7 +175,7 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	} else {
 		base = baseURIFromContext(ctx)
 		if base == "" {
-			return nil, &xdm.Error{Code: "FONS0005", Message: "static base URI is absent"}
+			return nil, &xdm.Error{Code: errCodeFONS0005, Message: "static base URI is absent"}
 		}
 	}
 
@@ -207,7 +227,7 @@ func validateIRI(s string) error {
 	}
 
 	for _, r := range s {
-		if r < 0x20 || (r > 0x7E && r < 0xA0) {
+		if r < uriPrintableASCIIMin || (r > uriPrintableASCIIMax && r < iriC1ControlEnd) {
 			return fmt.Errorf("invalid IRI character U+%04X", r)
 		}
 	}
@@ -225,7 +245,7 @@ func fnEscapeHTMLURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 
 	for i := range len(s) {
 		c := s[i]
-		if c > 0x7E || c < 0x20 {
+		if c > uriPrintableASCIIMax || c < uriPrintableASCIIMin {
 			writePercentEncodedByte(&b, c)
 		} else {
 			b.WriteByte(c)

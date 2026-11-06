@@ -242,30 +242,6 @@ func TestRedirectRejectsAuthenticatedTrailingData(t *testing.T) {
 	}
 }
 
-func key(t testing.TB) *ecdsa.PrivateKey {
-	t.Helper()
-
-	k, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return k
-}
-
-func doc(t testing.TB, text string) *document.Document {
-	t.Helper()
-
-	d, e := document.Parse(t.Context(), []byte(text), document.DefaultLimits())
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return d
-}
-
-func options() binding.Options { return binding.Options{SignatureMethod: xmldsig.ECDSASHA256} }
-
 // BenchmarkSignRedirect measures the complete public binding, including XML
 // output, raw DEFLATE, URL encoding and signing, on a reusable snapshot/key.
 func BenchmarkSignRedirect(b *testing.B) {
@@ -332,3 +308,27 @@ func TestRedirectCompressionReuse(t *testing.T) {
 		})
 	}
 }
+
+func key(t testing.TB) *ecdsa.PrivateKey {
+	t.Helper()
+
+	k, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return k
+}
+
+func doc(t testing.TB, text string) *document.Document {
+	t.Helper()
+
+	d, e := document.Parse(t.Context(), []byte(text), document.DefaultLimits())
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return d
+}
+
+func options() binding.Options { return binding.Options{SignatureMethod: xmldsig.ECDSASHA256} }

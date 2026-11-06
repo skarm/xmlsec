@@ -5,9 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/internal/xmloutput"
+)
+
+// XML declaration fragments preserve the exact output spelling and quoting.
+// Version suffixes accept only decimal digits after the XML 1.x prefix.
+const (
+	xmlDeclarationVersionPrefix = "1."
+	xmlDeclarationDigits        = "0123456789"
+	xmlDeclarationFormat        = "<?xml " + lexicon.DeclVersion + "=\"%s\" " + lexicon.DeclEncoding + "=\"%s\""
+	standaloneAttributePrefix   = " " + lexicon.DeclStandalone + "=\""
 )
 
 // XMLSerialization combines XDM declaration metadata with the project XML writer's options.
@@ -33,7 +46,7 @@ type XMLSerialization struct {
 // context. It leaves dst open and can leave partial output on error; use
 // WriteSequence when cancellation is required.
 func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
-	if n == nil || dst == nil {
+	if IsNilNode(n) || nilcheck.IsNil(dst) {
 		return errors.New("nil XML serialization input")
 	}
 
@@ -71,7 +84,7 @@ func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
 	}
 
 	if version == "" {
-		version = "1.0"
+		version = lexicon.XMLVersion10
 	}
 
 	enc := w.Encoding
@@ -79,9 +92,22 @@ func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
 		enc = d.Encoding()
 	}
 
-	decl := fmt.Sprintf("<?xml version=\"%s\" encoding=\"%s\"", version, enc)
+	versionDigits, versionPrefix := strings.CutPrefix(version, xmlDeclarationVersionPrefix)
+	if !versionPrefix || versionDigits == "" || strings.Trim(versionDigits, xmlDeclarationDigits) != "" {
+		return fmt.Errorf("%w: invalid XML declaration version %q", tree.ErrMalformed, version)
+	}
+
+	if !xmlchar.IsValidEncName(enc) {
+		return fmt.Errorf("%w: invalid XML declaration encoding %q", tree.ErrMalformed, enc)
+	}
+
+	if w.Standalone != "" && w.Standalone != lexicon.ValueYes && w.Standalone != lexicon.ValueNo {
+		return fmt.Errorf("%w: invalid XML declaration standalone %q", tree.ErrMalformed, w.Standalone)
+	}
+
+	decl := fmt.Sprintf(xmlDeclarationFormat, version, enc)
 	if w.Standalone != "" {
-		decl += " standalone=\"" + w.Standalone + "\""
+		decl += standaloneAttributePrefix + w.Standalone + "\""
 	}
 
 	separator := "\n"
@@ -89,8 +115,15 @@ func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
 		separator = ""
 	}
 
-	if _, err := io.WriteString(dst, decl+"?>"+separator); err != nil {
+	declaration := decl + "?>" + separator
+
+	n, err := io.WriteString(dst, declaration)
+	if err != nil {
 		return err
+	}
+
+	if n != len(declaration) {
+		return io.ErrShortWrite
 	}
 
 	return nil

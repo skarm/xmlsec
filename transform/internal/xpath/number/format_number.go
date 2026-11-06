@@ -12,6 +12,63 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+// Decimal-format defaults follow the XPath/XSLT picture vocabulary. The
+// exponent-disable flag is false by default so exponent syntax is enabled.
+const (
+	defaultInfinity          = "Infinity"
+	defaultDecimalSeparator  = '.'
+	defaultGroupingSeparator = ','
+	defaultPercent           = '%'
+	defaultPerMille          = '\u2030'
+	defaultZeroDigit         = '0'
+	defaultDigit             = '#'
+	defaultPatternSeparator  = ';'
+	defaultExponentSeparator = 'e'
+	defaultMinusSign         = '-'
+	defaultExponentDisabled  = false
+)
+
+// Picture cardinalities and fallback digit counts describe separate grammar
+// rules, even where their values coincide. Scaling multiplies values by the
+// percent or per-mille denominator before picture rounding.
+const (
+	maxPictureSubpatterns       = 2
+	maxPercentMarkers           = 1
+	maxPerMilleMarkers          = 1
+	minimumRepeatedGroups       = 2
+	minimumExponentIntegerSlots = 2
+	minimumExponentDigits       = 1
+	minimumMantissaDigits       = 1
+	percentScale                = 100
+	perMilleScale               = 1000
+)
+
+// Numeric formatting uses ASCII decimal lexicals before digit localization.
+// Powers through 10^18 fit in int64; larger decimal scales use big.Int.
+const (
+	decimalRadix              = 10
+	decimalFactorFive         = 5
+	maxInt64ScaleDigits       = 18
+	maxDigitOffset            = 9
+	asciiZeroDigit            = '0'
+	asciiLastDigit            = '9'
+	decimalZero               = "0"
+	asciiDecimalPoint         = "."
+	fixedFloatNotation        = 'f'
+	doublePrecisionBits       = 64
+	anyInfinitySign           = 0
+	minimumFractionalMantissa = 0.1
+)
+
+// Infinity rendering adds a minus prefix only when the selected picture does
+// not already supply the negative-value affix.
+const (
+	prefixWithoutMinus = false
+	prefixWithMinus    = true
 )
 
 // DecimalFormat defines picture symbols and special-value text for XPath and XSLT
@@ -48,18 +105,18 @@ type DecimalFormat struct {
 // including e as the exponent separator.
 func DefaultDecimalFormat() DecimalFormat {
 	return DecimalFormat{
-		Infinity:          "Infinity",
-		NaN:               "NaN",
-		DecimalSeparator:  '.',
-		GroupingSeparator: ',',
-		Percent:           '%',
-		PerMille:          '\u2030',
-		ZeroDigit:         '0',
-		Digit:             '#',
-		PatternSeparator:  ';',
-		ExponentSeparator: 'e',
-		MinusSign:         '-',
-		ExponentDisabled:  false,
+		Infinity:          defaultInfinity,
+		NaN:               lexicon.FloatNaN,
+		DecimalSeparator:  defaultDecimalSeparator,
+		GroupingSeparator: defaultGroupingSeparator,
+		Percent:           defaultPercent,
+		PerMille:          defaultPerMille,
+		ZeroDigit:         defaultZeroDigit,
+		Digit:             defaultDigit,
+		PatternSeparator:  defaultPatternSeparator,
+		ExponentSeparator: defaultExponentSeparator,
+		MinusSign:         defaultMinusSign,
+		ExponentDisabled:  defaultExponentDisabled,
 	}
 }
 
@@ -130,7 +187,7 @@ func ParsePicture(pic string, df DecimalFormat) (ParsedPicture, error) {
 //   - df: the decimal format specification
 func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *big.Rat, picture string, df DecimalFormat) (string, error) {
 	parts := strings.Split(picture, string(df.PatternSeparator))
-	if len(parts) > 2 {
+	if len(parts) > maxPictureSubpatterns {
 		return "", fmt.Errorf("picture %q contains more than one pattern separator", picture)
 	}
 
@@ -144,15 +201,15 @@ func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *
 	}
 
 	if isPosInf {
-		return formatInfinityPicture(positive, false, df)
+		return formatInfinityPicture(positive, prefixWithoutMinus, df)
 	}
 
 	if isNegInf {
 		if negativePicture != "" {
-			return formatInfinityPicture(negativePicture, false, df)
+			return formatInfinityPicture(negativePicture, prefixWithoutMinus, df)
 		}
 
-		return formatInfinityPicture(positive, true, df)
+		return formatInfinityPicture(positive, prefixWithMinus, df)
 	}
 
 	if negative {
@@ -170,9 +227,9 @@ func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *
 	}
 
 	if pp.IsPercent {
-		f *= 100
+		f *= percentScale
 	} else if pp.IsPerMille {
-		f *= 1000
+		f *= perMilleScale
 	}
 
 	prefix := pp.Prefix
@@ -180,8 +237,9 @@ func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *
 		prefix = string(df.MinusSign) + prefix
 	}
 
-	// Multiplier overflow takes priority even when a precise value is supplied.
-	if math.IsInf(f, 0) {
+	// A precise integer/decimal is scaled by exact arithmetic below. Its
+	// float64 approximation can overflow even when the actual value is finite.
+	if precise == nil && math.IsInf(f, anyInfinitySign) {
 		return prefix + df.Infinity + pp.Suffix, nil
 	}
 
@@ -197,7 +255,7 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	// no-op for the representable value, so leaving f unchanged is correct and
 	// keeps big.Float.SetFloat64 from ever seeing NaN/Inf.
 	if pp.MaxFracDigits >= 0 {
-		scale := math.Pow(10, float64(pp.MaxFracDigits))
+		scale := math.Pow(decimalRadix, float64(pp.MaxFracDigits))
 		if scaled := f * scale; isFinite(scale) && isFinite(scaled) {
 			f = math.RoundToEven(scaled) / scale
 		}
@@ -207,12 +265,12 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	trunc := math.Trunc(f)
 
 	// Format integer part
-	bigTrunc, _ := new(big.Float).SetFloat64(trunc).Int(nil)
+	bigTrunc, _ := new(big.Float).SetFloat64(trunc).Int(new(big.Int))
 	intStr := FormatBigInt(bigTrunc, pp.MinIntDigits, pp.GroupingSizes, pp.RepeatGrouping, df)
 
 	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
 		if intStr == "" {
-			intStr = "0"
+			intStr = decimalZero
 		}
 
 		return intStr
@@ -221,8 +279,8 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	// Render the rounded value as a whole. Subtracting its integer part and
 	// repeatedly multiplying the remainder can lose the last decimal digit
 	// (for example, 0.123456 became 0.123455).
-	_, fracStr, _ := strings.Cut(strconv.FormatFloat(f, 'f', pp.MaxFracDigits, 64), ".")
-	for len(fracStr) > pp.MinFracDigits && strings.HasSuffix(fracStr, "0") {
+	_, fracStr, _ := strings.Cut(strconv.FormatFloat(f, fixedFloatNotation, pp.MaxFracDigits, doublePrecisionBits), asciiDecimalPoint)
+	for len(fracStr) > pp.MinFracDigits && strings.HasSuffix(fracStr, decimalZero) {
 		fracStr = fracStr[:len(fracStr)-1]
 	}
 
@@ -232,9 +290,9 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
 	if intStr == "" && fracStr == "" {
 		if pp.MaxFracDigits > 0 {
-			fracStr = "0"
+			fracStr = decimalZero
 		} else {
-			intStr = "0"
+			intStr = decimalZero
 		}
 	}
 
@@ -253,9 +311,9 @@ func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string
 	r = new(big.Rat).Set(r)
 
 	if pp.IsPercent {
-		r.Mul(r, new(big.Rat).SetInt64(100))
+		r.Mul(r, new(big.Rat).SetInt64(percentScale))
 	} else if pp.IsPerMille {
-		r.Mul(r, new(big.Rat).SetInt64(1000))
+		r.Mul(r, new(big.Rat).SetInt64(perMilleScale))
 	}
 
 	if r.Sign() < 0 {
@@ -272,7 +330,7 @@ func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string
 
 	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
 		if intStr == "" {
-			intStr = "0"
+			intStr = decimalZero
 		}
 
 		return intStr
@@ -284,9 +342,9 @@ func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string
 	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
 	if intStr == "" && fracStr == "" {
 		if pp.MaxFracDigits > 0 {
-			fracStr = "0"
+			fracStr = decimalZero
 		} else {
-			intStr = "0"
+			intStr = decimalZero
 		}
 	}
 
@@ -302,12 +360,12 @@ func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string
 // FormatBigInt formats an integer with minimum digits and grouping separators.
 func FormatBigInt(n *big.Int, minDigits int, groupingSizes []int, repeatGrouping bool, df DecimalFormat) string {
 	s := n.String()
-	if minDigits == 0 && s == "0" {
+	if minDigits == 0 && s == decimalZero {
 		s = ""
 	}
 	// Pad to minDigits
 	if padding := minDigits - len(s); padding > 0 {
-		s = strings.Repeat("0", padding) + s
+		s = strings.Repeat(decimalZero, padding) + s
 	}
 
 	if len(groupingSizes) == 0 || len(s) == 0 {
@@ -358,80 +416,97 @@ func FormatFrac(frac float64, minDigits, maxDigits int, df DecimalFormat) string
 
 	remaining := frac
 	for range maxDigits {
-		remaining *= 10
+		remaining *= decimalRadix
 		d := int(remaining)
-		digits = append(digits, byte('0'+d)) // #nosec G115 -- The nonnegative fractional remainder produces a decimal digit in 0..9.
+		digits = append(digits, byte(asciiZeroDigit+d)) // #nosec G115 -- The nonnegative fractional remainder produces a decimal digit in 0..9.
 		remaining -= float64(d)
 	}
 
 	// Trim trailing zeros beyond minDigits
 	end := len(digits)
-	for end > minDigits && digits[end-1] == '0' {
+	for end > minDigits && digits[end-1] == asciiZeroDigit {
 		end--
 	}
 
 	return localizeDigits(string(digits[:end]), df.ZeroDigit)
 }
 
-// FormatRatFrac formats the fractional part of a *big.Rat.
+// FormatRatFrac formats a nonnegative proper fraction, truncating at maxDigits.
+// The caller bounds maxDigits before allocating the decimal scale.
 func FormatRatFrac(frac *big.Rat, minDigits, maxDigits int, df DecimalFormat) string {
-	if maxDigits == 0 {
+	if maxDigits <= 0 {
 		return ""
 	}
 
-	var digits []byte
+	// One scaled integer division produces all digits; per-digit long division
+	// repeatedly divides by a potentially wide rounded decimal denominator.
+	scale := new(big.Int)
 
-	// Long division keeps the denominator fixed. Rebuilding and reducing a
-	// rational for each digit needlessly allocates big integers and runs GCD.
-	// The private remainder also preserves the caller's reusable fraction.
-	ten := big.NewInt(10)
+	if maxDigits <= maxInt64ScaleDigits {
+		// These powers fit in int64; avoid big-integer exponentiation overhead.
+		power := int64(1)
+		for range maxDigits {
+			power *= decimalRadix
+		}
 
-	var rem, digit big.Int
-	rem.Set(frac.Num())
+		scale.SetInt64(power)
+	} else {
+		scale.Exp(big.NewInt(decimalRadix), big.NewInt(int64(maxDigits)), nil)
+	}
 
-	for range maxDigits {
-		rem.Mul(&rem, ten)
-		digit.QuoRem(&rem, frac.Denom(), &rem)
-		digits = append(digits, byte('0'+digit.Int64())) // #nosec G115 -- Long division of a nonnegative proper fraction produces digits in 0..9.
+	scaled := new(big.Int).Mul(frac.Num(), scale)
+	scaled.Quo(scaled, frac.Denom())
+
+	digits := scaled.String()
+	if padding := maxDigits - len(digits); padding > 0 {
+		digits = strings.Repeat(decimalZero, padding) + digits
 	}
 
 	end := len(digits)
-	for end > minDigits && digits[end-1] == '0' {
+	for end > minDigits && digits[end-1] == asciiZeroDigit {
 		end--
 	}
 
-	return localizeDigits(string(digits[:end]), df.ZeroDigit)
+	if end < len(digits) {
+		// A short result must not retain the backing string for a wide picture.
+		digits = strings.Clone(digits[:end])
+	}
+
+	return localizeDigits(digits, df.ZeroDigit)
 }
 
 // RatRoundHalfToEven rounds a *big.Rat to the given precision using
-// half-to-even rounding.
+// half-to-even rounding. Callers must bound nontrivial precision before this
+// helper allocates a power of ten; the host bounds picture widths and numeric
+// work before formatting. A precision at least the finite decimal scale is
+// handled without exponentiation, even when it is very large.
 func RatRoundHalfToEven(r *big.Rat, precision int) *big.Rat {
 	if precision < 0 {
-		// Guard against absurdly large negative precision
-		if -precision > 1000 {
+		// If the decimal scale exceeds even the numerator's binary width,
+		// the value is less than half a rounding unit. This also handles
+		// MinInt without overflowing when negating precision.
+		if precision < -r.Num().BitLen() {
 			return new(big.Rat) // rounds to zero
 		}
 		// Round to 10^(-precision) — convert to integer, round, convert back
-		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-precision)), nil)
-		scaleRat := new(big.Rat).SetInt(scale)
-		divided := new(big.Rat).Quo(r, scaleRat)
-		rounded := RatRoundHalfToEvenInt(divided)
+		scale := new(big.Int).Exp(big.NewInt(decimalRadix), big.NewInt(int64(-precision)), nil)
+		denominator := new(big.Int).Mul(r.Denom(), scale)
+		rounded := roundHalfToEvenQuotient(r.Num(), denominator)
 
-		return new(big.Rat).Mul(new(big.Rat).SetInt(rounded), scaleRat)
+		return new(big.Rat).SetInt(rounded.Mul(rounded, scale))
 	}
 	// If precision is very large and already exceeds the denominator's decimal
 	// digits, the value is already exact — return as-is. This avoids computing
 	// astronomically large powers of 10 (e.g. 10^4294967296).
-	if precision > 1000 || RatDecimalDigits(r) <= precision {
+	if RatDecimalDigits(r) <= precision {
 		return new(big.Rat).Set(r)
 	}
 	// Multiply by 10^precision, round to integer, divide back
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
-	scaleRat := new(big.Rat).SetInt(scale)
-	shifted := new(big.Rat).Mul(r, scaleRat)
-	rounded := RatRoundHalfToEvenInt(shifted)
+	scale := new(big.Int).Exp(big.NewInt(decimalRadix), big.NewInt(int64(precision)), nil)
+	numerator := new(big.Int).Mul(r.Num(), scale)
+	rounded := roundHalfToEvenQuotient(numerator, r.Denom())
 
-	return new(big.Rat).SetFrac(rounded, new(big.Int).Set(scale))
+	return new(big.Rat).SetFrac(rounded, scale)
 }
 
 // RatDecimalDigits returns the number of decimal digits needed to represent
@@ -450,15 +525,17 @@ func RatDecimalDigits(r *big.Rat) int {
 		twos++
 	}
 
-	five := big.NewInt(5)
+	five := big.NewInt(decimalFactorFive)
 
-	mod := new(big.Int)
+	var quotient, mod big.Int
 	for {
-		d.QuoRem(d, five, mod)
+		quotient.QuoRem(d, five, &mod)
 
 		if mod.Sign() != 0 {
 			break
 		}
+
+		d.Set(&quotient)
 
 		fives++
 	}
@@ -481,33 +558,25 @@ func RatRoundHalfToEvenInt(r *big.Rat) *big.Int {
 		return new(big.Int).Set(r.Num())
 	}
 
-	intPart := new(big.Int).Quo(r.Num(), r.Denom())
-	// Fractional remainder
-	rem := new(big.Rat).Sub(r, new(big.Rat).SetInt(intPart))
-	rem.Abs(rem)
+	return roundHalfToEvenQuotient(r.Num(), r.Denom())
+}
 
-	half := new(big.Rat).SetFrac64(1, 2)
-	cmp := rem.Cmp(half)
+func roundHalfToEvenQuotient(numerator, denominator *big.Int) *big.Int {
+	var remainder big.Int
 
-	if cmp < 0 {
-		// Closer to floor
+	intPart := new(big.Int)
+	intPart.QuoRem(numerator, denominator, &remainder)
+	// Compare the exact fractional distance with one half without constructing
+	// temporary rationals and reducing them by GCD.
+	remainder.Abs(&remainder)
+	remainder.Lsh(&remainder, 1)
+
+	comparison := remainder.Cmp(denominator)
+	if comparison < 0 || comparison == 0 && intPart.Bit(0) == 0 {
 		return intPart
 	}
 
-	if cmp > 0 {
-		// Closer to ceil
-		if r.Sign() > 0 {
-			return intPart.Add(intPart, big.NewInt(1))
-		}
-
-		return intPart.Sub(intPart, big.NewInt(1))
-	}
-	// Exactly half — round to even
-	if new(big.Int).And(intPart, big.NewInt(1)).Sign() == 0 {
-		return intPart // already even
-	}
-
-	if r.Sign() > 0 {
+	if numerator.Sign() > 0 {
 		return intPart.Add(intPart, big.NewInt(1))
 	}
 
@@ -515,7 +584,7 @@ func RatRoundHalfToEvenInt(r *big.Rat) *big.Int {
 }
 
 func isMandatoryDigit(r, zeroDigit rune) bool {
-	return r >= zeroDigit && r <= zeroDigit+9
+	return r >= zeroDigit && r <= zeroDigit+maxDigitOffset
 }
 
 func isPatternDigit(r rune, df DecimalFormat) bool {
@@ -563,12 +632,12 @@ func parseGroupedPart(part []rune, sep rune, df DecimalFormat) ([]int, int, int,
 }
 
 func shouldRepeatGrouping(groups []int) bool {
-	if len(groups) < 2 {
+	if len(groups) < minimumRepeatedGroups {
 		return false
 	}
 
 	repeated := groups[1]
-	for i := 2; i < len(groups); i++ {
+	for i := minimumRepeatedGroups; i < len(groups); i++ {
 		if groups[i] != repeated {
 			return false
 		}
@@ -597,7 +666,7 @@ func splitPictureExponent(runes []rune, df DecimalFormat) ([]rune, []rune, bool)
 
 	separator := df.ExponentSeparator
 	if separator == 0 {
-		separator = 'e'
+		separator = defaultExponentSeparator
 	}
 
 	precededByActive := false
@@ -657,11 +726,11 @@ func validatePictureMultipliers(runes []rune, df DecimalFormat) error {
 		}
 	}
 
-	if percent > 1 {
+	if percent > maxPercentMarkers {
 		return fmt.Errorf("picture contains more than one percent sign")
 	}
 
-	if perMille > 1 {
+	if perMille > maxPerMilleMarkers {
 		return fmt.Errorf("picture contains more than one per-mille sign")
 	}
 
@@ -699,7 +768,7 @@ func parsePictureSuffix(pp *ParsedPicture, mantissaSuffix, exponent []rune, df D
 	}
 
 	if pp.MinExpDigits == 0 {
-		pp.MinExpDigits = 1
+		pp.MinExpDigits = minimumExponentDigits
 	}
 
 	suffix := exponent[end:]
@@ -857,7 +926,7 @@ func exponentScalingFactor(pp ParsedPicture) int {
 		return pp.MinIntDigits
 	}
 
-	if pp.MaxIntDigits >= 2 {
+	if pp.MaxIntDigits >= minimumExponentIntegerSlots {
 		return pp.MaxIntDigits
 	}
 
@@ -883,11 +952,11 @@ func adjustMantissaPP(pp ParsedPicture, m int) ParsedPicture {
 		}
 		// Show leading zero when pattern had integer digit placeholders
 		if pp.MaxIntDigits > 0 {
-			r.MinIntDigits = 1
+			r.MinIntDigits = minimumMantissaDigits
 		} else if pp.MaxFracDigits > 0 && r.MinFracDigits == 0 {
 			// With pictures like ".#e0", rounding can carry into the integer part;
 			// keep one fractional digit in that case.
-			r.MinFracDigits = 1
+			r.MinFracDigits = minimumMantissaDigits
 		}
 	}
 
@@ -909,25 +978,25 @@ func formatExponentFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 		// Normalize so mantissa is in [0.1, 1) — first significant digit
 		// is the first fractional digit
 		for abs >= 1 {
-			abs /= 10
+			abs /= decimalRadix
 			exp++
 		}
 
-		for abs > 0 && abs < 0.1 {
-			abs *= 10
+		for abs > 0 && abs < minimumFractionalMantissa {
+			abs *= decimalRadix
 			exp--
 		}
 	} else {
-		upperBound := math.Pow(10, float64(m))
-		lowerBound := math.Pow(10, float64(m-1))
+		upperBound := math.Pow(decimalRadix, float64(m))
+		lowerBound := math.Pow(decimalRadix, float64(m-1))
 
 		for abs >= upperBound {
-			abs /= 10
+			abs /= decimalRadix
 			exp++
 		}
 
 		for abs < lowerBound {
-			abs *= 10
+			abs *= decimalRadix
 			exp--
 		}
 	}
@@ -944,9 +1013,9 @@ func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) strin
 	}
 
 	if pp.IsPercent {
-		r = new(big.Rat).Mul(r, new(big.Rat).SetInt64(100))
+		r = new(big.Rat).Mul(r, new(big.Rat).SetInt64(percentScale))
 	} else if pp.IsPerMille {
-		r = new(big.Rat).Mul(r, new(big.Rat).SetInt64(1000))
+		r = new(big.Rat).Mul(r, new(big.Rat).SetInt64(perMilleScale))
 	}
 
 	m := exponentScalingFactor(pp)
@@ -954,10 +1023,10 @@ func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) strin
 	// Compute exponent by normalizing the value
 	exp := 0
 	abs := new(big.Rat).Abs(r)
-	ten := new(big.Rat).SetInt64(10)
+	ten := new(big.Rat).SetInt64(decimalRadix)
 	one := new(big.Rat).SetInt64(1)
 
-	tenth := new(big.Rat).SetFrac64(1, 10)
+	tenth := new(big.Rat).SetFrac64(1, decimalRadix)
 
 	if m == 0 {
 		// Normalize so mantissa is in [0.1, 1)
@@ -973,9 +1042,9 @@ func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) strin
 			exp--
 		}
 	} else {
-		threshold := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(m)), nil))
+		threshold := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(decimalRadix), big.NewInt(int64(m)), nil))
 
-		lowerBound := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(m-1)), nil))
+		lowerBound := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(decimalRadix), big.NewInt(int64(m-1)), nil))
 		if m == 1 {
 			lowerBound = one
 		}
@@ -1012,7 +1081,7 @@ func joinExponent(mantissa string, exp int, pp ParsedPicture, df DecimalFormat) 
 
 	expSep := df.ExponentSeparator
 	if expSep == 0 {
-		expSep = 'e'
+		expSep = defaultExponentSeparator
 	}
 
 	return mantissa + string(expSep) + formatExponentDigits(exp, pp.MinExpDigits, df)
@@ -1031,7 +1100,7 @@ func formatExponentDigits(exp, minDigits int, df DecimalFormat) string {
 
 	digits := big.NewInt(int64(exp)).String()
 	if padding := minDigits - len(digits); padding > 0 {
-		digits = strings.Repeat("0", padding) + digits
+		digits = strings.Repeat(decimalZero, padding) + digits
 	}
 
 	s.WriteString(localizeDigits(digits, df.ZeroDigit))
@@ -1040,11 +1109,11 @@ func formatExponentDigits(exp, minDigits int, df DecimalFormat) string {
 }
 
 func isFinite(f float64) bool {
-	return !math.IsNaN(f) && !math.IsInf(f, 0)
+	return !math.IsNaN(f) && !math.IsInf(f, anyInfinitySign)
 }
 
 func localizeDigits(s string, zeroDigit rune) string {
-	if s == "" || zeroDigit == '0' {
+	if s == "" || zeroDigit == asciiZeroDigit {
 		return s
 	}
 
@@ -1052,8 +1121,8 @@ func localizeDigits(s string, zeroDigit rune) string {
 	b.Grow(len(s))
 
 	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(zeroDigit + (r - '0'))
+		if r >= asciiZeroDigit && r <= asciiLastDigit {
+			b.WriteRune(zeroDigit + (r - asciiZeroDigit))
 			continue
 		}
 

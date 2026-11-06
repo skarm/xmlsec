@@ -18,6 +18,30 @@ import (
 	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
+const (
+	// Aggregate DER byte budget selected when Config.MaxEvidenceBytes is zero.
+	defaultMaxEvidenceBytes = 8 << 20
+)
+
+const (
+	certificateASN1Depth = 33
+	certificateASN1Nodes = 100000
+	// Per-certificate DER byte cap applied before bounded parsing and evidence processing.
+	certificateDERBytes     = 1 << 20
+	defaultMaxCRLs          = 32
+	defaultMaxChainDepth    = 10
+	defaultMaxOCSPResponses = 32
+	// Hard count ceiling for supplied intermediate-certificate sets.
+	maxIntermediateCertificates = 64
+	maxRootCertificates         = 64
+	maximumCRLs                 = 256
+	maximumChainDepth           = 32
+	maximumEvidenceBytes        = 64 << 20
+	maximumOCSPResponses        = 256
+	minimumChainDepth           = 2
+	maxCertificateUsages        = 32
+)
+
 var (
 	// ErrPolicy reports a PKI policy violation.
 	ErrPolicy = errors.New("PKI policy violation")
@@ -85,8 +109,8 @@ type Config struct {
 	CRL CRLOptions
 	// MaxChainDepth bounds certificate path depth. Zero selects 10. The maximum is 32.
 	MaxChainDepth int
-	// MaxEvidenceBytes bounds supplied revocation evidence bytes. Zero selects 8 MiB. The
-	// maximum is 64 MiB.
+	// MaxEvidenceBytes bounds aggregate supplied intermediate certificate and revocation
+	// DER bytes. Zero selects 8 MiB. The maximum is 64 MiB.
 	MaxEvidenceBytes int
 	// MaxCRLs bounds supplied CRLs. Zero selects 32. The maximum is 256.
 	MaxCRLs int
@@ -122,21 +146,82 @@ type Evidence struct {
 // Verifier retains immutable PKIX and offline revocation policy for concurrent
 // verification calls.
 type Verifier struct {
-	roots                *x509.CertPool
-	intermediates        *x509.CertPool
-	usages               []x509.ExtKeyUsage
-	required             x509.KeyUsage
-	allowCA              bool
-	revocation           RevocationMode
-	maxDepth             int
-	maxBytes             int
-	maxCRLs              int
-	maxOCSP              int
-	ocspOptions          OCSPOptions
-	crlOptions           CRLOptions
-	issuerCertificates   [][]byte
-	anchorCertificates   [][]byte
-	originalCertificates map[[32]byte]*x509.Certificate
+	// roots contains only explicitly configured trust anchors.
+	roots *x509.CertPool
+	// intermediates contains configured untrusted path-building candidates.
+	intermediates *x509.CertPool
+	// usages retains the accepted extended key usages.
+	usages []x509.ExtKeyUsage
+	// required contains key usage bits required on the leaf certificate.
+	required x509.KeyUsage
+	// allowCA permits a CA certificate to serve as the leaf.
+	allowCA bool
+	// revocation selects the required offline revocation checks.
+	revocation RevocationMode
+	// maxDepth bounds the number of certificates in a path.
+	maxDepth int
+	// maxBytes bounds aggregate supplied evidence bytes.
+	maxBytes int
+	// maxCRLs bounds supplied CRL objects.
+	maxCRLs int
+	// maxOCSP bounds supplied OCSP responses.
+	maxOCSP int
+	// ocspOptions retains the normalized responder and freshness policy.
+	ocspOptions OCSPOptions
+	// crlOptions retains the normalized CRL scope and freshness policy.
+	crlOptions CRLOptions
+	// issuerCertificates retains DER issuer candidates for evidence checks.
+	issuerCertificates [][]byte
+	// anchorCertificates retains exact configured trust anchor encodings.
+	anchorCertificates [][]byte
+	// originalCertificates indexes parsed certificates by exact DER digest.
+	originalCertificates map[[sha256.Size]byte]*x509.Certificate
+}
+
+// Report contains certificate path and revocation diagnostics. Successful verification
+// also returns a Result.
+type Report struct {
+	// evidence retains authenticated evidence diagnostics, including evidence that
+	// did not satisfy acceptance policy.
+	evidence []*VerifiedEvidence
+	// Chain records the certificate path check outcome.
+	Chain Status `json:"chain"`
+	// Revocation records the evidence-check outcome; NoRevocation leaves it NotChecked.
+	Revocation Status `json:"revocation"`
+	// VerificationTime is the explicit time supplied for certificate and revocation checks.
+	VerificationTime time.Time `json:"verification_time"`
+	// ChainLength is the number of certificates in the accepted path, including its trust
+	// anchor.
+	ChainLength int `json:"chain_length,omitempty"`
+	// Error describes the verification failure, or is empty on success.
+	Error string `json:"error,omitempty"`
+}
+
+// Result records acceptance under the configured certificate and revocation policy.
+// It does not establish acceptance under other trust policies or the historical
+// validation requirements of AdES.
+type Result struct {
+	// chain retains the accepted DER path, including its trust anchor.
+	chain [][]byte
+	// spki retains the accepted leaf's SubjectPublicKeyInfo DER.
+	spki []byte
+	// at is the explicit time at which the configured policy accepted the path.
+	at time.Time
+	// revocation records the required offline revocation outcome.
+	revocation Status
+	// evidence retains the authenticated evidence accepted for this result.
+	evidence []*VerifiedEvidence
+}
+
+// KeyPin matches SubjectPublicKeyInfo against an explicitly trusted public key.
+// Matching does not check certificate dates, CA paths, revocation or subject names.
+// Use this trust primitive when the application already trusts the key, such as
+// for a configured metadata signer.
+type KeyPin struct {
+	// spki owns the exact trusted SubjectPublicKeyInfo encoding.
+	spki []byte
+	// fingerprint caches the SHA-256 digest of spki.
+	fingerprint [sha256.Size]byte
 }
 
 // NewVerifier validates and snapshots explicit trust and revocation policy for concurrent use.
@@ -162,7 +247,7 @@ func NewVerifier(c Config) (*Verifier, error) {
 		usages = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
 	}
 
-	if len(usages) > 32 {
+	if len(usages) > maxCertificateUsages {
 		return nil, ErrPolicy
 	}
 
@@ -186,6 +271,22 @@ func NewVerifier(c Config) (*Verifier, error) {
 	}
 
 	return v, nil
+}
+
+// NewKeyPin snapshots a public key as an SPKI pin. Matching a pin does not establish PKIX
+// certificate trust.
+func NewKeyPin(public crypto.PublicKey) (*KeyPin, error) {
+	// Marshal may reject nil/unsupported types; require round-trip parse as well.
+	der, err := safeMarshalPublic(public)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = x509.ParsePKIXPublicKey(der); err != nil {
+		return nil, err
+	}
+
+	return &KeyPin{spki: der, fingerprint: sha256.Sum256(der)}, nil
 }
 
 // Verify requires an explicit time. A caller-chosen past time alone is NOT a
@@ -238,7 +339,7 @@ func (v *Verifier) Verify(ctx context.Context, leafDER []byte, at time.Time, e E
 		return nil, report, err
 	}
 
-	chains, err := leafView.Verify(x509.VerifyOptions{Roots: v.roots, Intermediates: pool, CurrentTime: at, KeyUsages: append([]x509.ExtKeyUsage(nil), v.usages...), MaxConstraintComparisions: 100000})
+	chains, err := leafView.Verify(x509.VerifyOptions{Roots: v.roots, Intermediates: pool, CurrentTime: at, KeyUsages: append([]x509.ExtKeyUsage(nil), v.usages...), MaxConstraintComparisions: maxNameConstraintComparisons})
 	if err != nil {
 		report.Chain = Invalid
 		return nil, report, fmt.Errorf("%w: %w", ErrCertificate, err)
@@ -324,7 +425,7 @@ func (v *Verifier) Verify(ctx context.Context, leafDER []byte, at time.Time, e E
 // to one byte limit. Root constraints precede each anchor's public-key policy.
 func (v *Verifier) snapshotCertificates(roots, intermediates [][]byte) error {
 	configuredBytes := 0
-	v.originalCertificates = make(map[[32]byte]*x509.Certificate)
+	v.originalCertificates = make(map[[sha256.Size]byte]*x509.Certificate)
 
 	for _, group := range []struct {
 		ders [][]byte
@@ -378,8 +479,28 @@ func (v *Verifier) validateRequest(ctx context.Context, at time.Time) error {
 	return nil
 }
 
+// CheckEvidenceLimits checks only configured DER collection counts and aggregate
+// byte limits. It does not parse or authenticate evidence, inspect Sources or
+// validate historical options. Limit failures retain ErrPolicy and ErrLimit;
+// invalid verifiers/contexts return ErrPolicy, and cancellation retains its cause.
+func (v *Verifier) CheckEvidenceLimits(ctx context.Context, e Evidence) error {
+	if v == nil || v.roots == nil || v.intermediates == nil || ctx == nil {
+		return fmt.Errorf("%w: verifier and context required", ErrPolicy)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := v.validateEvidenceBounds(e); err != nil {
+		return errors.Join(ErrLimit, err)
+	}
+
+	return nil
+}
+
 func (v *Verifier) validateEvidenceBounds(e Evidence) error {
-	if len(e.Intermediates) > 64 || len(e.CRLs) > v.maxCRLs || len(e.OCSPResponses) > v.maxOCSP {
+	if len(e.Intermediates) > maxIntermediateCertificates || len(e.CRLs) > v.maxCRLs || len(e.OCSPResponses) > v.maxOCSP {
 		return fmt.Errorf("%w: evidence count", ErrPolicy)
 	}
 
@@ -419,7 +540,7 @@ func (v *Verifier) validateLeaf(der []byte) (*x509.Certificate, error) {
 	return leaf, nil
 }
 
-func (v *Verifier) evidenceIntermediatePool(ctx context.Context, ders [][]byte, originals map[[32]byte]*x509.Certificate) (*x509.CertPool, error) {
+func (v *Verifier) evidenceIntermediatePool(ctx context.Context, ders [][]byte, originals map[[sha256.Size]byte]*x509.Certificate) (*x509.CertPool, error) {
 	if len(ders) == 0 {
 		return v.intermediates, nil
 	}
@@ -471,7 +592,11 @@ func (v *Verifier) selectVerifiedChain(ctx context.Context, chains [][]*x509.Cer
 
 		if v.revocation == RequireCRL {
 			chainErr = checkChainCRLs(ctx, chain, lists, at, v.crlOptions)
-			if errors.Is(chainErr, ErrLimit) || ctx.Err() != nil {
+			if cause := ctx.Err(); cause != nil {
+				return nil, errors.Join(chainErr, cause)
+			}
+
+			if errors.Is(chainErr, ErrLimit) {
 				return nil, chainErr
 			}
 
@@ -482,7 +607,11 @@ func (v *Verifier) selectVerifiedChain(ctx context.Context, chains [][]*x509.Cer
 
 		if v.revocation == RequireOCSP {
 			chainErr = ocsp.checkChain(ctx, chain, at)
-			if errors.Is(chainErr, ErrLimit) || ctx.Err() != nil {
+			if cause := ctx.Err(); cause != nil {
+				return nil, errors.Join(chainErr, cause)
+			}
+
+			if errors.Is(chainErr, ErrLimit) {
 				return nil, chainErr
 			}
 
@@ -515,8 +644,8 @@ func (v *Verifier) validateChainPolicy(chain []*x509.Certificate) error {
 	return nil
 }
 
-func (v *Verifier) certificateOriginals(leaf *x509.Certificate) map[[32]byte]*x509.Certificate {
-	originals := make(map[[32]byte]*x509.Certificate, len(v.originalCertificates)+1)
+func (v *Verifier) certificateOriginals(leaf *x509.Certificate) map[[sha256.Size]byte]*x509.Certificate {
+	originals := make(map[[sha256.Size]byte]*x509.Certificate, len(v.originalCertificates)+1)
 	maps.Copy(originals, v.originalCertificates)
 
 	originals[sha256.Sum256(leaf.Raw)] = leaf
@@ -540,114 +669,6 @@ func (v *Verifier) crlEvidence(ctx context.Context, e Evidence, sources map[evid
 	}
 
 	return lists, nil
-}
-
-// normalizeVerifierPolicy validates policy fields in their public error order,
-// filling defaults only in the caller's local configuration snapshot.
-func normalizeVerifierPolicy(c *Config) error {
-	if len(c.Roots) < 1 || len(c.Roots) > 64 || len(c.Intermediates) > 64 {
-		return fmt.Errorf("%w: explicit bounded root/intermediate sets required", ErrPolicy)
-	}
-
-	if c.Revocation != NoRevocation && c.Revocation != RequireCRL && c.Revocation != RequireOCSP {
-		return fmt.Errorf("%w: revocation mode", ErrPolicy)
-	}
-
-	if c.RequiredKeyUsage == 0 {
-		c.RequiredKeyUsage = x509.KeyUsageDigitalSignature
-	}
-
-	if c.RequiredKeyUsage < 0 || c.RequiredKeyUsage & ^x509.KeyUsage(511) != 0 {
-		return fmt.Errorf("%w: key usage", ErrPolicy)
-	}
-
-	if c.MaxChainDepth == 0 {
-		c.MaxChainDepth = 10
-	}
-
-	if c.MaxEvidenceBytes == 0 {
-		c.MaxEvidenceBytes = 8 << 20
-	}
-
-	if c.MaxCRLs == 0 {
-		c.MaxCRLs = 32
-	}
-
-	if c.MaxChainDepth < 2 || c.MaxChainDepth > 32 || c.MaxEvidenceBytes < 1 || c.MaxEvidenceBytes > 64<<20 || c.MaxCRLs < 1 || c.MaxCRLs > 256 {
-		return fmt.Errorf("%w: limits", ErrPolicy)
-	}
-
-	if c.MaxOCSPResponses == 0 {
-		c.MaxOCSPResponses = 32
-	}
-
-	if c.MaxOCSPResponses < 1 || c.MaxOCSPResponses > 256 {
-		return ErrPolicy
-	}
-
-	if len(c.OCSPAuthorities) > 8 {
-		return ErrPolicy
-	}
-
-	configuredBytes := 0
-
-	for _, group := range [][][]byte{c.Roots, c.Intermediates} {
-		for _, raw := range group {
-			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
-				return ErrPolicy
-			}
-
-			configuredBytes += len(raw)
-		}
-	}
-
-	for _, authority := range c.OCSPAuthorities {
-		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
-			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
-				return ErrPolicy
-			}
-
-			configuredBytes += len(raw)
-		}
-	}
-
-	return nil
-}
-
-func parseCertificate(der []byte) (*x509.Certificate, error) {
-	if len(der) < 1 || len(der) > 1<<20 {
-		return nil, fmt.Errorf("%w: certificate size", ErrCertificate)
-	}
-
-	return parseBorrowedCertificate(bytes.Clone(der))
-}
-
-// Report contains certificate path and revocation diagnostics. Successful verification
-// also returns a Result.
-type Report struct {
-	evidence []*VerifiedEvidence
-	// Chain records the certificate path check outcome.
-	Chain Status `json:"chain"`
-	// Revocation records the evidence-check outcome; NoRevocation leaves it NotChecked.
-	Revocation Status `json:"revocation"`
-	// VerificationTime is the explicit time supplied for certificate and revocation checks.
-	VerificationTime time.Time `json:"verification_time"`
-	// ChainLength is the number of certificates in the accepted path, including its trust
-	// anchor.
-	ChainLength int `json:"chain_length,omitempty"`
-	// Error describes the verification failure, or is empty on success.
-	Error string `json:"error,omitempty"`
-}
-
-// Result records acceptance under the configured certificate and revocation policy.
-// It does not establish acceptance under other trust policies or the historical
-// validation requirements of AdES.
-type Result struct {
-	chain      [][]byte
-	spki       []byte
-	at         time.Time
-	revocation Status
-	evidence   []*VerifiedEvidence
 }
 
 // ChainDER returns owned copies of the verified certificate chain, starting with the leaf.
@@ -691,31 +712,6 @@ func (r *Result) RevocationStatus() Status {
 	return r.revocation
 }
 
-// KeyPin matches SubjectPublicKeyInfo against an explicitly trusted public key.
-// Matching does not check certificate dates, CA paths, revocation or subject names.
-// Use this trust primitive when the application already trusts the key, such as
-// for a configured metadata signer.
-type KeyPin struct {
-	spki        []byte
-	fingerprint [32]byte
-}
-
-// NewKeyPin snapshots a public key as an SPKI pin. Matching a pin does not establish PKIX
-// certificate trust.
-func NewKeyPin(public crypto.PublicKey) (*KeyPin, error) {
-	// Marshal may reject nil/unsupported types; require round-trip parse as well.
-	der, err := safeMarshalPublic(public)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = x509.ParsePKIXPublicKey(der); err != nil {
-		return nil, err
-	}
-
-	return &KeyPin{spki: der, fingerprint: sha256.Sum256(der)}, nil
-}
-
 // FingerprintSHA256 returns the hexadecimal SHA-256 fingerprint of the pinned SPKI.
 func (p *KeyPin) FingerprintSHA256() string {
 	if p == nil {
@@ -744,13 +740,97 @@ func (p *KeyPin) MatchCertificate(der []byte) error {
 	return nil
 }
 
-// parseBorrowedCertificate is for temporary use or DER that is already owned.
-func parseBorrowedCertificate(der []byte) (*x509.Certificate, error) {
-	if len(der) < 1 || len(der) > 1<<20 {
+// normalizeVerifierPolicy validates policy fields in their public error order,
+// filling defaults only in the caller's local configuration snapshot.
+func normalizeVerifierPolicy(c *Config) error {
+	const supportedKeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageContentCommitment |
+		x509.KeyUsageKeyEncipherment | x509.KeyUsageDataEncipherment | x509.KeyUsageKeyAgreement |
+		x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageEncipherOnly | x509.KeyUsageDecipherOnly
+
+	if len(c.Roots) < 1 || len(c.Roots) > maxRootCertificates || len(c.Intermediates) > maxIntermediateCertificates {
+		return fmt.Errorf("%w: explicit bounded root/intermediate sets required", ErrPolicy)
+	}
+
+	if c.Revocation != NoRevocation && c.Revocation != RequireCRL && c.Revocation != RequireOCSP {
+		return fmt.Errorf("%w: revocation mode", ErrPolicy)
+	}
+
+	if c.RequiredKeyUsage == 0 {
+		c.RequiredKeyUsage = x509.KeyUsageDigitalSignature
+	}
+
+	if c.RequiredKeyUsage < 0 || c.RequiredKeyUsage & ^supportedKeyUsage != 0 {
+		return fmt.Errorf("%w: key usage", ErrPolicy)
+	}
+
+	if c.MaxChainDepth == 0 {
+		c.MaxChainDepth = defaultMaxChainDepth
+	}
+
+	if c.MaxEvidenceBytes == 0 {
+		c.MaxEvidenceBytes = defaultMaxEvidenceBytes
+	}
+
+	if c.MaxCRLs == 0 {
+		c.MaxCRLs = defaultMaxCRLs
+	}
+
+	if c.MaxChainDepth < minimumChainDepth || c.MaxChainDepth > maximumChainDepth || c.MaxEvidenceBytes < 1 || c.MaxEvidenceBytes > maximumEvidenceBytes || c.MaxCRLs < 1 || c.MaxCRLs > maximumCRLs {
+		return fmt.Errorf("%w: limits", ErrPolicy)
+	}
+
+	if c.MaxOCSPResponses == 0 {
+		c.MaxOCSPResponses = defaultMaxOCSPResponses
+	}
+
+	if c.MaxOCSPResponses < 1 || c.MaxOCSPResponses > maximumOCSPResponses {
+		return ErrPolicy
+	}
+
+	if len(c.OCSPAuthorities) > maxOCSPAuthorities {
+		return ErrPolicy
+	}
+
+	configuredBytes := 0
+
+	for _, group := range [][][]byte{c.Roots, c.Intermediates} {
+		for _, raw := range group {
+			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+				return ErrPolicy
+			}
+
+			configuredBytes += len(raw)
+		}
+	}
+
+	for _, authority := range c.OCSPAuthorities {
+		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
+			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+				return ErrPolicy
+			}
+
+			configuredBytes += len(raw)
+		}
+	}
+
+	return nil
+}
+
+func parseCertificate(der []byte) (*x509.Certificate, error) {
+	if len(der) < 1 || len(der) > certificateDERBytes {
 		return nil, fmt.Errorf("%w: certificate size", ErrCertificate)
 	}
 
-	c, err := x509cert.Parse(der, x509cert.Limits{Bytes: 1 << 20, Depth: 33, Nodes: 100000})
+	return parseBorrowedCertificate(bytes.Clone(der))
+}
+
+// parseBorrowedCertificate is for temporary use or DER that is already owned.
+func parseBorrowedCertificate(der []byte) (*x509.Certificate, error) {
+	if len(der) < 1 || len(der) > certificateDERBytes {
+		return nil, fmt.Errorf("%w: certificate size", ErrCertificate)
+	}
+
+	c, err := x509cert.Parse(der, x509cert.Limits{Bytes: certificateDERBytes, Depth: certificateASN1Depth, Nodes: certificateASN1Nodes})
 	if errors.Is(err, derpkg.ErrLimit) {
 		return nil, fmt.Errorf("%w: %w: %w", ErrPolicy, ErrLimit, err)
 	}

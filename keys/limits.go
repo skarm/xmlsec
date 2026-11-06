@@ -7,6 +7,26 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
+const (
+	defaultMaxASN1Depth        = 32
+	defaultMaxASN1Nodes        = 1000000
+	defaultMaxBags             = 32
+	defaultMaxCRLBytes         = 16 << 20
+	defaultMaxCRLEntries       = 100000
+	defaultMaxCertificateBytes = 1 << 20
+	defaultMaxCertificates     = 16
+	defaultMaxContainerBytes   = 16 << 20
+	defaultMaxContentInfos     = 8
+	defaultMaxInputBytes       = 32 << 20
+	defaultMaxIterations       = 1000000
+	defaultMaxKDFWork          = 3000000
+	defaultMaxKeyBytes         = 64 << 10
+	defaultMaxPasswordBytes    = 1024
+	defaultMaxRSABits          = 16384
+	defaultMaxRSAPrimes        = 8
+	defaultMinIterations       = 1000
+)
+
 // Limits bounds key-material processing. Each zero field selects its default;
 // negative values are rejected. Budgets are independent of algorithm strength
 // and certificate trust policy. Parsing and export use the same limits.
@@ -57,23 +77,23 @@ type Limits struct {
 // DefaultLimits returns independent resource budgets for key material, containers and KDFs.
 func DefaultLimits() Limits {
 	return Limits{
-		MaxInputBytes:       32 << 20,
-		MaxKeyBytes:         64 << 10,
-		MaxCertificateBytes: 1 << 20,
-		MaxCRLBytes:         16 << 20,
-		MaxContainerBytes:   16 << 20,
-		MaxASN1Depth:        32,
-		MaxASN1Nodes:        1000000,
-		MaxRSABits:          16384,
-		MaxRSAPrimes:        8,
-		MaxCertificates:     16,
-		MaxBags:             32,
-		MaxContentInfos:     8,
-		MaxCRLEntries:       100000,
-		MaxPasswordBytes:    1024,
-		MinIterations:       1000,
-		MaxIterations:       1000000,
-		MaxKDFWork:          3000000,
+		MaxInputBytes:       defaultMaxInputBytes,
+		MaxKeyBytes:         defaultMaxKeyBytes,
+		MaxCertificateBytes: defaultMaxCertificateBytes,
+		MaxCRLBytes:         defaultMaxCRLBytes,
+		MaxContainerBytes:   defaultMaxContainerBytes,
+		MaxASN1Depth:        defaultMaxASN1Depth,
+		MaxASN1Nodes:        defaultMaxASN1Nodes,
+		MaxRSABits:          defaultMaxRSABits,
+		MaxRSAPrimes:        defaultMaxRSAPrimes,
+		MaxCertificates:     defaultMaxCertificates,
+		MaxBags:             defaultMaxBags,
+		MaxContentInfos:     defaultMaxContentInfos,
+		MaxCRLEntries:       defaultMaxCRLEntries,
+		MaxPasswordBytes:    defaultMaxPasswordBytes,
+		MinIterations:       defaultMinIterations,
+		MaxIterations:       defaultMaxIterations,
+		MaxKDFWork:          defaultMaxKDFWork,
 	}
 }
 

@@ -2,15 +2,21 @@ package xades
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"time"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/historical"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/xmldsig"
+)
+
+const (
+	codeFormatFailure = "FORMAT_FAILURE"
 )
 
 // ErrHistorical reports a non-passing historical workflow. Missing evidence is
@@ -106,10 +112,21 @@ func (v *HistoricalValidator) Validate(ctx context.Context, doc *document.Docume
 	if err != nil {
 		report.state.Cause = err
 
-		report.state.SubIndication = "FORMAT_FAILURE"
+		report.state.SubIndication = codeFormatFailure
 		if errors.Is(err, xmldsig.ErrDigest) || errors.Is(err, xmldsig.ErrSignature) {
 			report.state.Indication = historical.Failed
-			report.state.SubIndication = "SIG_CRYPTO_FAILURE"
+			report.state.SubIndication = lexicon.HistoricalCodeSigCryptoFailure
+		}
+
+		return nil, report, err
+	}
+
+	if err := v.checkEvidenceLimits(ctx, input); err != nil {
+		report.state.Cause = err
+		if errors.Is(err, pki.ErrLimit) {
+			report.state.Best = at
+
+			return nil, report, errors.Join(ErrHistorical, err)
 		}
 
 		return nil, report, err
@@ -118,7 +135,7 @@ func (v *HistoricalValidator) Validate(ctx context.Context, doc *document.Docume
 	model, evidence, err := historicalInput(ctx, baseline, v.baseline, v.workflow, input)
 	if err != nil {
 		report.state.Cause = err
-		report.state.SubIndication = "FORMAT_FAILURE"
+		report.state.SubIndication = codeFormatFailure
 
 		return nil, report, err
 	}
@@ -131,6 +148,14 @@ func (v *HistoricalValidator) Validate(ctx context.Context, doc *document.Docume
 	}
 
 	return &HistoricalResult{baseline: baseline, report: report}, report, nil
+}
+
+func (v *HistoricalValidator) checkEvidenceLimits(ctx context.Context, input ValidationEvidence) error {
+	if err := v.workflow.Signer.CheckEvidenceLimits(ctx, input.Signer); err != nil {
+		return err
+	}
+
+	return v.workflow.TSA.CheckEvidenceLimits(ctx, input.TSA)
 }
 
 // HistoricalReport records workflow diagnostics without granting acceptance.
@@ -205,7 +230,7 @@ func (r *HistoricalReport) Proofs() []HistoricalProof {
 	out := make([]HistoricalProof, 0, len(facts))
 	for _, fact := range facts {
 		source := ""
-		if fact.Source != ([32]byte{}) {
+		if fact.Source != ([sha256.Size]byte{}) {
 			source = hex.EncodeToString(fact.Source[:])
 		}
 

@@ -31,7 +31,7 @@ const (
 func (m OnMultipleMatchMode) String() string {
 	switch m {
 	case OnMultipleMatchUseLast:
-		return "use-last"
+		return onMultipleMatchUseLast
 	case OnMultipleMatchFail:
 		return onNoMatchFail
 	default:
@@ -653,24 +653,27 @@ type Execution struct {
 // terminal method. The mutex lives behind a pointer so copying
 // invocationConfig (in clone) never copies a lock.
 type resolvedOutputState struct {
-	mu  sync.Mutex
+	mu sync.Mutex
+	// def is an immutable owned snapshot; store only replaces the pointer.
 	def *OutputDef
 }
 
 // store records the resolved primary output def. It deep-clones so the stored
 // snapshot is independent of the per-call transformConfig.
 func (r *resolvedOutputState) store(def *OutputDef) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	def = cloneOutputDef(def)
 
-	r.def = cloneOutputDef(def)
+	r.mu.Lock()
+	r.def = def
+	r.mu.Unlock()
 }
 
 // snapshot returns an independent clone of the recorded output def, or nil if
 // no terminal method has recorded one yet.
 func (r *resolvedOutputState) snapshot() *OutputDef {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	def := r.def
+	r.mu.Unlock()
 
-	return cloneOutputDef(r.def)
+	return cloneOutputDef(def)
 }

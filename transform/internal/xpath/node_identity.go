@@ -15,22 +15,31 @@ import (
 // prefix rather than the newly allocated wrapper. Components are delimited so
 // different owner/prefix combinations cannot collide.
 func StableNodeID(n xdm.Node) string {
+	// Prefixes separate ordinary and namespace identities; hex encoding prevents
+	// delimiter collisions. A hex NUL cannot be a valid namespace prefix.
+	const (
+		namespaceNodeIDPrefix   = "idns"
+		ordinaryNodeIDPrefix    = "idn"
+		emptyNamespacePrefixHex = "00"
+		nodeIDRadix             = 16
+	)
+
 	if n == nil {
 		return ""
 	}
 
 	if nsk, ok := xdm.NamespaceNodeKey(n); ok {
-		parentHex := strconv.FormatUint(xdm.NodeIdentity(nsk.Parent), 16)
+		parentHex := strconv.FormatUint(xdm.NodeIdentity(nsk.Parent), nodeIDRadix)
 
 		prefixHex := hex.EncodeToString([]byte(nsk.Prefix))
 		if prefixHex == "" {
-			prefixHex = "00"
+			prefixHex = emptyNamespacePrefixHex
 		}
 
-		return "idns" + parentHex + "p" + prefixHex
+		return namespaceNodeIDPrefix + parentHex + "p" + prefixHex
 	}
 
-	return "idn" + strconv.FormatUint(xdm.NodeIdentity(n), 16)
+	return ordinaryNodeIDPrefix + strconv.FormatUint(xdm.NodeIdentity(n), nodeIDRadix)
 }
 
 // nodeIdentityKey is a map key for node identity (see xdm.SameNode): the

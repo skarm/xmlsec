@@ -19,6 +19,37 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// ASCII decimal padding digit before any separately selected digit-system localization.
+const (
+	numberZeroPaddingDigit = "0"
+)
+
+// Default decimal number picture used when no format AVT or no alphanumeric picture token is supplied; it is not a boolean lexical alias.
+const (
+	numberDecimalPicture = "1"
+)
+
+// Exact xsl:number picture selector; the selected formatting algorithm and fallback behavior remain unchanged.
+const (
+	numberPictureLowerAlpha = "a"
+	numberPictureLowerRoman = "i"
+	numberPictureUpperAlpha = "A"
+	numberPictureUpperRoman = "I"
+)
+
+// Explicit base ten for integer lexical parsing and formatting APIs; ordinary decimal place-value arithmetic and Unicode range lengths are independent.
+const (
+	numberDecimalRadix = 10
+)
+
+// Closed xsl:number selectors shared by grammar validation and number formatting; these do not select an XPath atomic type.
+const (
+	numberAlphabetic  = "alphabetic"
+	numberAny         = "any"
+	numberMultiple    = "multiple"
+	numberTraditional = "traditional"
+)
+
 // ordinalSystem describes a Unicode numbering system with potentially
 // non-contiguous ranges and a special zero character.
 type ordinalSystem struct {
@@ -168,9 +199,9 @@ func (ec *execContext) evaluateNumberValues(ctx context.Context, inst *numberIns
 
 func (ec *execContext) numberNodeValues(ctx context.Context, inst *numberInst, node xdm.Node) []int {
 	switch inst.Level {
-	case "multiple":
+	case numberMultiple:
 		return ec.numberMultiple(ctx, inst, node)
-	case "any":
+	case numberAny:
 		return ec.numberAny(ctx, inst, node)
 	default:
 		return ec.numberSingle(ctx, inst, node)
@@ -182,7 +213,7 @@ func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *nu
 
 	var err error
 
-	options.picture, err = ec.evaluateNumberAVT(ctx, inst.Format, "1")
+	options.picture, err = ec.evaluateNumberAVT(ctx, inst.Format, numberDecimalPicture)
 	if err != nil {
 		return numberFormatOptions{}, err
 	}
@@ -198,7 +229,7 @@ func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *nu
 			return numberFormatOptions{}, err
 		}
 
-		groupSize = strings.Trim(groupSize, " \t\r\n")
+		groupSize = strings.Trim(groupSize, lexicon.XMLWhitespace)
 		if !validNumberOption(nameGroupingSize, groupSize) {
 			return numberFormatOptions{}, dynamicError(errCodeXTDE0030, "invalid xsl:number grouping-size %q", groupSize)
 		}
@@ -217,7 +248,7 @@ func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *nu
 		return numberFormatOptions{}, err
 	}
 
-	options.lang = strings.Trim(options.lang, " \t\r\n")
+	options.lang = strings.Trim(options.lang, lexicon.XMLWhitespace)
 	if !validNumberOption(lexicon.AttrLang, options.lang) {
 		return numberFormatOptions{}, dynamicError(errCodeXTDE0030,
 			"xsl:number lang attribute is not a valid language code: %q", options.lang)
@@ -239,9 +270,9 @@ func (ec *execContext) evaluateNumberFormatOptions(ctx context.Context, inst *nu
 		return numberFormatOptions{}, err
 	}
 
-	if ec.stylesheet.processorLanguage() >= 30 {
-		switch strings.Trim(options.ordinal, " \t\r\n") {
-		case lexicon.ValueNo, lexicon.ValueFalse, "0":
+	if ec.stylesheet.processorLanguage() >= processorXSLT30 {
+		switch strings.Trim(options.ordinal, lexicon.XMLWhitespace) {
+		case lexicon.ValueNo, lexicon.ValueFalse, booleanDigitFalse:
 			options.ordinal = ""
 		}
 	}
@@ -536,7 +567,7 @@ func (ec *execContext) numberFindAncestorOrSelf(ctx context.Context, inst *numbe
 }
 
 func parseStartAt(value string) ([]*big.Int, bool) {
-	parts := strings.FieldsFunc(strings.Trim(value, " \t\r\n"), func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
+	parts := strings.FieldsFunc(strings.Trim(value, lexicon.XMLWhitespace), func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
 	if len(parts) == 0 {
 		return nil, false
 	}
@@ -547,7 +578,7 @@ func parseStartAt(value string) ([]*big.Int, bool) {
 			return nil, false
 		}
 
-		numbers[i], _ = new(big.Int).SetString(part, 10)
+		numbers[i], _ = new(big.Int).SetString(part, numberDecimalRadix)
 	}
 
 	return numbers, true
@@ -576,13 +607,13 @@ func decimalIntegerLexical(value string, allowPlus bool) bool {
 }
 
 func validNumberOption(name, value string) bool {
-	value = strings.Trim(value, " \t\r\n")
+	value = strings.Trim(value, lexicon.XMLWhitespace)
 
 	switch name {
 	case nameGroupingSize:
 		return decimalIntegerLexical(value, true)
 	case nameLetterValue:
-		return value == "alphabetic" || value == "traditional"
+		return value == numberAlphabetic || value == numberTraditional
 	case lexicon.AttrLang:
 		return value == "" || lexical.ValidLanguage(value)
 	case nameStartAt:
@@ -598,7 +629,7 @@ func isAlphanumeric(r rune) bool {
 		return true
 	}
 
-	return r > 127 && (unicode.IsLetter(r) || unicode.IsNumber(r))
+	return r > utf8.RuneSelf-1 && (unicode.IsLetter(r) || unicode.IsNumber(r))
 }
 
 func formatSingleNumber(num int, token string, groupSep string, groupSize int, lang string, ordinal string) string {
@@ -607,13 +638,13 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 	}
 
 	switch token {
-	case "a":
+	case numberPictureLowerAlpha:
 		return toLowerAlpha(int64(num))
-	case "A":
+	case numberPictureUpperAlpha:
 		return toUpperAlpha(int64(num))
-	case "i":
+	case numberPictureLowerRoman:
 		return strings.ToLower(toRoman(num))
-	case "I":
+	case numberPictureUpperRoman:
 		return toRoman(num)
 	default:
 		runes := []rune(token)
@@ -621,7 +652,7 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 
 		// Non-ASCII digit: use as base of a decimal numbering system
 		// (e.g., ٠ = U+0660 for Arabic-Indic digits)
-		if firstRune > 127 && unicode.IsDigit(firstRune) {
+		if firstRune > utf8.RuneSelf-1 && unicode.IsDigit(firstRune) {
 			s := formatWithDigitSystem(num, digitZeroOf(firstRune), len(runes))
 			if groupSep != "" && groupSize > 0 {
 				s = applyGroupingSeparator(s, groupSep, groupSize)
@@ -631,12 +662,12 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 		}
 		// Non-ASCII number (not a digit): ordinal numbering from that codepoint
 		// (e.g., ① = U+2460 for circled digits)
-		if firstRune > 127 && unicode.IsNumber(firstRune) {
+		if firstRune > utf8.RuneSelf-1 && unicode.IsNumber(firstRune) {
 			return formatWithOrdinalSystem(num, firstRune)
 		}
 		// Non-ASCII letter: alphabetic numbering from that codepoint
 		// (e.g., α = U+03B1 for Greek lowercase: α, β, γ, ..., ω, αα, αβ, ...)
-		if firstRune > 127 && unicode.IsLetter(firstRune) {
+		if firstRune > utf8.RuneSelf-1 && unicode.IsLetter(firstRune) {
 			return formatWithAlphaSystem(int64(num), firstRune)
 		}
 
@@ -645,7 +676,7 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 
 		s := strconv.Itoa(num)
 		if padding := minWidth - len(s); padding > 0 {
-			s = strings.Repeat("0", padding) + s
+			s = strings.Repeat(numberZeroPaddingDigit, padding) + s
 		}
 
 		if groupSep != "" && groupSize > 0 {
@@ -661,13 +692,20 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 }
 
 func formatWordNumber(num int64, token string, lang string, ordinal string) (string, bool) {
+	const (
+		numberPictureLowerWords = "w"
+		numberPictureTitleWords = "Ww"
+		numberPictureUpperWords = "W"
+		wordCaseLower           = "lower"
+	)
+
 	switch token {
-	case "w":
-		return numberToWordsLang(num, "lower", lang, ordinal), true
-	case "W":
-		return numberToWordsLang(num, "upper", lang, ordinal), true
-	case "Ww":
-		return numberToWordsLang(num, "title", lang, ordinal), true
+	case numberPictureLowerWords:
+		return numberToWordsLang(num, wordCaseLower, lang, ordinal), true
+	case numberPictureUpperWords:
+		return numberToWordsLang(num, wordCaseUpper, lang, ordinal), true
+	case numberPictureTitleWords:
+		return numberToWordsLang(num, wordCaseTitle, lang, ordinal), true
 	default:
 		return "", false
 	}
@@ -675,14 +713,14 @@ func formatWordNumber(num int64, token string, lang string, ordinal string) (str
 
 func formatAlphabeticNumber(num int64, token string) (string, bool) {
 	switch token {
-	case "a":
+	case numberPictureLowerAlpha:
 		return toLowerAlpha(num), true
-	case "A":
+	case numberPictureUpperAlpha:
 		return toUpperAlpha(num), true
 	}
 
 	runes := []rune(token)
-	if len(runes) > 0 && runes[0] > 127 && unicode.IsLetter(runes[0]) {
+	if len(runes) > 0 && runes[0] > utf8.RuneSelf-1 && unicode.IsLetter(runes[0]) {
 		return formatWithAlphaSystem(num, runes[0]), true
 	}
 
@@ -745,12 +783,16 @@ func lookupAlphabetLength(key rune) (int, bool) {
 // Greek numbering uses the shared 24-letter alphabet; other alphabets use
 // their configured contiguous range.
 func formatWithAlphaSystem(num int64, start rune) string {
+	const (
+		alphabetDetectionStopThreshold = 100
+	)
+
 	if start == 'α' || start == 'Α' {
 		return xpath.FormatGreekAlphabetic(big.NewInt(num), start == 'Α')
 	}
 
 	if num <= 0 {
-		return strconv.FormatInt(num, 10)
+		return strconv.FormatInt(num, numberDecimalRadix)
 	}
 
 	// Use known alphabet length if available, otherwise detect
@@ -759,14 +801,14 @@ func formatWithAlphaSystem(num int64, start rune) string {
 		seqLen = 0
 		for r := start; unicode.IsLetter(r); r++ {
 			seqLen++
-			if seqLen > 100 {
+			if seqLen > alphabetDetectionStopThreshold {
 				break // safety cap
 			}
 		}
 	}
 
 	if seqLen == 0 {
-		return strconv.FormatInt(num, 10)
+		return strconv.FormatInt(num, numberDecimalRadix)
 	}
 
 	// Convert to base-N alphabetic representation (1-based, like a=1, b=2, ..., z=26, aa=27)
@@ -806,6 +848,10 @@ func formatBigNumberList(bigNums []*big.Int, format string, groupSep string, gro
 }
 
 func parseNumberListPicture(format string) numberListPicture {
+	const (
+		numberDefaultSeparator = "."
+	)
+
 	runes := []rune(format)
 
 	var (
@@ -848,15 +894,15 @@ func parseNumberListPicture(format string) numberListPicture {
 	}
 
 	if len(tokens) == 0 {
-		tokens = []numberListToken{{format: "1"}}
+		tokens = []numberListToken{{format: numberDecimalPicture}}
 		suffix = prefix
 	}
 
-	defaultSep := "."
+	defaultSep := numberDefaultSeparator
 	if len(tokens) > 1 {
 		defaultSep = tokens[len(tokens)-2].separator
 		if defaultSep == "" {
-			defaultSep = "."
+			defaultSep = numberDefaultSeparator
 		}
 	}
 
@@ -864,8 +910,13 @@ func parseNumberListPicture(format string) numberListPicture {
 }
 
 func formatNumberListToken(num *big.Int, token, groupSep string, groupSize int, lang, ordinal string) string {
-	if token == "α" || token == "Α" {
-		return xpath.FormatGreekAlphabetic(num, token == "Α")
+	const (
+		numberPictureLowerGreek = "\u03b1"
+		numberPictureUpperGreek = "\u0391"
+	)
+
+	if token == numberPictureLowerGreek || token == numberPictureUpperGreek {
+		return xpath.FormatGreekAlphabetic(num, token == numberPictureUpperGreek)
 	}
 	// Word and alphabetic formats support all int64 values on any architecture.
 	// Other non-decimal formats require a native int.
@@ -893,12 +944,12 @@ func formatBigSingleNumber(num *big.Int, token string, groupSep string, groupSiz
 	runes := []rune(token)
 	firstRune := runes[0]
 	// Roman numbering falls back to plain decimal outside its bounded range.
-	if token == "i" || token == "I" {
+	if token == numberPictureLowerRoman || token == numberPictureUpperRoman {
 		return num.String()
 	}
 
 	// Non-ASCII digit system (e.g., Arabic-Indic ٠)
-	if firstRune > 127 && unicode.IsDigit(firstRune) {
+	if firstRune > utf8.RuneSelf-1 && unicode.IsDigit(firstRune) {
 		s := formatBigWithDigitSystem(num, digitZeroOf(firstRune), len(runes))
 		if groupSep != "" && groupSize > 0 {
 			s = applyGroupingSeparator(s, groupSep, groupSize)
@@ -908,7 +959,7 @@ func formatBigSingleNumber(num *big.Int, token string, groupSep string, groupSiz
 	}
 	// Non-ASCII number tokens use a bounded ordinal system. A number beyond
 	// that range falls back to plain decimal without a numeric ordinal suffix.
-	if firstRune > 127 && unicode.IsNumber(firstRune) {
+	if firstRune > utf8.RuneSelf-1 && unicode.IsNumber(firstRune) {
 		return num.String()
 	}
 
@@ -917,7 +968,7 @@ func formatBigSingleNumber(num *big.Int, token string, groupSep string, groupSiz
 
 	s := num.String()
 	if padding := minWidth - len(s); padding > 0 {
-		s = strings.Repeat("0", padding) + s
+		s = strings.Repeat(numberZeroPaddingDigit, padding) + s
 	}
 
 	if groupSep != "" && groupSize > 0 {
@@ -943,21 +994,13 @@ func formatBigWithDigitSystem(num *big.Int, zero rune, minWidth int) string {
 
 // digitZeroOf returns the zero digit for the Unicode digit block containing r.
 func digitZeroOf(r rune) rune {
-	// Unicode digit blocks are groups of 10 consecutive codepoints.
-	// The zero digit is always at an offset of (r - digit_value) from r.
-	// For standard digit blocks, digit_value = r % 10 when aligned at 0.
-	// Use unicode.Digit to get the numeric value.
-	for d := rune(0); d <= 9; d++ {
-		if r-d >= 0 && unicode.IsDigit(r-d) {
-			// Verify this is actually the zero of the block
-			candidate := r - d
-			if !unicode.IsDigit(candidate-1) || candidate == 0 {
-				return candidate
-			}
+	for offset := range rune(10) {
+		if zero := r - offset; xpath.DecimalZeroDigit(zero) {
+			return zero
 		}
 	}
-	// Fallback: assume digit value is r mod 10 offset
-	return r - (r % 10)
+
+	return '0'
 }
 
 // formatWithDigitSystem formats a number using a decimal digit system
@@ -972,7 +1015,7 @@ func formatWithDigitSystem(num int, zero rune, minWidth int) string {
 		magnitude = uint(num)
 	}
 
-	formatted := localizeDecimalDigits(strconv.FormatUint(uint64(magnitude), 10), zero, minWidth)
+	formatted := localizeDecimalDigits(strconv.FormatUint(uint64(magnitude), numberDecimalRadix), zero, minWidth)
 	if negative {
 		return "-" + formatted
 	}
@@ -1122,6 +1165,10 @@ func formatWithOrdinalSystem(num int, start rune) string {
 // is capped at 10 to avoid accidentally including characters from adjacent
 // but unrelated numbering systems.
 func ordinalRangeLength(r rune) int {
+	const (
+		unknownOrdinalRangeRunes = 10
+	)
+
 	isNum := unicode.IsNumber(r)
 	count := 0
 
@@ -1137,7 +1184,7 @@ func ordinalRangeLength(r rune) int {
 		}
 
 		count++
-		if count >= 10 {
+		if count >= unknownOrdinalRangeRunes {
 			break // cap unknown systems at 10
 		}
 	}
@@ -1175,16 +1222,20 @@ func applyGroupingSeparator(s string, sep string, size int) string {
 }
 
 func toLowerAlpha(n int64) string {
+	const (
+		latinAlphabetRunes = 26
+	)
+
 	if n <= 0 {
-		return strconv.FormatInt(n, 10)
+		return strconv.FormatInt(n, numberDecimalRadix)
 	}
 
 	var buf []byte
 
 	for n > 0 {
 		n--
-		buf = append([]byte{byte('a' + n%26)}, buf...)
-		n /= 26
+		buf = append([]byte{byte('a' + n%latinAlphabetRunes)}, buf...)
+		n /= latinAlphabetRunes
 	}
 
 	return string(buf)
@@ -1195,7 +1246,11 @@ func toUpperAlpha(n int64) string {
 }
 
 func toRoman(n int) string {
-	if n <= 0 || n >= 4000 {
+	const (
+		romanExclusiveUpperBound = 4000
+	)
+
+	if n <= 0 || n >= romanExclusiveUpperBound {
 		return strconv.Itoa(n)
 	}
 
@@ -1282,13 +1337,17 @@ func compatNumberValue(seq xdm.Sequence) (*big.Int, error) {
 // atomicToBigInt implements xs:integer(round(number($V))) (REC §12.2).
 // Conversion to xs:double precedes rounding, including for integers/decimals.
 func atomicToBigInt(value xdm.AtomicValue) (*big.Int, error) {
+	const (
+		numberNegativeHalfTie = -0.5
+	)
+
 	double, err := xpath.CastAtomic(value, xdm.TypeDouble)
 	if err != nil {
 		return nil, dynamicError(errCodeXTDE0980, "xsl:number value cannot be converted to a number")
 	}
 
 	rounded := math.Round(double.DoubleVal())
-	if double.DoubleVal() == -0.5 {
+	if double.DoubleVal() == numberNegativeHalfTie {
 		rounded = 0 // fn:round resolves ties toward positive infinity.
 	}
 
@@ -1401,7 +1460,7 @@ func englishNumberWords(n int64, ones, tens []string) string {
 	case n < numberTrillion:
 		return englishScaledNumber(n, numberBillion, "billion", ones, tens)
 	default:
-		return strconv.FormatInt(n, 10)
+		return strconv.FormatInt(n, numberDecimalRadix)
 	}
 }
 

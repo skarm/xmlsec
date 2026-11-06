@@ -8,6 +8,13 @@ import (
 	"math/big"
 )
 
+// Math sign selectors are shared by IEEE special-value construction and
+// numeric map-key normalization; they select positive or negative magnitude.
+const (
+	positiveSign = 1
+	negativeSign = -1
+)
+
 // IEEE 754 mantissa precision constants.
 const (
 	PrecisionFloat  = 24 // xs:float (IEEE 754 single)
@@ -53,11 +60,11 @@ func newFloatValue(f float64, prec uint) *FloatValue {
 		return &FloatValue{special: floatNaN, bf: new(big.Float).SetPrec(prec)}
 	}
 
-	if math.IsInf(f, 1) {
+	if math.IsInf(f, positiveSign) {
 		return &FloatValue{special: floatPosInf, bf: new(big.Float).SetPrec(prec)}
 	}
 
-	if math.IsInf(f, -1) {
+	if math.IsInf(f, negativeSign) {
 		return &FloatValue{special: floatNegInf, bf: new(big.Float).SetPrec(prec)}
 	}
 
@@ -77,11 +84,11 @@ func (fv *FloatValue) Float64() float64 {
 	case floatNaN:
 		return math.NaN()
 	case floatPosInf:
-		return math.Inf(1)
+		return math.Inf(positiveSign)
 	case floatNegInf:
-		return math.Inf(-1)
+		return math.Inf(negativeSign)
 	case floatNegZero:
-		return math.Copysign(0, -1)
+		return math.Copysign(0, negativeSign)
 	}
 
 	panic("unreachable")

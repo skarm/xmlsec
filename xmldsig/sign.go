@@ -106,18 +106,18 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 	}
 
 	signature := newDS(lexicon.DSigElementSignature)
-	signature.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}}
+	signature.NS = []tree.Namespace{{Prefix: lexicon.PrefixDSig, URI: Namespace}}
 	signature.Parent = root
 	si := newDS(lexicon.DSigElementSignedInfo)
 	add(signature, si)
 
 	cm := newDS(lexicon.DSigElementCanonicalizationMethod)
-	setAttr(cm, "Algorithm", c14n.Exclusive)
+	setAttr(cm, lexicon.SecurityAttrAlgorithm, c14n.Exclusive)
 	addInclusive(cm, opt.InclusivePrefixes)
 	add(si, cm)
 
 	sm := newDS(lexicon.DSigElementSignatureMethod)
-	setAttr(sm, "Algorithm", opt.SignatureMethod)
+	setAttr(sm, lexicon.SecurityAttrAlgorithm, opt.SignatureMethod)
 	add(si, sm)
 
 	h, err := hashForDigest(opt.DigestMethod)
@@ -148,23 +148,23 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 		}
 
 		ref := newDS(lexicon.DSigElementReference)
-		setAttr(ref, "URI", "#"+id)
+		setAttr(ref, lexicon.SecurityAttrURI, "#"+id)
 
 		ts := newDS(lexicon.DSigElementTransforms)
 		if target == root {
 			tr := newDS(lexicon.DSigElementTransform)
-			setAttr(tr, "Algorithm", EnvelopedSignature)
+			setAttr(tr, lexicon.SecurityAttrAlgorithm, EnvelopedSignature)
 			add(ts, tr)
 		}
 
 		tr := newDS(lexicon.DSigElementTransform)
-		setAttr(tr, "Algorithm", c14n.Exclusive)
+		setAttr(tr, lexicon.SecurityAttrAlgorithm, c14n.Exclusive)
 		addInclusive(tr, opt.InclusivePrefixes)
 		add(ts, tr)
 		add(ref, ts)
 
 		dm := newDS(lexicon.DSigElementDigestMethod)
-		setAttr(dm, "Algorithm", opt.DigestMethod)
+		setAttr(dm, lexicon.SecurityAttrAlgorithm, opt.DigestMethod)
 		add(ref, dm)
 
 		dv := newDS(lexicon.DSigElementDigestValue)
@@ -197,7 +197,7 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 		return nil, err
 	}
 
-	value, err := credential.signPrepared(ctx, spec, canonical)
+	value, err := credential.signPrepared(ctx, spec, p, canonical)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 }
 
 func newDS(local string) *tree.Node {
-	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: Namespace, Local: local}, Prefix: "ds"}
+	return &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: Namespace, Local: local}, Prefix: lexicon.PrefixDSig}
 }
 
 func setAttr(n *tree.Node, name, value string) {
@@ -231,8 +231,8 @@ func addInclusive(parent *tree.Node, prefixes []string) {
 		return
 	}
 
-	n := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: c14n.Exclusive, Local: "InclusiveNamespaces"}, Prefix: "ec", NS: []tree.Namespace{{Prefix: "ec", URI: c14n.Exclusive}}}
-	setAttr(n, "PrefixList", strings.Join(prefixes, " "))
+	n := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Space: c14n.Exclusive, Local: lexicon.C14NElementInclusiveNamespaces}, Prefix: lexicon.PrefixExclusiveC14N, NS: []tree.Namespace{{Prefix: lexicon.PrefixExclusiveC14N, URI: c14n.Exclusive}}}
+	setAttr(n, lexicon.C14NAttrPrefixList, strings.Join(prefixes, " "))
 	add(parent, n)
 }
 
@@ -272,7 +272,7 @@ func normalizeEnvelopedAlgorithms(pub crypto.PublicKey, opt SignOptions, p Polic
 		opt.DigestMethod = SHA256
 	}
 
-	if opt.SignatureMethod == DSASHA1 || opt.SignatureMethod == RSASHA1 {
+	if opt.SignatureMethod == DSASHA1 || opt.SignatureMethod == RSASHA1 && !p.AllowLegacySigning {
 		return opt, fmt.Errorf("%w: legacy signature generation is disabled", ErrPolicy)
 	}
 

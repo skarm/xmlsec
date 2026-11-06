@@ -16,6 +16,16 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Single-binding and scalar-result cardinalities select fast paths, not caps.
+// Nonpositive local operation/recursion limits disable their respective local
+// checks; these selectors do not disable the shared invocation budget.
+const (
+	singleScopeBinding          = 1
+	singleExpressionResult      = 1
+	disabledLocalOperationLimit = 0
+	disabledLocalRecursionLimit = 0
+)
+
 const maxNodeSetLength = xdm.DefaultMaxNodeSetLength
 
 // DefaultMaxRecursionDepth bounds nested expressions in each evaluation.
@@ -190,7 +200,7 @@ func (ec *evalContext) getDefaultLanguage() string {
 		return ec.defaultLanguage
 	}
 
-	return "en"
+	return defaultFormattingLanguage
 }
 
 func (ec *evalContext) withVar(name string, val xdm.Sequence) *evalContext {
@@ -225,7 +235,7 @@ func (ec *evalContext) countOps(ctx context.Context, n int) error {
 		return err
 	}
 
-	if ec.opLimit <= 0 {
+	if ec.opLimit <= disabledLocalOperationLimit {
 		return nil
 	}
 	// Saturate instead of wrapping: where int is 32 bits a long evaluation
@@ -279,7 +289,7 @@ func scopeWithBindings(parent *variableScope, bindings map[string]xdm.Sequence) 
 		return parent
 	}
 
-	if len(bindings) == 1 {
+	if len(bindings) == singleScopeBinding {
 		for name, value := range bindings {
 			return scopeWithBinding(parent, name, value)
 		}
@@ -304,13 +314,13 @@ type exprEvaluator func(context.Context, *evalContext, Expr) (xdm.Sequence, erro
 
 func evalWith(evalFn exprEvaluator, ctx context.Context, ec *evalContext, expr Expr) (xdm.Sequence, error) {
 	ec.depth++
-	if ec.maxRecursionDepth > 0 && ec.depth > ec.maxRecursionDepth {
+	if ec.maxRecursionDepth > disabledLocalRecursionLimit && ec.depth > ec.maxRecursionDepth {
 		return nil, ErrRecursionLimit
 	}
 	defer func() { ec.depth-- }()
 
 	result, err := evalFn(ctx, ec, expr)
-	if err == nil && xdm.SequenceLen(result) == 1 {
+	if err == nil && xdm.SequenceLen(result) == singleExpressionResult {
 		if value, ok := result.Get(0).(xdm.AtomicValue); ok {
 			err = ChargeNumber(ctx, value)
 		}

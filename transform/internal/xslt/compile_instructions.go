@@ -20,7 +20,7 @@ import (
 // Attribute predicates validate compile-time vocabulary without mutable tables.
 func withParamAllowedAttrs(name string) bool {
 	switch name {
-	case xslAttrName, xslAttrSelect, "as", nameTunnel:
+	case xslAttrName, xslAttrSelect, nameAs, nameTunnel:
 		return true
 	default:
 		return false
@@ -29,7 +29,7 @@ func withParamAllowedAttrs(name string) bool {
 
 func paramAllowedAttrs(name string) bool {
 	switch name {
-	case xslAttrName, xslAttrSelect, "as", ctxItemRequired, nameTunnel, nameStatic:
+	case xslAttrName, xslAttrSelect, nameAs, xslAttrRequired, nameTunnel, nameStatic:
 		return true
 	default:
 		return false
@@ -38,7 +38,7 @@ func paramAllowedAttrs(name string) bool {
 
 func variableAllowedAttrs(name string) bool {
 	switch name {
-	case xslAttrName, xslAttrSelect, "as", nameStatic, xslAttrVisibility:
+	case xslAttrName, xslAttrSelect, nameAs, nameStatic, xslAttrVisibility:
 		return true
 	default:
 		return false
@@ -47,8 +47,8 @@ func variableAllowedAttrs(name string) bool {
 
 func lreAllowedXSLTAttrs(name string) bool {
 	switch name {
-	case nameUseAttributeSets, nameExpandText, nameXpathDefaultNamespace, nameExcludeResultPrefixes,
-		nameExtensionElementPrefixes, lexicon.SerializationVersion, lexicon.AttrType, nameValidation,
+	case nameUseAttributeSets, nameExpandText, nameXPathDefaultNamespace, nameExcludeResultPrefixes,
+		nameExtensionElementPrefixes, xslAttrVersion, lexicon.AttrType, nameValidation,
 		nameDefaultCollation, nameDefaultMode, nameDefaultValidation, nameInheritNamespaces,
 		xslAttrUseWhen:
 		return true
@@ -78,7 +78,7 @@ func attributeNames(names ...string) func(string) bool {
 // In forwards-compatible mode (version > 3.0), unknown attributes are silently ignored
 // per XSLT 3.0 §3.8.
 func (c *compiler) validateXSLTAttrs(ctx context.Context, elem *xdm.Element, allowed func(string) bool) error {
-	if c.stylesheet.processorLanguage() >= 20 {
+	if c.stylesheet.processorLanguage() >= processorXSLT20 {
 		if err := checkComponentNames(elem, c.stylesheet.processorLanguage()); err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func (c *compiler) validateXSLTAttrs(ctx context.Context, elem *xdm.Element, all
 	fc := c.forwardsCompatible(c.effectiveVersion)
 	if !fc {
 		// Also check the element's own version attribute
-		if elemVer := getAttr(elem, lexicon.SerializationVersion); elemVer != "" {
+		if elemVer := getAttr(elem, xslAttrVersion); elemVer != "" {
 			fc = c.forwardsCompatible(elemVer)
 		}
 	}
@@ -242,14 +242,14 @@ func (c *compiler) compileInstruction(ctx context.Context, elem *xdm.Element) (i
 // directly from normal instructions whose static context and source are recorded.
 func (c *compiler) compileInstructionPayload(ctx context.Context, elem *xdm.Element) (instruction, bool, error) {
 	if elem.URI() == lexicon.NamespaceXSLT {
-		if c.stylesheet.processorLanguage() == 10 {
+		if c.stylesheet.processorLanguage() == processorXSLT10 {
 			if _, known := lookupXSLT10Attribute(elem.LocalName()); !known {
 				inst, err := c.compileForwardsCompat(ctx, elem)
 				return inst, false, err
 			}
 		}
 
-		if c.stylesheet.processorLanguage() == 20 && unavailableInstruction(elem.LocalName(), 20) && c.forwardsCompatible(c.effectiveVersion) {
+		if c.stylesheet.processorLanguage() == processorXSLT20 && unavailableInstruction(elem.LocalName(), processorXSLT20) && c.forwardsCompatible(c.effectiveVersion) {
 			inst, err := c.compileForwardsCompat(ctx, elem)
 			return inst, false, err
 		}
@@ -300,7 +300,7 @@ func (c *compiler) prepareInstructionAttributes(ctx context.Context, elem *xdm.E
 // their existing fallback path; unknown attributes obey forwards compatibility.
 func (c *compiler) validateKnownElementAttributes(ctx context.Context, elem *xdm.Element) error {
 	name := elem.LocalName()
-	if name == fnNameTransform {
+	if name == lexicon.XSLTElementTransform {
 		name = nameStylesheet
 	}
 
@@ -339,12 +339,12 @@ func (c *compiler) setInstructionXPathDefaultNS(elem *xdm.Element) bool {
 	hasLocalXPNS := false
 
 	if elem.URI() == lexicon.NamespaceXSLT {
-		if xdn, ok := elem.GetAttribute(nameXpathDefaultNamespace); ok {
+		if xdn, ok := elem.GetAttribute(nameXPathDefaultNamespace); ok {
 			c.xpathDefaultNS = xdn
 			c.hasXPathDefaultNS = true
 			hasLocalXPNS = true
 		}
-	} else if xdn, ok := elem.GetAttributeNS(nameXpathDefaultNamespace, lexicon.NamespaceXSLT); ok {
+	} else if xdn, ok := elem.GetAttributeNS(nameXPathDefaultNamespace, lexicon.NamespaceXSLT); ok {
 		c.xpathDefaultNS = xdn
 		c.hasXPathDefaultNS = true
 		hasLocalXPNS = true
@@ -502,7 +502,7 @@ func (c *compiler) evaluateUseWhen(ctx context.Context, expr string) (bool, erro
 	compiled = compiled.BindNamespaceContext(c.xpathNamespaces(c.nsBindings), c.nsBindings[""])
 
 	eval := c.useWhenEvaluator(ctx)
-	if c.stylesheet.processorLanguage() >= 20 {
+	if c.stylesheet.processorLanguage() >= processorXSLT20 {
 		if err := eval.ValidateExpression(ctx, compiled); err != nil {
 			return false, err
 		}
@@ -772,6 +772,10 @@ func (c *compiler) compileUnknownXSLTInstruction(ctx context.Context, elem *xdm.
 }
 
 func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element) (instruction, error) {
+	const (
+		itemSeparatorAbsentToken = "#absent"
+	)
+
 	inst := &resultDocumentInst{}
 
 	if href, present := elem.GetAttribute(lexicon.AttrHref); present {
@@ -787,7 +791,7 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 		return nil, err
 	}
 
-	if fmtAttr := getAttr(elem, "format"); fmtAttr != "" {
+	if fmtAttr := getAttr(elem, nameFormat); fmtAttr != "" {
 		if strings.ContainsAny(fmtAttr, "{}") {
 			avt, err := c.compileAVT(fmtAttr, c.nsBindings)
 			if err != nil {
@@ -801,10 +805,10 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 	}
 
 	inst.Method = getAttr(elem, lexicon.SerializationMethod)
-	if is := getAttr(elem, lexicon.SerializationItemSeparator); is != "" {
+	if is, present := elem.GetAttribute(lexicon.SerializationItemSeparator); present {
 		inst.ItemSeparatorSet = true
 		// item-separator="#absent" means explicitly absent (use default, blocks format inheritance)
-		if is != "#absent" {
+		if is != itemSeparatorAbsentToken {
 			avt, err := c.compileAVT(is, c.nsBindings)
 			if err != nil {
 				return nil, err
@@ -868,7 +872,7 @@ func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resu
 		attr string
 		dst  **avt
 	}{
-		{"output-version", &inst.OutputVersion},
+		{nameOutputVersion, &inst.OutputVersion},
 		{lexicon.SerializationEncoding, &inst.Encoding},
 		{lexicon.SerializationIndent, &inst.Indent},
 		{lexicon.SerializationOmitXMLDeclaration, &inst.OmitXMLDeclaration},
@@ -950,7 +954,7 @@ func (c *compiler) compileForwardsCompat(ctx context.Context, elem *xdm.Element)
 		return nil, err
 	}
 
-	if !inst.HasFallback && c.stylesheet.processorLanguage() >= 20 {
+	if !inst.HasFallback && c.stylesheet.processorLanguage() >= processorXSLT20 {
 		return nil, staticError(errCodeXTSE0010, "unknown XSLT instruction xsl:%s has no xsl:fallback", elem.LocalName())
 	}
 
@@ -1143,7 +1147,7 @@ func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) 
 		return nil, err
 	}
 
-	asAttr := c.resolveAsType(ctx, getAttr(elem, "as"))
+	asAttr := c.resolveAsType(ctx, getAttr(elem, nameAs))
 	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:variable "+name); err != nil {
 		return nil, err
 	}
@@ -1189,14 +1193,14 @@ func (c *compiler) compileMessage(ctx context.Context, elem *xdm.Element) (*mess
 
 	inst.Body = body
 
-	if termAttr, present := elem.GetAttribute("terminate"); present {
+	if termAttr, present := elem.GetAttribute(nameTerminate); present {
 		avt, err := c.compileAVT(termAttr, c.nsBindings)
 		if err != nil {
 			return nil, err
 		}
 		// Validate literal values using the selected processor edition.
 		if sv, ok := avt.staticValue(); ok {
-			if _, valid := parseMessageTerminate(sv, c.stylesheet.processorLanguage() >= 30); !valid {
+			if _, valid := parseMessageTerminate(sv, c.stylesheet.processorLanguage() >= processorXSLT30); !valid {
 				return nil, staticError(errCodeXTSE0020, "%q is not a valid value for xsl:message/@terminate", sv)
 			}
 		}
@@ -1204,7 +1208,7 @@ func (c *compiler) compileMessage(ctx context.Context, elem *xdm.Element) (*mess
 		inst.Terminate = avt
 	}
 
-	if errorCodeAttr, present := elem.GetAttribute("error-code"); present {
+	if errorCodeAttr, present := elem.GetAttribute(nameErrorCode); present {
 		avt, err := c.compileMessageErrorCode(errorCodeAttr)
 		if err != nil {
 			return nil, err
@@ -1226,7 +1230,7 @@ func (c *compiler) compileMessageErrorCode(value string) (*avt, error) {
 	}
 
 	if literal, known := code.staticValue(); known {
-		literal = strings.Trim(literal, " \t\r\n")
+		literal = strings.Trim(literal, lexicon.XMLWhitespace)
 		if xmlchar.IsValidQName(literal) {
 			if prefix, _, prefixed := strings.Cut(literal, ":"); prefixed && c.nsBindings[prefix] == "" {
 				return nil, staticError(errCodeXTSE0280, "undeclared error-code prefix %q", prefix)
@@ -1249,7 +1253,7 @@ func (c *compiler) compileMap(ctx context.Context, elem *xdm.Element) (*mapInst,
 func (c *compiler) compileMapEntry(ctx context.Context, elem *xdm.Element) (*mapEntryInst, error) {
 	inst := &mapEntryInst{}
 
-	keyAttr, hasKey := elem.GetAttribute(nameKey2)
+	keyAttr, hasKey := elem.GetAttribute(keyLocalName)
 	if hasKey {
 		expr, err := c.compileXPath(keyAttr, c.nsBindings)
 		if err != nil {
@@ -1305,13 +1309,13 @@ func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instru
 	inst := &assertInst{Test: testExpr}
 
 	// xpath-default-namespace
-	if xdn := getAttr(elem, nameXpathDefaultNamespace); xdn != "" {
+	if xdn := getAttr(elem, nameXPathDefaultNamespace); xdn != "" {
 		inst.XPathDefaultNS = xdn
 		inst.HasXPathDefaultNS = true
 	}
 
 	// error-code attribute
-	if ec, present := elem.GetAttribute("error-code"); present {
+	if ec, present := elem.GetAttribute(nameErrorCode); present {
 		code, err := c.compileMessageErrorCode(ec)
 		if err != nil {
 			return nil, err
@@ -1346,8 +1350,8 @@ func (c *compiler) compileAssert(ctx context.Context, elem *xdm.Element) (instru
 func xsltStandardAttrs(name string) bool {
 	switch name {
 	case nameDefaultCollation, nameDefaultMode, nameDefaultValidation, nameExcludeResultPrefixes,
-		nameExpandText, nameExtensionElementPrefixes, xslAttrUseWhen, nameXpathDefaultNamespace,
-		lexicon.SerializationVersion:
+		nameExpandText, nameExtensionElementPrefixes, xslAttrUseWhen, nameXPathDefaultNamespace,
+		xslAttrVersion:
 		return true
 	default:
 		return false
@@ -1358,7 +1362,7 @@ func xsltStandardAttrs(name string) bool {
 // namespace (http://www.w3.org/2001/XMLSchema). It recognises the conventional
 // xs: and xsd: prefixes directly, and also resolves any other prefix via ns.
 func isBuiltinXSDTypeName(typeName string, ns map[string]string) bool {
-	if strings.HasPrefix(typeName, "xs:") || strings.HasPrefix(typeName, "xsd:") {
+	if strings.HasPrefix(typeName, lexicon.PrefixXS+":") || strings.HasPrefix(typeName, lexicon.PrefixXSD+":") {
 		return true
 	}
 
@@ -1392,17 +1396,17 @@ func useWhenFunctionAvailable(ctx context.Context, args []xdm.Sequence, processo
 		case fnNameFunctionAvailable, funcSystemProperty, fnNameTypeAvailable, fnNameElementAvailable:
 			return xdm.SingleBoolean(xsltFunctionAcceptsArity(name.Local, arity) || arity < 0), nil
 		case funcAvailableSystemProperties:
-			return xdm.SingleBoolean(processor >= 30 && (arity < 0 || arity == 0)), nil
+			return xdm.SingleBoolean(processor >= processorXSLT30 && (arity < 0 || arity == 0)), nil
 		}
 	}
 
-	version := 31
-	if processor == 20 {
-		version = 20
+	version := xpathProfile31
+	if processor == processorXSLT20 {
+		version = xpathProfile20
 	}
 
-	if processor == 10 {
-		version = 10
+	if processor == processorXSLT10 {
+		version = xpathProfile10
 	}
 
 	return xdm.SingleBoolean(xpath.BuiltinFunctionAvailable(version, name.URI, name.Local, arity)), nil
@@ -1423,7 +1427,7 @@ func validateResultDocumentOutputAttrs(elem *xdm.Element) error {
 	// Validate html-version: must be a decimal number if present and not an avt
 	if hv := getAttr(elem, lexicon.SerializationHTMLVersion); hv != "" {
 		if !strings.ContainsAny(hv, "{}") {
-			if _, err := strconv.ParseFloat(hv, 64); err != nil {
+			if _, err := strconv.ParseFloat(hv, float64ParseBits); err != nil {
 				return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:result-document/@html-version", hv)
 			}
 		}
@@ -1446,7 +1450,7 @@ func validateResultDocumentOutputAttrs(elem *xdm.Element) error {
 		if !strings.ContainsAny(v, "{}") {
 			sv := strings.TrimSpace(v)
 			switch sv {
-			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit, lexicon.ValueTrue, lexicon.ValueFalse, "1", "0":
+			case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit, lexicon.ValueTrue, lexicon.ValueFalse, booleanDigitTrue, booleanDigitFalse:
 				// valid
 			default:
 				return staticError(lexicon.ErrSEPM0016, "%q is not a valid value for xsl:result-document/@standalone", v)
@@ -1513,6 +1517,18 @@ func (state *sequenceConstructorState) add(inst instruction) error {
 	}
 
 	state.body = append(state.body, inst)
+
+	// Retain lexical collation scopes in the body, but classify the instruction
+	// they contain when enforcing sequence-constructor ordering.
+	for {
+		scope, wrapped := inst.(*collationScopeInst)
+		if !wrapped {
+			break
+		}
+
+		inst = scope.Inner
+	}
+
 	switch inst.(type) {
 	case *breakInst, *nextIterationInst:
 		state.sawTerminator = true

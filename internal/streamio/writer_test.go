@@ -228,27 +228,6 @@ func TestReaderWriteToErrors(t *testing.T) {
 	}
 }
 
-type stringSink struct {
-	bytes.Buffer
-	stringWrites int
-}
-
-func (s *stringSink) WriteString(value string) (int, error) {
-	s.stringWrites++
-	return s.Buffer.WriteString(value)
-}
-
-type countWriter struct {
-	n   int
-	err error
-}
-
-func (w countWriter) Write([]byte) (int, error) { return w.n, w.err }
-
-type inputFunc func([]byte) (int, error)
-
-func (f inputFunc) Read(dst []byte) (int, error) { return f(dst) }
-
 // BenchmarkReaderWriteTo separates resident buffers from opaque streams such
 // as canonicalization and decoder readers. Fixtures are outside the timed loop.
 func BenchmarkReaderWriteTo(b *testing.B) {
@@ -292,3 +271,24 @@ func BenchmarkReaderCollection(b *testing.B) {
 		})
 	}
 }
+
+type stringSink struct {
+	bytes.Buffer
+	stringWrites int
+}
+
+func (s *stringSink) WriteString(value string) (int, error) {
+	s.stringWrites++
+	return s.Buffer.WriteString(value)
+}
+
+type countWriter struct {
+	n   int
+	err error
+}
+
+func (w countWriter) Write([]byte) (int, error) { return w.n, w.err }
+
+type inputFunc func([]byte) (int, error)
+
+func (f inputFunc) Read(dst []byte) (int, error) { return f(dst) }

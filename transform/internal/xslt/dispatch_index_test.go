@@ -1,6 +1,10 @@
 package xslt //nolint:testpackage // Exercises private candidate ordering and conservative pattern indexing.
 
 import (
+	"context"
+	"errors"
+	"math"
+	"math/big"
 	"slices"
 	"testing"
 
@@ -208,7 +212,8 @@ func TestPatternIndexAxisAndKindGuards(t *testing.T) {
 		{"schema attribute stays in the attribute bucket", xpath.Step{Axis: xpath.AxisAttribute, NodeTest: xdm.SchemaAttributeTest{Name: "item"}}, []sigEntry{{kind: kindAttribute}}},
 		{"schema element stays in the element bucket", xpath.Step{Axis: xpath.AxisChild, NodeTest: xdm.SchemaElementTest{Name: "item"}}, []sigEntry{{kind: kindElement}}},
 		{"self document test retains documents", xpath.Step{Axis: xpath.AxisSelf, NodeTest: xdm.DocumentTest{}}, []sigEntry{{kind: kindDocument}}},
-		{"self node test retains documents", xpath.Step{Axis: xpath.AxisSelf, NodeTest: xdm.TypeTest{Kind: xdm.NodeKindNode}}, []sigEntry{{kind: kindElement}, {kind: kindText}, {kind: kindComment}, {kind: kindPI}, {kind: kindDocument}}},
+		{"self node test retains documents and side nodes", xpath.Step{Axis: xpath.AxisSelf, NodeTest: xdm.TypeTest{Kind: xdm.NodeKindNode}}, []sigEntry{{kind: kindElement}, {kind: kindAttribute}, {kind: kindText}, {kind: kindComment}, {kind: kindPI}, {kind: kindDocument}, {kind: kindNamespace}}},
+		{"descendant or self retains side nodes", xpath.Step{Axis: xpath.AxisDescendantOrSelf, NodeTest: xdm.TypeTest{Kind: xdm.NodeKindNode}}, []sigEntry{{kind: kindElement}, {kind: kindAttribute}, {kind: kindText}, {kind: kindComment}, {kind: kindPI}, {kind: kindNamespace}}},
 		{"child node test excludes documents attributes and namespaces", xpath.Step{Axis: xpath.AxisChild, NodeTest: xdm.TypeTest{Kind: xdm.NodeKindNode}}, []sigEntry{{kind: kindElement}, {kind: kindText}, {kind: kindComment}, {kind: kindPI}}},
 		{"PI kind test", xpath.Step{Axis: xpath.AxisChild, NodeTest: xdm.TypeTest{Kind: xdm.NodeKindProcessingInstruction}}, []sigEntry{{kind: kindPI}}},
 	} {
@@ -243,4 +248,156 @@ func TestPatternIndexConsidersEveryAlternative(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIntegerIndexClassifierPreservesExactDomain(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value xdm.AtomicValue
+		want  int64
+		ok    bool
+	}{
+		{"zero", xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(0)}, 0, true},
+		{"min", xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(math.MinInt64)}, math.MinInt64, true},
+		{"max", xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(math.MaxInt64)}, math.MaxInt64, true},
+		{"fitting big integer", xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: big.NewInt(23)}, 23, true},
+		{"builtin subtype", xdm.AtomicValue{TypeName: xdm.TypeUnsignedByte, Value: int64(23)}, 23, true},
+		{"schema base", xdm.AtomicValue{TypeName: "Q{urn:test}integer", BaseType: xdm.TypeLong, Value: int64(23)}, 23, true},
+		{"decimal", xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: big.NewRat(23, 1)}, 0, false},
+		{"double", xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(23)}, 0, false},
+		{"float", xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(23)}, 0, false},
+		{"oversized integer", xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: new(big.Int).Lsh(big.NewInt(1), 80)}, 0, false},
+		{"string", xdm.AtomicValue{TypeName: xdm.TypeString, Value: "23"}, 0, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := indexInt64(test.value)
+			if ok != test.ok || got != test.want {
+				t.Fatal(got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
+func TestIntegerKeyIndexIsLazyOrderedAndQuerySpecific(t *testing.T) {
+	ctx := t.Context()
+	entries := integerIndexEntries(128)
+	for i := range entries {
+		entries[i].key.Value = int64(i % 64)
+	}
+	var table keyTable
+	query := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(5)}
+	for range 2 {
+		positions, indexed, err := table.integerCandidates(ctx, query, entries)
+		if err != nil || indexed || positions != nil || table.integerIndex != nil {
+			t.Fatal("eager index", positions, indexed, err)
+		}
+	}
+	positions, indexed, err := table.integerCandidates(ctx, query, entries)
+	if err != nil || !indexed || !slices.Equal(positions, []int{5, 69}) {
+		t.Fatal("lost candidate order or multiplicity", positions, indexed, err)
+	}
+	for _, mixed := range []xdm.AtomicValue{
+		{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(5)},
+		{TypeName: xdm.TypeDecimal, Value: big.NewRat(5, 1)},
+		{TypeName: xdm.TypeInteger, Value: new(big.Int).Lsh(big.NewInt(1), 80)},
+	} {
+		positions, indexed, err := table.integerCandidates(ctx, mixed, entries)
+		if err != nil || indexed || positions != nil || table.integerIndex == nil {
+			t.Fatal("mixed query must use broad bucket", positions, indexed, err)
+		}
+	}
+	positions, indexed, err = table.integerCandidates(ctx, query, entries)
+	if err != nil || !indexed || !slices.Equal(positions, []int{5, 69}) {
+		t.Fatal("integer index changed after fallback queries", positions, indexed, err)
+	}
+}
+
+func TestIntegerKeyIndexRejectsMixedEntriesAndOversizedCache(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		entries []keyEntry
+		ctx     context.Context
+	}{
+		{"mixed last entry", integerIndexEntries(64), t.Context()},
+		{"collection bound", integerIndexEntries(64), xpath.WithBudget(t.Context(), 1000, 32, 10000, 128)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "mixed last entry" {
+				test.entries[len(test.entries)-1].key = xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: xdm.NewFloat(1)}
+			}
+			table := keyTable{integerLookups: 2}
+			query := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(1)}
+			for range 2 {
+				positions, indexed, err := table.integerCandidates(test.ctx, query, test.entries)
+				if err != nil || indexed || positions != nil || table.integerIndex != nil || !table.integerDisabled {
+					t.Fatal("unsafe or repeated partial index", positions, indexed, err)
+				}
+			}
+		})
+	}
+	for _, size := range []int{1, 63} {
+		var table keyTable
+		for range 4 {
+			_, indexed, err := table.integerCandidates(t.Context(), xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(1)}, integerIndexEntries(size))
+			if indexed || err != nil || table.integerIndex != nil {
+				t.Fatal("small table built auxiliary index", size, indexed, err)
+			}
+		}
+	}
+}
+
+func TestIntegerKeyIndexBuildFailureDoesNotPublish(t *testing.T) {
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, test := range []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{"work during build", xpath.WithBudget(t.Context(), 3, 1000, 10000, 128), xpath.ErrBudget},
+		{"canceled", canceled, context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			table := keyTable{integerLookups: 2}
+			positions, indexed, err := table.integerCandidates(test.ctx, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(1)}, integerIndexEntries(64))
+			if !errors.Is(err, test.want) || indexed || positions != nil || table.integerIndex != nil {
+				t.Fatal("partial index escaped failure", positions, indexed, err)
+			}
+		})
+	}
+}
+
+func TestIntegerGroupingDisablesPrefixBeforeCardinalityExpansion(t *testing.T) {
+	for _, keys := range []xdm.Sequence{nil, xdm.ItemSlice{integerIndexAtomic(1), integerIndexAtomic(1), integerIndexAtomic(3)}} {
+		ctx := t.Context()
+		var execution execContext
+		groups := groupByAccumulator{
+			byKey: make(map[string][]*groupByEntry), limit: 100, int64Prefix: true,
+			equal: func(a, b xdm.Sequence) (bool, error) { return execution.groupingKeysEqual(ctx, a, b, nil) },
+		}
+		if err := groups.addKeys(ctx, integerIndexAtomic(1), xdm.ItemSlice{integerIndexAtomic(1)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := groups.addKeys(ctx, integerIndexAtomic(2), keys); err != nil {
+			t.Fatal(err)
+		}
+		if groups.int64Prefix || groups.byInt64 != nil {
+			t.Fatal("non-singleton key retained pure-prefix map")
+		}
+		if xdm.SequenceLen(keys) > 0 && (len(groups.order) != 2 || len(groups.order[0].items) != 2 || len(groups.order[1].items) != 1) {
+			t.Fatal("multiple keys duplicated membership", groups.order)
+		}
+	}
+}
+
+func integerIndexEntries(size int) []keyEntry {
+	entries := make([]keyEntry, size)
+	for i := range entries {
+		entries[i].key = integerIndexAtomic(int64(i))
+	}
+	return entries
+}
+
+func integerIndexAtomic(value int64) xdm.AtomicValue {
+	return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: value}
 }

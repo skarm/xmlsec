@@ -19,6 +19,23 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
+// Cast dispatch uses XML Schema editions and qualified type names, independently
+// of the XPath language edition. Integer sign restrictions keep exact bounds.
+const (
+	schemaEdition10        = 10
+	xsdCastTypePrefix      = lexicon.PrefixXS + ":"
+	integerZeroBound       = 0
+	integerPositiveMinimum = 1
+	integerNegativeMaximum = -1
+	booleanTrueDigit       = "1"
+	booleanFalseDigit      = "0"
+	// The leap-year probe validates the rest of an overflowing Gregorian year.
+	gregorianLeapYearProbe = "2000"
+	minimumSignedYearBytes = 5
+	positiveZeroTimezone   = "+00:00"
+	negativeZeroTimezone   = "-00:00"
+)
+
 // msgDateTimeStampTimezone is the FORG0001 message for an xs:dateTimeStamp
 // value that is missing its mandatory timezone.
 const msgDateTimeStampTimezone = "xs:dateTimeStamp requires a timezone"
@@ -89,12 +106,12 @@ func CastFromString(s string, targetType string) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{TypeName: targetType, Value: s}, nil
 	case xdm.TypeNormalizedString:
 		return castDerivedString(s, targetType)
-	case "xs:anyType", "xs:untyped":
+	case xdm.TypeAnyType, xdm.TypeUntyped:
 		return xdm.AtomicValue{TypeName: xdm.TypeUntypedAtomic, Value: s}, nil
 	}
 
 	// XSD whiteSpace applies only to XML S, not all Unicode whitespace.
-	trimmed := strings.Trim(s, " \t\r\n")
+	trimmed := strings.Trim(s, lexicon.XMLWhitespace)
 
 	switch targetType {
 	case xdm.TypeInteger, xdm.TypeDecimal, xdm.TypeDouble, xdm.TypeFloat, xdm.TypeBoolean:
@@ -144,7 +161,7 @@ func CastFromString(s string, targetType string) (xdm.AtomicValue, error) {
 }
 
 func validateVersionedCast(ctx context.Context, source xdm.AtomicValue, target string) error {
-	if XMLSchemaVersion(ctx) != 10 {
+	if XMLSchemaVersion(ctx) != schemaEdition10 {
 		return nil
 	}
 
@@ -157,7 +174,7 @@ func validateVersionedCast(ctx context.Context, source xdm.AtomicValue, target s
 	case xdm.TypeDouble, xdm.TypeFloat, xdm.TypeDate, xdm.TypeDateTime,
 		xdm.TypeDateTimeStamp, xdm.TypeGYear, xdm.TypeGYearMonth, xdm.TypeAnyURI:
 		text := collapseXMLWhitespace(source.StringVal())
-		if err := lexical.ValidateBuiltin(text, strings.TrimPrefix(target, "xs:"), lexical.Version10); err != nil {
+		if err := lexical.ValidateBuiltin(text, strings.TrimPrefix(target, xsdCastTypePrefix), lexical.Version10); err != nil {
 			return castError(text, target)
 		}
 	}
@@ -182,7 +199,7 @@ func castToNumeric(ctx context.Context, value xdm.AtomicValue) (xdm.AtomicValue,
 
 func isAbstractCastTarget(typeName string) bool {
 	return typeName == xdm.TypeAnyAtomicType ||
-		typeName == "xs:anySimpleType" ||
+		typeName == xdm.TypeAnySimpleType ||
 		typeName == xdm.TypeNOTATION
 }
 
@@ -387,27 +404,27 @@ func integerTypeRange(typeName string) (minVal *big.Int, maxVal *big.Int) {
 	case xdm.TypeLong:
 		return big.NewInt(math.MinInt64), big.NewInt(math.MaxInt64)
 	case xdm.TypeInt:
-		return big.NewInt(-2147483648), big.NewInt(2147483647)
+		return big.NewInt(math.MinInt32), big.NewInt(math.MaxInt32)
 	case xdm.TypeShort:
-		return big.NewInt(-32768), big.NewInt(32767)
+		return big.NewInt(math.MinInt16), big.NewInt(math.MaxInt16)
 	case xdm.TypeByte:
-		return big.NewInt(-128), big.NewInt(127)
+		return big.NewInt(math.MinInt8), big.NewInt(math.MaxInt8)
 	case xdm.TypeUnsignedLong:
-		return big.NewInt(0), new(big.Int).SetUint64(math.MaxUint64)
+		return big.NewInt(integerZeroBound), new(big.Int).SetUint64(math.MaxUint64)
 	case xdm.TypeUnsignedInt:
-		return big.NewInt(0), big.NewInt(4294967295)
+		return big.NewInt(integerZeroBound), big.NewInt(math.MaxUint32)
 	case xdm.TypeUnsignedShort:
-		return big.NewInt(0), big.NewInt(65535)
+		return big.NewInt(integerZeroBound), big.NewInt(math.MaxUint16)
 	case xdm.TypeUnsignedByte:
-		return big.NewInt(0), big.NewInt(255)
+		return big.NewInt(integerZeroBound), big.NewInt(math.MaxUint8)
 	case xdm.TypeNonNegativeInteger:
-		return big.NewInt(0), nil
+		return big.NewInt(integerZeroBound), nil
 	case xdm.TypeNonPositiveInteger:
-		return nil, big.NewInt(0)
+		return nil, big.NewInt(integerZeroBound)
 	case xdm.TypePositiveInteger:
-		return big.NewInt(1), nil
+		return big.NewInt(integerPositiveMinimum), nil
 	case xdm.TypeNegativeInteger:
-		return nil, big.NewInt(-1)
+		return nil, big.NewInt(integerNegativeMaximum)
 	}
 
 	return nil, nil
@@ -460,9 +477,9 @@ func castNumericLexical(s, targetType string) (xdm.AtomicValue, error) {
 		return castStringToFloat(s)
 	default:
 		switch s {
-		case lexicon.ValueTrue, "1":
+		case lexicon.ValueTrue, booleanTrueDigit:
 			return xdm.AtomicValue{TypeName: targetType, Value: true}, nil
-		case lexicon.ValueFalse, "0":
+		case lexicon.ValueFalse, booleanFalseDigit:
 			return xdm.AtomicValue{TypeName: targetType, Value: false}, nil
 		default:
 			return xdm.AtomicValue{}, castError(s, targetType)
@@ -471,7 +488,7 @@ func castNumericLexical(s, targetType string) (xdm.AtomicValue, error) {
 }
 
 func castIntegerLexical(s, targetType string) (xdm.AtomicValue, error) {
-	n, ok := new(big.Int).SetString(s, 10)
+	n, ok := new(big.Int).SetString(s, numericDecimalRadix)
 	if !ok {
 		return xdm.AtomicValue{}, castError(s, targetType)
 	}
@@ -561,7 +578,7 @@ func castGregorianLexical(s, targetType string, matches func(string) bool) (xdm.
 	if targetType == xdm.TypeGYear || targetType == xdm.TypeGYearMonth {
 		if _, rest, err := splitXSDYear(s); errors.Is(err, errCalendarYearRange) {
 			// Validate complete syntax before classifying representability.
-			probe := "2000" + rest
+			probe := gregorianLeapYearProbe + rest
 			if matches(probe) && validateGregorianValue(targetType, probe) {
 				return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFODT0001, Message: errCalendarYearRange.Error()}
 			}
@@ -583,10 +600,10 @@ func castGregorianLexical(s, targetType string, matches func(string) bool) (xdm.
 
 func isIntegerSubtype(t string) bool {
 	switch t {
-	case "xs:long", "xs:int", "xs:short", "xs:byte",
-		"xs:unsignedLong", "xs:unsignedInt", "xs:unsignedShort", "xs:unsignedByte",
-		"xs:positiveInteger", "xs:nonPositiveInteger",
-		"xs:negativeInteger", "xs:nonNegativeInteger":
+	case xdm.TypeLong, xdm.TypeInt, xdm.TypeShort, xdm.TypeByte,
+		xdm.TypeUnsignedLong, xdm.TypeUnsignedInt, xdm.TypeUnsignedShort, xdm.TypeUnsignedByte,
+		xdm.TypePositiveInteger, xdm.TypeNonPositiveInteger,
+		xdm.TypeNegativeInteger, xdm.TypeNonNegativeInteger:
 		return true
 	}
 
@@ -597,31 +614,31 @@ func validateIntegerRange(n *big.Int, targetType string) error {
 	var minVal, maxVal *big.Int
 
 	switch targetType {
-	case "xs:long":
+	case xdm.TypeLong:
 		minVal, maxVal = big.NewInt(math.MinInt64), big.NewInt(math.MaxInt64)
-	case "xs:int":
+	case xdm.TypeInt:
 		minVal, maxVal = big.NewInt(math.MinInt32), big.NewInt(math.MaxInt32)
-	case "xs:short":
+	case xdm.TypeShort:
 		minVal, maxVal = big.NewInt(math.MinInt16), big.NewInt(math.MaxInt16)
-	case "xs:byte":
+	case xdm.TypeByte:
 		minVal, maxVal = big.NewInt(math.MinInt8), big.NewInt(math.MaxInt8)
-	case "xs:unsignedLong":
-		minVal = big.NewInt(0)
+	case xdm.TypeUnsignedLong:
+		minVal = big.NewInt(integerZeroBound)
 		maxVal = new(big.Int).SetUint64(math.MaxUint64)
-	case "xs:unsignedInt":
-		minVal, maxVal = big.NewInt(0), big.NewInt(math.MaxUint32)
-	case "xs:unsignedShort":
-		minVal, maxVal = big.NewInt(0), big.NewInt(math.MaxUint16)
-	case "xs:unsignedByte":
-		minVal, maxVal = big.NewInt(0), big.NewInt(math.MaxUint8)
-	case "xs:positiveInteger":
-		minVal = big.NewInt(1)
-	case "xs:nonPositiveInteger":
-		maxVal = big.NewInt(0)
-	case "xs:negativeInteger":
-		maxVal = big.NewInt(-1)
-	case "xs:nonNegativeInteger":
-		minVal = big.NewInt(0)
+	case xdm.TypeUnsignedInt:
+		minVal, maxVal = big.NewInt(integerZeroBound), big.NewInt(math.MaxUint32)
+	case xdm.TypeUnsignedShort:
+		minVal, maxVal = big.NewInt(integerZeroBound), big.NewInt(math.MaxUint16)
+	case xdm.TypeUnsignedByte:
+		minVal, maxVal = big.NewInt(integerZeroBound), big.NewInt(math.MaxUint8)
+	case xdm.TypePositiveInteger:
+		minVal = big.NewInt(integerPositiveMinimum)
+	case xdm.TypeNonPositiveInteger:
+		maxVal = big.NewInt(integerZeroBound)
+	case xdm.TypeNegativeInteger:
+		maxVal = big.NewInt(integerNegativeMaximum)
+	case xdm.TypeNonNegativeInteger:
+		minVal = big.NewInt(integerZeroBound)
 	default:
 		return nil
 	}
@@ -640,7 +657,7 @@ func validateIntegerRange(n *big.Int, targetType string) error {
 // normalizeNegZeroYear strips leading '-' from "-0000" years (e.g. "-0000-05" → "0000-05").
 // Per XSD, negative zero is identical to positive zero for year values.
 func normalizeNegZeroYear(s string) string {
-	if len(s) < 5 || s[0] != '-' {
+	if len(s) < minimumSignedYearBytes || s[0] != '-' {
 		return s
 	}
 	// Check if all year digits are zero: "-0000..." or "-00000..."
@@ -658,8 +675,8 @@ func normalizeNegZeroYear(s string) string {
 
 func normalizeZeroTimezoneLexical(s string) string {
 	switch {
-	case strings.HasSuffix(s, "+00:00"), strings.HasSuffix(s, "-00:00"):
-		return s[:len(s)-6] + "Z"
+	case strings.HasSuffix(s, positiveZeroTimezone), strings.HasSuffix(s, negativeZeroTimezone):
+		return s[:len(s)-timezoneOffsetBytes] + utcTimezoneLexical
 	default:
 		return s
 	}
