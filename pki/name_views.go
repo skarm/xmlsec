@@ -27,7 +27,7 @@ func normalizedCertificate(ctx context.Context, original *x509.Certificate) (*x5
 	return &view, nil
 }
 
-func originalCertificateChains(ctx context.Context, chains [][]*x509.Certificate, originals map[[32]byte]*x509.Certificate) ([][]*x509.Certificate, error) {
+func originalCertificateChains(ctx context.Context, chains [][]*x509.Certificate, originals map[[sha256.Size]byte]*x509.Certificate) ([][]*x509.Certificate, error) {
 	out := make([][]*x509.Certificate, 0, len(chains))
 	for _, chain := range chains {
 		if err := ctx.Err(); err != nil {

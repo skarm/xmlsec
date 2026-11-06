@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// defaultFormattingLanguage is the formatting fallback when the invocation has
+// no explicit language; escaped functions retain this value without capabilities.
+const defaultFormattingLanguage = "en"
+
 // EvaluationContext is invocation-local configuration shared by both languages.
 type EvaluationContext struct {
 	// CurrentTime is the invocation time shared by date and time functions.
@@ -35,7 +39,7 @@ type DynamicProperties struct {
 // values use fallback, its location and en; trace and resource capabilities are
 // excluded.
 func CaptureDynamicProperties(ctx context.Context, fallback time.Time) DynamicProperties {
-	properties := DynamicProperties{CurrentTime: fallback, Timezone: fallback.Location(), Language: "en"}
+	properties := DynamicProperties{CurrentTime: fallback, Timezone: fallback.Location(), Language: defaultFormattingLanguage}
 	if value, ok := evaluationContextFrom(ctx); ok {
 		if !value.CurrentTime.IsZero() {
 			properties.CurrentTime = value.CurrentTime

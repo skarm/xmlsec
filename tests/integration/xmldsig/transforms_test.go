@@ -33,6 +33,9 @@ func TestJDKV1Transforms(t *testing.T) {
 	if e = json.Unmarshal(raw, &m); e != nil {
 		t.Fatal(e)
 	}
+	if len(m.Cases) != 12 {
+		t.Fatalf("transform fixture count = %d, want 12", len(m.Cases))
+	}
 
 	raw, e = os.ReadFile(filepath.Join(dir, m.PublicKey))
 	if e != nil {
@@ -77,8 +80,12 @@ func TestJDKV1Transforms(t *testing.T) {
 				if e != nil || r == nil || report.Status != "valid" {
 					t.Fatal(report, e)
 				}
-			} else if e == nil || r != nil || report.Status == "valid" {
-				t.Fatal("tampered transform fixture accepted", report, e)
+			} else {
+				// Verification reports retain diagnostics on failure.
+				// noinspection GoDfaErrorMayBeNotNil
+				if e == nil || r != nil || report.Status == "valid" {
+					t.Fatal("tampered transform fixture accepted", report, e)
+				}
 			}
 		})
 	}

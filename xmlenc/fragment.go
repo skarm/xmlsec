@@ -9,7 +9,13 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+)
+
+const (
+	fragmentContextName = "xmlsec-context"
+	maximumXMLDepth     = 512
 )
 
 // The wrapper carries only the actual parent's namespace context. EncryptedData
@@ -25,7 +31,7 @@ func namespaceContext(ctx context.Context, node *tree.Node) ([]tree.Namespace, e
 		}
 
 		for _, ns := range node.NS {
-			if _, exists := seen[ns.Prefix]; ns.Prefix != "xml" && !exists {
+			if _, exists := seen[ns.Prefix]; ns.Prefix != lexicon.PrefixXML && !exists {
 				bindings[ns.Prefix] = ns.URI
 				seen[ns.Prefix] = struct{}{}
 			}
@@ -87,7 +93,7 @@ func parseContentPlaintext(ctx context.Context, raw []byte, parent *tree.Node, l
 		return nil, err
 	}
 
-	frame := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Local: "xmlsec-context"}, NS: namespaces}
+	frame := &tree.Node{Kind: tree.ElementNode, Name: document.Name{Local: fragmentContextName}, NS: namespaces}
 	frameDoc := tree.FromNodes([]*tree.Node{frame}, limits)
 	// Stream escaping of inherited namespace values under the complete source
 	// byte budget; a small plaintext budget must not hide unbounded wrapper I/O.
@@ -101,7 +107,7 @@ func parseContentPlaintext(ctx context.Context, raw []byte, parent *tree.Node, l
 	parseLimits := limits
 
 	parseLimits.MaxBytes += wrapped.Len() + len(closing)
-	if parseLimits.MaxDepth < 512 {
+	if parseLimits.MaxDepth < maximumXMLDepth {
 		parseLimits.MaxDepth++
 	}
 

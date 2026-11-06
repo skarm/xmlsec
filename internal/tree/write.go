@@ -5,6 +5,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+// Escaping uses bounded scratch storage and preserves the XML profile's exact hexadecimal character-reference spellings.
+const (
+	xmlEscapeBufferBytes = 4096
+	escapeLineFeed       = "&#xA;"
+	escapeTab            = "&#x9;"
 )
 
 // XML serializes the snapshot without pretty-printing or changing prefixes.
@@ -18,14 +27,20 @@ func (d *Document) XML(ctx context.Context) ([]byte, error) {
 	}
 
 	var b bytes.Buffer
-	if _, err := WriteXMLFragment(ctx, &b, d.children, int(^uint(0)>>1)); err != nil {
+
+	nodes, err := serializationChildren(d)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := WriteXMLFragment(ctx, &b, nodes, int(^uint(0)>>1)); err != nil {
 		return nil, err
 	}
 
 	return b.Bytes(), nil
 }
 
-type xmlEscaper struct{ buffer [4096]byte }
+type xmlEscaper struct{ buffer [xmlEscapeBufferBytes]byte }
 
 // write replaces bytes into reusable bounded storage. The destination checks
 // cancellation and limits on every flush, including within one large text node.
@@ -76,26 +91,26 @@ func (e *xmlEscaper) write(dst io.Writer, value string, replacement func(byte) s
 func xmlEscape(c byte, attribute bool) string {
 	switch c {
 	case '&':
-		return "&amp;"
+		return lexicon.EscapeAmpersand
 	case '<':
-		return "&lt;"
+		return lexicon.EscapeLessThan
 	case '>':
 		if !attribute {
-			return "&gt;"
+			return lexicon.EscapeGreaterThan
 		}
 	case '\r':
-		return "&#xD;"
+		return escapeCarriageReturn
 	case '"':
 		if attribute {
-			return "&quot;"
+			return lexicon.EscapeQuote
 		}
 	case '\t':
 		if attribute {
-			return "&#x9;"
+			return escapeTab
 		}
 	case '\n':
 		if attribute {
-			return "&#xA;"
+			return escapeLineFeed
 		}
 	}
 

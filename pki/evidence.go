@@ -11,6 +11,10 @@ import (
 	"github.com/skarm/xmlsec/evidence"
 )
 
+const (
+	assertedNotListed = "not-listed"
+)
+
 // EvidenceKind identifies the encoding of an authenticated offline assertion.
 type EvidenceKind string
 
@@ -28,30 +32,62 @@ const (
 // Result includes an assertion only after its required freshness/coverage policy
 // passes. Report can also expose authenticated but stale or inapplicable evidence.
 type VerifiedEvidence struct {
-	revoked            time.Time
-	invalidity         time.Time
-	issued             time.Time
-	this               time.Time
-	next               time.Time
-	validation         time.Time
-	signerAuthority    string
-	signatureOID       string
-	kind               EvidenceKind
-	status             string
-	scope              string
-	signerChain        [][]byte
-	sources            []*evidence.Observation
-	raw                []byte
-	dependencies       []string
-	reason             int
+	// revoked is the authenticated revocation-time claim, if present.
+	revoked time.Time
+	// invalidity is the issuer's signed invalidity-date claim, not independent
+	// proof of compromise time.
+	invalidity time.Time
+	// issued is producedAt for OCSP or thisUpdate for a CRL.
+	issued time.Time
+	// this is the authenticated thisUpdate claim.
+	this time.Time
+	// next is the original nextUpdate claim; zero records its absence.
+	next time.Time
+	// validation is the explicit time used to authenticate the evidence signer and
+	// path.
+	validation time.Time
+	// signerAuthority records the issuer, delegated or local signer authority used
+	// during authentication.
+	signerAuthority string
+	// signatureOID preserves the declared signature algorithm OID.
+	signatureOID string
+	// kind identifies CRL or OCSP evidence.
+	kind EvidenceKind
+	// status is the authenticated status assertion, independently of freshness or
+	// acceptance.
+	status string
+	// scope binds the assertion to its exact issuer and evidence scope.
+	scope string
+	// signerChain retains the evidence signer's certificate path.
+	signerChain [][]byte
+	// sources retains acquisition observations without granting authority or proof
+	// of existence.
+	sources []*evidence.Observation
+	// raw owns authenticated source bytes when observations do not retain them.
+	raw []byte
+	// dependencies identifies original evidence sources used in a composite
+	// assertion.
+	dependencies []string
+	// reason retains the signed revocation or removal reason.
+	reason int
+	// historicalCoverage retains reason coverage used by historical validation.
 	historicalCoverage crlReasonMask
-	scopeReasons       crlReasonMask
-	coverage           crlReasonMask
-	fingerprint        [32]byte
-	target             [32]byte
-	issuer             [32]byte
-	signer             [32]byte
-	authenticated      bool
+	// scopeReasons is the reason mask declared by the signed CRL scope.
+	scopeReasons crlReasonMask
+	// coverage is the reason mask checked for this exact target and validation
+	// time.
+	coverage crlReasonMask
+	// fingerprint identifies the exact source encoding by SHA-256.
+	fingerprint [sha256.Size]byte
+	// target identifies the exact target certificate DER by SHA-256.
+	target [sha256.Size]byte
+	// issuer identifies the issuer's SubjectPublicKeyInfo by SHA-256.
+	issuer [sha256.Size]byte
+	// signer identifies the evidence signer's exact certificate DER by SHA-256.
+	signer [sha256.Size]byte
+	// authenticated records signature and authority authentication without
+	// asserting freshness.
+	authenticated bool
 }
 
 func newCRLEvidence(list *parsedCRL, target, issuer, signer *x509.Certificate, at time.Time) *VerifiedEvidence {
@@ -62,7 +98,7 @@ func newCRLEvidence(list *parsedCRL, target, issuer, signer *x509.Certificate, a
 	scopeData := append([]byte(list.issuerKey), list.scope.raw...)
 	scope := sha256.Sum256(scopeData)
 
-	return &VerifiedEvidence{authenticated: true, signatureOID: list.algorithm.Algorithm.String(), scopeReasons: list.scope.reasons, sources: append([]*evidence.Observation(nil), list.sources...), kind: EvidenceCRL, raw: list.ownedRaw, fingerprint: sha256.Sum256(list.raw), target: sha256.Sum256(target.Raw), issuer: sha256.Sum256(issuer.RawSubjectPublicKeyInfo), signer: sha256.Sum256(signer.Raw), issued: list.this, this: list.this, next: list.next, validation: at, status: "not-listed", scope: hex.EncodeToString(scope[:])}
+	return &VerifiedEvidence{authenticated: true, signatureOID: list.algorithm.Algorithm.String(), scopeReasons: list.scope.reasons, sources: append([]*evidence.Observation(nil), list.sources...), kind: EvidenceCRL, raw: list.ownedRaw, fingerprint: sha256.Sum256(list.raw), target: sha256.Sum256(target.Raw), issuer: sha256.Sum256(issuer.RawSubjectPublicKeyInfo), signer: sha256.Sum256(signer.Raw), issued: list.this, this: list.this, next: list.next, validation: at, status: assertedNotListed, scope: hex.EncodeToString(scope[:])}
 }
 
 // Kind returns the original evidence encoding.
@@ -226,7 +262,7 @@ func (e *VerifiedEvidence) InvalidityDate() time.Time {
 
 // RevocationReason returns the signed status reason when revocation/removal is asserted.
 func (e *VerifiedEvidence) RevocationReason() (int, bool) {
-	if e == nil || e.status != "revoked" && e.status != "remove-from-crl" {
+	if e == nil || e.status != assertedRevoked && e.status != assertedRemoveFromCRL {
 		return 0, false
 	}
 
@@ -289,6 +325,8 @@ func canonicalEvidence(items []*VerifiedEvidence) []*VerifiedEvidence {
 			continue
 		}
 
+		// Merge coverage only within the same target, authority, scope and
+		// validation time; identical source bytes alone do not bind those claims.
 		key := item.FingerprintSHA256() + "/" + item.TargetCertificateSHA256() + "/" + item.IssuerScopeBinding() + "/" + item.SignerCertificateSHA256() + "/" + item.IssuerSPKISHA256() + "/" + item.validation.UTC().Format(time.RFC3339Nano)
 		if previous := byBinding[key]; previous == nil {
 			keys = append(keys, key)

@@ -2,7 +2,9 @@ package lexicon
 
 // XML declaration versions and whitespace.
 const (
+	// XMLVersion10 selects XML 1.0 declaration and character rules.
 	XMLVersion10 = "1.0"
+	// XMLVersion11 selects XML 1.1 declaration and character rules.
 	XMLVersion11 = "1.1"
 	// XMLWhitespace is the set of XSD whitespace characters (#x20 space, #x9 tab,
 	// #xD carriage return, #xA newline). Unlike Go's unicode.IsSpace this excludes
@@ -31,30 +33,58 @@ const (
 	MethodAdaptive = "adaptive"
 )
 
-// Serialization parameter names (xsl:output / xsl:result-document attributes).
-// Also shared by fn:serialize.
+// Internal processing-instruction targets used to carry output-escaping state
+// between result-tree construction and serialization. These marker names are
+// distinct from the XSLT disable-output-escaping attribute.
 const (
-	SerializationMethod               = "method"
-	SerializationVersion              = "version"
-	SerializationEncoding             = "encoding"
-	SerializationOmitXMLDeclaration   = "omit-xml-declaration"
-	SerializationStandalone           = "standalone"
-	SerializationDoctypePublic        = "doctype-public"
+	// DisableOutputEscapingPITarget starts a span emitted without XML/HTML escaping.
+	DisableOutputEscapingPITarget = "disable-output-escaping"
+	// EnableOutputEscapingPITarget ends that span and restores normal escaping.
+	EnableOutputEscapingPITarget = "enable-output-escaping"
+)
+
+// Serialization parameter names shared by xsl:output, xsl:result-document and
+// fn:serialize. These are keys; accepted values and defaults depend on the method.
+const (
+	SerializationMethod = "method"
+	// SerializationVersion identifies a method's output version, not the XSLT language version.
+	SerializationVersion            = "version"
+	SerializationEncoding           = "encoding"
+	SerializationOmitXMLDeclaration = "omit-xml-declaration"
+	SerializationStandalone         = "standalone"
+	// SerializationDoctypePublic names emitted public-ID metadata; it performs no DTD retrieval.
+	SerializationDoctypePublic = "doctype-public"
+	// SerializationDoctypeSystem names emitted system-ID metadata; it grants no resource access.
 	SerializationDoctypeSystem        = "doctype-system"
 	SerializationCDATASectionElements = "cdata-section-elements"
 	SerializationIndent               = "indent"
-	SerializationMediaType            = "media-type"
-	SerializationByteOrderMark        = "byte-order-mark"
-	SerializationEscapeURIAttributes  = "escape-uri-attributes"
-	SerializationIncludeContentType   = "include-content-type"
-	SerializationNormalizationForm    = "normalization-form"
-	SerializationUndeclarePrefixes    = "undeclare-prefixes"
-	SerializationUseCharacterMaps     = "use-character-maps"
-	SerializationSuppressIndentation  = "suppress-indentation"
+	// SerializationMediaType names declared output metadata, not an input trust decision.
+	SerializationMediaType           = "media-type"
+	SerializationByteOrderMark       = "byte-order-mark"
+	SerializationEscapeURIAttributes = "escape-uri-attributes"
+	SerializationIncludeContentType  = "include-content-type"
+	// SerializationNormalizationForm selects Unicode normalization for eligible output content.
+	SerializationNormalizationForm   = "normalization-form"
+	SerializationUndeclarePrefixes   = "undeclare-prefixes"
+	SerializationUseCharacterMaps    = "use-character-maps"
+	SerializationSuppressIndentation = "suppress-indentation"
+	// SerializationHTMLVersion selects the HTML edition independently of an XML declaration.
 	SerializationHTMLVersion          = "html-version"
 	SerializationItemSeparator        = "item-separator"
 	SerializationJSONNodeOutputMethod = "json-node-output-method"
 	SerializationParameterDocument    = "parameter-document"
 	SerializationBuildTree            = "build-tree"
 	SerializationAllowDuplicateNames  = "allow-duplicate-names"
+)
+
+// Unicode normalization names shared by string functions and serializers.
+const (
+	// NormalizationFormNFC selects canonical composition.
+	NormalizationFormNFC = "NFC"
+	// NormalizationFormNFD selects canonical decomposition.
+	NormalizationFormNFD = "NFD"
+	// NormalizationFormNFKC selects compatibility composition.
+	NormalizationFormNFKC = "NFKC"
+	// NormalizationFormNFKD selects compatibility decomposition.
+	NormalizationFormNFKD = "NFKD"
 )

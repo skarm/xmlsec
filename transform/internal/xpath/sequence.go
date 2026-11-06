@@ -15,6 +15,8 @@ import (
 
 // EBV computes the Effective Boolean Value of a sequence per XPath 3.1 Section 2.4.3.
 func EBV(seq xdm.Sequence) (bool, error) {
+	const effectiveBooleanSingleton = 1 // exactly one non-node atom
+
 	n := xdm.SequenceLen(seq)
 	if n == 0 {
 		return false, nil
@@ -26,7 +28,7 @@ func EBV(seq xdm.Sequence) (bool, error) {
 		return true, nil
 	}
 
-	if n == 1 {
+	if n == effectiveBooleanSingleton {
 		return ebvSingle(first)
 	}
 
@@ -145,12 +147,19 @@ func atomizeStream(seq xdm.Sequence, yield func(xdm.AtomicValue) (bool, error)) 
 // atomizeBounded charges array traversal even when every leaf atomizes to ().
 // The callback can stop before a later item, preserving cardinality error order.
 func atomizeBounded(ctx context.Context, ec *evalContext, seq xdm.Sequence, yield func(xdm.AtomicValue) (bool, error)) error {
+	// Array nesting has its own fallback depth; cursor steps add one work
+	// unit to the separately counted empty members.
+	const (
+		defaultAtomizationArrayDepth = 128
+		atomizationCursorBaseWork    = 1
+	)
+
 	check := typedValueItemCheckFor(ec)
 
 	stack := []seqCursor{{members: []xdm.Sequence{seq}}}
 	for len(stack) != 0 {
 		item, ok, empty := stack[len(stack)-1].next()
-		if err := fnCountOps(ctx, ec, empty+1); err != nil {
+		if err := fnCountOps(ctx, ec, empty+atomizationCursorBaseWork); err != nil {
 			return err
 		}
 
@@ -160,7 +169,7 @@ func atomizeBounded(ctx context.Context, ec *evalContext, seq xdm.Sequence, yiel
 		}
 
 		if array, isArray := item.(xdm.ArrayItem); isArray {
-			if len(stack) >= DepthLimit(ctx, 128) {
+			if len(stack) >= DepthLimit(ctx, defaultAtomizationArrayDepth) {
 				return ErrBudget
 			}
 

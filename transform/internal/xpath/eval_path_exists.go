@@ -10,6 +10,25 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// An existence probe runs at most one fused descendant walk depth first; that
+// walk consumes two VM steps. Inline counters cover eight steps before spilling.
+const (
+	singleProbeDescendantWalk = 1
+	fusedProbeStepCount       = 2
+	inlineProbeStepCounts     = 8
+)
+
+// One selected node proves existence, while two nodes settle a step's document
+// registration. Walked flags distinguish a fused walk from an ordinary step;
+// predicate evaluation retains one logical operation per inspected node.
+const (
+	minimumProbeMatches        = 1
+	probeRegistrationNodeCount = 2
+	ordinaryProbeTraversal     = false
+	descendantProbeTraversal   = true
+	probePredicateWork         = 1
+)
+
 // Existence-only paths stop after selecting a node. Depth-first execution
 // is limited to steps that cannot revisit a node through different contexts;
 // earlier steps use ordinary materialized evaluation (pathExistsSplit).
@@ -20,7 +39,8 @@ import (
 // nodes are not observed. Document registration must be settled before stopping
 // so later cross-document unions retain their ordering.
 
-// maxPooledProbeBuffer is the largest buffer capacity a pooled probe keeps.
+// maxPooledProbeBuffer bounds retained capacity in buffer ELEMENTS, not bytes.
+// Node, integer-count and pending-subtree buffers have different element sizes.
 const maxPooledProbeBuffer = 1024
 
 // foundSlack is how many more nodes a probe that has found a node, but has
@@ -55,7 +75,7 @@ func pathExistsSplit(steps []vmLocationStep) int {
 
 			lastWalk = i
 			walks++
-			i += 2
+			i += fusedProbeStepCount
 
 			continue
 		}
@@ -69,9 +89,9 @@ func pathExistsSplit(steps []vmLocationStep) int {
 	}
 
 	switch {
-	case walks > 1:
+	case walks > singleProbeDescendantWalk:
 		return lastWalk
-	case walks == 1 && split > 0 && firstWalk != split:
+	case walks == singleProbeDescendantWalk && split > 0 && firstWalk != split:
 		return firstWalk
 	}
 
@@ -129,7 +149,7 @@ func pathExists(evalFn exprEvaluator, ctx context.Context, ec *evalContext, lp v
 	p.steps = lp.Steps
 	p.resultRegisters = resultRegisters
 	// A step result of more than one node has registered its document.
-	p.reserved = len(contexts) > 1
+	p.reserved = len(contexts) > singleOrderedNodeResult
 	if len(lp.Steps) <= len(p.countsBuf) {
 		p.counts = p.countsBuf[:len(lp.Steps)]
 		clear(p.counts)
@@ -167,7 +187,7 @@ type pathProbe struct {
 	// walk is the pre-order stack of the `//` walk, of which a probe runs at
 	// most one at a time.
 	walk      []xdm.Node
-	countsBuf [8]int
+	countsBuf [inlineProbeStepCounts]int
 	// pending counts the operations the `//` walk has done and not charged
 	// yet.
 	pending int
@@ -285,7 +305,7 @@ func (p *pathProbe) run(evalFn exprEvaluator, ctx context.Context, i int, contex
 			return false, err
 		}
 
-		if len(nodes) > 1 {
+		if len(nodes) > singleOrderedNodeResult {
 			p.reserved = true
 		}
 
@@ -330,7 +350,7 @@ func (p *pathProbe) run(evalFn exprEvaluator, ctx context.Context, i int, contex
 			return false, err
 		}
 
-		stop, err := p.selectFrom(evalFn, ctx, i, p.buf[mark:], false)
+		stop, err := p.selectFrom(evalFn, ctx, i, p.buf[mark:], ordinaryProbeTraversal)
 		p.buf = p.buf[:mark]
 
 		if err != nil || stop {
@@ -387,7 +407,7 @@ func (p *pathProbe) runChildren(evalFn exprEvaluator, ctx context.Context, i int
 
 		traversed = 0
 
-		stop, err := p.selectNode(evalFn, ctx, i, child, false)
+		stop, err := p.selectNode(evalFn, ctx, i, child, ordinaryProbeTraversal)
 		if err != nil || stop {
 			return stop, err
 		}
@@ -445,7 +465,7 @@ func (p *pathProbe) selectFrom(evalFn exprEvaluator, ctx context.Context, i int,
 func (p *pathProbe) selectNode(evalFn exprEvaluator, ctx context.Context, i int, n xdm.Node, walked bool) (bool, error) {
 	mark := len(p.buf)
 	p.buf = append(p.buf, n)
-	stop, err := p.selectNodes(evalFn, ctx, i, p.buf[mark:], 1, walked)
+	stop, err := p.selectNodes(evalFn, ctx, i, p.buf[mark:], minimumProbeMatches, walked)
 	p.buf = p.buf[:mark]
 
 	return stop, err
@@ -465,7 +485,7 @@ func (p *pathProbe) selectNodes(evalFn exprEvaluator, ctx context.Context, i int
 	// A step result of more than one node registers its document. The
 	// result of a `//` walk does not (clampDescendantResult): the walk
 	// registers it for the nodes it covers.
-	if p.counts[i] > 1 && (!walked || (last && p.resultRegisters)) {
+	if p.counts[i] > singleOrderedNodeResult && (!walked || (last && p.resultRegisters)) {
 		p.reserve()
 	}
 
@@ -495,9 +515,9 @@ func (p *pathProbe) countLastPredicate(evalFn exprEvaluator, ctx context.Context
 		return len(selected), err
 	}
 
-	need := 1
+	need := minimumProbeMatches
 	if !p.settled() {
-		need = max(1, 2-p.counts[i])
+		need = max(minimumProbeMatches, probeRegistrationNodeCount-p.counts[i])
 	}
 
 	return countPredicateUpTo(evalFn, ctx, p.ec, nodes, pred, need)
@@ -515,7 +535,7 @@ func (p *pathProbe) runDescendant(evalFn exprEvaluator, ctx context.Context, i i
 	// than one node (finishDescendantOrSelfStep): with several context
 	// nodes, or one with a child. Registering first keeps it ahead of any
 	// document a predicate registers, as in the step-by-step evaluation.
-	if len(contexts) > 1 || hasXDMChild(contexts[0]) {
+	if len(contexts) > singleOrderedNodeResult || hasXDMChild(contexts[0]) {
 		p.reserve()
 	}
 
@@ -533,7 +553,7 @@ func (p *pathProbe) runDescendant(evalFn exprEvaluator, ctx context.Context, i i
 			return false, err
 		}
 
-		if ec.maxNodes < 1 {
+		if ec.maxNodes < descendantSelfNodeCount {
 			return false, xdm.ErrNodeSetLimit
 		}
 
@@ -615,7 +635,7 @@ func (p *pathProbe) walkSubtree(evalFn exprEvaluator, ctx context.Context, si in
 			err  error
 		)
 		if streaming {
-			stop, err = p.walkChild(evalFn, ctx, si, cur, visited > 1, !last)
+			stop, err = p.walkChild(evalFn, ctx, si, cur, visited > descendantSelfNodeCount, !last)
 		} else {
 			stop, err = p.walkParent(evalFn, ctx, si, cur, chargeEach)
 		}
@@ -662,7 +682,7 @@ func (p *pathProbe) walkChild(evalFn exprEvaluator, ctx context.Context, si int,
 					}
 				}
 
-				stop, err := p.selectNode(evalFn, ctx, si, cur, true)
+				stop, err := p.selectNode(evalFn, ctx, si, cur, descendantProbeTraversal)
 				if err != nil || stop {
 					return stop, err
 				}
@@ -710,7 +730,7 @@ func (p *pathProbe) walkParent(evalFn exprEvaluator, ctx context.Context, si int
 		}
 	}
 	// The next steps leave p.walk alone: a probe runs one `//` walk.
-	stop, err := p.selectFrom(evalFn, ctx, si, p.buf[mark:], true)
+	stop, err := p.selectFrom(evalFn, ctx, si, p.buf[mark:], descendantProbeTraversal)
 	p.buf = p.buf[:mark]
 
 	return stop, err
@@ -745,11 +765,11 @@ func countPredicateUpTo(evalFn exprEvaluator, ctx context.Context, ec *evalConte
 	kept := 0
 
 	for i, n := range nodes {
-		if err := ec.countOps(ctx, 1); err != nil {
+		if err := ec.countOps(ctx, probePredicateWork); err != nil {
 			return 0, err
 		}
 
-		frame := ec.pushNodeContext(n, i+1, size)
+		frame := ec.pushNodeContext(n, i+focusPositionOrigin, size)
 		r, err := evalFn(ctx, ec, pred)
 		ec.restoreContext(frame)
 
@@ -757,7 +777,7 @@ func countPredicateUpTo(evalFn exprEvaluator, ctx context.Context, ec *evalConte
 			return 0, err
 		}
 
-		match, err := predicateTrue(r, i+1)
+		match, err := predicateTrue(r, i+focusPositionOrigin)
 		if err != nil {
 			return 0, err
 		}

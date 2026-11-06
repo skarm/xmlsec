@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -16,6 +17,20 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/x509name"
+)
+
+// certificateOctetBits converts encoded certificate and evidence byte widths to bits.
+const certificateOctetBits = 8
+
+const (
+	// Caps certificate serial numbers used in OCSP requests and revocation entries, in bits.
+	maxCertificateSerialBits = 160
+	maximumOCSPExtensions    = 32
+	// Maximum encoded nonce value accepted by the OCSP request/response profile, in bytes.
+	maximumOCSPNonceBytes        = 128
+	maximumOCSPPublicKeyDERBytes = 1 << 20
+	maximumOCSPRequestBytes      = 1 << 16
+	minimumOCSPRequestNonceBytes = 32
 )
 
 // OCSPOptions selects offline response checks at an explicit verification time.
@@ -142,33 +157,44 @@ type OCSPRequest struct {
 // ParseOCSPRequest parses one complete bounded OCSP request without authenticating its
 // origin.
 func ParseOCSPRequest(b []byte) (*OCSPRequest, error) {
-	if len(b) > 1<<16 {
+	// The supported unsigned profile has one TBS request and one certificate
+	// request. Only TBS-level extensions are optional; their context tag is [2].
+	const (
+		unsignedRequestFields    = 1
+		tbsRequestRequiredFields = 1
+		tbsRequestMaximumFields  = 2
+		requestListItems         = 1
+		singleRequestFields      = 1
+		requestExtensionsTag     = 2
+	)
+
+	if len(b) > maximumOCSPRequestBytes {
 		return nil, ErrEvidence
 	}
 
 	b = bytes.Clone(b)
 
-	v, e := der.Read(b, 1<<16)
+	v, e := der.Read(b, maximumOCSPRequestBytes)
 	if e != nil {
 		return nil, ErrEvidence
 	}
 
-	f, e := der.Sequence(v, 1, 1)
+	f, e := der.Sequence(v, unsignedRequestFields, unsignedRequestFields)
 	if e != nil {
 		return nil, ErrUnsupported
 	}
 
-	t, e := der.Sequence(f[0], 1, 2)
+	t, e := der.Sequence(f[0], tbsRequestRequiredFields, tbsRequestMaximumFields)
 	if e != nil {
 		return nil, ErrEvidence
 	}
 
-	list, e := der.Sequence(t[0], 1, 1)
+	list, e := der.Sequence(t[0], requestListItems, requestListItems)
 	if e != nil {
 		return nil, ErrUnsupported
 	}
 
-	entry, e := der.Sequence(list[0], 1, 1)
+	entry, e := der.Sequence(list[0], singleRequestFields, singleRequestFields)
 	if e != nil {
 		return nil, ErrUnsupported
 	}
@@ -180,8 +206,8 @@ func ParseOCSPRequest(b []byte) (*OCSPRequest, error) {
 
 	r := &OCSPRequest{id: id, raw: b}
 
-	if len(t) > 1 {
-		x, e := der.Explicit(t[1], 2)
+	if len(t) > tbsRequestRequiredFields {
+		x, e := der.Explicit(t[1], requestExtensionsTag)
 		if e != nil {
 			return nil, ErrEvidence
 		}
@@ -240,7 +266,7 @@ func (r *OCSPRequest) Hash() crypto.Hash {
 // by a cryptographically strong random source (RFC 9654 section 2.1). Incoming
 // requests retain support for legacy 1--31 byte nonces.
 func CreateOCSPRequest(certificateDER, issuerDER []byte, h crypto.Hash, nonce []byte) ([]byte, error) {
-	if len(nonce) > 0 && len(nonce) < 32 || len(nonce) > 128 {
+	if len(nonce) > 0 && len(nonce) < minimumOCSPRequestNonceBytes || len(nonce) > maximumOCSPNonceBytes {
 		return nil, ErrPolicy
 	}
 
@@ -268,7 +294,10 @@ func CreateOCSPRequest(certificateDER, issuerDER []byte, h crypto.Hash, nonce []
 }
 
 func parseCertID(v asn1.RawValue) (certID, error) {
-	f, e := der.Sequence(v, 4, 4)
+	// CertID consists of hashAlgorithm, issuerNameHash, issuerKeyHash and serialNumber.
+	const certIDFields = 4
+
+	f, e := der.Sequence(v, certIDFields, certIDFields)
 	if e != nil {
 		return certID{}, ErrEvidence
 	}
@@ -287,7 +316,7 @@ func parseCertID(v asn1.RawValue) (certID, error) {
 		n, k []byte
 		s    *big.Int
 	)
-	if der.Decode(f[1], &n) != nil || der.Decode(f[2], &k) != nil || der.Decode(f[3], &s) != nil || s == nil || s.Sign() <= 0 || s.BitLen() > 160 || len(n) != h.Size() || len(k) != h.Size() {
+	if der.Decode(f[1], &n) != nil || der.Decode(f[2], &k) != nil || der.Decode(f[3], &s) != nil || s == nil || s.Sign() <= 0 || s.BitLen() > maxCertificateSerialBits || len(n) != h.Size() || len(k) != h.Size() {
 		return certID{}, ErrEvidence
 	}
 
@@ -295,7 +324,13 @@ func parseCertID(v asn1.RawValue) (certID, error) {
 }
 
 func extensions(v asn1.RawValue) ([]pkix.Extension, error) {
-	fields, e := der.Sequence(v, 1, 32)
+	// Extension contains extnID, optional critical, and extnValue.
+	const (
+		extensionMinimumFields = 2
+		extensionMaximumFields = 3
+	)
+
+	fields, e := der.Sequence(v, 1, maximumOCSPExtensions)
 	if e != nil {
 		return nil, ErrEvidence
 	}
@@ -305,7 +340,7 @@ func extensions(v asn1.RawValue) ([]pkix.Extension, error) {
 	seen := map[string]struct{}{}
 
 	for _, field := range fields {
-		f, e := der.Sequence(field, 2, 3)
+		f, e := der.Sequence(field, extensionMinimumFields, extensionMaximumFields)
 		if e != nil {
 			return nil, ErrEvidence
 		}
@@ -323,7 +358,7 @@ func extensions(v asn1.RawValue) ([]pkix.Extension, error) {
 		x := pkix.Extension{Id: oid}
 		i := 1
 
-		if len(f) == 3 {
+		if len(f) == extensionMaximumFields {
 			if der.Decode(f[1], &x.Critical) != nil || !x.Critical {
 				return nil, ErrEvidence
 			}
@@ -331,7 +366,7 @@ func extensions(v asn1.RawValue) ([]pkix.Extension, error) {
 			i++
 		}
 
-		if !der.Is(f[i], 0, asn1.TagOctetString, false) {
+		if !der.Is(f[i], asn1.ClassUniversal, asn1.TagOctetString, false) {
 			return nil, ErrEvidence
 		}
 
@@ -352,7 +387,7 @@ func nonceFrom(exts []pkix.Extension, allow bool) ([]byte, error) {
 				return nil, ErrUnsupported
 			}
 
-			if der.Unmarshal(e.Value, &nonce) != nil || len(nonce) < 1 || len(nonce) > 128 {
+			if der.Unmarshal(e.Value, &nonce) != nil || len(nonce) < 1 || len(nonce) > maximumOCSPNonceBytes {
 				return nil, ErrEvidence
 			}
 		} else if e.Critical {
@@ -364,18 +399,20 @@ func nonceFrom(exts []pkix.Extension, allow bool) ([]byte, error) {
 }
 
 func publicBits(c *x509.Certificate) ([]byte, error) {
-	v, e := der.Read(c.RawSubjectPublicKeyInfo, 1<<20)
+	const subjectPublicKeyInfoFields = 2 // algorithm and subjectPublicKey BIT STRING
+
+	v, e := der.Read(c.RawSubjectPublicKeyInfo, maximumOCSPPublicKeyDERBytes)
 	if e != nil {
 		return nil, e
 	}
 
-	f, e := der.Sequence(v, 2, 2)
+	f, e := der.Sequence(v, subjectPublicKeyInfoFields, subjectPublicKeyInfoFields)
 	if e != nil {
 		return nil, e
 	}
 
 	var b asn1.BitString
-	if der.Decode(f[1], &b) != nil || b.BitLength%8 != 0 {
+	if der.Decode(f[1], &b) != nil || b.BitLength%certificateOctetBits != 0 {
 		return nil, ErrCertificate
 	}
 
@@ -385,6 +422,12 @@ func publicBits(c *x509.Certificate) ([]byte, error) {
 func makeCertID(ctx context.Context, c, issuer *x509.Certificate, h crypto.Hash) (certID, error) {
 	if h == 0 {
 		h = crypto.SHA256
+	}
+
+	// CertID hashes identify the issuer, but the FIPS runtime still forbids
+	// invoking SHA-1. Reject the requested algorithm before entering that primitive.
+	if h == crypto.SHA1 && fips140.Enabled() {
+		return certID{}, ErrPolicy
 	}
 
 	a, e := signature.DigestAlgorithm(h)
@@ -397,7 +440,7 @@ func makeCertID(ctx context.Context, c, issuer *x509.Certificate, h crypto.Hash)
 		return certID{}, fmt.Errorf("%w: issuer name: %w", ErrCertificate, err)
 	}
 
-	if c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 160 || !equal || c.CheckSignatureFrom(issuer) != nil {
+	if c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > maxCertificateSerialBits || !equal || c.CheckSignatureFrom(issuer) != nil {
 		return certID{}, ErrCertificate
 	}
 

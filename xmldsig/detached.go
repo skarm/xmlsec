@@ -21,6 +21,11 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	defaultMaxResourceBytes      = 8 << 20
+	defaultMaxTotalResourceBytes = 32 << 20
+)
+
 // Resolver supplies original octets for an explicitly authorized URI. The library
 // does not automatically fetch HTTP or file resources or select XML fragments.
 // ExternalReferences.BaseURI enables relative URI resolution only when configured
@@ -108,6 +113,71 @@ type DetachedResult struct {
 	algorithm   string
 	fingerprint string
 	references  []ReferenceResult
+}
+
+// SignDetached produces a standalone ds:Signature, with one or more external
+// octet-stream references. ALL recipes are checked before any resolver call.
+// The same processing engine is used by SignEnveloped, Verify and VerifyDetached.
+func SignDetached(ctx context.Context, refs []DetachedReference, signer crypto.Signer, resolver Resolver, opt DetachedSignOptions) (*document.Document, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: nil context", ErrPolicy)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if nilcheck.IsNil(signer) {
+		return nil, ErrKey
+	}
+
+	if nilcheck.IsNil(resolver) {
+		return nil, fmt.Errorf("%w: resolver required", ErrReference)
+	}
+
+	p, err := prepareDetachedSigning(refs, signer, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	draft, err := buildDetachedSignature(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := p.policy.MaxCanonicalBytes
+	if err := fillDetachedDigests(ctx, draft, p, resolver, &remaining); err != nil {
+		return nil, err
+	}
+
+	spec := signatureSpec{algorithm: p.method}
+	credential := signatureCredential{public: p.key, signer: signer}
+
+	canonicalSI, err := credential.prepareInput(ctx, spec, func(dst io.Writer) error {
+		return writeCanonicalElement(ctx, dst, tree.Wrap(draft.doc, draft.si), p.cm, &remaining)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	value, err := credential.signPrepared(ctx, spec, p.policy, canonicalSI)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	sv := newDS(lexicon.DSigElementSignatureValue)
+	text(sv, base64.StdEncoding.EncodeToString(value))
+	add(draft.sig, sv)
+
+	return tree.Reparse(ctx, draft.doc, p.xmlLimits)
 }
 
 // VerifyDetached authenticates SignedInfo BEFORE calling resolver. It checks the
@@ -269,7 +339,7 @@ func verifyDetachedResources(ctx context.Context, resolver Resolver, p *detached
 		}
 
 		if subtle.ConstantTimeCompare(hash.Sum(nil), ref.digest) != 1 {
-			return &ReferenceError{i, ref.URI, "digest", ErrDigest}
+			return &ReferenceError{i, ref.URI, stageDigest, ErrDigest}
 		}
 
 		result.references = append(result.references, ReferenceResult{uri: ref.URI, typeURI: ref.Type, digestMethod: ref.DigestMethod, processed: processed, external: source, processing: p.processing, digest: hash.Sum(nil), transforms: ref.Transforms})
@@ -310,71 +380,6 @@ type detachedSignatureDraft struct {
 	sig         *tree.Node
 	si          *tree.Node
 	digestNodes []*tree.Node
-}
-
-// SignDetached produces a standalone ds:Signature, with one or more external
-// octet-stream references. ALL recipes are checked before any resolver call.
-// The same processing engine is used by SignEnveloped, Verify and VerifyDetached.
-func SignDetached(ctx context.Context, refs []DetachedReference, signer crypto.Signer, resolver Resolver, opt DetachedSignOptions) (*document.Document, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("%w: nil context", ErrPolicy)
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if nilcheck.IsNil(signer) {
-		return nil, ErrKey
-	}
-
-	if nilcheck.IsNil(resolver) {
-		return nil, fmt.Errorf("%w: resolver required", ErrReference)
-	}
-
-	p, err := prepareDetachedSigning(refs, signer, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	draft, err := buildDetachedSignature(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-
-	remaining := p.policy.MaxCanonicalBytes
-	if err := fillDetachedDigests(ctx, draft, p, resolver, &remaining); err != nil {
-		return nil, err
-	}
-
-	spec := signatureSpec{algorithm: p.method}
-	credential := signatureCredential{public: p.key, signer: signer}
-
-	canonicalSI, err := credential.prepareInput(ctx, spec, func(dst io.Writer) error {
-		return writeCanonicalElement(ctx, dst, tree.Wrap(draft.doc, draft.si), p.cm, &remaining)
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	value, err := credential.signPrepared(ctx, spec, canonicalSI)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	sv := newDS(lexicon.DSigElementSignatureValue)
-	text(sv, base64.StdEncoding.EncodeToString(value))
-	add(draft.sig, sv)
-
-	return tree.Reparse(ctx, draft.doc, p.xmlLimits)
 }
 
 func normalizeCanonicalization(tr reference.Transform) (reference.Transform, error) {
@@ -440,6 +445,15 @@ func prepareDetachedSigning(refs []DetachedReference, signer crypto.Signer, opt 
 		return nil, err
 	}
 
+	if _, mac := macHash(method); mac || method == RSAPSS {
+		return nil, ErrAlgorithm
+	}
+
+	credential := signatureCredential{public: key, signer: signer}
+	if err := credential.validateSigner(signatureSpec{algorithm: method}, p); err != nil {
+		return nil, err
+	}
+
 	if err := validateDetachedReferenceCount(refs, p.MaxReferences); err != nil {
 		return nil, err
 	}
@@ -492,18 +506,18 @@ func normalizeDetachedReferences(refs []DetachedReference, p Policy, processing 
 // buildDetachedSignature validates all serialized metadata before resource I/O.
 func buildDetachedSignature(ctx context.Context, p *detachedSigningPlan) (*detachedSignatureDraft, error) {
 	sig := newDS(lexicon.DSigElementSignature)
-	sig.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}}
+	sig.NS = []tree.Namespace{{Prefix: lexicon.PrefixDSig, URI: Namespace}}
 	doc := tree.FromNodes([]*tree.Node{sig}, p.xmlLimits)
 	si := newDS(lexicon.DSigElementSignedInfo)
 	add(sig, si)
 
 	methodNode := newDS(lexicon.DSigElementCanonicalizationMethod)
-	setAttr(methodNode, "Algorithm", p.cm.Algorithm)
+	setAttr(methodNode, lexicon.SecurityAttrAlgorithm, p.cm.Algorithm)
 	addInclusive(methodNode, p.cm.InclusivePrefixes)
 	add(si, methodNode)
 
 	sm := newDS(lexicon.DSigElementSignatureMethod)
-	setAttr(sm, "Algorithm", p.method)
+	setAttr(sm, lexicon.SecurityAttrAlgorithm, p.method)
 	add(si, sm)
 	// Build ALL metadata before resolving any data. Reparse the temporary template
 	// to catch invalid Type strings, prefixes, and document limits before I/O.
@@ -585,11 +599,11 @@ func validateDetachedReferenceCount(refs []DetachedReference, maximum int) error
 
 func normalizeResourceLimits(l ResourceLimits) (ResourceLimits, error) {
 	if l.MaxResourceBytes == 0 {
-		l.MaxResourceBytes = 8 << 20
+		l.MaxResourceBytes = defaultMaxResourceBytes
 	}
 
 	if l.MaxTotalResourceBytes == 0 {
-		l.MaxTotalResourceBytes = 32 << 20
+		l.MaxTotalResourceBytes = defaultMaxTotalResourceBytes
 	}
 
 	if l.MaxResourceBytes < 1 || l.MaxTotalResourceBytes < 1 {
@@ -670,7 +684,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 		return fmt.Errorf("%w: standalone Signature required", ErrStructure)
 	}
 
-	children, err := structure(sig, lexicon.DSigElementSignature, "Id")
+	children, err := structure(sig, lexicon.DSigElementSignature, lexicon.SecurityAttrID)
 	if err != nil {
 		return err
 	}
@@ -681,7 +695,7 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 
 	si := children[0]
 
-	signed, err := structure(si, lexicon.DSigElementSignedInfo, "Id")
+	signed, err := structure(si, lexicon.DSigElementSignedInfo, lexicon.SecurityAttrID)
 	if err != nil {
 		return err
 	}
@@ -712,16 +726,16 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 		return fmt.Errorf("%w: signature method", ErrPolicy)
 	}
 
-	value, err := base64Value(ctx, children[1], lexicon.DSigElementSignatureValue, 2048, "Id")
+	value, err := base64Value(ctx, children[1], lexicon.DSigElementSignatureValue, maximumSignatureBytes, lexicon.SecurityAttrID)
 	if err != nil {
 		return err
 	}
 
-	if len(signed)-2 != len(p.expected) {
+	if len(signed)-signedInfoHeaderChildren != len(p.expected) {
 		return fmt.Errorf("%w: expected reference set size", ErrPolicy)
 	}
 
-	refs, err := parseDetachedReferenceSet(ctx, doc, signed[2:], p.policy, p.processing, p.expected)
+	refs, err := parseDetachedReferenceSet(ctx, doc, signed[signedInfoHeaderChildren:], p.policy, p.processing, p.expected)
 	if err != nil {
 		return err
 	}
@@ -734,12 +748,12 @@ func (p *detachedVerificationPlan) parseSignature(ctx context.Context, doc *docu
 func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree.Node, p Policy, processing reference.Options) (parsedDetachedReference, error) {
 	var ref parsedDetachedReference
 
-	children, err := structure(n, lexicon.DSigElementReference, "URI", "Id", "Type")
+	children, err := structure(n, lexicon.DSigElementReference, lexicon.SecurityAttrURI, lexicon.SecurityAttrID, lexicon.SecurityAttrType)
 	if err != nil {
 		return ref, err
 	}
 
-	ref.URI, err = requiredAttribute(n, "URI")
+	ref.URI, err = requiredAttribute(n, lexicon.SecurityAttrURI)
 	if err != nil {
 		return ref, err
 	}
@@ -748,7 +762,7 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 		return ref, err
 	}
 
-	ref.Type, _ = getAttr(n, document.Name{Local: "Type"})
+	ref.Type, _ = getAttr(n, document.Name{Local: lexicon.SecurityAttrType})
 
 	if len(children) != 0 && isDS(children[0], lexicon.DSigElementTransforms) {
 		transforms, err := structure(children[0], lexicon.DSigElementTransforms)
@@ -756,7 +770,7 @@ func parseDetachedReference(ctx context.Context, doc *document.Document, n *tree
 			return ref, err
 		}
 		// Schema requires at least one Transform when Transforms exists.
-		if len(transforms) == 0 || len(transforms) > 64 {
+		if len(transforms) == 0 || len(transforms) > maximumReferenceTransforms {
 			return ref, fmt.Errorf("%w: Transforms count", ErrStructure)
 		}
 
@@ -813,7 +827,9 @@ func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, node
 	for i, n := range nodes {
 		ref, err := parseDetachedReference(ctx, doc, n, policy, processing)
 		if err != nil {
-			return nil, &ReferenceError{i, ref.URI, nameTransform, err}
+			uri, _ := getAttr(n, document.Name{Local: lexicon.SecurityAttrURI})
+
+			return nil, &ReferenceError{i, uri, nameTransform, err}
 		}
 
 		if _, exists := seen[ref.URI]; exists {
@@ -832,7 +848,7 @@ func parseDetachedReferenceSet(ctx context.Context, doc *document.Document, node
 }
 
 func validateDetachedSignedInfo(signed []*tree.Node, maximum int) error {
-	if len(signed) < 3 || len(signed)-2 > maximum || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
+	if len(signed) < signedInfoMinimumChildren || len(signed)-signedInfoHeaderChildren > maximum || !isDS(signed[0], lexicon.DSigElementCanonicalizationMethod) || !isDS(signed[1], lexicon.DSigElementSignatureMethod) {
 		return fmt.Errorf("%w: SignedInfo children", ErrStructure)
 	}
 

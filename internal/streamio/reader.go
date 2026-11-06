@@ -5,17 +5,34 @@ import (
 	"io"
 )
 
+const (
+	// Caps one copy or string-write chunk and the retained scratch buffer, in bytes.
+	copyChunkBytes            = 32 << 10
+	initialReadBufferBytes    = 4 << 10
+	maximumStalledReads       = 100
+	whitespaceReadBufferBytes = 4096
+)
+
 // Reader checks cancellation and a byte limit without retaining input.
 // At the limit it reads one sentinel byte to distinguish exact EOF from overflow.
 // It never closes the caller-owned source.
 type Reader struct {
-	Context    context.Context
-	Source     io.Reader
-	Limit      int64
-	ReadBytes  int64
+	// Context supplies cancellation and must be non-nil.
+	Context context.Context
+	// Source is the caller-owned reader; this wrapper never closes it.
+	Source io.Reader
+	// Limit is the maximum number of input bytes to return. The overflow probe is
+	// not returned.
+	Limit int64
+	// ReadBytes counts bytes returned from Source within the limit.
+	ReadBytes int64
+	// LimitError is returned when the sentinel read detects input beyond Limit.
 	LimitError error
-	stalled    int
-	readErr    error
+	// stalled counts consecutive reads that return neither data nor an error.
+	stalled int
+	// readErr retains a terminal source error so later reads do not resume the
+	// source.
+	readErr error
 }
 
 // Read rejects invalid reader counts and repeated reads that make no progress.
@@ -72,11 +89,11 @@ func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 		return 0, err
 	}
 
-	size := 4 << 10
+	size := initialReadBufferBytes
 
 	source, resident := r.Source.(interface{ Len() int })
 	if resident {
-		size = max(1, min(32<<10, source.Len()))
+		size = max(1, min(copyChunkBytes, source.Len()))
 	}
 
 	buffer := make([]byte, size)
@@ -109,13 +126,13 @@ func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 			return written, readErr
 		}
 
-		if !resident && n == size && size < 32<<10 {
+		if !resident && n == size && size < copyChunkBytes {
 			// Write 4, 4, 8, 16, then 32 KiB chunks. A 4+32 KiB start
 			// would make bytes.Buffer retain 36 KiB * 2^k instead of
 			// 32 KiB * 2^k when collecting a large opaque stream.
-			size = int(min(32<<10, written))
+			size = int(min(copyChunkBytes, written))
 			if size > len(buffer) {
-				buffer = make([]byte, 32<<10)
+				buffer = make([]byte, copyChunkBytes)
 			}
 		}
 	}
@@ -126,7 +143,7 @@ func (r *Reader) progress(n int, err error) error {
 		r.stalled = 0
 	} else if err == nil {
 		r.stalled++
-		if r.stalled >= 100 {
+		if r.stalled >= maximumStalledReads {
 			err = io.ErrNoProgress
 		}
 	}
@@ -141,7 +158,7 @@ func (r *Reader) progress(n int, err error) error {
 // supplies its own context and byte budget; non-XML whitespace is retained.
 type XMLWhitespaceReader struct {
 	Source io.Reader
-	buffer [4096]byte
+	buffer [whitespaceReadBufferBytes]byte
 }
 
 func (r *XMLWhitespaceReader) Read(dst []byte) (int, error) {
@@ -170,7 +187,7 @@ func (r *XMLWhitespaceReader) Read(dst []byte) (int, error) {
 
 		if n == 0 {
 			stalled++
-			if stalled >= 100 {
+			if stalled >= maximumStalledReads {
 				return 0, io.ErrNoProgress
 			}
 		} else {

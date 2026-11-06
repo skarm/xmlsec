@@ -11,6 +11,19 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+// CMS signature OIDs map authenticated algorithm identifiers to the PKIX family;
+// digest selection and RSA-PSS parameter validation happen before this dispatch.
+const (
+	oidECDSAWithSHA256 = "1.2.840.10045.4.3.2"
+	oidECDSAWithSHA384 = "1.2.840.10045.4.3.3"
+	oidECDSAWithSHA512 = "1.2.840.10045.4.3.4"
+	oidEd25519         = "1.3.101.112"
+	oidRSAPSS          = "1.2.840.113549.1.1.10"
+	oidSHA256WithRSA   = "1.2.840.113549.1.1.11"
+	oidSHA384WithRSA   = "1.2.840.113549.1.1.12"
+	oidSHA512WithRSA   = "1.2.840.113549.1.1.13"
+)
+
 func hashReliable(hash crypto.Hash, at time.Time, rules []pki.CryptoConstraint) bool {
 	for _, rule := range rules {
 		if rule.Hash == hash && !at.Before(rule.ReliableUntil) {
@@ -38,6 +51,8 @@ func signatureReliable(algorithm x509.SignatureAlgorithm, hash crypto.Hash, cert
 }
 
 func keyBits(key crypto.PublicKey) int {
+	const bitsPerOctet = 8
+
 	switch key := key.(type) {
 	case *rsa.PublicKey:
 		if key != nil && key.N != nil {
@@ -48,7 +63,7 @@ func keyBits(key crypto.PublicKey) int {
 			return key.Curve.Params().BitSize
 		}
 	case ed25519.PublicKey:
-		return len(key) * 8
+		return len(key) * bitsPerOctet
 	}
 
 	return 0
@@ -58,19 +73,19 @@ func keyBits(key crypto.PublicKey) int {
 // the OID. RSA-PSS parameters were already checked by CMS's fixed profile.
 func cmsAlgorithm(oid string, hash crypto.Hash) x509.SignatureAlgorithm {
 	switch oid {
-	case "1.2.840.113549.1.1.11":
+	case oidSHA256WithRSA:
 		return x509.SHA256WithRSA
-	case "1.2.840.113549.1.1.12":
+	case oidSHA384WithRSA:
 		return x509.SHA384WithRSA
-	case "1.2.840.113549.1.1.13":
+	case oidSHA512WithRSA:
 		return x509.SHA512WithRSA
-	case "1.2.840.10045.4.3.2":
+	case oidECDSAWithSHA256:
 		return x509.ECDSAWithSHA256
-	case "1.2.840.10045.4.3.3":
+	case oidECDSAWithSHA384:
 		return x509.ECDSAWithSHA384
-	case "1.2.840.10045.4.3.4":
+	case oidECDSAWithSHA512:
 		return x509.ECDSAWithSHA512
-	case "1.2.840.113549.1.1.10":
+	case oidRSAPSS:
 		switch hash {
 		case crypto.SHA256:
 			return x509.SHA256WithRSAPSS
@@ -79,7 +94,7 @@ func cmsAlgorithm(oid string, hash crypto.Hash) x509.SignatureAlgorithm {
 		case crypto.SHA512:
 			return x509.SHA512WithRSAPSS
 		}
-	case "1.3.101.112":
+	case oidEd25519:
 		return x509.PureEd25519
 	}
 

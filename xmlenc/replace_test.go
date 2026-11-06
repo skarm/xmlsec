@@ -188,7 +188,7 @@ func TestSelectedElementSuperEncryption(t *testing.T) {
 		before := xmlBytes(t, inner)
 
 		result, handle, err := xmlenc.EncryptElementWithKeyWrap(ctx, inner, selected, kek, xmlenc.KeyWrapOptions{})
-		if result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) || !bytes.Equal(before, xmlBytes(t, inner)) {
+		if result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) || !bytes.Equal(before, xmlBytes(t, inner)) {
 			t.Fatal("partial super-encryption accepted or source changed", err)
 		}
 	}
@@ -298,7 +298,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, bounded, bounded.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(wire, xmlBytes(t, bounded)) {
+	if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, bounded, bounded.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(wire, xmlBytes(t, bounded)) {
 		t.Fatal("complete document byte budget bypassed or source changed", err)
 	}
 }
@@ -331,11 +331,11 @@ func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
 
 	foreign := parse(t, []byte(`<r><secret>foreign</secret></r>`))
 	for _, selected := range []document.Element{{}, foreign.Root(), foreign.Root().Children()[0]} {
-		if result, handle, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, selected, kek, xmlenc.KeyWrapOptions{}); result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) {
+		if result, handle, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, selected, kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("foreign selection accepted", err)
 		}
 
-		if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, source, selected, kek, xmlenc.KeyWrapOptions{}); result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) {
+		if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, source, selected, kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("foreign decryption selection accepted", err)
 		}
 	}
@@ -429,7 +429,7 @@ func FuzzSelectedElementPlaintext(f *testing.F) {
 		}
 
 		if err != nil {
-			if result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatal("error exposed a partial result", err)
 			}
 

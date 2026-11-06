@@ -6,18 +6,60 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/normalization"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+)
+
+// Container depth is a serialization fallback, separate from evaluator call depth.
+// Work units count visits and base run work; the shared chunk size counts source
+// bytes per operation rather than an accepted-input or output-byte limit.
+const (
+	defaultSerializedValueDepth  = 128
+	serializedContainerVisitWork = 1
+	serializedRunBaseWork        = 1
+	serializedWorkChunkBytes     = 64
+)
+
+// JSON node serialization uses XML without its declaration. The other fixed
+// flags retain the established markup writer defaults for this embedding path.
+const (
+	jsonNodeOmitXMLDeclaration  = true
+	jsonNodeIncludeContentType  = true
+	jsonNodeEscapeURIAttributes = true
+)
+
+// JSON escapes cover C0, DEL/C1 and the requested encoding repertoire. A UTF-16
+// code unit uses four hexadecimal digits and six output bytes (\uXXXX); a
+// surrogate pair needs twelve bytes. These sizes are syntax, not policy caps.
+const (
+	jsonFirstPrintableASCII      = 0x20
+	jsonEscapedControlStart      = 0x7F
+	jsonEscapedControlEnd        = 0x9F
+	jsonSurrogatePairEscapeBytes = 12
+	jsonCodeUnitEscapeBytes      = 6
+	jsonCodeUnitHexDigits        = 4
+	jsonHexDigitBits             = 4
+	jsonCodeUnitHighShift        = 12
+	jsonHexDigitMask             = 15
+	jsonMaximumSingleCodeUnit    = 0xFFFF
+)
+
+// The fused node writer preserves work for its former XML buffer and two JSON
+// expansion passes. Invalid UTF-8 decodes to RuneError consuming one input byte.
+const (
+	jsonNodeExpansionPasses = 3
+	invalidUTF8RuneBytes    = 1
 )
 
 // enterValue bounds recursive JSON/adaptive containers independently of the
 // evaluator's own call depth, including values received from an application.
 func (opts serializeOptions) enterValue() error {
 	ctx := opts.serializationContext()
-	if opts.depth > DepthLimit(ctx, 128) {
+	if opts.depth > DepthLimit(ctx, defaultSerializedValueDepth) {
 		return ErrBudget
 	}
 
-	return Charge(ctx, 1)
+	return Charge(ctx, serializedContainerVisitWork)
 }
 
 // join charges each copied part and delimiter before growing the result.
@@ -61,15 +103,20 @@ func (opts serializeOptions) jsonComposite(open, closeBracket string, parts []st
 // potentially much larger concatenation.
 func (opts serializeOptions) characterRuns(value string, plain, mapped func(string) error) error {
 	ctx := opts.serializationContext()
-	if err := Charge(ctx, 1+len(value)/64); err != nil {
+	if err := Charge(ctx, serializedRunBaseWork+len(value)/serializedWorkChunkBytes); err != nil {
 		return err
 	}
 
 	form, normalize := serializeCharMapNorm(opts)
 
+	var normalizer *normalization.Normalizer
+	if normalize {
+		normalizer = &normalization.Normalizer{}
+	}
+
 	emit := func(run string) error {
 		if normalize {
-			return form.Each(ctx, run, plain)
+			return normalizer.Each(ctx, form, run, plain)
 		}
 
 		return plain(run)
@@ -94,7 +141,9 @@ func (opts serializeOptions) characterRuns(value string, plain, mapped func(stri
 			return err
 		}
 
-		start = offset + utf8.RuneLen(r)
+		// A malformed original byte consumes one byte, even though r is RuneError.
+		_, width := utf8.DecodeRuneInString(value[offset:])
+		start = offset + width
 	}
 
 	return emit(value[start:])
@@ -142,7 +191,7 @@ func WriteJSONNode(ctx context.Context, dst io.Writer, value xdm.NodeItem, metho
 		return WriteJSONString(ctx, dst, text, charMap, normalizationForm, canEncode)
 	}
 
-	opts := serializeOptions{ctx: ctx, method: lexicon.MethodXML, omitXMLDeclaration: true, standalone: lexicon.ValueOmit, includeContentType: true, escapeURIAttributes: true}
+	opts := serializeOptions{ctx: ctx, method: lexicon.MethodXML, omitXMLDeclaration: jsonNodeOmitXMLDeclaration, standalone: lexicon.ValueOmit, includeContentType: jsonNodeIncludeContentType, escapeURIAttributes: jsonNodeEscapeURIAttributes}
 	if err := opts.validate(); err != nil {
 		return err
 	}
@@ -171,7 +220,7 @@ func normalizeSerializedValue(value string, opts serializeOptions) (string, erro
 	}
 
 	ctx := opts.serializationContext()
-	if err := Charge(ctx, 1+len(value)/64); err != nil {
+	if err := Charge(ctx, serializedRunBaseWork+len(value)/serializedWorkChunkBytes); err != nil {
 		return "", err
 	}
 
@@ -193,7 +242,7 @@ func writeSerializationString(dst io.Writer, value string) error {
 }
 
 func writeSerializedJSONRun(ctx context.Context, dst io.Writer, run string, canEncode func(rune) bool) error {
-	if err := Charge(ctx, 1+len(run)/64); err != nil {
+	if err := Charge(ctx, serializedRunBaseWork+len(run)/serializedWorkChunkBytes); err != nil {
 		return err
 	}
 
@@ -213,7 +262,9 @@ func writeSerializedJSONRun(ctx context.Context, dst io.Writer, run string, canE
 			return err
 		}
 
-		start = offset + utf8.RuneLen(r)
+		// Preserve boundaries in the original run when RuneError came from one byte.
+		_, width := utf8.DecodeRuneInString(run[offset:])
+		start = offset + width
 	}
 
 	return writeSerializationString(dst, run[start:])
@@ -239,26 +290,26 @@ func serializedJSONRune(r rune, canEncode func(rune) bool) string {
 		return `\t`
 	}
 
-	if r >= 0x20 && !(r >= 0x7F && r <= 0x9F) && isValidXMLCodepoint(int(r)) && (canEncode == nil || canEncode(r)) {
+	if r >= jsonFirstPrintableASCII && !(r >= jsonEscapedControlStart && r <= jsonEscapedControlEnd) && isValidXMLCodepoint(int(r)) && (canEncode == nil || canEncode(r)) {
 		return ""
 	}
 
-	var data [12]byte
+	var data [jsonSurrogatePairEscapeBytes]byte
 
 	unit := func(offset int, value uint16) {
 		data[offset], data[offset+1] = '\\', 'u'
-		for i := range 4 {
-			data[offset+2+i] = jsonHexUpper[(value>>uint(12-i*4))&15]
+		for i := range jsonCodeUnitHexDigits {
+			data[offset+2+i] = jsonHexUpper[(value>>uint(jsonCodeUnitHighShift-i*jsonHexDigitBits))&jsonHexDigitMask]
 		}
 	}
-	if r <= 0xFFFF {
+	if r <= jsonMaximumSingleCodeUnit {
 		unit(0, uint16(r)) // #nosec G115 -- r is a decoded Unicode rune and this branch restricts it to the BMP.
-		return string(data[:6])
+		return string(data[:jsonCodeUnitEscapeBytes])
 	}
 
 	hi, lo := utf16SurrogatePair(r)
 	unit(0, hi)
-	unit(6, lo)
+	unit(jsonCodeUnitEscapeBytes, lo)
 
 	return string(data[:])
 }
@@ -277,7 +328,7 @@ func (w *jsonNodeWriter) Write(p []byte) (int, error) {
 	}
 	// Preserve work accounting for the former XML buffer and its two JSON
 	// expansion passes. Chunk boundaries may conservatively charge more work.
-	if err := Charge(w.ctx, 3+3*(len(p)/64)); err != nil {
+	if err := Charge(w.ctx, jsonNodeExpansionPasses+jsonNodeExpansionPasses*(len(p)/serializedWorkChunkBytes)); err != nil {
 		return 0, err
 	}
 
@@ -294,7 +345,7 @@ func (w *jsonNodeWriter) Write(p []byte) (int, error) {
 		}
 
 		r, size := utf8.DecodeRune(w.tail[:w.tailSize])
-		if r == utf8.RuneError && size == 1 {
+		if r == utf8.RuneError && size == invalidUTF8RuneBytes {
 			return offset, io.ErrUnexpectedEOF
 		}
 
@@ -308,7 +359,7 @@ func (w *jsonNodeWriter) Write(p []byte) (int, error) {
 	start := offset
 	for offset < len(p) {
 		r, size := utf8.DecodeRune(p[offset:])
-		if r == utf8.RuneError && size == 1 {
+		if r == utf8.RuneError && size == invalidUTF8RuneBytes {
 			if utf8.FullRune(p[offset:]) {
 				return offset, io.ErrUnexpectedEOF
 			}

@@ -12,18 +12,25 @@
 // Document.Root and navigate elements, attributes and other node kinds without
 // exposing a mutable tree. [Name] uses an expanded namespace URI and local
 // name, independent of the source prefix. The parser accepts UTF-8 and UTF-16
-// XML 1.0. DTDs, external entities and XSD validation are unsupported; ID
+// XML 1.0. The default rejects DTDs and external entities; ID
 // attributes are configured by consumers. Names follow XML 1.0 Fifth Edition,
 // including supplementary characters through U+EFFFF. This is not a complete
 // XML processor conformance claim.
 //
-// Nonempty namespace names must be absolute URIs. The parser normalizes XML
-// line endings and literal attribute whitespace, expands character references
-// and the five predefined entities, and preserves the resulting Unicode
-// sequence. It does not obtain DTD attribute defaults, declared attribute types
-// or replacement entities. No resource resolver is invoked while parsing.
-// A general XML processor mode would need those semantics and explicit bounded
-// external resolution; this API does not expose such a mode.
+// In the default mode, nonempty namespace names must be absolute URIs. The
+// parser normalizes XML line endings and literal attribute whitespace, expands
+// character references and the five predefined entities, and preserves the
+// resulting Unicode sequence. The default parser invokes no resource resolver.
+//
+// [ParseOptions] with NonValidating enables a separate bounded XML 1.0
+// nonvalidating processor: DTD entities, attribute defaults and normalization,
+// Namespaces 1.0 relative namespace names and supported single-byte encodings.
+// XML 1.x declarations are processed using XML 1.0 syntax. External subsets and
+// entities require an explicit [EntityResolver]; there is no automatic I/O.
+// DTD notation, unparsed-entity and processing-instruction information is
+// available through Document.DTD as owned copies. Serialization writes the
+// expanded tree and omits the original DTD. DTD validity and XSD validation are
+// not performed. Security consumers must deliberately choose their input mode.
 //
 // # Node selections and output
 //

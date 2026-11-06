@@ -14,6 +14,28 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Streaming control flow charges one logical operation at each respective
+// clause/item/binding site. Positional variables use XPath's one-based origin,
+// independently of zero-based internal clause and binding cursors.
+const (
+	flworClauseWork       = 1
+	flworItemWork         = 1
+	quantifiedBindingWork = 1
+	flworPositionOrigin   = 1
+)
+
+// Catch bindings use the standard error namespace's conventional lexical prefix.
+// Keep the qualified spellings because VariableKey performs the existing lookup.
+const (
+	catchVariableCode         = lexicon.PrefixErr + ":code"
+	catchVariableDescription  = lexicon.PrefixErr + ":description"
+	catchVariableValue        = lexicon.PrefixErr + ":value"
+	catchVariableModule       = lexicon.PrefixErr + ":module"
+	catchVariableLineNumber   = lexicon.PrefixErr + ":line-number"
+	catchVariableColumnNumber = lexicon.PrefixErr + ":column-number"
+	catchVariableAdditional   = lexicon.PrefixErr + ":additional"
+)
+
 // checkedArrayIndex converts an xs:integer array index to int. An index outside
 // the int range (above 2^31-1 where int is 32 bits) raises FOAY0001: no array
 // has that many members, and converting it would wrap to a valid index.
@@ -201,7 +223,7 @@ func iterateFLWORClauses(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 		return consumer.ConsumeTuple(scope)
 	}
 
-	if err := ec.countOps(ctx, 1); err != nil {
+	if err := ec.countOps(ctx, flworClauseWork); err != nil {
 		return err
 	}
 
@@ -218,9 +240,13 @@ func iterateFLWORClauses(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 		pos := 0
 
 		for item := range xdm.SequenceItems(domain) {
+			if err := ec.countOps(ctx, flworItemWork); err != nil {
+				return err
+			}
+
 			inner := scopeWithBinding(scope, VariableKey(c.Var, ec.namespaces), xdm.ItemSlice{item})
 			if c.PosVar != "" {
-				inner = scopeWithBinding(inner, VariableKey(c.PosVar, ec.namespaces), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(pos + 1)}})
+				inner = scopeWithBinding(inner, VariableKey(c.PosVar, ec.namespaces), xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(pos + flworPositionOrigin)}})
 			}
 
 			if err := iterateFLWORClauses(evalFn, ctx, ec, clauses, i+1, inner, consumer); err != nil {
@@ -278,6 +304,10 @@ func evalQuantifiedBindings(evalFn exprEvaluator, ctx context.Context, ec *evalC
 	}
 
 	for item := range xdm.SequenceItems(domain) {
+		if err := ec.countOps(ctx, quantifiedBindingWork); err != nil {
+			return nil, err
+		}
+
 		oldScope := ec.pushScope(scopeWithBinding(ec.vars, VariableKey(binding.Var, ec.namespaces), xdm.ItemSlice{item}))
 		result, err := evalQuantifiedBindings(evalFn, ctx, ec, e, idx+1)
 		ec.restoreScope(oldScope)
@@ -427,13 +457,13 @@ func buildCatchContext(ec *evalContext, xpErr *xdm.Error) *evalContext {
 		TypeName: xdm.TypeQName,
 		Value:    errQName,
 	})
-	ctx := ec.withVar("err:code", errQN)
-	ctx = ctx.withVar("err:description", xdm.SingleString(xpErr.Message))
-	ctx = ctx.withVar("err:value", xpErr.Value)
-	ctx = ctx.withVar("err:module", nil)
-	ctx = ctx.withVar("err:line-number", nil)
-	ctx = ctx.withVar("err:column-number", nil)
-	ctx = ctx.withVar("err:additional", nil)
+	ctx := ec.withVar(catchVariableCode, errQN)
+	ctx = ctx.withVar(catchVariableDescription, xdm.SingleString(xpErr.Message))
+	ctx = ctx.withVar(catchVariableValue, xpErr.Value)
+	ctx = ctx.withVar(catchVariableModule, nil)
+	ctx = ctx.withVar(catchVariableLineNumber, nil)
+	ctx = ctx.withVar(catchVariableColumnNumber, nil)
+	ctx = ctx.withVar(catchVariableAdditional, nil)
 
 	return ctx
 }

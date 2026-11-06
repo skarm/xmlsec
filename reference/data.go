@@ -10,6 +10,12 @@ import (
 )
 
 const (
+	invalidKindName     = "invalid"
+	nodeSetKindName     = "node-set"
+	octetStreamKindName = "octet-stream"
+)
+
+const (
 	// EnvelopedSignature is the XMLDSig enveloped-signature transform URI.
 	EnvelopedSignature = lexicon.TransformEnvelopedSignature
 	// Base64 is the XMLDSig Base64 transform URI.
@@ -45,11 +51,11 @@ const (
 func (k Kind) String() string {
 	switch k {
 	case OctetStream:
-		return "octet-stream"
+		return octetStreamKindName
 	case NodeSet:
-		return "node-set"
+		return nodeSetKindName
 	default:
-		return "invalid"
+		return invalidKindName
 	}
 }
 
@@ -67,11 +73,11 @@ func (k *Kind) UnmarshalText(text []byte) error {
 	var value Kind
 
 	switch string(text) {
-	case "invalid":
+	case invalidKindName:
 		value = Invalid
-	case "octet-stream":
+	case octetStreamKindName:
 		value = OctetStream
-	case "node-set":
+	case nodeSetKindName:
 		value = NodeSet
 	default:
 		return fmt.Errorf("%w: unknown data kind", ErrInput)
@@ -86,9 +92,12 @@ func (k *Kind) UnmarshalText(text []byte) error {
 // invalid, but an empty octet stream or initialized empty node set is valid.
 // Octets copies the supplied bytes.
 type Data struct {
-	kind   Kind
+	// kind selects the active octet-stream or node-set representation.
+	kind Kind
+	// octets owns data for the octet-stream representation.
 	octets []byte
-	nodes  document.NodeSet
+	// nodes holds the immutable node-set representation.
+	nodes document.NodeSet
 }
 
 // Octets copies data into an immutable octet stream.
@@ -163,11 +172,17 @@ type Step struct {
 
 // Report records a completed transform chain without retaining the final output bytes.
 type Report struct {
-	input            Kind
-	size             int
-	steps            []Step
-	produced         int
-	visits           int
+	// input records the resolver's initial data representation.
+	input Kind
+	// size records the final output length in bytes.
+	size int
+	// steps records transform execution diagnostics in order.
+	steps []Step
+	// produced counts aggregate intermediate and final output bytes.
+	produced int
+	// visits counts aggregate node visits charged to processing.
+	visits int
+	// canonicalization identifies the final canonicalization algorithm, if applied.
 	canonicalization string
 }
 
@@ -227,8 +242,10 @@ func (o *Report) Canonicalization() string {
 
 // Output retains buffered transform bytes and their processing report.
 type Output struct {
+	// report retains immutable processing diagnostics.
 	report *Report
-	bytes  []byte
+	// bytes owns the final processed octets.
+	bytes []byte
 }
 
 // Bytes returns an owned copy of the buffered output.

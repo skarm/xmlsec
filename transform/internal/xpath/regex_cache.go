@@ -45,16 +45,18 @@ func newRegexLRUCache(capacity int) *regexLRUCache {
 // Load returns the cached compiled regex for key, marking it most-recently-used.
 func (c *regexLRUCache) Load(key xpathRegexCacheKey) (*compiledXPathRegex, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	el, ok := c.items[key]
 	if !ok {
+		c.mu.Unlock()
 		return nil, false
 	}
 
 	c.ll.MoveToFront(el)
+	value := el.Value.(*regexLRUEntry).value //nolint:forcetypeassert // Only regexLRUEntry values are inserted into this list.
+	c.mu.Unlock()
 
-	return el.Value.(*regexLRUEntry).value, true //nolint:forcetypeassert // Only regexLRUEntry values are inserted into this list.
+	return value, true
 }
 
 // LoadOrStore returns the existing value for key, marking it most-recently-used,
@@ -62,6 +64,13 @@ func (c *regexLRUCache) Load(key xpathRegexCacheKey) (*compiledXPathRegex, bool)
 // The bool reports whether an existing value was loaded. Admission evicts the
 // least-recently-used entries as needed.
 func (c *regexLRUCache) LoadOrStore(key xpathRegexCacheKey, value *compiledXPathRegex) (*compiledXPathRegex, bool) {
+	// Conservative accounting charges retained key storage and entry metadata;
+	// the pattern program reports its own cost. These are not exact heap sizes.
+	const (
+		regexCacheKeyWeightFactor    = 2
+		regexCacheEntryOverheadBytes = 256
+	)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -70,7 +79,7 @@ func (c *regexLRUCache) LoadOrStore(key xpathRegexCacheKey, value *compiledXPath
 		return el.Value.(*regexLRUEntry).value, true //nolint:forcetypeassert // Only regexLRUEntry values are inserted into this list.
 	}
 
-	weight := 2*(len(key.pattern)+len(key.flags)) + 256 + value.program.CacheCost(xpathRegexCacheBytes+1)
+	weight := regexCacheKeyWeightFactor*(len(key.pattern)+len(key.flags)) + regexCacheEntryOverheadBytes + value.program.CacheCost(xpathRegexCacheBytes+1)
 	if weight > xpathRegexCacheBytes {
 		return value, false
 	}

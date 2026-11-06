@@ -64,8 +64,8 @@ func processTo(ctx context.Context, dst io.Writer, data reference.Data, ts []ref
 	return out, nil
 }
 
-// processData shares an aggregate octet-production budget across SignedInfo and
-// every reference. Intermediate outputs count, not only the last representation.
+// writeCanonicalElement streams a complete subtree through the selected
+// canonicalization transform, charging the shared octet-production budget.
 func writeCanonicalElement(ctx context.Context, dst io.Writer, e document.Element, method reference.Transform, remaining *int) error {
 	set, err := e.Subtree(ctx)
 	if err != nil {

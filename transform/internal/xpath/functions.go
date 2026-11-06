@@ -17,6 +17,22 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Standard built-in registry arities count arguments. These package-shared
+// values do not describe sequence cardinality, focus positions or output limits.
+const (
+	builtinArityZero  = 0
+	builtinArityOne   = 1
+	builtinArityTwo   = 2
+	builtinArityThree = 3
+	builtinArityFour  = 4
+	builtinArityFive  = 5
+)
+
+// prefixFn is the conventional prefix for the standard function namespace.
+const (
+	prefixFn = "fn"
+)
+
 // Namespace URIs for standard XPath 3.1 function namespaces.
 const (
 	NSFn    = lexicon.NamespaceFn
@@ -25,6 +41,43 @@ const (
 	NSArray = lexicon.NamespaceArray
 	NSErr   = lexicon.NamespaceErr
 	NSXS    = lexicon.NamespaceXSD
+)
+
+// Function argument cardinality and result fast-path cardinality have distinct
+// roles. The latter only selects an accounting shortcut, not a result limit.
+const (
+	singletonFunctionArgument = 1
+	singleBuiltinResult       = 1
+)
+
+// Built-in arities retain the standard signatures. Boolean predicates are
+// unary, truth constants are nullary, and error/trace keep independent ranges.
+// Nonnegative maximum arities are finite; negative maxima retain variadic behavior.
+const (
+	predicateFunctionArity = 1
+	constantBooleanArity   = 0
+	fnErrorMinArity        = 0
+	fnErrorMaxArity        = 3
+	fnTraceMinArity        = 1
+	fnTraceMaxArity        = 2
+	finiteArityFloor       = 0
+	fnNameError            = "error"
+	fnNameTrace            = "trace"
+)
+
+// These message fragments are inputs to the existing error-category remapping.
+// The default error description and trace fragments preserve public diagnostics
+// exactly; trace accounting charges one logical operation per inspected item.
+const (
+	emptySequenceMessageMarker = "empty sequence"
+	multiItemMessageMarker     = "length > 1"
+	defaultErrorDescription    = "error() called"
+	traceOutputPrefix          = "[trace] "
+	traceLabelSeparator        = ": "
+	traceItemSeparator         = ", "
+	traceOutputTerminator      = "\n"
+	traceOpaqueItemFormat      = "<%T>"
+	traceItemWork              = 1
 )
 
 // Function implements a built-in or host-supplied XPath function. Implementations
@@ -66,14 +119,6 @@ type DynamicRefSnapshotProvider interface {
 type FunctionRefBinder interface {
 	// BindFunctionReference returns a function bound to adapter-specific lexical state.
 	BindFunctionReference() Function
-}
-
-func bindFunctionReference(fn Function) Function {
-	if binder, ok := fn.(FunctionRefBinder); ok {
-		return binder.BindFunctionReference()
-	}
-
-	return fn
 }
 
 // TypedFunction extends Function with type signature information.
@@ -137,7 +182,7 @@ func (f *hostBuiltin) FuncReturnTypeForArity(arity int) *xdm.SequenceType {
 // PredeclaredNamespace resolves a standard XPath namespace prefix.
 func PredeclaredNamespace(prefix string) (string, bool) {
 	switch prefix {
-	case "fn":
+	case prefixFn:
 		return NSFn, true
 	case nameMath:
 		return NSMath, true
@@ -147,7 +192,7 @@ func PredeclaredNamespace(prefix string) (string, bool) {
 		return NSArray, true
 	case lexicon.PrefixErr:
 		return NSErr, true
-	case "xs":
+	case lexicon.PrefixXS:
 		return NSXS, true
 	}
 
@@ -156,7 +201,7 @@ func PredeclaredNamespace(prefix string) (string, bool) {
 
 // PredeclaredNamespaces returns caller-owned standard namespace bindings.
 func PredeclaredNamespaces() map[string]string {
-	return map[string]string{"fn": NSFn, nameMath: NSMath, keywordMap: NSMap, keywordArray: NSArray, lexicon.PrefixErr: NSErr, "xs": NSXS}
+	return map[string]string{prefixFn: NSFn, nameMath: NSMath, keywordMap: NSMap, keywordArray: NSArray, lexicon.PrefixErr: NSErr, lexicon.PrefixXS: NSXS}
 }
 
 // IsBuiltinFunction returns true if name is a registered XPath built-in function.
@@ -195,6 +240,14 @@ func StandardFunctionAcceptsArity(uri, name string, arity int) bool {
 	return checkArity(fn, name, arity) == nil
 }
 
+func bindFunctionReference(fn Function) Function {
+	if binder, ok := fn.(FunctionRefBinder); ok {
+		return binder.BindFunctionReference()
+	}
+
+	return fn
+}
+
 // isExtensionBuiltin identifies built-ins outside F&O 3.1. They remain
 // static-call-only so function-lookup cannot bypass a restricted static context.
 func isExtensionBuiltin(fn Function) bool {
@@ -212,7 +265,7 @@ func unavailableModuleFunction(fn Function) bool {
 func namespacePrefixFor(uri string) string {
 	switch uri {
 	case NSFn:
-		return "fn"
+		return prefixFn
 	case NSMath:
 		return nameMath
 	case NSMap:
@@ -222,7 +275,7 @@ func namespacePrefixFor(uri string) string {
 	case NSErr:
 		return lexicon.PrefixErr
 	case NSXS:
-		return "xs"
+		return lexicon.PrefixXS
 	}
 
 	return ""
@@ -336,7 +389,7 @@ func resolveFunctionByURIInfo(ctx context.Context, ec *evalContext, uri, name st
 	}
 
 	cause := fmt.Errorf("%w: %s#%d", ErrUnknownFunction, name, arity)
-	if ec.version >= 20 {
+	if ec.version >= xpathVersion20 {
 		return resolveUnavailableFunction(ctx, ec, uri, name, arity, &xdm.Error{Code: lexicon.ErrXPST0017, Message: cause.Error(), Cause: cause})
 	}
 
@@ -377,7 +430,7 @@ func checkArity(fn Function, name string, arity int) error {
 		return fmt.Errorf("%w: %s requires at least %d arguments, got %d", ErrArityMismatch, name, minArity, arity)
 	}
 
-	if maxArity >= 0 && arity > maxArity {
+	if maxArity >= finiteArityFloor && arity > maxArity {
 		return fmt.Errorf("%w: %s accepts at most %d arguments, got %d", ErrArityMismatch, name, maxArity, arity)
 	}
 
@@ -409,7 +462,7 @@ func (f *builtinFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 		return nil, err
 	}
 	// Function items and higher-order calls can bypass scalar AST/VM evaluation.
-	if xdm.SequenceLen(result) == 1 {
+	if xdm.SequenceLen(result) == singleBuiltinResult {
 		if value, ok := result.Get(0).(xdm.AtomicValue); ok {
 			err = ChargeNumber(ctx, value)
 		}
@@ -451,7 +504,7 @@ func seqToStringErr(ctx context.Context, seq xdm.Sequence) (string, error) {
 		return "", nil
 	}
 
-	if len(atoms) > 1 {
+	if len(atoms) > singletonFunctionArgument {
 		return "", &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("expected single string, got sequence of length %d", len(atoms))}
 	}
 
@@ -522,7 +575,7 @@ func coerceAtomizedString(ctx context.Context, seq xdm.Sequence) (value string, 
 
 	if _, serr := atomizeStreamCont(seq, typedValueItemCheck(ctx), func(av xdm.AtomicValue) (bool, error) {
 		count++
-		if count == 1 {
+		if count == singletonFunctionArgument {
 			first = av
 			return true, nil
 		}
@@ -537,7 +590,7 @@ func coerceAtomizedString(ctx context.Context, seq xdm.Sequence) (value string, 
 		return "", true, nil
 	}
 
-	if count > 1 {
+	if count > singletonFunctionArgument {
 		return "", false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected xs:string?, got sequence of length > 1"}
 	}
 
@@ -568,7 +621,7 @@ func coerceArgToInteger(ctx context.Context, seq xdm.Sequence) (int64, error) {
 	switch xdm.SequenceLen(seq) {
 	case 0:
 		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected xs:integer, got empty sequence"}
-	case 1:
+	case singletonFunctionArgument:
 	default:
 		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected xs:integer, got sequence of length > 1"}
 	}
@@ -619,13 +672,13 @@ func coerceArgToInteger(ctx context.Context, seq xdm.Sequence) (int64, error) {
 // coerceArgToDoubleRequired applies XPath 3.1 function coercion rules for xs:double params.
 // Accepts any numeric type and xs:untypedAtomic after casting. Rejects empty and multi-item sequences.
 func coerceArgToDoubleRequired(ctx context.Context, seq xdm.Sequence) (float64, error) {
-	a, err := extractSingleAtomicArg(seq, "xs:double")
+	a, err := extractSingleAtomicArg(seq, xdm.TypeDouble)
 	if err != nil {
 		if xpErr, ok := errors.AsType[*xdm.Error](err); ok {
 			switch {
-			case strings.Contains(xpErr.Message, "empty sequence"):
+			case strings.Contains(xpErr.Message, emptySequenceMessageMarker):
 				return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected xs:double, got empty sequence"}
-			case strings.Contains(xpErr.Message, "length > 1"):
+			case strings.Contains(xpErr.Message, multiItemMessageMarker):
 				return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected xs:double, got sequence of length > 1"}
 			}
 		}
@@ -657,7 +710,7 @@ func extractSingleAtomicArg(seq xdm.Sequence, fnName string) (xdm.AtomicValue, e
 	switch xdm.SequenceLen(seq) {
 	case 0:
 		return xdm.AtomicValue{}, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fnName + ": expected single atomic value, got empty sequence"}
-	case 1:
+	case singletonFunctionArgument:
 		return AtomizeItem(seq.Get(0))
 	default:
 		return xdm.AtomicValue{}, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fnName + ": expected single atomic value, got sequence of length > 1"}
@@ -691,13 +744,13 @@ func coerceToInteger(ctx context.Context, a xdm.AtomicValue) (xdm.AtomicValue, e
 func lookupFunctions(name string) (*builtinFunc, bool) {
 	switch name {
 	case fnNameBoolean:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnBoolean}, true
+		return &builtinFunc{name: name, min: predicateFunctionArity, max: predicateFunctionArity, fn: fnBoolean}, true
 	case fnNameNot:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnNot}, true
+		return &builtinFunc{name: name, min: predicateFunctionArity, max: predicateFunctionArity, fn: fnNot}, true
 	case lexicon.ValueTrue:
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnTrue}, true
+		return &builtinFunc{name: name, min: constantBooleanArity, max: constantBooleanArity, fn: fnTrue}, true
 	case lexicon.ValueFalse:
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnFalse}, true
+		return &builtinFunc{name: name, min: constantBooleanArity, max: constantBooleanArity, fn: fnFalse}, true
 	}
 
 	return nil, false
@@ -731,10 +784,10 @@ func fnFalse(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 
 func lookupFunctions2(name string) (*builtinFunc, bool) {
 	switch name {
-	case lexicon.TypeError:
-		return &builtinFunc{name: name, min: 0, max: 3, fn: fnError}, true
-	case "trace":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnTrace}, true
+	case fnNameError:
+		return &builtinFunc{name: name, min: fnErrorMinArity, max: fnErrorMaxArity, fn: fnError}, true
+	case fnNameTrace:
+		return &builtinFunc{name: name, min: fnTraceMinArity, max: fnTraceMaxArity, fn: fnTrace}, true
 	}
 
 	return nil, false
@@ -742,7 +795,7 @@ func lookupFunctions2(name string) (*builtinFunc, bool) {
 
 func fnError(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	code := xdm.QNameValue{Prefix: lexicon.PrefixErr, URI: NSErr, Local: errCodeFOER0000}
-	msg := "error() called"
+	msg := defaultErrorDescription
 
 	if len(args) > 0 {
 		qv, hasCode, err := coerceErrorCode(args[0])
@@ -776,7 +829,7 @@ func coerceErrorCode(seq xdm.Sequence) (xdm.QNameValue, bool, error) {
 	switch xdm.SequenceLen(seq) {
 	case 0:
 		return xdm.QNameValue{}, false, nil
-	case 1:
+	case singletonFunctionArgument:
 	default:
 		return xdm.QNameValue{}, false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:error code argument must be xs:QName?"}
 	}
@@ -818,9 +871,9 @@ func fnTrace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 	}
 
-	prefix := "[trace] "
+	prefix := traceOutputPrefix
 	if label != "" {
-		prefix += label + ": "
+		prefix += label + traceLabelSeparator
 	}
 
 	if err := write(prefix); err != nil {
@@ -828,19 +881,19 @@ func fnTrace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	for i := range xdm.SequenceLen(args[0]) {
-		if err := Charge(ctx, 1); err != nil {
+		if err := Charge(ctx, traceItemWork); err != nil {
 			return nil, err
 		}
 
 		if i > 0 {
-			if err := write(", "); err != nil {
+			if err := write(traceItemSeparator); err != nil {
 				return nil, err
 			}
 		}
 
 		item := args[0].Get(i)
 
-		value := fmt.Sprintf("<%T>", item)
+		value := fmt.Sprintf(traceOpaqueItemFormat, item)
 		if atomic, err := AtomizeItem(item); err == nil {
 			value, err = atomicToString(atomic)
 			if err != nil {
@@ -853,7 +906,7 @@ func fnTrace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		}
 	}
 
-	if err := write("\n"); err != nil {
+	if err := write(traceOutputTerminator); err != nil {
 		return nil, err
 	}
 

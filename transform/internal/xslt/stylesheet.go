@@ -8,6 +8,32 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Encoded XSLT processor selections are ten times their major version; this scale is not a decimal radix or an XML Schema lexical enum.
+const (
+	processorVersionScale = 10
+)
+
+// Encoded XSLT processor selections, independent of a module declaration and the XPath edition selected for its expressions.
+const (
+	processorXSLT10 = 10
+	processorXSLT20 = 20
+	processorXSLT30 = 30
+)
+
+// Major-version boundaries for XSLT compatibility and the fn:transform minimum-processor request, before encoding into processor selections.
+const (
+	xsltMajorVersion1 = 1
+	xsltMajorVersion2 = 2
+	xsltMajorVersion3 = 3
+)
+
+// XPath compiler/evaluator edition selectors; XSLT processor profiles map to these explicitly rather than sharing one version policy.
+const (
+	xpathProfile10 = 10
+	xpathProfile20 = 20
+	xpathProfile31 = 31
+)
+
 const (
 	// Mode sentinel values per the XSLT 3.0 specification.
 	modeDefault = "#default" // the default (unnamed) mode, used as internal key
@@ -182,6 +208,7 @@ type modeDef struct {
 	ImportPrec          int
 	Implicit            bool // created from a template rule, with no matching xsl:expose
 	Streamable          bool
+	HasStreamable       bool // streamable was explicitly specified
 	conflictStreamable  bool // deferred: conflicting streamable at same prec
 	conflictOnNoMatch   bool
 	conflictVisibility  bool
@@ -279,7 +306,7 @@ func (ss *Stylesheet) DefaultOutputDef() *OutputDef {
 	}
 
 	out := cloneOutputDef(ss.outputs[""])
-	if out == nil && ss.processorLanguage() <= 20 {
+	if out == nil && ss.processorLanguage() <= processorXSLT20 {
 		out = defaultOutputDef()
 	}
 
@@ -342,7 +369,7 @@ func (ss *Stylesheet) defaultItemSeparator() *string {
 // processorLanguage also covers internal zero-value stylesheet helpers.
 func (ss *Stylesheet) processorLanguage() int {
 	if ss.processorVersion == 0 {
-		return 30
+		return processorXSLT30
 	}
 
 	return ss.processorVersion
@@ -350,12 +377,12 @@ func (ss *Stylesheet) processorLanguage() int {
 
 func (ss *Stylesheet) xpathVersion() int {
 	switch ss.processorLanguage() {
-	case 10:
-		return 10
-	case 20:
-		return 20
+	case processorXSLT10:
+		return xpathProfile10
+	case processorXSLT20:
+		return xpathProfile20
 	default:
-		return 31
+		return xpathProfile31
 	}
 }
 

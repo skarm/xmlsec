@@ -11,7 +11,9 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-// executeTemplate executes a template with the given node as context.
+// maxRecursionDepth is the fallback ceiling for nested template, function and
+// attribute-set execution, and for the HTML serializer namespace stack.
+// An active XPath depth budget replaces this fallback through DepthLimit.
 const maxRecursionDepth = 2000
 
 // conflictCandidateResult classifies one candidate template probed by
@@ -58,12 +60,12 @@ func (ec *execContext) applyTemplates(ctx context.Context, node xdm.Node, mode s
 	// XTTE3110: typed="no" mode rejects typed nodes
 	if md := ec.lookupModeDef(mode); md != nil {
 		switch md.Typed {
-		case lexicon.ValueYes, lexicon.ValueTrue, "1", validationStrict, validationLax:
+		case lexicon.ValueYes, lexicon.ValueTrue, booleanDigitTrue, validationStrict, validationLax:
 			if !ec.nodeIsTyped(node) {
 				return dynamicError(errCodeXTTE3100,
 					"mode %q has typed=%q but node is untyped", mode, md.Typed)
 			}
-		case lexicon.ValueNo, lexicon.ValueFalse, "0":
+		case lexicon.ValueNo, lexicon.ValueFalse, booleanDigitFalse:
 			if ec.nodeIsTyped(node) {
 				return dynamicError(errCodeXTTE3110,
 					"mode %q has typed=%q but node is typed", mode, md.Typed)
@@ -489,6 +491,14 @@ func (ec *execContext) executeAtomicTemplate(ctx context.Context, tmpl *template
 	ec.pushVarScope()
 	defer ec.popVarScope()
 
+	if tmpl.ContextItemUse == ctxItemAbsent {
+		ec.contextItem = nil
+	}
+
+	if err := ec.checkContextItemType(tmpl); err != nil {
+		return err
+	}
+
 	// Collect param overrides supplied by the caller (via xsl:with-param).
 	var po map[string]xdm.Sequence
 	if len(paramOverrides) > 0 {
@@ -541,6 +551,26 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	savedXPathDefaultNS := ec.xpathDefaultNS
 	savedHasXPathDefaultNS := ec.hasXPathDefaultNS
 	savedDefaultCollation := ec.defaultCollation
+	// Track overriding template for xsl:original support
+	savedOverridingTemplate := ec.overridingTemplate
+	if tmpl.OriginalTemplate != nil {
+		ec.overridingTemplate = tmpl
+	}
+	defer func() {
+		ec.currentNode = savedCurrent
+		ec.contextNode = savedContext
+		ec.contextItem = savedItem
+		ec.currentMode = savedMode
+		ec.setCurrentTemplate(savedTemplate)
+		ec.overridingTemplate = savedOverridingTemplate
+		ec.xpathDefaultNS = savedXPathDefaultNS
+		ec.hasXPathDefaultNS = savedHasXPathDefaultNS
+		ec.defaultCollation = savedDefaultCollation
+		ec.position = savedPos
+		ec.size = savedSize
+		ec.tunnelParams = savedTunnel
+	}()
+
 	ec.currentNode = node
 	ec.contextNode = node
 	ec.currentMode = mode
@@ -566,25 +596,6 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	if err := ec.checkContextItemType(tmpl); err != nil {
 		return err
 	}
-	// Track overriding template for xsl:original support
-	savedOverridingTemplate := ec.overridingTemplate
-	if tmpl.OriginalTemplate != nil {
-		ec.overridingTemplate = tmpl
-	}
-	defer func() {
-		ec.currentNode = savedCurrent
-		ec.contextNode = savedContext
-		ec.contextItem = savedItem
-		ec.currentMode = savedMode
-		ec.setCurrentTemplate(savedTemplate)
-		ec.overridingTemplate = savedOverridingTemplate
-		ec.xpathDefaultNS = savedXPathDefaultNS
-		ec.hasXPathDefaultNS = savedHasXPathDefaultNS
-		ec.defaultCollation = savedDefaultCollation
-		ec.position = savedPos
-		ec.size = savedSize
-		ec.tunnelParams = savedTunnel
-	}()
 
 	ec.pushVarScope()
 	defer ec.popVarScope()
@@ -666,8 +677,12 @@ func (ec *execContext) checkTemplateParam(ctx context.Context, p *param, val xdm
 }
 
 func (ec *execContext) parameterDefaultErrorCode() string {
-	if ec.stylesheet.processorLanguage() == 20 {
-		return "XTTE0600"
+	const (
+		errCodeXTTE0600 = "XTTE0600"
+	)
+
+	if ec.stylesheet.processorLanguage() == processorXSLT20 {
+		return errCodeXTTE0600
 	}
 
 	return errCodeXTTE0590
@@ -679,8 +694,8 @@ func (ec *execContext) missingTemplateParam(p *param) error {
 	}
 
 	code := errCodeXTDE0700
-	if !p.Required && ec.stylesheet.processorLanguage() == 20 {
-		code = "XTDE0610"
+	if !p.Required && ec.stylesheet.processorLanguage() == processorXSLT20 {
+		code = errCodeXTDE0610
 	}
 
 	return dynamicError(code, "required template parameter $%s was not supplied", p.Name)
@@ -826,7 +841,7 @@ func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, 
 	// (comments, attributes, PIs) per XSLT 3.0 §20.1.
 	emitDOE := isDOE && ec.temporaryOutputDepth == 0 && !out.captureItems && !out.sequenceMode
 	if emitDOE {
-		pi := ec.resultDoc.CreatePI(lexicon.OutputDisableEscaping, "")
+		pi := ec.resultDoc.CreatePI(lexicon.DisableOutputEscapingPITarget, "")
 		if err := ec.addNode(pi); err != nil {
 			return err
 		}
@@ -844,7 +859,7 @@ func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, 
 	}
 
 	if emitDOE {
-		piEnd := ec.resultDoc.CreatePI("enable-output-escaping", "")
+		piEnd := ec.resultDoc.CreatePI(lexicon.EnableOutputEscapingPITarget, "")
 		if err := ec.addNode(piEnd); err != nil {
 			return err
 		}
@@ -923,12 +938,12 @@ func stripDOEMarkers(seq xdm.Sequence) (xdm.Sequence, map[int]struct{}) {
 	for item := range xdm.SequenceItems(seq) {
 		if ni, ok := item.(xdm.NodeItem); ok && ni.Node.Type() == xdm.ProcessingInstructionNode {
 			piName := ni.Node.Name()
-			if piName == lexicon.OutputDisableEscaping {
+			if piName == lexicon.DisableOutputEscapingPITarget {
 				doeActive = true
 				continue
 			}
 
-			if piName == "enable-output-escaping" {
+			if piName == lexicon.EnableOutputEscapingPITarget {
 				doeActive = false
 				continue
 			}

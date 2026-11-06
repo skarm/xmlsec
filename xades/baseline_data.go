@@ -12,27 +12,46 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	attrQualifier                  = "Qualifier"
+	nameAllSignedDataObjects       = "AllSignedDataObjects"
+	nameCommitmentTypeID           = "CommitmentTypeId"
+	nameCommitmentTypeQualifier    = "CommitmentTypeQualifier"
+	nameCommitmentTypeQualifiers   = "CommitmentTypeQualifiers"
+	nameDescription                = "Description"
+	nameDocumentationReference     = "DocumentationReference"
+	nameDocumentationReferences    = "DocumentationReferences"
+	nameIdentifier                 = "Identifier"
+	nameObjectIdentifier           = "ObjectIdentifier"
+	oidURNPrefix                   = "urn:oid:"
+	schemeURN                      = "urn"
+	maximumDocumentationReferences = 64
+)
+
 func parseObjectIdentifier(element document.Element) (ObjectIdentifier, error) {
+	// Identifier is required; Description and DocumentationReferences are optional.
+	const maximumObjectIdentifierChildren = 3
+
 	var out ObjectIdentifier
 	if attrs(element) != nil {
 		return out, ErrProfile
 	}
 
 	values, err := baselineContent(element)
-	if err != nil || len(values) == 0 || len(values) > 3 || values[0].Name() != name("Identifier") {
+	if err != nil || len(values) == 0 || len(values) > maximumObjectIdentifierChildren || values[0].Name() != name(nameIdentifier) {
 		return out, ErrProfile
 	}
 
 	identifier := values[0]
-	if baselineAttrs(identifier, nil, "Qualifier") != nil || len(identifier.Children()) != 0 {
+	if baselineAttrs(identifier, nil, attrQualifier) != nil || len(identifier.Children()) != 0 {
 		return out, ErrProfile
 	}
 
 	out.Identifier = identifier.Text()
-	out.Qualifier = localAttribute(identifier, "Qualifier")
+	out.Qualifier = localAttribute(identifier, attrQualifier)
 
 	at := 1
-	if at < len(values) && values[at].Name() == name("Description") {
+	if at < len(values) && values[at].Name() == name(nameDescription) {
 		out.Description, err = simple(values[at])
 		if err != nil {
 			return out, err
@@ -41,7 +60,7 @@ func parseObjectIdentifier(element document.Element) (ObjectIdentifier, error) {
 		at++
 	}
 
-	if at < len(values) && values[at].Name() == name("DocumentationReferences") {
+	if at < len(values) && values[at].Name() == name(nameDocumentationReferences) {
 		docs := values[at]
 		if attrs(docs) != nil {
 			return out, ErrProfile
@@ -53,7 +72,7 @@ func parseObjectIdentifier(element document.Element) (ObjectIdentifier, error) {
 		}
 
 		for _, entry := range entries {
-			if entry.Name() != name("DocumentationReference") {
+			if entry.Name() != name(nameDocumentationReference) {
 				return out, ErrProfile
 			}
 
@@ -76,22 +95,22 @@ func parseObjectIdentifier(element document.Element) (ObjectIdentifier, error) {
 }
 
 func checkObjectIdentifier(value ObjectIdentifier) error {
-	if len(value.Documentation) > 64 || !baselineURI(value.Identifier) {
+	if len(value.Documentation) > maximumDocumentationReferences || !baselineURI(value.Identifier) {
 		return ErrProfile
 	}
 
 	switch value.Qualifier {
 	case "":
-		if strings.HasPrefix(strings.ToLower(value.Identifier), "urn:oid:") {
+		if strings.HasPrefix(strings.ToLower(value.Identifier), oidURNPrefix) {
 			return ErrProfile
 		}
 	case qualifierOIDAsURN:
-		if !strings.HasPrefix(value.Identifier, "urn:oid:") || !baselineOID(value.Identifier[len("urn:oid:"):]) {
+		if !strings.HasPrefix(value.Identifier, oidURNPrefix) || !baselineOID(value.Identifier[len(oidURNPrefix):]) {
 			return ErrProfile
 		}
 	case qualifierOIDAsURI:
 		uri, err := url.Parse(value.Identifier)
-		if err != nil || !uri.IsAbs() || strings.EqualFold(uri.Scheme, "urn") {
+		if err != nil || !uri.IsAbs() || strings.EqualFold(uri.Scheme, schemeURN) {
 			return ErrProfile
 		}
 	default:
@@ -143,19 +162,19 @@ func buildObjectIdentifier(local string, value ObjectIdentifier) (*tree.Node, er
 
 	out := xnode(local)
 
-	identifier := leaf(out, "Identifier", value.Identifier)
+	identifier := leaf(out, nameIdentifier, value.Identifier)
 	if value.Qualifier != "" {
-		attr(identifier, "Qualifier", value.Qualifier)
+		attr(identifier, attrQualifier, value.Qualifier)
 	}
 
 	if value.Description != "" {
-		leaf(out, "Description", value.Description)
+		leaf(out, nameDescription, value.Description)
 	}
 
 	if len(value.Documentation) > 0 {
-		docs := xnode("DocumentationReferences")
+		docs := xnode(nameDocumentationReferences)
 		for _, value := range value.Documentation {
-			leaf(docs, "DocumentationReference", value)
+			leaf(docs, nameDocumentationReference, value)
 		}
 
 		add(out, docs)
@@ -165,8 +184,8 @@ func buildObjectIdentifier(local string, value ObjectIdentifier) (*tree.Node, er
 }
 
 func parseDataObjectFormat(element document.Element) (DataObjectFormat, error) {
-	out := DataObjectFormat{ObjectReference: localAttribute(element, "ObjectReference")}
-	if baselineAttrs(element, []string{"ObjectReference"}) != nil {
+	out := DataObjectFormat{ObjectReference: localAttribute(element, attrObjectReference)}
+	if baselineAttrs(element, []string{attrObjectReference}) != nil {
 		return out, ErrProfile
 	}
 
@@ -178,7 +197,7 @@ func parseDataObjectFormat(element document.Element) (DataObjectFormat, error) {
 	previous := -1
 
 	for _, child := range values {
-		index := slices.Index([]document.Name{name("Description"), name("ObjectIdentifier"), name("MimeType"), name(attributeEncoding)}, child.Name())
+		index := slices.Index([]document.Name{name(nameDescription), name(nameObjectIdentifier), name(lexicon.SecurityAttrMimeType), name(attributeEncoding)}, child.Name())
 		if index < 0 || index <= previous {
 			return out, ErrProfile
 		}
@@ -203,7 +222,7 @@ func parseDataObjectFormat(element document.Element) (DataObjectFormat, error) {
 		}
 	}
 
-	hasDescription := slices.ContainsFunc(values, func(child document.Element) bool { return child.Name() == name("Description") })
+	hasDescription := slices.ContainsFunc(values, func(child document.Element) bool { return child.Name() == name(nameDescription) })
 	if !hasDescription && out.ObjectIdentifier == nil && out.MIMEType == "" {
 		return out, ErrProfile
 	}
@@ -240,15 +259,15 @@ func buildDataObjectFormat(value DataObjectFormat) (*tree.Node, error) {
 		return nil, err
 	}
 
-	node := xnode("DataObjectFormat")
-	attr(node, "ObjectReference", value.ObjectReference)
+	node := xnode(nameDataObjectFormat)
+	attr(node, attrObjectReference, value.ObjectReference)
 
 	if value.Description != "" {
-		leaf(node, "Description", value.Description)
+		leaf(node, nameDescription, value.Description)
 	}
 
 	if value.ObjectIdentifier != nil {
-		identifier, err := buildObjectIdentifier("ObjectIdentifier", *value.ObjectIdentifier)
+		identifier, err := buildObjectIdentifier(nameObjectIdentifier, *value.ObjectIdentifier)
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +276,7 @@ func buildDataObjectFormat(value DataObjectFormat) (*tree.Node, error) {
 	}
 
 	if value.MIMEType != "" {
-		leaf(node, "MimeType", value.MIMEType)
+		leaf(node, lexicon.SecurityAttrMimeType, value.MIMEType)
 	}
 
 	if value.Encoding != "" {
@@ -274,7 +293,7 @@ func parseCommitment(element document.Element) (CommitmentType, error) {
 	}
 
 	values, err := baselineContent(element)
-	if err != nil || len(values) < 2 || values[0].Name() != name("CommitmentTypeId") {
+	if err != nil || len(values) < 2 || values[0].Name() != name(nameCommitmentTypeID) {
 		return out, ErrProfile
 	}
 
@@ -284,7 +303,7 @@ func parseCommitment(element document.Element) (CommitmentType, error) {
 	}
 
 	at := 1
-	if values[at].Name() == name("AllSignedDataObjects") {
+	if values[at].Name() == name(nameAllSignedDataObjects) {
 		if _, err := children(values[at]); err != nil || attrs(values[at]) != nil {
 			return out, ErrProfile
 		}
@@ -292,7 +311,7 @@ func parseCommitment(element document.Element) (CommitmentType, error) {
 		out.All = true
 		at++
 	} else {
-		for at < len(values) && values[at].Name() == name("ObjectReference") {
+		for at < len(values) && values[at].Name() == name(attrObjectReference) {
 			value, err := simple(values[at])
 			if err != nil || value == "" || !baselineURI(value) {
 				return out, ErrProfile
@@ -307,7 +326,7 @@ func parseCommitment(element document.Element) (CommitmentType, error) {
 		}
 	}
 
-	if at < len(values) && values[at].Name() == name("CommitmentTypeQualifiers") {
+	if at < len(values) && values[at].Name() == name(nameCommitmentTypeQualifiers) {
 		out.Qualifiers, err = parseCommitmentQualifiers(values[at])
 		if err != nil {
 			return out, err
@@ -328,9 +347,9 @@ func buildCommitment(ctx context.Context, value CommitmentType) (*tree.Node, err
 		return nil, ErrProfile
 	}
 
-	node := xnode("CommitmentTypeIndication")
+	node := xnode(nameCommitmentTypeIndication)
 
-	identifier, err := buildObjectIdentifier("CommitmentTypeId", value.Identifier)
+	identifier, err := buildObjectIdentifier(nameCommitmentTypeID, value.Identifier)
 	if err != nil {
 		return nil, err
 	}
@@ -338,22 +357,22 @@ func buildCommitment(ctx context.Context, value CommitmentType) (*tree.Node, err
 	add(node, identifier)
 
 	if value.All {
-		add(node, xnode("AllSignedDataObjects"))
+		add(node, xnode(nameAllSignedDataObjects))
 	} else {
 		for _, uri := range value.ObjectReferences {
 			if uri == "" || !baselineURI(uri) {
 				return nil, ErrProfile
 			}
 
-			leaf(node, "ObjectReference", uri)
+			leaf(node, attrObjectReference, uri)
 		}
 	}
 
 	if len(value.Qualifiers) > 0 {
-		qualifiers := xnode("CommitmentTypeQualifiers")
+		qualifiers := xnode(nameCommitmentTypeQualifiers)
 
 		for _, qualifier := range value.Qualifiers {
-			n, err := baselinePropertyValue(ctx, qualifier, name("CommitmentTypeQualifier"))
+			n, err := baselinePropertyValue(ctx, qualifier, name(nameCommitmentTypeQualifier))
 			if err != nil {
 				return nil, err
 			}
@@ -395,7 +414,7 @@ func baselineDataReferences(verified *xmldsig.SignatureResult) (map[string]basel
 			result := results[index]
 			index++
 
-			id := localAttribute(element, "Id")
+			id := localAttribute(element, lexicon.SecurityAttrID)
 			if id == "" {
 				continue
 			}
@@ -469,12 +488,12 @@ func checkBaselineDataBindings(layout baselineLayout, verified *xmldsig.Signatur
 			continue
 		}
 
-		typ := localAttribute(element, "Type")
+		typ := localAttribute(element, lexicon.SecurityAttrType)
 		if typ == SignedPropertiesType || typ == countersignedSignatureType {
 			continue
 		}
 
-		if _, exists := covered["#"+localAttribute(element, "Id")]; !exists {
+		if _, exists := covered["#"+localAttribute(element, lexicon.SecurityAttrID)]; !exists {
 			return ErrProfile
 		}
 	}
@@ -553,7 +572,7 @@ func parseCommitmentQualifiers(element document.Element) ([]PropertyValue, error
 
 	out := make([]PropertyValue, 0, len(values))
 	for _, value := range values {
-		if value.Name() != name("CommitmentTypeQualifier") {
+		if value.Name() != name(nameCommitmentTypeQualifier) {
 			return nil, ErrProfile
 		}
 
@@ -564,11 +583,11 @@ func parseCommitmentQualifiers(element document.Element) ([]PropertyValue, error
 }
 
 func checkBaselineObjectFormat(target document.Element, format DataObjectFormat) error {
-	if target.Name() != ds("Object") {
+	if target.Name() != ds(lexicon.DSigElementObject) {
 		return nil
 	}
 
-	for _, pair := range [][2]string{{"MimeType", format.MIMEType}, {attributeEncoding, format.Encoding}} {
+	for _, pair := range [][2]string{{lexicon.SecurityAttrMimeType, format.MIMEType}, {attributeEncoding, format.Encoding}} {
 		value, exists := target.Attribute(document.Name{Local: pair[0]})
 		if exists && pair[1] != "" && value != pair[1] {
 			return ErrProfile
@@ -617,7 +636,7 @@ func baselineReferenceKey(value string, element document.Element, options Baseli
 
 		for _, n := range slices.Backward(path) {
 			for _, attribute := range n.Attrs {
-				if attribute.Name == (document.Name{Space: document.XMLNamespace, Local: "base"}) {
+				if attribute.Name == (document.Name{Space: document.XMLNamespace, Local: lexicon.AttrBase}) {
 					part, err := url.Parse(attribute.Value)
 					if err != nil {
 						return "", ErrProfile

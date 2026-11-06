@@ -108,6 +108,9 @@ func TestCurrentSubIndicationPreservesCertificateBoundsAndFailureClass(t *testin
 			}
 		})
 	}
+	if got := currentSubIndication(pki.ErrRevoked, pki.Report{}, nil, testcert.Now()); got != revoked {
+		t.Fatalf("revocation without a parsed certificate = %s; want %s", got, revoked)
+	}
 }
 
 func TestTimestampPreparationChecksAccuracyWithoutGrantingHistoricalTrust(t *testing.T) {
@@ -303,6 +306,8 @@ func TestWorkflowTimestampFailureHonorsOptionalPolicyWithoutExtractingProofs(t *
 					t.Fatal("rejected timestamp changed bound or lost diagnostic", report, err)
 				}
 				if required {
+					// Verification reports retain diagnostics on failure.
+					//noinspection GoDfaErrorMayBeNotNil
 					if !errors.Is(err, ErrValidation) || !errors.Is(report.Cause, err) || report.Indication == Passed || report.Current != nil || report.Past != nil {
 						t.Fatal("required timestamp did not stop signer acceptance", report, err)
 					}
@@ -345,6 +350,8 @@ func TestWorkflowRejectsContentChronologyEvenWhenTimestampsAreOptional(t *testin
 			}
 			continue
 		}
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if !errors.Is(err, ErrValidation) || report.Indication == Passed || report.SubIndication != timestampOrderFailure || len(report.Stamps) != 2 || report.Stamps[1].SubIndication != timestampOrderFailure || report.Stamps[1].Indication != Indeterminate || report.Current != nil {
 			t.Fatal("incoherent content chronology accepted as optional", report, err)
 		}
@@ -377,6 +384,8 @@ func TestWorkflowPastRecoveryRequiresTimestampedCertificateAndRevocationBytes(t 
 		input := Input{Signature: signature, Certificate: issuer.chain.Leaf.Raw, SignatureMethod: issuer.chain.Leaf.SignatureAlgorithm, Hashes: []crypto.Hash{crypto.SHA256}, Objects: []Object{{Bytes: signatureBytes, Kind: historicalproof.Signature}}, Timestamps: []Candidate{stamp.candidate}}
 		report, err := Validate(t.Context(), config, input, testcert.Now(), pki.Evidence{CRLs: [][]byte{crl}}, pki.Evidence{CRLs: [][]byte{crl}})
 		if !fullCoverage {
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if !errors.Is(err, ErrValidation) || report.Indication == Passed || report.Past != nil {
 				t.Fatal("signature proof alone repaired expired certificate/evidence hashes", report, err)
 			}

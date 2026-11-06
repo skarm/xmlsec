@@ -10,7 +10,7 @@ import (
 // WithEvidenceCertificates replaces UNTRUSTED certificate lookup/path material,
 // keeping roots, algorithm policy, TSA policy identifiers and time constraints.
 func (v *Verifier) WithEvidenceCertificates(raw [][]byte) (*Verifier, error) {
-	if v == nil || len(raw) > 32 {
+	if v == nil || len(raw) > maximumLookupCertificates {
 		return nil, ErrPolicy
 	}
 
@@ -20,7 +20,7 @@ func (v *Verifier) WithEvidenceCertificates(raw [][]byte) (*Verifier, error) {
 	total := 0
 	for _, b := range raw {
 		total += len(b)
-		if len(b) > 1<<20 || total > v.maxBytes {
+		if len(b) > maximumCertificateBytes || total > v.maxBytes {
 			return nil, ErrPolicy
 		}
 

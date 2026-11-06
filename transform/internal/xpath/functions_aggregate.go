@@ -15,20 +15,49 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Aggregate dispatch spellings and max/min selection modes belong to F&O.
+// Numeric ranks order promotion families, rather than byte or IEEE bit widths.
+const (
+	fnNameAvg                       = "avg"
+	fnNameMax                       = "max"
+	fnNameMin                       = "min"
+	fnNameDistinctValues            = "distinct-values"
+	aggregateSelectMaximum          = true
+	aggregateSelectMinimum          = false
+	aggregateIntegerRank            = 1
+	aggregateDecimalRank            = 2
+	aggregateFloatRank              = 3
+	aggregateDoubleRank             = 4
+	aggregateSingletonAtoms         = 1
+	aggregateCollationArgumentIndex = 1
+	aggregateWorkBatch              = 64 // logical item charges per average/sum batch
+)
+
+// Distinct-value keys separate comparison domains within an evaluation. IEEE
+// bit patterns use hexadecimal text; these prefixes are internal key framing.
+const (
+	distinctStringKeyPrefix       = "s:"
+	distinctBooleanKeyPrefix      = "b:"
+	distinctExactNumericKeyPrefix = "n:"
+	distinctFloatKeyPrefix        = "f:"
+	distinctDoubleKeyPrefix       = "d:"
+	distinctFloatingKeyRadix      = 16
+)
+
 func lookupFunctionsAggregate(name string) (*builtinFunc, bool) {
 	switch name {
 	case fnNameCount:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnCount}, true
-	case "avg":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnAvg}, true
-	case "max":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnMax}, true
-	case "min":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnMin}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnCount}, true
+	case fnNameAvg:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnAvg}, true
+	case fnNameMax:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnMax}, true
+	case fnNameMin:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnMin}, true
 	case nameSum:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnSum}, true
-	case "distinct-values":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnDistinctValues}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnSum}, true
+	case fnNameDistinctValues:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnDistinctValues}, true
 	}
 
 	return nil, false
@@ -144,8 +173,8 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	for i, a := range atoms {
 		// Charge bounded batches before work; exact arithmetic below also
 		// checks cancellation at every math/big operation.
-		if i%64 == 0 {
-			if err := Charge(ctx, min(64, len(atoms)-i)); err != nil {
+		if i%aggregateWorkBatch == 0 {
+			if err := Charge(ctx, min(aggregateWorkBatch, len(atoms)-i)); err != nil {
 				return nil, err
 			}
 		}
@@ -270,7 +299,7 @@ func avgDurations(ctx context.Context, seq xdm.Sequence, family string) (xdm.Seq
 
 		for item := range xdm.SequenceItems(seq) {
 			a, _ := AtomizeItem(item)
-			totalSecs.Add(totalSecs, xdm.DurationToRat(a.DurationVal(), false))
+			totalSecs.Add(totalSecs, xdm.DurationToRat(a.DurationVal(), durationSecondsComponent))
 		}
 
 		avgSecs, err := finiteDecimalValue(ctx, new(big.Rat).Quo(totalSecs, new(big.Rat).SetInt64(int64(count))))
@@ -287,10 +316,10 @@ func avgDurations(ctx context.Context, seq xdm.Sequence, family string) (xdm.Seq
 
 		secs, frac := durationFromRatSeconds(absSecs)
 
-		return xdm.SingleAtomic(xdm.AtomicValue{
+		return boundedDurationResult(ctx, xdm.AtomicValue{
 			TypeName: xdm.TypeDayTimeDuration,
 			Value:    xdm.Duration{Seconds: secs, FracSec: frac, SecRat: absSecs, Negative: negative},
-		}), nil
+		})
 	}
 
 	totalMonths := new(big.Int)
@@ -332,10 +361,10 @@ func avgDurations(ctx context.Context, seq xdm.Sequence, family string) (xdm.Seq
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: textDurationOverflow}
 	}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{
+	return boundedDurationResult(ctx, xdm.AtomicValue{
 		TypeName: xdm.TypeYearMonthDuration,
 		Value:    xdm.Duration{Months: int(absInt.Int64()), Negative: negative},
-	}), nil
+	})
 }
 
 // promoteForAggregate promotes an atomic value for aggregate operations.
@@ -389,18 +418,18 @@ func promoteForAggregate(ctx context.Context, a xdm.AtomicValue) (xdm.AtomicValu
 func numericTypeWidth(typeName string) int {
 	switch typeName {
 	case xdm.TypeDouble:
-		return 4
+		return aggregateDoubleRank
 	case xdm.TypeFloat:
-		return 3
+		return aggregateFloatRank
 	case xdm.TypeDecimal:
-		return 2
+		return aggregateDecimalRank
 	default:
-		return 1
+		return aggregateIntegerRank
 	}
 }
 
 func fnMax(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return maxMin(ctx, args, true)
+	return maxMin(ctx, args, aggregateSelectMaximum)
 }
 
 func maxMin(ctx context.Context, args []xdm.Sequence, isMax bool) (xdm.Sequence, error) {
@@ -413,7 +442,7 @@ func maxMin(ctx context.Context, args []xdm.Sequence, isMax bool) (xdm.Sequence,
 		return nil, nil
 	}
 
-	coll, err := getCollation(ctx, args, 1)
+	coll, err := getCollation(ctx, args, aggregateCollationArgumentIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -426,16 +455,16 @@ func maxMin(ctx context.Context, args []xdm.Sequence, isMax bool) (xdm.Sequence,
 }
 
 func fnMin(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return maxMin(ctx, args, false)
+	return maxMin(ctx, args, aggregateSelectMinimum)
 }
 
 func maxMinCommon(ctx context.Context, atoms []xdm.AtomicValue, isMax bool, coll *collationImpl) (xdm.Sequence, error) {
-	fnName := "fn:min"
+	fnName := prefixFn + ":" + fnNameMin
 	if isMax {
-		fnName = "fn:max"
+		fnName = prefixFn + ":" + fnNameMax
 	}
 
-	if len(atoms) == 1 {
+	if len(atoms) == aggregateSingletonAtoms {
 		return maxMinSingle(ctx, atoms[0], fnName)
 	}
 
@@ -581,7 +610,7 @@ func maxMinTypeFamily(ctx context.Context, value xdm.AtomicValue, fnName string)
 	family := aggregateTypeFamily(value)
 
 	legacyBinary := false
-	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
+	if ec := getFnContext(ctx); ec != nil && ec.version != xpathVersionDefault && ec.version < xpathVersion31 {
 		legacyBinary = family == lexicon.TypeBase64Binary || family == lexicon.TypeHexBinary
 	}
 
@@ -639,7 +668,7 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return xdm.SingleInteger(0), nil
 	}
 
-	if len(atoms) == 1 {
+	if len(atoms) == aggregateSingletonAtoms {
 		return sumSingle(ctx, atoms[0])
 	}
 
@@ -654,8 +683,8 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	for i, value := range atoms {
-		if i%64 == 0 {
-			if err := Charge(ctx, min(64, len(atoms)-i)); err != nil {
+		if i%aggregateWorkBatch == 0 {
+			if err := Charge(ctx, min(aggregateWorkBatch, len(atoms)-i)); err != nil {
 				return nil, err
 			}
 		}
@@ -671,7 +700,7 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			atomSeq[i] = atom
 		}
 
-		return sumDurations(atomSeq, sum.family)
+		return sumDurations(ctx, atomSeq, sum.family)
 	}
 
 	return sum.numericResult(), nil
@@ -856,7 +885,7 @@ func checkAggregateHomogeneity(family, newFamily string) (string, error) {
 	}
 }
 
-func sumDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
+func sumDurations(ctx context.Context, seq xdm.Sequence, family string) (xdm.Sequence, error) {
 	if family == xdm.FamilyDurationDT {
 		// Accumulate dayTime seconds EXACTLY so large totals (beyond float64's
 		// 2^53 range) and fractional seconds canonicalize precisely.
@@ -864,7 +893,7 @@ func sumDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
 
 		for item := range xdm.SequenceItems(seq) {
 			a, _ := AtomizeItem(item)
-			totalSecs.Add(totalSecs, xdm.DurationToRat(a.DurationVal(), false))
+			totalSecs.Add(totalSecs, xdm.DurationToRat(a.DurationVal(), durationSecondsComponent))
 		}
 
 		negative := totalSecs.Sign() < 0
@@ -876,10 +905,10 @@ func sumDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
 
 		secs, frac := durationFromRatSeconds(absSecs)
 
-		return xdm.SingleAtomic(xdm.AtomicValue{
+		return boundedDurationResult(ctx, xdm.AtomicValue{
 			TypeName: xdm.TypeDayTimeDuration,
 			Value:    xdm.Duration{Seconds: secs, FracSec: frac, SecRat: absSecs, Negative: negative},
-		}), nil
+		})
 	}
 
 	// Accumulate months via big.Int so a total near the int limit does not wrap
@@ -909,10 +938,10 @@ func sumDurations(seq xdm.Sequence, family string) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: "yearMonthDuration sum overflow"}
 	}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{
+	return boundedDurationResult(ctx, xdm.AtomicValue{
 		TypeName: xdm.TypeYearMonthDuration,
 		Value:    xdm.Duration{Months: int(absMonths.Int64()), Negative: negative},
-	}), nil
+	})
 }
 
 func fnDistinctValues(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -920,11 +949,11 @@ func fnDistinctValues(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 		return nil, nil
 	}
 
-	if err := validateCollationArg(ctx, args, 1); err != nil {
+	if err := validateCollationArg(ctx, args, aggregateCollationArgumentIndex); err != nil {
 		return nil, err
 	}
 
-	coll, err := getCollation(ctx, args, 1)
+	coll, err := getCollation(ctx, args, aggregateCollationArgumentIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1007,7 +1036,7 @@ func (s *distinctValueAccumulator) add(value xdm.AtomicValue) error {
 func (s *distinctValueAccumulator) addFast(value xdm.AtomicValue, group distinctGroup, key string) error {
 	// Collation-equal strings must share their bucket.
 	if s.coll != nil && group == distinctGroupString {
-		key = "s:" + string(s.coll.key(value.StringVal()))
+		key = distinctStringKeyPrefix + string(s.coll.key(value.StringVal()))
 	}
 
 	if _, exists := s.seenFast[key]; exists {
@@ -1067,16 +1096,16 @@ func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 	et := distinctEffectiveType(a)
 	switch {
 	case xdm.IsStringDerived(et):
-		return distinctGroupString, "s:" + a.StringVal(), true
+		return distinctGroupString, distinctStringKeyPrefix + a.StringVal(), true
 	case et == xdm.TypeAnyURI:
-		return distinctGroupString, "s:" + stringFromAtomic(a), true
+		return distinctGroupString, distinctStringKeyPrefix + stringFromAtomic(a), true
 	case et == xdm.TypeBoolean:
-		return distinctGroupBoolean, "b:" + strconv.FormatBool(a.BooleanVal()), true
+		return distinctGroupBoolean, distinctBooleanKeyPrefix + strconv.FormatBool(a.BooleanVal()), true
 	case xdm.IsIntegerDerived(et) || et == xdm.TypeDecimal:
 		// Promote via BaseType so a schema-derived integer/decimal (custom TypeName,
 		// built-in BaseType, backed by int64/*big.Int/*big.Rat) keys on its effective
 		// value. The un-promoted toRatForCompare would produce 0.
-		return distinctGroupDecimalInt, "n:" + toRatForCompare(xdm.PromoteSchemaType(a)).RatString(), true
+		return distinctGroupDecimalInt, distinctExactNumericKeyPrefix + toRatForCompare(xdm.PromoteSchemaType(a)).RatString(), true
 	case et == xdm.TypeFloat:
 		// Promote via BaseType so a schema-derived float (custom TypeName, built-in
 		// BaseType, backed by float64/float32/*FloatValue) keys on its effective
@@ -1086,14 +1115,14 @@ func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 			f = 0
 		}
 
-		return distinctGroupFloat, "f:" + strconv.FormatUint(uint64(math.Float32bits(f)), 16), true
+		return distinctGroupFloat, distinctFloatKeyPrefix + strconv.FormatUint(uint64(math.Float32bits(f)), distinctFloatingKeyRadix), true
 	case et == xdm.TypeDouble:
 		f := xdm.PromoteSchemaType(a).ToFloat64()
 		if f == 0 {
 			f = 0
 		}
 
-		return distinctGroupDouble, "d:" + strconv.FormatUint(math.Float64bits(f), 16), true
+		return distinctGroupDouble, distinctDoubleKeyPrefix + strconv.FormatUint(math.Float64bits(f), distinctFloatingKeyRadix), true
 	default:
 		return distinctGroupUnknown, "", false
 	}

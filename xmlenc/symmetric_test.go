@@ -226,25 +226,6 @@ func FuzzDecryptWithKey(f *testing.F) {
 	})
 }
 
-func cbcAlgorithms() []algorithmSpec {
-	return []algorithmSpec{{xmlenc.AES128CBC, 16}, {xmlenc.AES192CBC, 24}, {xmlenc.AES256CBC, 32}, {xmlenc.TripleDESCBC, 24}}
-}
-
-func legacyBlock(t *testing.T, algorithm string, secret []byte) cipher.Block {
-	t.Helper()
-	var block cipher.Block
-	var err error
-	if algorithm == xmlenc.TripleDESCBC {
-		block, err = des.NewTripleDESCipher(secret)
-	} else {
-		block, err = aes.NewCipher(secret)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return block
-}
-
 func TestLegacyCBCDataAlgorithms(t *testing.T) {
 	for _, algorithm := range cbcAlgorithms() {
 		t.Run(algorithm.uri, func(t *testing.T) {
@@ -396,4 +377,23 @@ func TestLegacyCBCElementContentAndReferences(t *testing.T) {
 			}
 		})
 	}
+}
+
+func cbcAlgorithms() []algorithmSpec {
+	return []algorithmSpec{{xmlenc.AES128CBC, 16}, {xmlenc.AES192CBC, 24}, {xmlenc.AES256CBC, 32}, {xmlenc.TripleDESCBC, 24}}
+}
+
+func legacyBlock(t *testing.T, algorithm string, secret []byte) cipher.Block {
+	t.Helper()
+	var block cipher.Block
+	var err error
+	if algorithm == xmlenc.TripleDESCBC {
+		block, err = des.NewTripleDESCipher(secret)
+	} else {
+		block, err = aes.NewCipher(secret)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return block
 }

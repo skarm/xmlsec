@@ -17,6 +17,15 @@ import (
 	"strings"
 )
 
+// The shared event/case threshold chooses the larger report write buffer. Schema versioning and buffer byte sizes describe different parts of evidence publication.
+const (
+	languageProofSchemaVersion = 1
+	// Counts report cases/events; it changes buffering, not which entries are published.
+	reportStreamingThreshold   = 128
+	reportBufferBytes          = 4 << 10
+	reportStreamingBufferBytes = 32 << 10
+)
+
 const goTestSkipEvent = "skip"
 
 func main() {
@@ -34,7 +43,7 @@ func main() {
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: go run ./tests/cmd/dev {docs|examples|fuzz|suites|proof} [options]")
+		return errors.New("usage: go run ./tests/cmd/dev {docs|examples|fuzz|suites|proof|interop-check} [options]")
 	}
 
 	root, err := repositoryRoot()
@@ -57,6 +66,8 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 		return runSuites(ctx, root, args[1:], out, stderr)
 	case "proof":
 		return runLanguageProof(ctx, root, args[1:], out, stderr)
+	case "interop-check":
+		return checkInteropLogs(args[1:], out)
 	default:
 		return fmt.Errorf("unknown development command %q", args[0])
 	}
@@ -131,7 +142,7 @@ type languageProofStream struct {
 }
 
 func (s languageProofStream) validate(stamp languageProofStamp) error {
-	if s.SchemaVersion != 1 || s.Before != stamp || s.After != stamp {
+	if s.SchemaVersion != languageProofSchemaVersion || s.Before != stamp || s.After != stamp {
 		return errors.New("test stream has stale or changed source/register stamps")
 	}
 
@@ -153,7 +164,7 @@ type languageProofArtifact struct {
 }
 
 func (a languageProofArtifact) validate(stamp languageProofStamp) ([]languageProofEvent, error) {
-	if a.SchemaVersion != 1 || a.Stamp != stamp || len(a.Streams) == 0 {
+	if a.SchemaVersion != languageProofSchemaVersion || a.Stamp != stamp || len(a.Streams) == 0 {
 		return nil, errors.New("proof artifact has stale stamps or no captured streams")
 	}
 
@@ -273,10 +284,10 @@ func writeLanguageProofFile(path string, value any) error {
 
 	switch value := value.(type) {
 	case languageProofStream:
-		large = len(value.Events) > 128
+		large = len(value.Events) > reportStreamingThreshold
 	case languageProofArtifact:
 		for _, stream := range value.Streams {
-			large = large || len(stream.Events) > 128
+			large = large || len(stream.Events) > reportStreamingThreshold
 		}
 	}
 
@@ -353,9 +364,9 @@ func writeJSONFile(path string, large bool, write func(io.Writer) error) (result
 		}
 	}()
 
-	bufferSize := 4 << 10
+	bufferSize := reportBufferBytes
 	if large {
-		bufferSize = 32 << 10
+		bufferSize = reportStreamingBufferBytes
 	}
 
 	buffered := bufio.NewWriterSize(file, bufferSize)
@@ -520,7 +531,7 @@ func runLanguageProof(ctx context.Context, root string, args []string, out, stde
 		return err
 	}
 
-	artifact := languageProofArtifact{SchemaVersion: 1, Stamp: stamp}
+	artifact := languageProofArtifact{SchemaVersion: languageProofSchemaVersion, Stamp: stamp}
 
 	if err := validateProofDestination(*path, flags.Args()); err != nil {
 		return err
@@ -564,7 +575,7 @@ func captureLanguageProof(ctx context.Context, root, path string, args []string,
 		return err
 	}
 
-	stream := languageProofStream{SchemaVersion: 1, Before: before, Arguments: append([]string{"test", "-json", "-count=1"}, args...), ExitCode: -1}
+	stream := languageProofStream{SchemaVersion: languageProofSchemaVersion, Before: before, Arguments: append([]string{"test", "-json", "-count=1"}, args...), ExitCode: -1}
 
 	if err := invalidateLanguageProofFile(path); err != nil {
 		return err

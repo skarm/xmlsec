@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+const (
+	fixtureManifestFileName = "manifest.json"
+)
+
 // PublicFixture contains checked-in public evidence, never private keys.
 // All fuzz processes use the same certificates and validation time.
 type PublicFixture struct {
@@ -23,7 +27,7 @@ type PublicFixture struct {
 func LoadFixture(t testing.TB, base, name string) PublicFixture {
 	t.Helper()
 
-	data, err := os.ReadFile(filepath.Join(base, "manifest.json")) // #nosec G304 -- Go tests supply the fixture directory.
+	data, err := os.ReadFile(filepath.Join(base, fixtureManifestFileName)) // #nosec G304 -- Go tests supply the fixture directory.
 	if err != nil {
 		t.Fatal(err)
 	}

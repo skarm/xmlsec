@@ -14,15 +14,6 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 )
 
-func parseNameFixture(t *testing.T, encoded []byte) asn1.RawValue {
-	t.Helper()
-	value, err := der.Read(encoded, 1<<20)
-	if err != nil {
-		t.Fatal("invalid DER fixture", err)
-	}
-	return value
-}
-
 func TestGeneralNameChoices(t *testing.T) {
 	t.Parallel()
 
@@ -162,4 +153,13 @@ func TestRelativeCRLPointRetainsIssuerAndFullURIs(t *testing.T) {
 		}
 	}
 	t.Fatal("distribution-point extension lost")
+}
+
+func parseNameFixture(t *testing.T, encoded []byte) asn1.RawValue {
+	t.Helper()
+	value, err := der.Read(encoded, 1<<20)
+	if err != nil {
+		t.Fatal("invalid DER fixture", err)
+	}
+	return value
 }

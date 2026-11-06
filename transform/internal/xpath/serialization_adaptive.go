@@ -6,9 +6,15 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
+
+// Container members are parenthesized according to cardinality; the outer
+// sequence's alternate mode is local to AdaptiveSerialization.WriteTo.
+const adaptiveContainerMember = true
 
 // AdaptiveSerialization shares SER31 §10 value representations between hosts.
 // XML parameters apply to each delegated node; the separator applies only to
@@ -24,14 +30,20 @@ type AdaptiveSerialization struct {
 // WriteTo serializes seq under ctx and the shared evaluation budgets. It leaves dst
 // open and may leave partial output on error.
 func (options AdaptiveSerialization) WriteTo(ctx context.Context, dst io.Writer, seq xdm.Sequence) error {
+	// Outer sequences default to newline without member parentheses.
+	const (
+		adaptiveDefaultItemSeparator = "\n"
+		adaptiveOuterSequence        = false
+	)
+
 	state := adaptiveSerialization{ctx: ctx, dst: dst, options: options}
 
-	separator := "\n"
+	separator := adaptiveDefaultItemSeparator
 	if options.ItemSeparator != nil {
 		separator = *options.ItemSeparator
 	}
 
-	return state.sequence(seq, separator, false, 0)
+	return state.sequence(seq, separator, adaptiveOuterSequence, 0)
 }
 
 type adaptiveSerialization struct {
@@ -41,7 +53,7 @@ type adaptiveSerialization struct {
 }
 
 func (s *adaptiveSerialization) write(value string) error {
-	if err := Charge(s.ctx, 1+len(value)/64); err != nil {
+	if err := Charge(s.ctx, serializedRunBaseWork+len(value)/serializedWorkChunkBytes); err != nil {
 		return err
 	}
 
@@ -49,11 +61,13 @@ func (s *adaptiveSerialization) write(value string) error {
 }
 
 func (s *adaptiveSerialization) sequence(seq xdm.Sequence, separator string, member bool, depth int) error {
-	if depth > DepthLimit(s.ctx, 128) {
+	const adaptiveSingleMemberCardinality = 1 // singleton needs no parentheses
+
+	if depth > DepthLimit(s.ctx, defaultSerializedValueDepth) {
 		return ErrBudget
 	}
 
-	wrap := member && xdm.SequenceLen(seq) != 1
+	wrap := member && xdm.SequenceLen(seq) != adaptiveSingleMemberCardinality
 	if wrap {
 		if err := s.write("("); err != nil {
 			return err
@@ -83,7 +97,14 @@ func (s *adaptiveSerialization) sequence(seq xdm.Sequence, separator string, mem
 }
 
 func (s *adaptiveSerialization) item(item xdm.Item, depth int) error {
-	if err := Charge(s.ctx, 1); err != nil {
+	// Each value visit costs one operation. Anonymous functions use this
+	// adaptive label instead of an expanded QName.
+	const (
+		adaptiveItemVisitWork         = 1
+		adaptiveAnonymousFunctionName = "(anonymous-function)"
+	)
+
+	if err := Charge(s.ctx, adaptiveItemVisitWork); err != nil {
 		return err
 	}
 
@@ -97,20 +118,20 @@ func (s *adaptiveSerialization) item(item xdm.Item, depth int) error {
 	case xdm.MapItem:
 		return s.mapping(value, depth)
 	case xdm.FunctionItem:
-		name := "(anonymous-function)"
+		name := adaptiveAnonymousFunctionName
 
 		if value.Name != "" {
 			switch value.Namespace {
 			case NSFn:
-				name = "fn:" + value.Name
+				name = prefixFn + ":" + value.Name
 			case NSMath:
-				name = "math:" + value.Name
+				name = nameMath + ":" + value.Name
 			case NSMap:
-				name = "map:" + value.Name
+				name = keywordMap + ":" + value.Name
 			case NSArray:
-				name = "array:" + value.Name
+				name = keywordArray + ":" + value.Name
 			case NSXS:
-				name = "xs:" + value.Name
+				name = lexicon.PrefixXS + ":" + value.Name
 			default:
 				name = "Q{" + value.Namespace + "}" + value.Name
 			}
@@ -123,6 +144,9 @@ func (s *adaptiveSerialization) item(item xdm.Item, depth int) error {
 }
 
 func (s *adaptiveSerialization) atomic(value xdm.AtomicValue) error {
+	// SER31 adaptive doubles retain this scientific-notation picture.
+	const adaptiveDoublePicture = "0.0##########################e0"
+
 	text, err := atomicToString(value)
 	if err != nil {
 		return err
@@ -136,7 +160,7 @@ func (s *adaptiveSerialization) atomic(value xdm.AtomicValue) error {
 	case xdm.IsSubtypeOf(value.TypeName, xdm.TypeDecimal):
 		return s.write(text)
 	case value.TypeName == xdm.TypeDouble:
-		text, err = boundedFormatNumber(s.ctx, value, "0.0##########################e0", DefaultDecimalFormat())
+		text, err = boundedFormatNumber(s.ctx, value, adaptiveDoublePicture, DefaultDecimalFormat())
 		if err != nil {
 			return err
 		}
@@ -164,18 +188,25 @@ func (s *adaptiveSerialization) atomic(value xdm.AtomicValue) error {
 }
 
 func (s *adaptiveSerialization) quoted(value string) error {
+	// Framing adds two bytes. The threshold chooses a writer shortcut, not
+	// an accepted-value cap; maps and normalization retain buffering.
+	const (
+		adaptiveQuotedFrameBytes          = 2
+		adaptiveDirectQuoteThresholdBytes = 4096
+	)
+
 	// Quotes are doubled before the resulting text undergoes character mapping.
 	// A quote introduced by a map is emitted verbatim, never doubled again.
 	quotes := strings.Count(value, `"`)
 
-	if err := ChargeString(s.ctx, len(value), quotes, 2); err != nil {
+	if err := ChargeString(s.ctx, len(value), quotes, adaptiveQuotedFrameBytes); err != nil {
 		return err
 	}
 
 	// Quotes, maps and normalization retain their character-expansion order.
 	// Unquoted large values need only framing; retaining the short path avoids
 	// additional writer calls on tiny values.
-	if len(value) < 4096 || quotes != 0 || len(s.options.XML.CharacterMap) != 0 || serializeNormalizationActive(s.options.XML.Normalization) {
+	if len(value) < adaptiveDirectQuoteThresholdBytes || quotes != 0 || len(s.options.XML.CharacterMap) != 0 || serializeNormalizationActive(s.options.XML.Normalization) {
 		quoted := `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 
 		text, err := SerializeTextValue(s.ctx, quoted, s.options.XML.CharacterMap, s.options.XML.Normalization)
@@ -186,7 +217,7 @@ func (s *adaptiveSerialization) quoted(value string) error {
 		return s.write(text)
 	}
 
-	if err := Charge(s.ctx, 1+(len(value)+2)/64); err != nil {
+	if err := Charge(s.ctx, serializedRunBaseWork+(len(value)+adaptiveQuotedFrameBytes)/serializedWorkChunkBytes); err != nil {
 		return err
 	}
 
@@ -216,9 +247,9 @@ func (s *adaptiveSerialization) node(node xdm.Node) error {
 		name := node.Name()
 		if node.Type() == xdm.NamespaceNode {
 			if name == "" {
-				name = "xmlns"
+				name = lexicon.PrefixXMLNS
 			} else {
-				name = "xmlns:" + name
+				name = lexicon.PrefixXMLNS + ":" + name
 			}
 		}
 
@@ -255,11 +286,18 @@ func (s *adaptiveSerialization) node(node xdm.Node) error {
 // repertoire. Choose that recovery before writing; character references still
 // handle ordinary text/attributes and XML character validity remains enforced.
 func (s *adaptiveSerialization) nodeWriter(node xdm.Node) (xdm.XMLSerialization, error) {
+	// Delegated markup nodes have a separate visit charge. UTF-8 recovery
+	// disables only the writer's ASCII repertoire flag.
+	const (
+		adaptiveMarkupNodeVisitWork = 1
+		adaptiveUTF8RecoveryASCII   = false
+	)
+
 	writer := s.options.XML
 
 	canEncode := writer.CanEncode
 	if canEncode == nil && writer.ASCII {
-		canEncode = func(r rune) bool { return r < 128 }
+		canEncode = func(r rune) bool { return r < utf8.RuneSelf }
 	}
 
 	if canEncode == nil {
@@ -268,7 +306,7 @@ func (s *adaptiveSerialization) nodeWriter(node xdm.Node) (xdm.XMLSerialization,
 
 	unencodable := false
 	check := func(value string) error {
-		if err := Charge(s.ctx, 1+len(value)/64); err != nil {
+		if err := Charge(s.ctx, serializedRunBaseWork+len(value)/serializedWorkChunkBytes); err != nil {
 			return err
 		}
 
@@ -282,7 +320,7 @@ func (s *adaptiveSerialization) nodeWriter(node xdm.Node) (xdm.XMLSerialization,
 		return nil
 	}
 	err := xdm.Walk(node, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if err := Charge(s.ctx, 1); err != nil {
+		if err := Charge(s.ctx, adaptiveMarkupNodeVisitWork); err != nil {
 			return err
 		}
 
@@ -311,8 +349,8 @@ func (s *adaptiveSerialization) nodeWriter(node xdm.Node) (xdm.XMLSerialization,
 	}))
 
 	if unencodable {
-		writer.Encoding = "UTF-8"
-		writer.ASCII = false
+		writer.Encoding = lexicon.EncodingUTF8U
+		writer.ASCII = adaptiveUTF8RecoveryASCII
 		writer.CanEncode = nil
 	}
 
@@ -331,7 +369,7 @@ func (s *adaptiveSerialization) array(value xdm.ArrayItem, depth int) error {
 			}
 		}
 
-		if err := s.sequence(member, ",", true, depth+1); err != nil {
+		if err := s.sequence(member, ",", adaptiveContainerMember, depth+1); err != nil {
 			return err
 		}
 	}
@@ -363,7 +401,7 @@ func (s *adaptiveSerialization) mapping(value xdm.MapItem, depth int) error {
 			return err
 		}
 
-		return s.sequence(member, ",", true, depth+1)
+		return s.sequence(member, ",", adaptiveContainerMember, depth+1)
 	})
 	if err != nil {
 		return err

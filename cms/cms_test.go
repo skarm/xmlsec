@@ -253,77 +253,6 @@ func TestCMSBERNormalizedBudget(t *testing.T) {
 	}
 }
 
-func indefiniteBER(tag byte, parts ...[]byte) []byte {
-	return append(append([]byte{tag, 128}, bytes.Join(parts, nil)...), 0, 0)
-}
-
-func cmsBEREnvelope(t testing.TB, raw, octets []byte) []byte {
-	t.Helper()
-	ci, fields := cmsEnvelopeFields(t, raw)
-
-	ec, err := der.Sequence(fields[2], 1, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	encap := ec[0].FullBytes
-	if len(ec) == 2 {
-		encap = append(bytes.Clone(encap), indefiniteBER(0xa0, octets)...)
-	}
-
-	parts := signerBytes(fields)
-	parts[2] = indefiniteBER(0x30, encap)
-
-	return indefiniteBER(0x30, ci[0].FullBytes, indefiniteBER(0xa0, indefiniteBER(0x30, parts...)))
-}
-
-func testCMSIndependentFixture(t *testing.T, path string) {
-	t.Helper()
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	certificate, err := os.ReadFile(filepath.Join(filepath.Dir(path), "signer.der"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	message, err := os.ReadFile(filepath.Join(filepath.Dir(path), "content.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	signed, err := cms.ParseReader(t.Context(), bytes.NewReader(raw), cms.Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	options := cms.VerifyOptions{ExpectedContentType: cms.DataOID()}
-	if signed.Detached() {
-		options.DetachedContent = &message
-	}
-
-	for _, discard := range []bool{false, true} {
-		options.DiscardContent = discard
-
-		result, err := signed.Verify(t.Context(), [][]byte{certificate}, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if result.ContentSize() != int64(len(message)) || (!discard && !bytes.Equal(result.Content(), message)) || (discard && result.Content() != nil) {
-			t.Fatal("content retention", discard)
-		}
-	}
-
-	var output bytes.Buffer
-	if n, err := signed.WriterTo(t.Context()).WriteTo(&output); err != nil || n != int64(len(raw)) || !bytes.Equal(output.Bytes(), raw) {
-		t.Fatal("DER replay", n, err)
-	}
-}
-
 func TestCMSRejectsMalformedAttributeValues(t *testing.T) {
 	c := testcert.New(t)
 	for _, value := range [][]byte{
@@ -1025,63 +954,6 @@ func TestCMSSigningTimeSyntax(t *testing.T) {
 	}
 }
 
-// Rebuild just the unsigned container, leaving the signed attributes and
-// cryptographic signature intact. The negative cases are valid DER.
-func rewriteSigner(t *testing.T, raw []byte, change func([]asn1.RawValue) [][]byte) []byte {
-	t.Helper()
-	ci, f := cmsEnvelopeFields(t, raw)
-
-	si, err := der.SetFields(f[len(f)-1], 0, asn1.TagSet, 1)
-	if err != nil || len(si) != 1 {
-		t.Fatal(err)
-	}
-
-	fields, err := der.Sequence(si[0], 5, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	parts := signerBytes(f)
-	parts[len(parts)-1] = der.Set(der.Seq(change(fields)...))
-
-	return der.Seq(ci[0].FullBytes, der.Ctx(0, der.Seq(parts...)))
-}
-
-func cmsEnvelopeFields(t testing.TB, raw []byte) ([]asn1.RawValue, []asn1.RawValue) {
-	t.Helper()
-
-	v, err := der.Read(raw, len(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ci, err := der.Sequence(v, 2, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sd, err := der.Explicit(ci[1], 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	f, err := der.Sequence(sd, 4, 6)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return ci, f
-}
-
-func signerBytes(f []asn1.RawValue) [][]byte {
-	b := make([][]byte, len(f))
-	for i := range f {
-		b[i] = f[i].FullBytes
-	}
-
-	return b
-}
-
 func TestCMSTrustBinding(t *testing.T) {
 	chain := testcert.New(t)
 	content := []byte("authenticated content and explicit trust")
@@ -1373,6 +1245,11 @@ func TestCMSAuthenticatedESSStructure(t *testing.T) {
 	names := der.Seq(der.Ctx(4, chain.Leaf.RawIssuer))
 	issuer := der.Seq(names, serial)
 	id := der.Seq(der.Octets(sum[:]), issuer)
+	policyOID := der.OID(asn1.ObjectIdentifier{1, 2, 3, 4})
+	qualifierOID := der.OID(asn1.ObjectIdentifier{1, 2, 3, 5})
+	policyValue := func(fields ...[]byte) []byte {
+		return der.Seq(der.Seq(id), der.Seq(der.Seq(fields...)))
+	}
 	for _, tc := range []struct {
 		name  string
 		value []byte
@@ -1391,6 +1268,15 @@ func TestCMSAuthenticatedESSStructure(t *testing.T) {
 		{"zero issuer serial", der.Seq(der.Seq(der.Seq(der.Octets(sum[:]), der.Seq(names, der.Int(0))))), cms.ErrSyntax},
 		{"empty policies", der.Seq(der.Seq(id), der.Seq()), cms.ErrSyntax},
 		{"wrong policies type", der.Seq(der.Seq(id), der.Int(1)), cms.ErrSyntax},
+		{"advisory policy", policyValue(policyOID), nil},
+		{"policy qualifier", policyValue(policyOID, der.Seq(der.Seq(qualifierOID, der.Octets([]byte("qualifier"))))), nil},
+		{"wrong policy information type", der.Seq(der.Seq(id), der.Seq(der.Int(1))), cms.ErrSyntax},
+		{"empty policy information", policyValue(), cms.ErrSyntax},
+		{"wrong policy identifier", policyValue(der.Int(1)), cms.ErrSyntax},
+		{"empty policy qualifiers", policyValue(policyOID, der.Seq()), cms.ErrSyntax},
+		{"wrong policy qualifiers type", policyValue(policyOID, der.Octets(nil)), cms.ErrSyntax},
+		{"wrong policy qualifier identifier", policyValue(policyOID, der.Seq(der.Seq(der.Int(1), der.Octets(nil)))), cms.ErrSyntax},
+		{"missing policy qualifier value", policyValue(policyOID, der.Seq(der.Seq(qualifierOID))), cms.ErrSyntax},
 		{"malformed additional identifier", der.Seq(der.Seq(id, der.Seq(der.Octets(sum[:]), der.Seq(names)))), cms.ErrSyntax},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1441,6 +1327,12 @@ func TestCMSAuthenticatedESSStructure(t *testing.T) {
 				}
 			} else if result == nil || err != nil || !result.Signers()[0].CertificateBound() || string(result.Content()) != "ESS schema with valid signature" {
 				t.Fatal("valid ESS certificate binding rejected", err)
+			}
+			if tc.want == nil {
+				result, err := parsed.Verify(t.Context(), [][]byte{chain.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true, RequireUnrestrictedCertificatePath: true})
+				if result == nil || err != nil {
+					t.Fatal("advisory ESS policy became a certification-path restriction", err)
+				}
 			}
 		})
 	}
@@ -1667,6 +1559,134 @@ func BenchmarkCMSBER(b *testing.B) { benchmarkCMSBER(b, false) }
 
 func BenchmarkCMSBERReader(b *testing.B) { benchmarkCMSBER(b, true) }
 
+func indefiniteBER(tag byte, parts ...[]byte) []byte {
+	return append(append([]byte{tag, 128}, bytes.Join(parts, nil)...), 0, 0)
+}
+
+func cmsBEREnvelope(t testing.TB, raw, octets []byte) []byte {
+	t.Helper()
+	ci, fields := cmsEnvelopeFields(t, raw)
+
+	ec, err := der.Sequence(fields[2], 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	encap := ec[0].FullBytes
+	if len(ec) == 2 {
+		encap = append(bytes.Clone(encap), indefiniteBER(0xa0, octets)...)
+	}
+
+	parts := signerBytes(fields)
+	parts[2] = indefiniteBER(0x30, encap)
+
+	return indefiniteBER(0x30, ci[0].FullBytes, indefiniteBER(0xa0, indefiniteBER(0x30, parts...)))
+}
+
+func testCMSIndependentFixture(t *testing.T, path string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certificate, err := os.ReadFile(filepath.Join(filepath.Dir(path), "signer.der"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := os.ReadFile(filepath.Join(filepath.Dir(path), "content.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := cms.ParseReader(t.Context(), bytes.NewReader(raw), cms.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	options := cms.VerifyOptions{ExpectedContentType: cms.DataOID()}
+	if signed.Detached() {
+		options.DetachedContent = &message
+	}
+
+	for _, discard := range []bool{false, true} {
+		options.DiscardContent = discard
+
+		result, err := signed.Verify(t.Context(), [][]byte{certificate}, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if result.ContentSize() != int64(len(message)) || (!discard && !bytes.Equal(result.Content(), message)) || (discard && result.Content() != nil) {
+			t.Fatal("content retention", discard)
+		}
+	}
+
+	var output bytes.Buffer
+	if n, err := signed.WriterTo(t.Context()).WriteTo(&output); err != nil || n != int64(len(raw)) || !bytes.Equal(output.Bytes(), raw) {
+		t.Fatal("DER replay", n, err)
+	}
+}
+
+// Rebuild just the unsigned container, leaving the signed attributes and
+// cryptographic signature intact. The negative cases are valid DER.
+func rewriteSigner(t *testing.T, raw []byte, change func([]asn1.RawValue) [][]byte) []byte {
+	t.Helper()
+	ci, f := cmsEnvelopeFields(t, raw)
+
+	si, err := der.SetFields(f[len(f)-1], 0, asn1.TagSet, 1)
+	if err != nil || len(si) != 1 {
+		t.Fatal(err)
+	}
+
+	fields, err := der.Sequence(si[0], 5, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parts := signerBytes(f)
+	parts[len(parts)-1] = der.Set(der.Seq(change(fields)...))
+
+	return der.Seq(ci[0].FullBytes, der.Ctx(0, der.Seq(parts...)))
+}
+
+func cmsEnvelopeFields(t testing.TB, raw []byte) ([]asn1.RawValue, []asn1.RawValue) {
+	t.Helper()
+
+	v, err := der.Read(raw, len(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ci, err := der.Sequence(v, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sd, err := der.Explicit(ci[1], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := der.Sequence(sd, 4, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return ci, f
+}
+
+func signerBytes(f []asn1.RawValue) [][]byte {
+	b := make([][]byte, len(f))
+	for i := range f {
+		b[i] = f[i].FullBytes
+	}
+
+	return b
+}
+
 func benchmarkCMSBER(b *testing.B, reader bool) {
 	c := testcert.New(b)
 	for _, size := range []int{16 << 10, 1 << 20} {
@@ -1689,6 +1709,32 @@ func benchmarkCMSBER(b *testing.B, reader bool) {
 				}
 				if err != nil || parsed.Size() != len(raw) {
 					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkCertificateBagBudget(b *testing.B) {
+	chain := testcert.New(b)
+	raw, err := cms.Sign(b.Context(), nil, []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw}}, cms.SignOptions{})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	outer, fields := cmsEnvelopeFields(b, raw)
+	for _, count := range []int{64, 4096, 16384} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			parts := signerBytes(fields)
+			// A valid DER bag exceeds the certificate count before any member
+			// needs to be interpreted as an X.509 certificate.
+			parts[3] = der.Ctx(0, bytes.Repeat(der.Seq(), count))
+			input := der.Seq(outer[0].FullBytes, der.Ctx(0, der.Seq(parts...)))
+			b.ReportAllocs()
+			for b.Loop() {
+				parsed, err := cms.Parse(b.Context(), input, cms.Limits{MaxCertificates: 1})
+				if parsed != nil || !errors.Is(err, cms.ErrSyntax) {
+					b.Fatalf("oversized certificate bag accepted: %v", err)
 				}
 			}
 		})

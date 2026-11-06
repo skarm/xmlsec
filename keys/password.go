@@ -14,6 +14,24 @@ import (
 	"errors"
 )
 
+const (
+	// AES key length in bits used when selecting and validating the export cipher.
+	aes128KeyBits = 128
+	// AES key length in bits used when selecting and validating the export cipher.
+	aes192KeyBits           = 192
+	aes256KeyBits           = 256
+	defaultExportIterations = 600000
+	defaultExportKeyBits    = aes256KeyBits
+	// Number of KDF iterations between context checks.
+	kdfCancellationInterval = 1024
+	// Caps a derived key length before KDF allocation, independently of salt length.
+	maximumDerivedKeyBytes = 64
+	// Maximum accepted salt length for the supported password-based KDF profiles, in bytes.
+	maximumSaltBytes = 64
+	// Minimum accepted salt length for the supported password-based KDF profiles, in bytes.
+	minimumSaltBytes = 8
+)
+
 var (
 	// ErrPolicy reports unsupported password protection or invalid caller options.
 	ErrPolicy = errors.New("key protection policy violation")
@@ -82,7 +100,10 @@ func (p *passwordState) charge(iterations, blocks int) error {
 }
 
 func (p *passwordState) derive(hash crypto.Hash, salt []byte, iterations, size int) ([]byte, error) {
-	if !p.acceptHash(hash) || size < 1 || size > 64 || len(salt) < 8 || len(salt) > 64 {
+	// PBKDF2 appends a 32-bit big-endian block counter to the salt.
+	const pbkdf2CounterBytes = 4
+
+	if !p.acceptHash(hash) || size < 1 || size > maximumDerivedKeyBytes || len(salt) < minimumSaltBytes || len(salt) > maximumSaltBytes {
 		return nil, ErrPolicy
 	}
 
@@ -98,7 +119,7 @@ func (p *passwordState) derive(hash crypto.Hash, salt []byte, iterations, size i
 	defer clear(u)
 	defer clear(t)
 
-	var counter [4]byte
+	var counter [pbkdf2CounterBytes]byte
 	for block := 1; block <= blocks; block++ {
 		binary.BigEndian.PutUint32(counter[:], uint32(block))
 		prf.Reset()
@@ -108,7 +129,7 @@ func (p *passwordState) derive(hash crypto.Hash, salt []byte, iterations, size i
 		copy(t, u)
 
 		for i := 1; i < iterations; i++ {
-			if i%1024 == 0 {
+			if i%kdfCancellationInterval == 0 {
 				if err := p.ctx.Err(); err != nil {
 					clear(out)
 					return nil, err
@@ -147,7 +168,7 @@ func sha2(h crypto.Hash) bool { return h == crypto.SHA256 || h == crypto.SHA384 
 
 func normalizeEncryption(options EncryptionOptions) (EncryptionOptions, error) {
 	if options.KeyBits == 0 {
-		options.KeyBits = 256
+		options.KeyBits = defaultExportKeyBits
 	}
 
 	if options.Hash == 0 {
@@ -155,10 +176,10 @@ func normalizeEncryption(options EncryptionOptions) (EncryptionOptions, error) {
 	}
 
 	if options.Iterations == 0 {
-		options.Iterations = 600000
+		options.Iterations = defaultExportIterations
 	}
 
-	if (options.KeyBits != 128 && options.KeyBits != 192 && options.KeyBits != 256) || !sha2(options.Hash) || options.Iterations < 1 {
+	if (options.KeyBits != aes128KeyBits && options.KeyBits != aes192KeyBits && options.KeyBits != aes256KeyBits) || !sha2(options.Hash) || options.Iterations < 1 {
 		return EncryptionOptions{}, ErrPolicy
 	}
 

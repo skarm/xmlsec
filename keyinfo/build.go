@@ -20,6 +20,14 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	// Caps each builder collection; aggregate candidate and element visits have
+	// separate default-profile budgets, including values repeated across X509Data groups.
+	maxBuilderEntries = 32
+	// Hard ceiling on transforms attached to one RetrievalMethod.
+	maxRetrievalTransforms = 64
+)
+
 // KeyFormat selects the XML representation of a public key.
 type KeyFormat string
 
@@ -116,25 +124,25 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 		return nil, ErrInput
 	}
 
-	if len(t.Names) > 32 || len(t.Keys) > 32 || len(t.Certificates) > 32 || len(t.KeyInfoReferences) > 32 || len(t.RetrievalMethods) > 32 {
+	if len(t.Names) > maxBuilderEntries || len(t.Keys) > maxBuilderEntries || len(t.Certificates) > maxBuilderEntries || len(t.KeyInfoReferences) > maxBuilderEntries || len(t.RetrievalMethods) > maxBuilderEntries {
 		return nil, ErrLimit
 	}
 
-	root := element(Namespace, "ds", lexicon.DSigElementKeyInfo)
+	root := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
 
-	root.NS = []tree.Namespace{{Prefix: "ds", URI: Namespace}, {Prefix: "dsig11", URI: Namespace11}}
+	root.NS = []tree.Namespace{{Prefix: lexicon.PrefixDSig, URI: Namespace}, {Prefix: lexicon.PrefixDSig11, URI: Namespace11}}
 	if t.ID != "" {
-		set(root, "Id", t.ID)
+		set(root, lexicon.SecurityAttrID, t.ID)
 	}
 
 	total := 0
 	for _, name := range t.Names {
 		total += len(name)
-		if total > 4<<20 {
+		if total > defaultMaxTotalBytes {
 			return nil, ErrLimit
 		}
 
-		v := element(Namespace, "ds", lexicon.DSigElementKeyName)
+		v := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
 		addText(v, name)
 		add(root, v)
 	}
@@ -160,16 +168,16 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 	}
 
 	for _, uri := range t.KeyInfoReferences {
-		if len(uri) > 8192 {
+		if len(uri) > maxURIBytes {
 			return nil, ErrLimit
 		}
 
-		if externalURI(uri) && !validKeyURI(uri) {
+		if !validKeyURI(uri) {
 			return nil, ErrInput
 		}
 
-		r := element(Namespace11, "dsig11", nameKeyInfoReference)
-		set(r, "URI", uri)
+		r := element(Namespace11, lexicon.PrefixDSig11, nameKeyInfoReference)
+		set(r, lexicon.SecurityAttrURI, uri)
 		add(root, r)
 	}
 
@@ -188,32 +196,41 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 // Count parser visits as well as output entries: decoding a selector is work
 // even when the same value is repeated in several groups.
 func x509TemplateBudget(ctx context.Context, t *Template, total *int) error {
+	// Visit weights count the root and each selected XML representation's
+	// nodes; RSA/DSA add components beyond the item/bare-key/binary base.
+	const (
+		keyInfoRootVisits   = 1
+		keyNameVisits       = 2
+		keyItemBaseVisits   = 3
+		dsaAdditionalVisits = 3
+	)
+
 	groups := len(t.X509Data)
 	if len(t.Certificates) > 0 {
 		groups++
 	}
 
-	if groups > 32 {
+	if groups > maxBuilderEntries {
 		return ErrLimit
 	}
 
-	visits := 1 + 2*len(t.Names) + len(t.KeyInfoReferences) + len(t.RetrievalMethods)
+	visits := keyInfoRootVisits + keyNameVisits*len(t.Names) + len(t.KeyInfoReferences) + len(t.RetrievalMethods)
 	for _, key := range t.Keys {
-		visits += 3 // item, bare key, binary value
+		visits += keyItemBaseVisits
 
 		if key.Format != DERKeyValue {
 			switch key.Key.(type) {
 			case *rsa.PublicKey:
 				visits++
 			case *dsa.PublicKey:
-				visits += 3
+				visits += dsaAdditionalVisits
 			}
 		}
 	}
 
 	candidates := len(t.Keys)
 	charge := func(size int) error {
-		if size > 1<<20 || size > (4<<20)-*total {
+		if size > defaultMaxBlobBytes || size > defaultMaxTotalBytes-*total {
 			return ErrLimit
 		}
 
@@ -231,7 +248,7 @@ func x509TemplateBudget(ctx context.Context, t *Template, total *int) error {
 		items := 0
 
 		for _, count := range counts {
-			if count > 32 {
+			if count > maxBuilderEntries {
 				return ErrLimit
 			}
 
@@ -245,7 +262,7 @@ func x509TemplateBudget(ctx context.Context, t *Template, total *int) error {
 		visits += 1 + 2*items + len(group.IssuerSerials)
 
 		candidates += len(group.Certificates)
-		if visits > 256 || candidates > 32 {
+		if visits > defaultMaxElements || candidates > defaultMaxCandidates {
 			return ErrLimit
 		}
 
@@ -267,11 +284,11 @@ func x509TemplateBudget(ctx context.Context, t *Template, total *int) error {
 }
 
 func buildRetrieval(ctx context.Context, root *tree.Node, method RetrievalMethod, total *int) error {
-	if len(method.URI) > 8192 || len(method.Transforms) > 64 {
+	if len(method.URI) > maxURIBytes || len(method.Transforms) > maxRetrievalTransforms {
 		return ErrLimit
 	}
 
-	if externalURI(method.URI) && !validKeyURI(method.URI) {
+	if !validKeyURI(method.URI) {
 		return ErrInput
 	}
 
@@ -283,18 +300,18 @@ func buildRetrieval(ctx context.Context, root *tree.Node, method RetrievalMethod
 		return err
 	}
 
-	n := element(Namespace, "ds", "RetrievalMethod")
-	set(n, "URI", method.URI)
+	n := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementRetrievalMethod)
+	set(n, lexicon.SecurityAttrURI, method.URI)
 
 	if method.Type != "" {
-		set(n, "Type", method.Type)
+		set(n, lexicon.SecurityAttrType, method.Type)
 	}
 
 	if len(method.Transforms) != 0 {
-		transforms := element(Namespace, "ds", lexicon.DSigElementTransforms)
+		transforms := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementTransforms)
 		for _, transform := range method.Transforms {
-			child := element(Namespace, "ds", lexicon.DSigElementTransform)
-			set(child, "Algorithm", transform.Algorithm)
+			child := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementTransform)
+			set(child, lexicon.SecurityAttrAlgorithm, transform.Algorithm)
 
 			if err := transformxml.AppendParameters(ctx, child, transform); err != nil {
 				return retrievalError(err)
@@ -314,7 +331,7 @@ func buildRetrieval(ctx context.Context, root *tree.Node, method RetrievalMethod
 // Bound all retained parameter sources before importing any stylesheet tree.
 func retrievalTemplateBudget(ctx context.Context, method RetrievalMethod, total *int) error {
 	charge := func(value string) error {
-		if len(value) > (4<<20)-*total {
+		if len(value) > defaultMaxTotalBytes-*total {
 			return ErrLimit
 		}
 
@@ -336,7 +353,7 @@ func retrievalTemplateBudget(ctx context.Context, method RetrievalMethod, total 
 			return err
 		}
 
-		if len(step.Stylesheet) > (4<<20)-*total {
+		if len(step.Stylesheet) > defaultMaxTotalBytes-*total {
 			return ErrLimit
 		}
 
@@ -415,7 +432,7 @@ func buildKeys(ctx context.Context, keys []PublicKeyValue, root *tree.Node) erro
 			return err
 		}
 
-		if err := validateKey(value.Key, 8192); err != nil {
+		if err := validateKey(value.Key, defaultMaxRSABits); err != nil {
 			return err
 		}
 
@@ -438,7 +455,7 @@ func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, erro
 			return nil, err
 		}
 
-		node := element(Namespace11, "dsig11", nameDEREncodedKeyValue)
+		node := element(Namespace11, lexicon.PrefixDSig11, nameDEREncodedKeyValue)
 
 		encoded, err := tree.EncodeBase64(ctx, der)
 		if err != nil {
@@ -449,7 +466,7 @@ func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, erro
 
 		return node, nil
 	case "", XMLKeyValue:
-		node := element(Namespace, "ds", lexicon.DSigElementKeyValue)
+		node := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementKeyValue)
 
 		child, err := buildXMLKey(ctx, value.Key)
 		if err != nil {
@@ -467,29 +484,29 @@ func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, erro
 func buildXMLKey(ctx context.Context, key crypto.PublicKey) (*tree.Node, error) {
 	switch k := key.(type) {
 	case *dsa.PublicKey:
-		node := element(Namespace, "ds", nameDSAKeyValue)
+		node := element(Namespace, lexicon.PrefixDSig, nameDSAKeyValue)
 		for i, value := range []*big.Int{k.P, k.Q, k.G, k.Y} {
-			if err := blob(ctx, node, Namespace, "ds", []string{"P", "Q", "G", "Y"}[i], value.Bytes()); err != nil {
+			if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, []string{nameP, nameQ, nameG, nameY}[i], value.Bytes()); err != nil {
 				return nil, err
 			}
 		}
 
 		return node, nil
 	case *rsa.PublicKey:
-		node := element(Namespace, "ds", nameRSAKeyValue)
-		if err := blob(ctx, node, Namespace, "ds", "Modulus", k.N.Bytes()); err != nil {
+		node := element(Namespace, lexicon.PrefixDSig, nameRSAKeyValue)
+		if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, nameModulus, k.N.Bytes()); err != nil {
 			return nil, err
 		}
 
-		if err := blob(ctx, node, Namespace, "ds", "Exponent", big.NewInt(int64(k.E)).Bytes()); err != nil {
+		if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, nameExponent, big.NewInt(int64(k.E)).Bytes()); err != nil {
 			return nil, err
 		}
 
 		return node, nil
 	case *ecdsa.PublicKey:
-		node := element(Namespace11, "dsig11", nameECKeyValue)
-		curve := element(Namespace11, "dsig11", "NamedCurve")
-		set(curve, "URI", curveURI(k.Curve))
+		node := element(Namespace11, lexicon.PrefixDSig11, nameECKeyValue)
+		curve := element(Namespace11, lexicon.PrefixDSig11, lexicon.DSigElementNamedCurve)
+		set(curve, lexicon.SecurityAttrURI, curveURI(k.Curve))
 		add(node, curve)
 
 		point, err := k.Bytes()
@@ -497,7 +514,7 @@ func buildXMLKey(ctx context.Context, key crypto.PublicKey) (*tree.Node, error) 
 			return nil, ErrKey
 		}
 
-		if err := blob(ctx, node, Namespace11, "dsig11", "PublicKey", point); err != nil {
+		if err := blob(ctx, node, Namespace11, lexicon.PrefixDSig11, lexicon.DSigElementPublicKey, point); err != nil {
 			return nil, err
 		}
 

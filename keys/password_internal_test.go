@@ -205,20 +205,6 @@ func TestPKCS12AuthenticatedBagAttributes(t *testing.T) {
 	}
 }
 
-func authenticatedPFX(t testing.TB, contents []byte) []byte {
-	t.Helper()
-
-	authSafe := der.Seq(dataInfo(contents))
-	s := testState(t.Context(), t)
-
-	mac, err := encodePKCS12MAC(s, authSafe, PKCS12Options{Encryption: EncryptionOptions{Hash: crypto.SHA256, Iterations: 1000}})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return der.Seq(der.Int(3), dataInfo(authSafe), mac)
-}
-
 func TestProtectionParameterPolicy(t *testing.T) {
 	salt, iv := bytes.Repeat([]byte{1}, 16), bytes.Repeat([]byte{2}, 16)
 
@@ -468,62 +454,6 @@ func TestPBES2WorkingStorage(t *testing.T) {
 	}
 }
 
-func rawValue(t testing.TB, b []byte) asn1.RawValue {
-	t.Helper()
-
-	v, err := der.Read(b, len(b))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return v
-}
-
-func sequence(t testing.TB, b []byte) []asn1.RawValue {
-	t.Helper()
-	v := rawValue(t, b)
-
-	f, err := der.Sequence(v, 0, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return f
-}
-
-func testState(ctx context.Context, t testing.TB) *passwordState {
-	t.Helper()
-
-	s, err := newPasswordState(ctx, []byte("public password"), Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(s.close)
-
-	return s
-}
-
-func keyAllocated(t *testing.T, run func() error) uint64 {
-	t.Helper()
-
-	allocated := ^uint64(0)
-
-	for range 3 {
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
-
-		if err := run(); err != nil {
-			t.Fatal(err)
-		}
-
-		runtime.ReadMemStats(&after)
-		allocated = min(allocated, after.TotalAlloc-before.TotalAlloc)
-	}
-
-	return allocated
-}
-
 // RFC 6070 section 2: the 25-octet vector crosses SHA-1 output blocks and
 // therefore also checks the aggregate PBKDF2 work count.
 func TestPBKDF2LegacyPublishedVector(t *testing.T) {
@@ -541,7 +471,9 @@ func TestPBKDF2LegacyPublishedVector(t *testing.T) {
 		return
 	}
 	want, _ := hex.DecodeString("3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038")
-	if err != nil || !bytes.Equal(got, want) || state.remaining != DefaultLimits().MaxKDFWork-8192 {
+	if err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, want) || state.remaining != DefaultLimits().MaxKDFWork-8192 {
 		t.Fatal("RFC 6070 vector or aggregate work differs", got, err, state.remaining)
 	}
 	clear(got)
@@ -587,35 +519,6 @@ func TestPBKDF2OptionalParameters(t *testing.T) {
 			}
 		})
 	}
-}
-
-func protectedPKCS8Fixture(t testing.TB, plain, password []byte, hash crypto.Hash, bits int, defaultPRF bool) []byte {
-	t.Helper()
-	salt, iv := []byte("independent salt"), bytes.Repeat([]byte{0x42}, aes.BlockSize)
-	key, err := pbkdf2.Key(hash.New, string(password), salt, 1000, bits/8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clear(key)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	padding := aes.BlockSize - len(plain)%aes.BlockSize
-	padded := append(bytes.Clone(plain), bytes.Repeat([]byte{byte(padding)}, padding)...)
-	defer clear(padded)
-	cipher.NewCBCEncrypter(block, iv).CryptBlocks(padded, padded)
-	kdfParams := [][]byte{der.Octets(salt), der.Int(1000)}
-	if !defaultPRF {
-		oid := hmacOID(hash)
-		if hash == crypto.SHA1 {
-			oid = oidHMAC1()
-		}
-		kdfParams = append(kdfParams, der.Seq(der.OID(oid), []byte{5, 0}))
-	}
-	encOID := map[int]asn1.ObjectIdentifier{128: oidAES128CBC(), 192: oidAES192CBC(), 256: oidAES256CBC()}[bits]
-	alg := der.Seq(der.OID(oidPBES2()), der.Seq(der.Seq(der.OID(oidPBKDF2()), der.Seq(kdfParams...)), der.Seq(der.OID(encOID), der.Octets(iv))))
-	return der.Seq(alg, der.Octets(padded))
 }
 
 func TestPKCS8LegacyAndPasswordOctets(t *testing.T) {
@@ -968,4 +871,103 @@ func FuzzPEMDecoding(f *testing.F) {
 			t.Fatal("PEM input changed")
 		}
 	})
+}
+
+func authenticatedPFX(t testing.TB, contents []byte) []byte {
+	t.Helper()
+
+	authSafe := der.Seq(dataInfo(contents))
+	s := testState(t.Context(), t)
+
+	mac, err := encodePKCS12MAC(s, authSafe, PKCS12Options{Encryption: EncryptionOptions{Hash: crypto.SHA256, Iterations: 1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return der.Seq(der.Int(3), dataInfo(authSafe), mac)
+}
+
+func rawValue(t testing.TB, b []byte) asn1.RawValue {
+	t.Helper()
+
+	v, err := der.Read(b, len(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return v
+}
+
+func sequence(t testing.TB, b []byte) []asn1.RawValue {
+	t.Helper()
+	v := rawValue(t, b)
+
+	f, err := der.Sequence(v, 0, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return f
+}
+
+func testState(ctx context.Context, t testing.TB) *passwordState {
+	t.Helper()
+
+	s, err := newPasswordState(ctx, []byte("public password"), Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(s.close)
+
+	return s
+}
+
+func keyAllocated(t *testing.T, run func() error) uint64 {
+	t.Helper()
+
+	allocated := ^uint64(0)
+
+	for range 3 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+
+		if err := run(); err != nil {
+			t.Fatal(err)
+		}
+
+		runtime.ReadMemStats(&after)
+		allocated = min(allocated, after.TotalAlloc-before.TotalAlloc)
+	}
+
+	return allocated
+}
+
+func protectedPKCS8Fixture(t testing.TB, plain, password []byte, hash crypto.Hash, bits int, defaultPRF bool) []byte {
+	t.Helper()
+	salt, iv := []byte("independent salt"), bytes.Repeat([]byte{0x42}, aes.BlockSize)
+	key, err := pbkdf2.Key(hash.New, string(password), salt, 1000, bits/8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(key)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := aes.BlockSize - len(plain)%aes.BlockSize
+	padded := append(bytes.Clone(plain), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	defer clear(padded)
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(padded, padded)
+	kdfParams := [][]byte{der.Octets(salt), der.Int(1000)}
+	if !defaultPRF {
+		oid := hmacOID(hash)
+		if hash == crypto.SHA1 {
+			oid = oidHMAC1()
+		}
+		kdfParams = append(kdfParams, der.Seq(der.OID(oid), []byte{5, 0}))
+	}
+	encOID := map[int]asn1.ObjectIdentifier{128: oidAES128CBC(), 192: oidAES192CBC(), 256: oidAES256CBC()}[bits]
+	alg := der.Seq(der.OID(oidPBES2()), der.Seq(der.Seq(der.OID(oidPBKDF2()), der.Seq(kdfParams...)), der.Seq(der.OID(encOID), der.Octets(iv))))
+	return der.Seq(alg, der.Octets(padded))
 }

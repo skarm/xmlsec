@@ -14,11 +14,31 @@ import (
 	"math/bits"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509crl"
 )
 
+const (
+	crlPEMType          = "X509 CRL"
+	ecPrivateKeyPEMType = "EC PRIVATE KEY"
+	// PEM boundary prefix shared by material detection and private-key export.
+	pemBeginMarker          = "-----BEGIN "
+	pemEndMarker            = "-----END "
+	pemHorizontalWhitespace = " \t"
+	pemMarkerSuffix         = "-----"
+	rsaPrivateKeyPEMType    = "RSA PRIVATE KEY"
+	rsaPublicKeyPEMType     = "RSA PUBLIC KEY"
+	materialReadChunkBytes  = 4096
+	maximumPEMLabelBytes    = 64
+	minimumPEMBoundaryBytes = len(pemBeginMarker) + len(pemMarkerSuffix)
+	pemCancellationMask     = 4095
+)
+
 const certificatePEMType = "CERTIFICATE"
+
+// bitsPerOctet converts encoded key bytes to cryptographic bit lengths.
+const bitsPerOctet = 8
 
 var (
 	// ErrFormat reports malformed, ambiguous or unsupported key material.
@@ -51,6 +71,8 @@ func ParsePrivate(data []byte, limits Limits) (crypto.Signer, error) {
 // public key from one X.509 certificate, in PEM or DER. It does not validate
 // certificate trust, lifetime or revocation. Returned data does not alias input.
 func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
+	const certificateOuterFields = 3
+
 	limits, err := normalizeLimits(limits)
 	if err != nil {
 		return nil, err
@@ -69,12 +91,12 @@ func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
 		return nil, err
 	}
 
-	fields, err := der.Sequence(value, 2, 3)
+	fields, err := der.Sequence(value, 2, certificateOuterFields)
 	if err != nil {
 		return nil, derError(err)
 	}
 
-	certificate := label == certificatePEMType || label == "" && len(fields) == 3
+	certificate := label == certificatePEMType || label == "" && len(fields) == certificateOuterFields
 	if !certificate && len(raw) > limits.MaxKeyBytes {
 		return nil, ErrLimit
 	}
@@ -88,9 +110,9 @@ func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
 	var key any
 
 	switch label {
-	case "PUBLIC KEY":
+	case lexicon.PEMPublicKey:
 		key, err = x509.ParsePKIXPublicKey(raw)
-	case "RSA PUBLIC KEY":
+	case rsaPublicKeyPEMType:
 		key, err = x509.ParsePKCS1PublicKey(raw)
 	case certificatePEMType:
 		return certificateKey(raw, limits)
@@ -160,7 +182,7 @@ func ParseCRL(data []byte, limits Limits) (*x509.RevocationList, error) {
 		return nil, err
 	}
 
-	if decoded.label != "" && decoded.label != "X509 CRL" {
+	if decoded.label != "" && decoded.label != crlPEMType {
 		return nil, ErrFormat
 	}
 
@@ -187,11 +209,11 @@ func parsePrivateDER(label string, raw []byte, limits Limits) (crypto.Signer, er
 	)
 
 	switch label {
-	case "PRIVATE KEY":
+	case lexicon.PEMPrivateKey:
 		key, err = x509.ParsePKCS8PrivateKey(raw)
-	case "RSA PRIVATE KEY":
+	case rsaPrivateKeyPEMType:
 		key, err = x509.ParsePKCS1PrivateKey(raw)
-	case "EC PRIVATE KEY":
+	case ecPrivateKeyPEMType:
 		key, err = x509.ParseECPrivateKey(raw)
 	case "":
 		key, err = x509.ParsePKCS8PrivateKey(raw)
@@ -225,33 +247,36 @@ func parsePrivateDER(label string, raw []byte, limits Limits) (crypto.Signer, er
 // Bound private RSA integers before x509 validates primes and builds CRT values.
 // PKCS#8 carries a nested DER key inside its privateKey OCTET STRING.
 func privateBudget(raw []byte, limits Limits) error {
+	// Early wrapper inspection cap; complete schema validation follows parsing.
+	const maximumBudgetWrapperFields = 16
+
 	v, err := readDER(raw, limits.MaxKeyBytes, limits)
 	if err != nil {
 		return err
 	}
 
-	fields, err := der.Sequence(v, 2, 16)
+	fields, err := der.Sequence(v, 2, maximumBudgetWrapperFields)
 	if err != nil {
 		return derError(err)
 	}
 
-	if len(fields) >= 3 && der.Is(fields[1], 0, asn1.TagSequence, true) && der.Is(fields[2], 0, asn1.TagOctetString, false) {
+	if len(fields) >= privateKeyInfoMinimumFields && der.Is(fields[1], asn1.ClassUniversal, asn1.TagSequence, true) && der.Is(fields[2], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		v, err = readDER(fields[2].Bytes, limits.MaxKeyBytes, limits)
 		if err != nil {
 			return err
 		}
 		// Ed25519's inner value is an OCTET STRING; EC SEC1 has an OCTET STRING second field.
-		if !der.Is(v, 0, asn1.TagSequence, true) {
+		if !der.Is(v, asn1.ClassUniversal, asn1.TagSequence, true) {
 			return nil
 		}
 
-		fields, err = der.Sequence(v, 2, 16)
+		fields, err = der.Sequence(v, 2, maximumBudgetWrapperFields)
 		if err != nil {
 			return derError(err)
 		}
 	}
 
-	if der.Is(fields[0], 0, asn1.TagInteger, false) && der.Is(fields[1], 0, asn1.TagInteger, false) {
+	if der.Is(fields[0], asn1.ClassUniversal, asn1.TagInteger, false) && der.Is(fields[1], asn1.ClassUniversal, asn1.TagInteger, false) {
 		return integerBudget(v, limits)
 	}
 
@@ -259,7 +284,13 @@ func privateBudget(raw []byte, limits Limits) error {
 }
 
 func integerBudget(v asn1.RawValue, limits Limits) error {
-	if der.Is(v, 0, asn1.TagInteger, false) {
+	// PKCS#1 has nine base fields and one optional OtherPrimeInfos field.
+	const (
+		rsaPrivateBaseFields    = 9
+		rsaPrivateMaximumFields = rsaPrivateBaseFields + 1
+	)
+
+	if der.Is(v, asn1.ClassUniversal, asn1.TagInteger, false) {
 		if !integerWithinBits(v.Bytes, limits.MaxRSABits) {
 			return ErrLimit
 		}
@@ -272,13 +303,13 @@ func integerBudget(v asn1.RawValue, limits Limits) error {
 		}
 		// PKCS#1's additional primes otherwise allow an attacker to multiply a
 		// large collection during x509 validation despite bounded components.
-		if der.Is(v, 0, asn1.TagSequence, true) && len(children) >= 9 && der.Is(children[0], 0, asn1.TagInteger, false) && der.Is(children[1], 0, asn1.TagInteger, false) && der.Is(children[2], 0, asn1.TagInteger, false) {
-			if len(children) > 10 {
+		if der.Is(v, asn1.ClassUniversal, asn1.TagSequence, true) && len(children) >= rsaPrivateBaseFields && der.Is(children[0], asn1.ClassUniversal, asn1.TagInteger, false) && der.Is(children[1], asn1.ClassUniversal, asn1.TagInteger, false) && der.Is(children[2], asn1.ClassUniversal, asn1.TagInteger, false) {
+			if len(children) > rsaPrivateMaximumFields {
 				return ErrFormat
 			}
 
-			if len(children) == 10 {
-				if _, err := der.Sequence(children[9], 0, limits.MaxRSAPrimes-2); err != nil {
+			if len(children) == rsaPrivateMaximumFields {
+				if _, err := der.Sequence(children[rsaPrivateBaseFields], 0, limits.MaxRSAPrimes-2); err != nil {
 					return ErrLimit
 				}
 			}
@@ -303,11 +334,11 @@ func integerWithinBits(value []byte, maximum int) bool {
 		return true
 	}
 
-	if len(value)-1 > maximum/8 {
+	if len(value)-1 > maximum/bitsPerOctet {
 		return false
 	}
 
-	return (len(value)-1)*8+bits.Len8(value[0]) <= maximum
+	return (len(value)-1)*bitsPerOctet+bits.Len8(value[0]) <= maximum
 }
 
 func certificateKey(raw []byte, limits Limits) (crypto.PublicKey, error) {
@@ -335,32 +366,40 @@ func certificateKey(raw []byte, limits Limits) (crypto.PublicKey, error) {
 }
 
 func crlBudget(raw []byte, limits Limits) error {
+	// CertificateList has a fixed envelope; TBSCertList starts with three
+	// mandatory fields, alongside up to four optional fields.
+	const (
+		certificateListFields = 3
+		tbsRequiredFields     = 3
+		tbsMaximumFields      = 7
+	)
+
 	value, err := readDER(raw, limits.MaxCRLBytes, limits)
 	if err != nil {
 		return err
 	}
 
-	fields, err := der.Sequence(value, 3, 3)
+	fields, err := der.Sequence(value, certificateListFields, certificateListFields)
 	if err != nil {
 		return derError(err)
 	}
 
-	body, err := der.Sequence(fields[0], 3, 7)
+	body, err := der.Sequence(fields[0], tbsRequiredFields, tbsMaximumFields)
 	if err != nil {
 		return derError(err)
 	}
 
 	index := 0
-	if der.Is(body[0], 0, asn1.TagInteger, false) {
+	if der.Is(body[0], asn1.ClassUniversal, asn1.TagInteger, false) {
 		index++
 	}
 	// Signature algorithm, issuer and thisUpdate precede optional nextUpdate.
-	index += 3
-	if index < len(body) && (der.Is(body[index], 0, asn1.TagUTCTime, false) || der.Is(body[index], 0, asn1.TagGeneralizedTime, false)) {
+	index += tbsRequiredFields
+	if index < len(body) && (der.Is(body[index], asn1.ClassUniversal, asn1.TagUTCTime, false) || der.Is(body[index], asn1.ClassUniversal, asn1.TagGeneralizedTime, false)) {
 		index++
 	}
 
-	if index < len(body) && der.Is(body[index], 0, asn1.TagSequence, true) {
+	if index < len(body) && der.Is(body[index], asn1.ClassUniversal, asn1.TagSequence, true) {
 		contents := body[index].Bytes
 		for count := 0; len(contents) > 0; count++ {
 			if count >= limits.MaxCRLEntries {
@@ -418,7 +457,7 @@ func material(ctx context.Context, data []byte, maximum int, limits Limits) (dec
 
 	m := decodedMaterial{}
 
-	if bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+	if bytes.HasPrefix(trimmed, []byte(pemBeginMarker)) {
 		var err error
 
 		m, err = decodePEM(ctx, trimmed, maximum)
@@ -446,22 +485,22 @@ func material(ctx context.Context, data []byte, maximum int, limits Limits) (dec
 // before allocation. Base64 whitespace is skipped without copying encoded text.
 func decodePEM(ctx context.Context, data []byte, maximum int) (decodedMaterial, error) {
 	line, body, ok := pemLine(data)
-	if !ok || !bytes.HasSuffix(line, []byte("-----")) || len(line) < 16 || bytes.Count(data, []byte("-----BEGIN ")) != 1 {
+	if !ok || !bytes.HasSuffix(line, []byte(pemMarkerSuffix)) || len(line) < minimumPEMBoundaryBytes || bytes.Count(data, []byte(pemBeginMarker)) != 1 {
 		return decodedMaterial{}, ErrFormat
 	}
 
-	label := line[11 : len(line)-5]
-	if len(label) == 0 || len(label) > 64 {
+	label := line[len(pemBeginMarker) : len(line)-len(pemMarkerSuffix)]
+	if len(label) == 0 || len(label) > maximumPEMLabelBytes {
 		return decodedMaterial{}, ErrFormat
 	}
 
-	end := bytes.Index(body, []byte("\n-----END "))
-	if end < 0 {
+	end := bytes.Index(body, []byte(pemEndMarker))
+	if end < 1 || body[end-1] != '\r' && body[end-1] != '\n' {
 		return decodedMaterial{}, ErrFormat
 	}
 
-	trailer, rest, _ := pemLine(body[end+1:])
-	if len(trailer) != 9+len(label)+5 || !bytes.Equal(trailer[9:len(trailer)-5], label) || !bytes.HasSuffix(trailer, []byte("-----")) || len(bytes.TrimSpace(rest)) != 0 {
+	trailer, rest, _ := pemLine(body[end:])
+	if len(trailer) != len(pemEndMarker)+len(label)+len(pemMarkerSuffix) || !bytes.Equal(trailer[len(pemEndMarker):len(trailer)-len(pemMarkerSuffix)], label) || !bytes.HasSuffix(trailer, []byte(pemMarkerSuffix)) || len(bytes.TrimSpace(rest)) != 0 {
 		return decodedMaterial{}, ErrFormat
 	}
 
@@ -498,19 +537,32 @@ func decodePEM(ctx context.Context, data []byte, maximum int) (decodedMaterial, 
 func pemSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
 
 func pemLine(data []byte) ([]byte, []byte, bool) {
-	line, rest, newline := bytes.Cut(data, []byte{'\n'})
-	if newline && len(line) > 0 && line[len(line)-1] == '\r' {
-		line = line[:len(line)-1]
+	// RFC 7468 section 3 defines eol as CRLF / CR / LF.
+	end := bytes.IndexAny(data, "\r\n")
+	if end < 0 {
+		return bytes.TrimRight(data, pemHorizontalWhitespace), nil, false
 	}
 
-	return bytes.TrimRight(line, " \t"), rest, newline
+	line, rest := data[:end], data[end+1:]
+	if data[end] == '\r' && len(rest) > 0 && rest[0] == '\n' {
+		rest = rest[1:]
+	}
+
+	return bytes.TrimRight(line, pemHorizontalWhitespace), rest, true
 }
 
 func pemDecodedSize(ctx context.Context, data []byte, maximum int) (int, error) {
+	// Standard Base64 maps three bytes to four symbols with at most two pads.
+	const (
+		encodedQuantumSymbols = 4
+		decodedQuantumBytes   = 3
+		maximumPaddingSymbols = 2
+	)
+
 	count, padding := 0, 0
 
 	for i, c := range data {
-		if i&4095 == 0 {
+		if i&pemCancellationMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return 0, err
 			}
@@ -529,11 +581,11 @@ func pemDecodedSize(ctx context.Context, data []byte, maximum int) (int, error) 
 		}
 	}
 
-	if count%4 != 0 || padding > 2 || count == 0 {
+	if count%encodedQuantumSymbols != 0 || padding > maximumPaddingSymbols || count == 0 {
 		return 0, ErrFormat
 	}
 
-	size := count/4*3 - padding
+	size := count/encodedQuantumSymbols*decodedQuantumBytes - padding
 	if size > maximum {
 		return 0, ErrLimit
 	}
@@ -553,7 +605,7 @@ func (r *pemBodyReader) Read(dst []byte) (int, error) {
 			return used, err
 		}
 
-		span := r.data[:min(len(r.data), 4096)]
+		span := r.data[:min(len(r.data), materialReadChunkBytes)]
 
 		taken := 0
 		for taken < len(span) && used < len(dst) {

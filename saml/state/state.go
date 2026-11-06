@@ -8,9 +8,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/saml/internal/expiry"
 	"github.com/skarm/xmlsec/saml/internal/profile"
+	"github.com/skarm/xmlsec/saml/protocol"
 )
+
+// Store only the fixed 32-byte SHA-256 browser-secret digest; the original unpredictable browser secret is never retained in pending state.
+const (
+	browserDigestBytes = 32
+)
+
+const paosBinding = lexicon.SAMLBindingPAOS
 
 var (
 	// ErrPolicy reports invalid SAML request state.
@@ -26,6 +35,10 @@ var (
 // Pending retains a solicited request, its browser-secret digest, requested
 // authentication conditions and expiration.
 type Pending struct {
+	// IssuedAt is the authentication request issuance time.
+	IssuedAt time.Time
+	// ExpiresAt is the pending request's expiration time.
+	ExpiresAt time.Time
 	// SP is the requesting service provider's entity identifier.
 	SP string
 	// IDP is the selected identity provider's entity identifier.
@@ -36,17 +49,21 @@ type Pending struct {
 	RelayState string
 	// ACS is the exact assertion consumer endpoint selected for the request.
 	ACS string
+	// ResponseBinding fixes the assertion delivery binding. Empty means the
+	// historical HTTP-POST default for existing durable-store records.
+	ResponseBinding string
 	// NameIDFormat is the requested subject identifier format URI, if specified.
 	NameIDFormat string
-	// IssuedAt is the authentication request issuance time.
-	IssuedAt time.Time
-	// ExpiresAt is the pending request's expiration time.
-	ExpiresAt time.Time
-	// BrowserSHA256 binds the request to the browser secret without storing the secret.
-	BrowserSHA256 [32]byte
+	// ChannelBindings retains the actual SP channel data sent in the signed ECP
+	// request, so a missing or mismatched assertion signal cannot downgrade it.
+	ChannelBindings []protocol.ChannelBinding
 	// RequestedContexts contains the authentication context class URIs requested with exact
 	// comparison.
 	RequestedContexts []string
+	// BrowserSHA256 binds the request to the browser secret without storing the secret.
+	BrowserSHA256 [browserDigestBytes]byte
+	// RequireHolderOfKey prevents a bearer downgrade of a solicited ECP login.
+	RequireHolderOfKey bool
 	// ForceAuthn records whether the request requires fresh authentication.
 	ForceAuthn bool
 }
@@ -54,6 +71,8 @@ type Pending struct {
 // Clone returns an owned copy of the request state and its context list.
 func (p Pending) Clone() Pending {
 	p.RequestedContexts = append([]string(nil), p.RequestedContexts...)
+	p.ChannelBindings = protocol.CloneChannelBindings(p.ChannelBindings)
+
 	return p
 }
 
@@ -66,6 +85,7 @@ func (p Pending) own() Pending {
 	out.RequestID = strings.Clone(out.RequestID)
 	out.RelayState = strings.Clone(out.RelayState)
 	out.ACS = strings.Clone(out.ACS)
+	out.ResponseBinding = strings.Clone(out.ResponseBinding)
 	out.NameIDFormat = strings.Clone(out.NameIDFormat)
 
 	for i, value := range out.RequestedContexts {
@@ -117,15 +137,23 @@ type stateKey struct {
 // NewMemoryStore creates an empty bounded request store using default limits for zero Config
 // fields.
 func NewMemoryStore(c Config) (*MemoryStore, error) {
+	const (
+		defaultStateLifetime = 15 * time.Minute
+		defaultStoreCapacity = 10000
+		maximumStateLifetime = time.Hour
+		maximumStoreCapacity = 1000000
+		minimumStoreLifetime = time.Second
+	)
+
 	if c.Capacity == 0 {
-		c.Capacity = 10000
+		c.Capacity = defaultStoreCapacity
 	}
 
 	if c.MaxTTL == 0 {
-		c.MaxTTL = 15 * time.Minute
+		c.MaxTTL = defaultStateLifetime
 	}
 
-	if c.Capacity < 1 || c.Capacity > 1000000 || c.MaxTTL < time.Second || c.MaxTTL > time.Hour {
+	if c.Capacity < 1 || c.Capacity > maximumStoreCapacity || c.MaxTTL < minimumStoreLifetime || c.MaxTTL > maximumStateLifetime {
 		return nil, ErrPolicy
 	}
 
@@ -174,7 +202,7 @@ func (m *MemoryStore) Put(ctx context.Context, p Pending, at time.Time) error {
 
 // Get returns an owned copy of unexpired request state without consuming it.
 func (m *MemoryStore) Get(ctx context.Context, sp, relay string, at time.Time) (Pending, error) {
-	if m == nil || ctx == nil || at.IsZero() || sp == "" || relay == "" || len(relay) > 80 {
+	if m == nil || ctx == nil || at.IsZero() || sp == "" || relay == "" || len(relay) > profile.HTTPRelayStateMaxBytes {
 		return Pending{}, ErrPolicy
 	}
 
@@ -208,14 +236,21 @@ func (m *MemoryStore) Len() int {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	n := len(m.entries)
+	m.mu.Unlock()
 
-	return len(m.entries)
+	return n
 }
 
 func (m *MemoryStore) prune(ctx context.Context, at time.Time) error {
+	const (
+		pruneMinimumCapacity    = 1024
+		pruneSweepBatch         = 256
+		retainedCapacityDivisor = 4
+	)
+
 	for removed := 0; ; removed++ {
-		if removed%256 == 0 {
+		if removed%pruneSweepBatch == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -230,10 +265,10 @@ func (m *MemoryStore) prune(ctx context.Context, at time.Time) error {
 		delete(m.entries, key)
 	}
 
-	if m.peak > 1024 && len(m.entries) <= m.peak/4 {
+	if m.peak > pruneMinimumCapacity && len(m.entries) <= m.peak/retainedCapacityDivisor {
 		entries := make(map[stateKey]Pending, len(m.entries))
 		for key, value := range m.entries {
-			if len(entries)%256 == 0 {
+			if len(entries)%pruneSweepBatch == 0 {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
@@ -252,16 +287,38 @@ func (m *MemoryStore) prune(ctx context.Context, at time.Time) error {
 
 // BrowserDigest hashes a browser correlation secret of 16 to 1024 bytes. The caller must
 // generate and protect the secret.
-func BrowserDigest(secret []byte) ([32]byte, error) {
-	if len(secret) < 16 || len(secret) > 1024 {
-		return [32]byte{}, ErrPolicy
+func BrowserDigest(secret []byte) ([browserDigestBytes]byte, error) {
+	const (
+		maximumBrowserBindingBytes = 1024
+		minimumBrowserBindingBytes = 16
+	)
+
+	if len(secret) < minimumBrowserBindingBytes || len(secret) > maximumBrowserBindingBytes {
+		return [browserDigestBytes]byte{}, ErrPolicy
 	}
 
 	return sha256.Sum256(secret), nil
 }
 
 func valid(p Pending, at time.Time, maxTTL time.Duration) bool {
-	if !profile.URI(p.SP) || !profile.URI(p.IDP) || !profile.ID(p.RequestID) || len(p.RelayState) < 16 || len(p.RelayState) > 80 || !profile.Endpoint(p.ACS, true) || p.IssuedAt.IsZero() || p.IssuedAt.After(at) || !p.ExpiresAt.After(at) || p.ExpiresAt.Sub(p.IssuedAt) > maxTTL || len(p.RequestedContexts) > 8 || p.NameIDFormat != "" && !profile.URI(p.NameIDFormat) {
+	const (
+		maximumRequestedContexts = 8
+		minimumRelayStateBytes   = 16
+	)
+
+	if p.RequireHolderOfKey && p.ResponseBinding != paosBinding {
+		return false
+	}
+
+	if protocol.ValidateChannelBindings(p.ChannelBindings, false) != nil || len(p.ChannelBindings) != 0 && p.ResponseBinding != paosBinding {
+		return false
+	}
+
+	if p.ResponseBinding != "" && p.ResponseBinding != lexicon.SAMLBindingHTTPPost && p.ResponseBinding != lexicon.SAMLBindingHTTPArtifact && p.ResponseBinding != paosBinding {
+		return false
+	}
+
+	if !profile.URI(p.SP) || !profile.URI(p.IDP) || !profile.ID(p.RequestID) || len(p.RelayState) < minimumRelayStateBytes || len(p.RelayState) > profile.HTTPRelayStateMaxBytes || !profile.Endpoint(p.ACS, true) || p.IssuedAt.IsZero() || p.IssuedAt.After(at) || !p.ExpiresAt.After(at) || p.ExpiresAt.Sub(p.IssuedAt) > maxTTL || len(p.RequestedContexts) > maximumRequestedContexts || p.NameIDFormat != "" && !profile.URI(p.NameIDFormat) {
 		return false
 	}
 

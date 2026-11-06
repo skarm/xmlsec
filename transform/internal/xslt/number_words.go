@@ -9,6 +9,24 @@ import (
 	"unicode"
 )
 
+// German eight lexical data shared by the cardinal table and irregular ordinal stem; it is not an XSLT attribute or selector.
+const (
+	germanEight = "acht"
+)
+
+// Internal casing mode passed from a word-number picture to spellout; it is independent of sort case-order or language selection.
+const (
+	wordCaseTitle = "title"
+	wordCaseUpper = "upper"
+)
+
+// Normalized base language tags supported by the existing word-number dispatch; unsupported tags continue to select its English fallback.
+const (
+	numberLanguageFrench  = "fr"
+	numberLanguageGerman  = "de"
+	numberLanguageItalian = "it"
+)
+
 // germanOne is the German cardinal for the digit one ("eins"). Used in the
 // ones-table and in special-case logic that switches to the prefix form "ein"
 // when followed by another component.
@@ -25,7 +43,7 @@ func minInt64MagnitudeString(n int64) (string, bool) {
 		return "", false
 	}
 
-	return strconv.FormatUint(uint64(1)<<63, 10), true
+	return strconv.FormatUint(uint64(1)<<63, numberDecimalRadix), true
 }
 
 // numberToWordsLang converts a number to words in the given language and case.
@@ -46,9 +64,9 @@ func numberToWordsLang(n int64, caseMode string, lang string, ordinal string) st
 	}
 
 	switch caseMode {
-	case "upper":
+	case wordCaseUpper:
 		return germanAwareToUpper(result)
-	case "title":
+	case wordCaseTitle:
 		return toTitleCase(result)
 	default:
 		return result
@@ -77,11 +95,11 @@ func toTitleCase(s string) string {
 
 func numberToCardinalWords(n int64, lang string) string {
 	switch lang {
-	case "de":
+	case numberLanguageGerman:
 		return germanCardinal(n)
-	case "it":
+	case numberLanguageItalian:
 		return italianCardinal(n)
-	case "fr":
+	case numberLanguageFrench:
 		return frenchCardinal(n)
 	default:
 		return numberToWords(n, false)
@@ -90,11 +108,11 @@ func numberToCardinalWords(n int64, lang string) string {
 
 func numberToOrdinalWords(n int64, lang string, ordinal string) string {
 	switch lang {
-	case "de":
+	case numberLanguageGerman:
 		return germanOrdinal(n, ordinal)
-	case "it":
+	case numberLanguageItalian:
 		return italianOrdinal(n, ordinal)
-	case "fr":
+	case numberLanguageFrench:
 		return frenchOrdinal(n, ordinal)
 	default:
 		return englishOrdinal(n)
@@ -188,7 +206,7 @@ func englishOnesOrdinal(n int64) string {
 		return ords[int(n)]
 	}
 
-	return strconv.FormatInt(n, 10) + "th"
+	return strconv.FormatInt(n, numberDecimalRadix) + "th"
 }
 
 func englishTensOrdinal(n int64) string {
@@ -200,7 +218,7 @@ func englishTensOrdinal(n int64) string {
 		return ords[int(n)]
 	}
 
-	return strconv.FormatInt(n*10, 10) + "th"
+	return strconv.FormatInt(n*10, numberDecimalRadix) + "th"
 }
 
 // ============================================================
@@ -259,12 +277,12 @@ func germanCardinal(n int64) string {
 		return w
 	}
 
-	return strconv.FormatInt(n, 10)
+	return strconv.FormatInt(n, numberDecimalRadix)
 }
 
 func germanCardinalUnderThousand(n int64) string {
 	ones := []string{
-		"", germanOne, "zwei", "drei", "vier", "fünf", "sechs", "sieben", nameAcht, "neun",
+		"", germanOne, "zwei", "drei", "vier", "fünf", "sechs", "sieben", germanEight, "neun",
 		"zehn", "elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn",
 	}
 	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
@@ -362,7 +380,7 @@ func germanOrdinalStem(n int64) string {
 	if n >= 100 {
 		q := n / 100
 		r := n % 100
-		ones := []string{"", germanOne, "zwei", "drei", "vier", "fünf", "sechs", "sieben", nameAcht, "neun"}
+		ones := []string{"", germanOne, "zwei", "drei", "vier", "fünf", "sechs", "sieben", germanEight, "neun"}
 
 		w := ones[int(q)]
 		if w == germanOne {
@@ -386,7 +404,7 @@ func germanOrdinalStem(n int64) string {
 	case 7:
 		return "siebt"
 	case 8:
-		return nameAcht
+		return germanEight
 	}
 
 	card := germanCardinal(n)
@@ -475,16 +493,20 @@ func italianCardinal(n int64) string {
 		return w
 	}
 
-	return strconv.FormatInt(n, 10)
+	return strconv.FormatInt(n, numberDecimalRadix)
 }
 
 func italianOrdinal(n int64, ordinal string) string {
+	const (
+		ordinalFeminineHint = "feminine"
+	)
+
 	if n <= 0 {
 		return italianCardinal(n)
 	}
 
 	// Detect gender from ordinal hint
-	feminine := strings.Contains(ordinal, "feminine")
+	feminine := strings.Contains(ordinal, ordinalFeminineHint)
 
 	// Italian ordinals 1-10 are irregular
 	if n <= 10 {
@@ -592,7 +614,7 @@ func frenchCardinal(n int64) string {
 		return w
 	}
 
-	return strconv.FormatInt(n, 10)
+	return strconv.FormatInt(n, numberDecimalRadix)
 }
 
 func frenchOrdinal(n int64, _ string) string {

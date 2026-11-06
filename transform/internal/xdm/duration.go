@@ -8,6 +8,20 @@ import (
 	"math/big"
 )
 
+// Exact-duration reconstruction uses this binary precision and half-second
+// rounding offset after removing the exact fractional component.
+const (
+	durationRecoveryPrecisionBits = 256
+	durationRecoveryHalfSecond    = 0.5
+)
+
+// DurationToRat's selector chooses total months or total day-time seconds.
+// Map-key normalization uses both representations to preserve duration identity.
+const (
+	durationMonthsMode  = true
+	durationSecondsMode = false
+)
+
 // DurationToRat converts a Duration to an exact big.Rat value.
 // For yearMonthDuration, the value is total months; for dayTimeDuration, total seconds.
 func DurationToRat(d Duration, isYM bool) *big.Rat {
@@ -33,12 +47,12 @@ func DurationToRat(d Duration, isYM bool) *big.Rat {
 			// for fractions extremely close to 1 (e.g. PT0.999...9S where Seconds
 			// rounds up to 1.0).
 			fracFloat, _ := d.FracSec.Float64()
-			secs = math.Trunc(d.Seconds - fracFloat + 0.5)
+			secs = math.Trunc(d.Seconds - fracFloat + durationRecoveryHalfSecond)
 		}
 		// Use big.Float → big.Rat to handle values exceeding int64 range
-		bf := new(big.Float).SetPrec(256).SetFloat64(secs)
+		bf := new(big.Float).SetPrec(durationRecoveryPrecisionBits).SetFloat64(secs)
 
-		r, _ = bf.Rat(nil)
+		r, _ = bf.Rat(new(big.Rat))
 		if d.FracSec != nil {
 			r.Add(r, d.FracSec)
 		}

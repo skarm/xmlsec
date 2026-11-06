@@ -78,7 +78,7 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 		return false, err
 	}
 
-	if c.stylesheet.processorLanguage() < 20 || !hasConditionalAttributes(elem, c.stylesheet.processorLanguage()) {
+	if c.stylesheet.processorLanguage() < processorXSLT20 || !hasConditionalAttributes(elem, c.stylesheet.processorLanguage()) {
 		return true, nil
 	}
 
@@ -99,8 +99,8 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 		return false, err
 	}
 
-	if elem.URI() == lexicon.NamespaceXSLT && c.stylesheet.processorLanguage() >= 30 {
-		if err := c.resolveSingleShadowAttribute(ctx, elem, nameXpathDefaultNamespace); err != nil {
+	if elem.URI() == lexicon.NamespaceXSLT && c.stylesheet.processorLanguage() >= processorXSLT30 {
+		if err := c.resolveSingleShadowAttribute(ctx, elem, nameXPathDefaultNamespace); err != nil {
 			return false, err
 		}
 
@@ -120,7 +120,7 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 	}
 
 	if elem.URI() == lexicon.NamespaceXSLT {
-		if c.stylesheet.processorLanguage() >= 30 {
+		if c.stylesheet.processorLanguage() >= processorXSLT30 {
 			if err := c.resolveShadowAttributes(ctx, elem); err != nil {
 				return false, err
 			}
@@ -139,7 +139,7 @@ func (c *compiler) preprocessConditionalElement(ctx context.Context, elem *xdm.E
 }
 
 func (c *compiler) validatePreparedLanguage(root *xdm.Element) error {
-	if _, deferred := c.deferredLanguageChecks[root]; c.stylesheet.processorLanguage() >= 20 && deferred {
+	if _, deferred := c.deferredLanguageChecks[root]; c.stylesheet.processorLanguage() >= processorXSLT20 && deferred {
 		if err := checkModernLanguage(root, elementXSLTVersion(root), c.stylesheet.processorLanguage()); err != nil {
 			return err
 		}
@@ -288,7 +288,7 @@ func hasConditionalAttributes(elem *xdm.Element, processor int) bool {
 		return true
 	}
 
-	if processor >= 30 {
+	if processor >= processorXSLT30 {
 		for _, attr := range elem.Attributes() {
 			if attr.URI() == "" && isShadowAttributeName(attr.LocalName()) {
 				return true
@@ -309,7 +309,7 @@ func isUserDefinedDataElement(element *xdm.Element) bool {
 	parent, ok := element.Parent().(*xdm.Element)
 
 	return ok && parent.URI() == lexicon.NamespaceXSLT &&
-		(parent.LocalName() == nameStylesheet || parent.LocalName() == fnNameTransform || parent.LocalName() == namePackage)
+		(parent.LocalName() == nameStylesheet || parent.LocalName() == lexicon.XSLTElementTransform || parent.LocalName() == namePackage)
 }
 
 // Remove excluded siblings in one pass, avoiding repeated slice shifts and

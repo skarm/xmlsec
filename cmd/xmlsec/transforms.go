@@ -16,6 +16,14 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+// These bound the trusted binding vector and recursive typed-JSON output; output format labels are the CLI protocol choices.
+const (
+	cliOutputText           = "text"
+	cliOutputJSON           = "json"
+	cliMaxBindings          = 256
+	cliMaxJSONSequenceDepth = 128
+)
+
 type bindingValue struct {
 	Name  transform.Name `json:"name"`
 	Type  string         `json:"type"`
@@ -33,7 +41,7 @@ func readBindings(ctx context.Context, path string) (transform.Bindings, error) 
 		return nil, err
 	}
 
-	if len(values) > 256 {
+	if len(values) > cliMaxBindings {
 		return nil, usageError("too many variables")
 	}
 
@@ -48,24 +56,24 @@ func readBindings(ctx context.Context, path string) (transform.Bindings, error) 
 		)
 
 		switch v.Type {
-		case "string":
+		case lexicon.TypeString:
 			item = transform.String(v.Value)
-		case "integer":
+		case lexicon.TypeInteger:
 			n, ok := new(big.Int).SetString(v.Value, 10)
 			if !ok {
 				return nil, usageError("invalid integer variable")
 			}
 
 			item = transform.BigInteger(n)
-		case "decimal":
+		case lexicon.TypeDecimal:
 			item, err = transform.Decimal(v.Value)
-		case "boolean":
+		case lexicon.TypeBoolean:
 			if v.Value != lexicon.ValueTrue && v.Value != lexicon.ValueFalse {
 				return nil, usageError("boolean variable requires true or false")
 			}
 
 			item = transform.Boolean(v.Value == lexicon.ValueTrue)
-		case "dateTime":
+		case lexicon.TypeDateTime:
 			var t time.Time
 
 			t, err = time.Parse(time.RFC3339Nano, v.Value)
@@ -113,16 +121,16 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	expression := fs.String("expression", "", "XPath expression")
 	sheetFile := fs.String("stylesheet", "", "local XSLT stylesheet")
 	version := fs.String("version", "", "XPath 1.0/2.0/3.0/3.1 or XSLT 1.0/2.0/3.0; empty uses library default")
-	format := fs.String("format", "text", "XPath output: text (singleton) or json (typed sequence); XSLT: text or json (all result documents)")
+	format := fs.String("format", cliOutputText, "XPath output: text (singleton) or json (typed sequence); XSLT: text or json (all result documents)")
 	variables := fs.String("bindings", "", "trusted JSON typed variable/parameter array")
 	static := fs.String("static-bindings", "", "trusted JSON XSLT 3.0 static parameter array")
 	resources := fs.String("resources", "", "trusted URI/path allowlist for imports and URI functions")
 	baseURI := fs.String("base-uri", "", "explicit base URI")
 	template := fs.String("template", "", "named XSLT template, Clark name {URI}local or local")
 	mode := fs.String("mode", "", "XSLT mode, Clark name {URI}local or local")
-	programBytes := fs.Int("max-program-bytes", 64<<10, "maximum expression/stylesheet bytes")
-	operations := fs.Int("max-operations", 2_000_000, "XPath/XSLT operation budget")
-	engineTimeout := fs.Duration("engine-timeout", 3*time.Second, "maximum duration per engine invocation")
+	programBytes := fs.Int("max-program-bytes", transform.DefaultLimits().MaxProgramBytes, "maximum expression/stylesheet bytes")
+	operations := fs.Int("max-operations", transform.DefaultLimits().MaxOperations, "XPath/XSLT operation budget")
+	engineTimeout := fs.Duration("engine-timeout", transform.DefaultLimits().Timeout, "maximum duration per engine invocation")
 
 	var nsFlags repeatedFlag
 	fs.Var(&nsFlags, "namespace", "PREFIX=URI static namespace; repeatable")
@@ -158,13 +166,15 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	}
 
 	config := transform.Config{Limits: transform.Limits{
-		MaxInputBytes:   exec.xml.MaxBytes,
-		MaxProgramBytes: *programBytes,
-		MaxOutputBytes:  exec.output,
-		MaxNodes:        exec.xml.MaxNodes,
-		MaxDepth:        exec.xml.MaxDepth,
-		MaxOperations:   *operations,
-		Timeout:         *engineTimeout,
+		MaxInputBytes:           exec.xml.MaxBytes,
+		MaxProgramBytes:         *programBytes,
+		MaxOutputBytes:          exec.output,
+		MaxNodes:                exec.xml.MaxNodes,
+		MaxDepth:                exec.xml.MaxDepth,
+		MaxAttributesPerElement: exec.xml.MaxAttributesPerElement,
+		MaxInScopeNamespaces:    exec.xml.MaxInScopeNamespaces,
+		MaxOperations:           *operations,
+		Timeout:                 *engineTimeout,
 	}}
 
 	config.Resolver, err = transformResolver(ctx, *resources)
@@ -244,14 +254,14 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	options := transform.XSLTContext{Parameters: bindings, Template: parseQName(*template), Mode: parseQName(*mode), BaseOutputURI: *baseURI}
 
 	switch *format {
-	case "json":
+	case cliOutputJSON:
 		result, err := sheet.Transform(ctx, doc, options)
 		if err != nil {
 			return err
 		}
 
 		return jsonOutput(ctx, *output, stdout, result)
-	case "text":
+	case cliOutputText:
 		return produceOutput(ctx, *output, stdout, func(w io.Writer) error {
 			_, err := sheet.Write(ctx, w, doc, options)
 			return err
@@ -276,7 +286,12 @@ func canonicalizeXPath(ctx context.Context, w io.Writer, doc *document.Document,
 	tr := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: expression, Namespaces: ns}}}
 	e := execution(ctx)
 
-	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{tr}, Limits: transform.Limits{MaxInputBytes: e.xml.MaxBytes, MaxOutputBytes: e.output, MaxNodes: e.xml.MaxNodes, MaxDepth: e.xml.MaxDepth, MaxOperations: e.nodeVisits}})
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{tr}, Limits: transform.Limits{
+		MaxInputBytes: e.xml.MaxBytes, MaxOutputBytes: e.output,
+		MaxNodes: e.xml.MaxNodes, MaxDepth: e.xml.MaxDepth, MaxOperations: e.nodeVisits,
+		MaxAttributesPerElement: e.xml.MaxAttributesPerElement,
+		MaxInScopeNamespaces:    e.xml.MaxInScopeNamespaces,
+	}})
 	if err != nil {
 		return err
 	}
@@ -348,7 +363,7 @@ func (c xpathCommand) run(ctx context.Context, engine *transform.Engine, doc *tr
 		return err
 	}
 
-	if c.format == "text" {
+	if c.format == cliOutputText {
 		value, err := result.Text()
 		if err != nil {
 			return err
@@ -357,7 +372,7 @@ func (c xpathCommand) run(ctx context.Context, engine *transform.Engine, doc *tr
 		return writeOutputContext(ctx, c.output, stdout, []byte(value+"\n"))
 	}
 
-	if c.format != "json" {
+	if c.format != cliOutputJSON {
 		return usageError("-format must be text or json")
 	}
 
@@ -370,7 +385,7 @@ func (c xpathCommand) run(ctx context.Context, engine *transform.Engine, doc *tr
 }
 
 func sequenceJSON(sequence transform.Sequence, depth int) (any, error) {
-	if depth > 128 {
+	if depth > cliMaxJSONSequenceDepth {
 		return nil, errors.New("result nesting exceeds 128")
 	}
 

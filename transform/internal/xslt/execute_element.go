@@ -254,7 +254,7 @@ func (ec *execContext) validateConstructedElement(_ context.Context, elem *xdm.E
 		// Per XSLT 3.0 §19.2: validation="preserve" assigns type
 		// annotation xs:anyType to the constructed element node,
 		// while preserving existing annotations on child nodes.
-		ec.annotateNode(elem, "xs:anyType")
+		ec.annotateNode(elem, xdm.TypeAnyType)
 		return nil
 	case validationStrict, validationLax:
 		return ErrLanguageUnsupported
@@ -276,7 +276,7 @@ func (ec *execContext) validateConstructedElementWithIDCheck(_ context.Context, 
 		// Per XSLT 3.0 §19.2: validation="preserve" assigns type
 		// annotation xs:anyType to the constructed element node,
 		// while preserving existing annotations on child nodes.
-		ec.annotateNode(elem, "xs:anyType")
+		ec.annotateNode(elem, xdm.TypeAnyType)
 		return nil
 	case validationStrict, validationLax:
 		return ErrLanguageUnsupported
@@ -322,6 +322,10 @@ func (ec *execContext) annotateAttributesFromType(elem *xdm.Element, typeName st
 // (sequence-mode capture, item capture, and element output) so a name such as
 // name="p:a" namespace="urn:p" yields an attribute in urn:p in all modes.
 func (ec *execContext) resolveComputedAttributeName(ctx context.Context, name string, inst *attributeInst) (resolvedAttrName, error) {
+	const (
+		provisionalAttributePrefix = "ns0"
+	)
+
 	prefix := ""
 
 	localName := name
@@ -349,7 +353,7 @@ func (ec *execContext) resolveComputedAttributeName(ctx context.Context, name st
 		// Attributes in a namespace require a non-empty prefix (unlike
 		// elements, the default namespace does not apply to attributes).
 		if prefix == "" {
-			prefix = "ns0"
+			prefix = provisionalAttributePrefix
 		}
 
 		return resolvedAttrName{localName: localName, nsURI: nsURI, prefix: prefix}, nil
@@ -360,7 +364,7 @@ func (ec *execContext) resolveComputedAttributeName(ctx context.Context, name st
 		return resolvedAttrName{localName: localName}, nil
 	}
 
-	nsURI := ec.resolvePrefix(prefix)
+	nsURI := inst.Namespaces[prefix]
 	if nsURI == "" {
 		// XTDE0860: prefix in computed attribute name is undeclared.
 		return resolvedAttrName{}, dynamicError(errCodeXTDE0860,
@@ -537,7 +541,7 @@ func (ec *execContext) outputNonElementAttribute(out *outputFrame, lexicalName s
 	// the existing parent and namespace behavior of this output mode.
 	tmpDoc := xdm.NewDefaultDocument()
 
-	tmpElem, err := tmpDoc.CreateElement("_tmp")
+	tmpElem, err := tmpDoc.CreateElement(temporaryOutputWrapper)
 	if err != nil {
 		return err
 	}
@@ -591,7 +595,7 @@ func (ec *execContext) attachComputedAttribute(elem *xdm.Element, name resolvedA
 // (XTDE1480) when the stylesheet declares an XSLT version below 3.0. XSLT 3.0
 // relaxes this restriction, so the depth is left untouched there.
 func (ec *execContext) withV2TempOutput(fn func() error) error {
-	isV2TempOutput := ec.stylesheet.processorLanguage() < 30
+	isV2TempOutput := ec.stylesheet.processorLanguage() < processorXSLT30
 	if isV2TempOutput {
 		ec.temporaryOutputDepth++
 	}
@@ -666,7 +670,7 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 			"xsl:processing-instruction name %q is not a valid NCName", name)
 	}
 
-	if strings.EqualFold(name, lexicon.MethodXML) {
+	if strings.EqualFold(name, lexicon.ReservedXMLPITarget) {
 		return dynamicError(errCodeXTDE0890,
 			"xsl:processing-instruction name must not be %q", name)
 	}
@@ -1060,7 +1064,7 @@ func validateComputedNamespace(ctx context.Context, name, value string) error {
 }
 
 func validComputedNamespaceURI(ctx context.Context, value string) bool {
-	if xpath.XMLSchemaVersion(ctx) != 10 {
+	if xpath.XMLSchemaVersion(ctx) != xmlSchemaProfile10 {
 		return true
 	}
 
@@ -1085,9 +1089,14 @@ func checkComputedNamespaceConflict(elem *xdm.Element, name, value string, fixup
 	return nil
 }
 
+// namespaceCollisionSeedSuffix starts namespace-fixup searches for computed
+// and literal elements and copied attributes. The search still checks every
+// generated prefix against the element's in-scope bindings.
+const namespaceCollisionSeedSuffix = "_0"
+
 func renameElementNamespacePrefix(elem *xdm.Element, name string) error {
 	uri := elem.URI()
-	prefix := uniqueNSPrefix(elem, name+"_0", uri)
+	prefix := uniqueNSPrefix(elem, name+namespaceCollisionSeedSuffix, uri)
 	elem.RemoveNamespaceByPrefix(name)
 
 	if err := elem.DeclareNamespace(prefix, uri); err != nil {
@@ -1097,10 +1106,6 @@ func renameElementNamespacePrefix(elem *xdm.Element, name string) error {
 	return elem.SetActiveNamespace(prefix, uri)
 }
 
-// validateConstructedAttribute validates an attribute value against the schema
-// when validation="strict" or validation="lax". Returns XTTE1510 when the
-// value is invalid, XTTE1555 when no matching global declaration is found
-// (strict only).
 // firstNonEmptyType returns explicit if non-empty, else fallback. An explicit
 // type= on xsl:attribute takes precedence over a validation-resolved type.
 func firstNonEmptyType(explicit, fallback string) string {
@@ -1162,7 +1167,7 @@ func copyAttributeToElement(elem *xdm.Element, attr *xdm.Attribute) {
 		// generate a unique prefix to avoid conflict.
 		if prefix != "" {
 			if conflictingAttrPrefix(elem, prefix, uri) {
-				prefix = uniqueNSPrefix(elem, prefix+"_0", uri)
+				prefix = uniqueNSPrefix(elem, prefix+namespaceCollisionSeedSuffix, uri)
 			}
 		}
 

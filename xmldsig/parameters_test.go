@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -12,6 +13,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -128,7 +131,7 @@ func TestParameterizedProviderAndPreflight(t *testing.T) {
 		reads := 0
 		opt := xmldsig.SignatureOptions{Policy: xmldsig.ParameterizedPolicy(), External: &xmldsig.ExternalReferences{AllowedURIs: []string{uriUrnData}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 			reads++
-			return io.NopCloser(strings.NewReader(nameData2)), nil
+			return io.NopCloser(strings.NewReader(dataLiteral)), nil
 		})}}
 
 		out, e := xmldsig.SignTemplate(ctx, d, s, key, xmldsig.TemplateSignOptions{Validation: opt})
@@ -179,6 +182,8 @@ func TestParameterizedPSSXML(t *testing.T) {
 		opt.RequiredElements = nil
 
 		r, report, e = xmldsig.VerifySignatureDetailed(ctx, modified, modified.Root(), &key.PublicKey, opt)
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if r != nil || !errors.Is(e, xmldsig.ErrDigest) || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Invalid {
 			t.Fatalf("second digest bypass %v %+v", e, report)
 		}
@@ -465,4 +470,193 @@ func (s *contextPSSProvider) Sign(ctx context.Context, r io.Reader, d []byte, o 
 	}
 
 	return s.pssProvider.Sign(r, d, o)
+}
+
+func TestIntersectPoliciesConstraints(t *testing.T) {
+	first := xmldsig.Policy{
+		AllowLegacySigning:      true,
+		AllowedSignatureMethods: []string{xmldsig.RSASHA512, xmldsig.ECDSASHA256, xmldsig.RSASHA256},
+		AllowedDigestMethods:    []string{xmldsig.SHA512, xmldsig.SHA256, xmldsig.SHA384},
+		MinRSABits:              2048,
+		MaxRSABits:              6144,
+		MaxReferences:           4,
+		MaxCanonicalBytes:       2000,
+		MinPSSSaltBytes:         8,
+		MaxPSSSaltBytes:         80,
+		MinHMACKeyBytes:         64,
+		MaxHMACKeyBytes:         256,
+		MinHMACOutputBits:       192,
+		AllowHMACTruncation:     true,
+	}
+	second := xmldsig.Policy{
+		AllowedSignatureMethods: []string{xmldsig.RSASHA256, xmldsig.RSASHA512},
+		AllowedDigestMethods:    []string{xmldsig.SHA256, xmldsig.SHA512},
+		MinRSABits:              3072,
+		MaxRSABits:              8192,
+		MaxReferences:           8,
+		MaxCanonicalBytes:       1000,
+		MinPSSSaltBytes:         16,
+		MaxPSSSaltBytes:         128,
+		MinHMACKeyBytes:         32,
+		MaxHMACKeyBytes:         128,
+		MinHMACOutputBits:       256,
+	}
+	want := xmldsig.Policy{
+		AllowedSignatureMethods: []string{xmldsig.RSASHA512, xmldsig.RSASHA256},
+		AllowedDigestMethods:    []string{xmldsig.SHA512, xmldsig.SHA256},
+		MinRSABits:              3072,
+		MaxRSABits:              6144,
+		MaxReferences:           4,
+		MaxCanonicalBytes:       1000,
+		MinPSSSaltBytes:         16,
+		MaxPSSSaltBytes:         80,
+		MinHMACKeyBytes:         64,
+		MaxHMACKeyBytes:         128,
+		MinHMACOutputBits:       256,
+	}
+	got, err := xmldsig.IntersectPolicies(first, second)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("intersection = %+v, %v; want %+v", got, err, want)
+	}
+
+	// Reversing the policies must retain the same bounds and permissions;
+	// only the explicitly documented first-input algorithm order changes.
+	reverse, err := xmldsig.IntersectPolicies(second, first)
+	want.AllowedSignatureMethods = []string{xmldsig.RSASHA256, xmldsig.RSASHA512}
+	want.AllowedDigestMethods = []string{xmldsig.SHA256, xmldsig.SHA512}
+	if err != nil || !reflect.DeepEqual(reverse, want) {
+		t.Fatalf("reverse intersection = %+v, %v; want %+v", reverse, err, want)
+	}
+
+	// Force a review of the security composition contract when Policy gains a
+	// field, so a new restriction cannot silently fall back to its zero default.
+	covered := []string{
+		"AllowLegacySigning", "AllowedSignatureMethods", "AllowedDigestMethods",
+		"MinRSABits", "MaxRSABits", "MaxReferences", "MaxCanonicalBytes",
+		"MinPSSSaltBytes", "MaxPSSSaltBytes", "MinHMACKeyBytes",
+		"MaxHMACKeyBytes", "MinHMACOutputBits", "AllowHMACTruncation",
+	}
+	typ := reflect.TypeFor[xmldsig.Policy]()
+	if typ.NumField() != len(covered) {
+		t.Fatalf("Policy has %d fields; composition tests cover %d", typ.NumField(), len(covered))
+	}
+
+	for field := range typ.Fields() {
+		if !slices.Contains(covered, field.Name) {
+			t.Errorf("unreviewed Policy field %s", field.Name)
+		}
+	}
+}
+
+func TestIntersectPoliciesDefaultsAndPermissions(t *testing.T) {
+	for _, empty := range []xmldsig.Policy{{}, {AllowedSignatureMethods: []string{}, AllowedDigestMethods: []string{}}} {
+		got, err := xmldsig.IntersectPolicies(empty, xmldsig.Policy{})
+		if err != nil || !reflect.DeepEqual(got, xmldsig.DefaultPolicy()) {
+			t.Fatalf("zero/default intersection = %+v, %v", got, err)
+		}
+	}
+
+	for _, left := range []bool{false, true} {
+		for _, right := range []bool{false, true} {
+			first := xmldsig.DefaultPolicy()
+			first.AllowLegacySigning = left
+			first.AllowHMACTruncation = left
+			second := xmldsig.DefaultPolicy()
+			second.AllowLegacySigning = right
+			second.AllowHMACTruncation = right
+			got, err := xmldsig.IntersectPolicies(first, second)
+			if err != nil || got.AllowLegacySigning != (left && right) || got.AllowHMACTruncation != (left && right) {
+				t.Fatalf("permissions %v/%v: %+v, %v", left, right, got, err)
+			}
+		}
+	}
+
+	legacy := xmldsig.LegacyVerificationPolicy()
+	got, err := xmldsig.IntersectPolicies(legacy, legacy)
+	if fips140.Enabled() {
+		if !errors.Is(err, xmldsig.ErrPolicy) || !reflect.DeepEqual(got, xmldsig.Policy{}) {
+			t.Fatalf("FIPS legacy intersection = %+v, %v; want zero and policy error", got, err)
+		}
+
+		return
+	}
+
+	if err != nil || !slices.Contains(got.AllowedSignatureMethods, xmldsig.RSASHA1) || !slices.Contains(got.AllowedDigestMethods, xmldsig.SHA1) {
+		t.Fatalf("explicit legacy algorithms were lost: %+v, %v", got, err)
+	}
+}
+
+func TestIntersectPoliciesRejectsIncompatible(t *testing.T) {
+	cases := []struct {
+		name   string
+		first  xmldsig.Policy
+		second xmldsig.Policy
+		want   error
+	}{
+		{
+			name:   "disjoint signatures",
+			first:  xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.RSASHA256}},
+			second: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}},
+			want:   xmldsig.ErrPolicy,
+		},
+		{
+			name:   "disjoint digests",
+			first:  xmldsig.Policy{AllowedDigestMethods: []string{xmldsig.SHA256}},
+			second: xmldsig.Policy{AllowedDigestMethods: []string{xmldsig.SHA512}},
+			want:   xmldsig.ErrPolicy,
+		},
+		{name: "RSA range", first: xmldsig.Policy{MaxRSABits: 2048}, second: xmldsig.Policy{MinRSABits: 3072}, want: xmldsig.ErrPolicy},
+		{name: "PSS range", first: xmldsig.Policy{MaxPSSSaltBytes: 16}, second: xmldsig.Policy{MinPSSSaltBytes: 32}, want: xmldsig.ErrPolicy},
+		{name: "HMAC range", first: xmldsig.Policy{MaxHMACKeyBytes: 32}, second: xmldsig.Policy{MinHMACKeyBytes: 64}, want: xmldsig.ErrPolicy},
+		{name: "invalid first", first: xmldsig.Policy{MaxReferences: -1}, want: xmldsig.ErrPolicy},
+		{name: "invalid second", second: xmldsig.Policy{MaxCanonicalBytes: -1}, want: xmldsig.ErrPolicy},
+		{name: "unknown signature", first: xmldsig.Policy{AllowedSignatureMethods: []string{"urn:unknown:signature"}}, want: xmldsig.ErrAlgorithm},
+		{name: "unknown digest", second: xmldsig.Policy{AllowedDigestMethods: []string{"urn:unknown:digest"}}, want: xmldsig.ErrAlgorithm},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := xmldsig.IntersectPolicies(tc.first, tc.second)
+			if !errors.Is(err, tc.want) || !reflect.DeepEqual(got, xmldsig.Policy{}) {
+				t.Fatalf("intersection = %+v, %v; want zero and %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestIntersectPoliciesOwnsAllowlists(t *testing.T) {
+	first := xmldsig.Policy{
+		AllowedSignatureMethods: []string{xmldsig.RSASHA512, xmldsig.RSASHA256},
+		AllowedDigestMethods:    []string{xmldsig.SHA512, xmldsig.SHA256},
+	}
+	second := xmldsig.Policy{
+		AllowedSignatureMethods: []string{xmldsig.RSASHA256, xmldsig.RSASHA512},
+		AllowedDigestMethods:    []string{xmldsig.SHA256, xmldsig.SHA512},
+	}
+	beforeFirst, beforeSecond := first, second
+	beforeFirst.AllowedSignatureMethods = slices.Clone(first.AllowedSignatureMethods)
+	beforeFirst.AllowedDigestMethods = slices.Clone(first.AllowedDigestMethods)
+	beforeSecond.AllowedSignatureMethods = slices.Clone(second.AllowedSignatureMethods)
+	beforeSecond.AllowedDigestMethods = slices.Clone(second.AllowedDigestMethods)
+	got, err := xmldsig.IntersectPolicies(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(first, beforeFirst) || !reflect.DeepEqual(second, beforeSecond) {
+		t.Fatal("intersection mutated an input policy")
+	}
+
+	first.AllowedSignatureMethods[0] = xmldsig.ECDSASHA256
+	first.AllowedDigestMethods[0] = xmldsig.SHA384
+	second.AllowedSignatureMethods[1] = xmldsig.ECDSASHA384
+	second.AllowedDigestMethods[1] = xmldsig.SHA384
+	if !slices.Equal(got.AllowedSignatureMethods, beforeFirst.AllowedSignatureMethods) || !slices.Equal(got.AllowedDigestMethods, beforeFirst.AllowedDigestMethods) {
+		t.Fatal("intersection result aliases an input allowlist")
+	}
+
+	got.AllowedSignatureMethods[1] = xmldsig.ECDSASHA512
+	got.AllowedDigestMethods[1] = xmldsig.SHA384
+	if first.AllowedSignatureMethods[1] != xmldsig.RSASHA256 || first.AllowedDigestMethods[1] != xmldsig.SHA256 || second.AllowedSignatureMethods[0] != xmldsig.RSASHA256 || second.AllowedDigestMethods[0] != xmldsig.SHA256 {
+		t.Fatal("mutating the result changed an input allowlist")
+	}
 }

@@ -15,6 +15,24 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Cast and occurrence contracts accept a singleton where specified. A zero
+// atom bound means no singleton-specific stopping cap; node/work limits remain.
+const (
+	singletonTypeCardinality = 1
+	unboundedCoercionAtoms   = 0
+)
+
+// Type binding and user-list token conversion charge independent logical work.
+// The list capacity is an item allocation hint, while schema-base lookup stops
+// after 32 declarations; neither value changes the atomization ancestry ceiling.
+const (
+	sequenceTypeBindingWork    = 1
+	userListTokenWork          = 1
+	userListInitialCapacity    = 8
+	maxSchemaBaseLookupDepth   = 32
+	generatedQNamePrefixFormat = "ns%d"
+)
+
 // errCoerceMismatch is a sentinel returned by coerceToSequenceTypeE for a plain
 // type or cardinality mismatch — one with no more-specific typed error. Callers
 // map it to XPTY0004. A more-specific typed error (FOTY0013 from atomizing a
@@ -41,7 +59,7 @@ func CoerceToSequenceTypeContext(ctx context.Context, seq xdm.Sequence, st xdm.S
 // Plain type/cardinality mismatches are XPTY0004; cast, atomization and control
 // errors retain their own codes and causes.
 func ConvertToSequenceType(ctx context.Context, seq xdm.Sequence, st xdm.SequenceType) (xdm.Sequence, error) {
-	return (Evaluator{}).ConvertToSequenceType(ctx, seq, st, 31)
+	return (Evaluator{}).ConvertToSequenceType(ctx, seq, st, xpathVersion31)
 }
 
 // ConvertToSequenceType applies function conversion in this evaluator's static
@@ -63,7 +81,7 @@ func (e Evaluator) ConvertToSequenceType(ctx context.Context, seq xdm.Sequence, 
 // BindSequenceType expands signature names at their declaration site. Function
 // metadata can then cross modules and survive a caller rebinding its prefixes.
 func BindSequenceType(ctx context.Context, st xdm.SequenceType, namespaces map[string]string, defaultNS string) (xdm.SequenceType, error) {
-	if err := Charge(ctx, 1); err != nil {
+	if err := Charge(ctx, sequenceTypeBindingWork); err != nil {
 		return st, err
 	}
 
@@ -211,7 +229,7 @@ func qnameCastLexical(qv xdm.QNameValue, base map[string]string) (string, map[st
 	prefix := qv.Prefix
 	if prefix == "" {
 		for i := 0; ; i++ {
-			cand := fmt.Sprintf("ns%d", i)
+			cand := fmt.Sprintf(generatedQNamePrefixFormat, i)
 			if _, taken := ns[cand]; !taken {
 				prefix = cand
 				break
@@ -390,7 +408,7 @@ func schemaAwareCastViaBuiltin(ctx context.Context, ec *evalContext, av xdm.Atom
 }
 
 func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e CastExpr) (xdm.Sequence, error) {
-	if err := validateCastTarget(e.Type, ec.namespaces, ec.schemaDeclarations, ec.version, ec.strictPrefixes || ec.version == 10); err != nil {
+	if err := validateCastTarget(e.Type, ec.namespaces, ec.schemaDeclarations, ec.version, ec.strictPrefixes || ec.version == xpathVersion10); err != nil {
 		return nil, err
 	}
 
@@ -417,7 +435,7 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "cast requires non-empty sequence"}
 	}
 
-	if len(atoms) > 1 {
+	if len(atoms) > singletonTypeCardinality {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "cast requires singleton"}
 	}
 
@@ -466,7 +484,7 @@ func evalCastExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 }
 
 func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e CastableExpr) (xdm.Sequence, error) {
-	if err := validateCastTarget(e.Type, ec.namespaces, ec.schemaDeclarations, ec.version, ec.strictPrefixes || ec.version == 10); err != nil {
+	if err := validateCastTarget(e.Type, ec.namespaces, ec.schemaDeclarations, ec.version, ec.strictPrefixes || ec.version == xpathVersion10); err != nil {
 		return nil, err
 	}
 
@@ -498,7 +516,7 @@ func evalCastableExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 		return xdm.SingleBoolean(e.AllowEmpty), nil
 	}
 
-	if len(atoms) > 1 {
+	if len(atoms) > singletonTypeCardinality {
 		return xdm.SingleBoolean(false), nil
 	}
 
@@ -579,14 +597,14 @@ func castToUserList(ctx context.Context, ec *evalContext, av xdm.AtomicValue, li
 	}
 
 	limit := NodeLimit(ctx, fnMaxNodes(ec))
-	items := make(xdm.ItemSlice, 0, min(limit, 8))
+	items := make(xdm.ItemSlice, 0, min(limit, userListInitialCapacity))
 
 	for token := range strings.FieldsFuncSeq(s, xmlchar.IsSpace) {
 		if len(items) >= limit {
 			return nil, ErrNodeSetLimit
 		}
 
-		if err := fnCountOps(ctx, ec, 1); err != nil {
+		if err := fnCountOps(ctx, ec, userListTokenWork); err != nil {
 			return nil, err
 		}
 
@@ -631,7 +649,7 @@ func resolveToBuiltinBase(local, ns string, decls SchemaDeclarations) string {
 	current := local
 
 	currentNS := ns
-	for range 32 {
+	for range maxSchemaBaseLookupDepth {
 		baseType, ok := decls.LookupSchemaType(current, currentNS)
 		if !ok {
 			return ""
@@ -665,7 +683,7 @@ func resolveAtomicTypeName(tn AtomicTypeName, ec *evalContext) string {
 
 	uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
 	if uri == lexicon.NamespaceXSD {
-		return "xs:" + local
+		return xsdCastTypePrefix + local
 	}
 
 	return xdm.QAnnotation(uri, local)
@@ -830,9 +848,9 @@ func coerceFunctionSequence(ctx context.Context, seq xdm.Sequence, occurrence xd
 func coercionOccurrenceMatches(length int, occurrence xdm.Occurrence) bool {
 	switch occurrence {
 	case xdm.OccurrenceExactlyOne:
-		return length == 1
+		return length == singletonTypeCardinality
 	case xdm.OccurrenceZeroOrOne:
-		return length <= 1
+		return length <= singletonTypeCardinality
 	case xdm.OccurrenceOneOrMore:
 		return length > 0
 	default:
@@ -844,9 +862,9 @@ func coercionOccurrenceMatches(length int, occurrence xdm.Occurrence) bool {
 // stop after the second atom; typed-value errors encountered before that limit
 // still propagate, before the cardinality mismatch is reported.
 func visitCoercionAtoms(ctx context.Context, seq xdm.Sequence, occurrence xdm.Occurrence, ec *evalContext, yield func(xdm.AtomicValue)) error {
-	maxAtoms := 0
+	maxAtoms := unboundedCoercionAtoms
 	if occurrence == xdm.OccurrenceExactlyOne || occurrence == xdm.OccurrenceZeroOrOne {
-		maxAtoms = 1
+		maxAtoms = singletonTypeCardinality
 	}
 
 	count := 0
@@ -861,7 +879,7 @@ func visitCoercionAtoms(ctx context.Context, seq xdm.Sequence, occurrence xdm.Oc
 
 		yield(atom)
 
-		if maxAtoms > 0 && count > maxAtoms {
+		if maxAtoms > unboundedCoercionAtoms && count > maxAtoms {
 			tooMany = true
 			return false, nil
 		}
@@ -905,8 +923,8 @@ func coerceAtomicFunctionArgument(ctx context.Context, value xdm.AtomicValue, ta
 	}
 
 	if value.TypeName == xdm.TypeUntypedAtomic {
-		if ec != nil && ec.version >= 30 && (target == xdm.TypeQName || target == xdm.TypeNOTATION) {
-			return xdm.AtomicValue{}, &xdm.Error{Code: "XPTY0117", Message: "untypedAtomic cannot be converted to a namespace-sensitive type by function conversion"}
+		if ec != nil && ec.version >= xpathVersion30 && (target == xdm.TypeQName || target == xdm.TypeNOTATION) {
+			return xdm.AtomicValue{}, &xdm.Error{Code: errCodeXPTY0117, Message: "untypedAtomic cannot be converted to a namespace-sensitive type by function conversion"}
 		}
 
 		if target == xdm.TypeNumeric {
@@ -946,13 +964,13 @@ func coerceFunctionItem(item xdm.Item, target xdm.FunctionTest, ec *evalContext)
 		return nil, false
 	}
 
-	if actual.Arity >= 0 && actual.Arity != len(target.ParamTypes) {
+	if actual.Arity >= finiteArityFloor && actual.Arity != len(target.ParamTypes) {
 		return nil, false
 	}
 
 	if ec == nil {
 		ec = (Evaluator{}).newEvalCtx(nil)
-		ec.version = 31
+		ec.version = xpathVersion31
 	}
 
 	paramTypes := append([]xdm.SequenceType(nil), target.ParamTypes...)
@@ -1039,7 +1057,7 @@ func coerceFunctionItemArgs(ctx context.Context, actual xdm.FunctionItem, args [
 		if err != nil {
 			return nil, &xdm.Error{
 				Code:    lexicon.ErrXPTY0004,
-				Message: fmt.Sprintf("function argument %d does not match required type %v", i+1, parameter),
+				Message: fmt.Sprintf("function argument %d does not match required type %v", i+functionArgumentOrigin, parameter),
 			}
 		}
 
@@ -1162,11 +1180,11 @@ func matchesSequenceType(seq xdm.Sequence, st xdm.SequenceType, ec *evalContext)
 
 	switch st.Occurrence {
 	case xdm.OccurrenceExactlyOne:
-		if xdm.SequenceLen(seq) != 1 {
+		if xdm.SequenceLen(seq) != singletonTypeCardinality {
 			return false
 		}
 	case xdm.OccurrenceZeroOrOne:
-		if xdm.SequenceLen(seq) > 1 {
+		if xdm.SequenceLen(seq) > singletonTypeCardinality {
 			return false
 		}
 	case xdm.OccurrenceOneOrMore:
@@ -1266,7 +1284,7 @@ func matchesSchemaElementItem(node xdm.NodeItem, test xdm.SchemaElementTest, ec 
 		return false
 	}
 
-	local, ns := resolveSchemaTestName(test.Name, ec, false)
+	local, ns := resolveSchemaTestName(test.Name, ec, elementNamespaceMode)
 
 	annotation := node.TypeAnnotation
 	if annotation == "" {
@@ -1294,7 +1312,7 @@ func matchesSchemaAttributeItem(node xdm.NodeItem, test xdm.SchemaAttributeTest,
 		return false
 	}
 
-	local, ns := resolveSchemaTestName(test.Name, ec, true)
+	local, ns := resolveSchemaTestName(test.Name, ec, attributeNamespaceMode)
 	if xdm.LocalNameOf(node.Node) != local || xdm.NodeNamespaceURI(node.Node) != ns {
 		return false
 	}
@@ -1330,7 +1348,7 @@ func matchesFunctionItemTest(item xdm.Item, test xdm.FunctionTest, ec *evalConte
 	case xdm.MapItem:
 		return matchesMapFunctionItem(value, test, ec)
 	case xdm.ArrayItem:
-		return len(test.ParamTypes) == 1 &&
+		return len(test.ParamTypes) == collectionLookupArity &&
 			isSequenceSubtype(test.ParamTypes[0], stAtomic(xdm.TypeInteger, xdm.OccurrenceExactlyOne), ec) &&
 			arrayMembersMatchType(value, test.ReturnType, ec)
 	default:
@@ -1339,7 +1357,7 @@ func matchesFunctionItemTest(item xdm.Item, test xdm.FunctionTest, ec *evalConte
 }
 
 func matchesTypedFunctionItem(value xdm.FunctionItem, test xdm.FunctionTest, ec *evalContext) bool {
-	if value.Arity >= 0 && value.Arity != len(test.ParamTypes) {
+	if value.Arity >= finiteArityFloor && value.Arity != len(test.ParamTypes) {
 		return false
 	}
 
@@ -1361,7 +1379,7 @@ func matchesTypedFunctionItem(value xdm.FunctionItem, test xdm.FunctionTest, ec 
 }
 
 func matchesMapFunctionItem(value xdm.MapItem, test xdm.FunctionTest, ec *evalContext) bool {
-	if len(test.ParamTypes) != 1 ||
+	if len(test.ParamTypes) != collectionLookupArity ||
 		!isSequenceSubtype(test.ParamTypes[0], stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne), ec) {
 		return false
 	}
@@ -1632,7 +1650,7 @@ func isElementTestSubtype(a xdm.NodeTest, bt xdm.ElementTest, ec *evalContext) b
 		return true // element() matches any element
 	}
 
-	if bt.Name != "" && bt.Name != "*" && !sameTypeTestName(at.Name, bt.Name, ec, false) {
+	if bt.Name != "" && bt.Name != "*" && !sameTypeTestName(at.Name, bt.Name, ec, elementNamespaceMode) {
 		return false
 	}
 	// Check type annotation: if bt specifies a type, at must have a
@@ -1663,7 +1681,7 @@ func isAttributeTestSubtype(a xdm.NodeTest, bt xdm.AttributeTest, ec *evalContex
 		return false
 	}
 
-	if bt.Name != "" && bt.Name != "*" && !sameTypeTestName(at.Name, bt.Name, ec, true) {
+	if bt.Name != "" && bt.Name != "*" && !sameTypeTestName(at.Name, bt.Name, ec, attributeNamespaceMode) {
 		return false
 	}
 
@@ -1755,7 +1773,7 @@ func isAnyItemTest(t xdm.NodeTest) bool {
 // XPath 2.0 restricts lexical QName casts to string literal operands. Inspect
 // the source expression, rather than an evaluated or constant-folded value.
 func qnameCastOperandAllowed(ec *evalContext, source Expr, value xdm.AtomicValue) bool {
-	if ec == nil || ec.version != 20 || value.TypeName == xdm.TypeQName || value.BaseType == xdm.TypeQName {
+	if ec == nil || ec.version != xpathVersion20 || value.TypeName == xdm.TypeQName || value.BaseType == xdm.TypeQName {
 		return true
 	}
 

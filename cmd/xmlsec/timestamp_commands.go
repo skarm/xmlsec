@@ -11,6 +11,11 @@ import (
 	"github.com/skarm/xmlsec/timestamp"
 )
 
+// Zero accuracy omits the optional RFC 3161 issuance accuracy field.
+const (
+	cliDefaultDeclaredAccuracy = 0
+)
+
 func runTimestamp(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := args[0]
 	fs := flag.NewFlagSet("timestamp "+cmd, flag.ContinueOnError)
@@ -19,7 +24,7 @@ func runTimestamp(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	input := fs.String("in", "-", "data for request, request DER for issue, response/token DER for verify/inspect")
 	out := fs.String("out", "-", "output DER or diagnostic JSON")
 	kind := fs.String(fieldKind, nameResponse, "inspect/verify: request (inspect only), response or token")
-	hashName := fs.String("hash", "sha256", "imprint/signature hash")
+	hashName := fs.String("hash", cliDefaultHashName, "imprint/signature hash")
 	policy := fs.String("tsa-policy", "", "TSA policy OID for request/issue or expected token policy")
 	nonceFile := fs.String("nonce-file", "", "exact nonce bytes; omitted requests generate a random nonce")
 	omitNonce := fs.Bool("omit-nonce", false, "explicitly omit request nonce")
@@ -29,7 +34,7 @@ func runTimestamp(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	config := fs.String("trust", "", "trusted TSA JSON configuration")
 	atValue := fs.String("at", "", "explicit verification/issuance time, RFC3339")
 	serialValue := fs.String("serial", "", "positive unique decimal serial for issuance")
-	accuracy := fs.Duration("accuracy", 0, "declared issuance accuracy (0 omits accuracy)")
+	accuracy := fs.Duration("accuracy", cliDefaultDeclaredAccuracy, "declared issuance accuracy (0 omits accuracy)")
 	ordering := fs.Bool("ordering", false, "assert TSA ordering; issuer must guarantee it")
 	pss := fs.Bool("pss", false, "RSA-PSS signature for issuance")
 	keyFile := fs.String("key", "", "TSA private key")
@@ -227,7 +232,7 @@ func (c timestampCommand) requestOptions(ctx context.Context) (timestamp.Request
 			return opt, usageError("choose -nonce-file or -omit-nonce")
 		}
 
-		opt.Nonce, err = readInputContext(ctx, c.nonceFile, nil, 128)
+		opt.Nonce, err = readInputContext(ctx, c.nonceFile, nil, cliMaxNonceBytes)
 	}
 
 	return opt, err
@@ -329,6 +334,10 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 			}
 
 			if err := writeOutputContext(ctx, c.tokenOut, stdout, result.TokenDER()); err != nil {
+				return err
+			}
+
+			if err := separateOutput(c.tokenOut, c.output, "token-out"); err != nil {
 				return err
 			}
 		}

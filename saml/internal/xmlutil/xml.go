@@ -109,6 +109,10 @@ func Simple(e document.Element, maximum int) (string, error) {
 // SimpleText returns bounded direct text, ignoring comments/PIs and rejecting
 // child elements. Attributes are validated separately by the caller.
 func SimpleText(e document.Element, maximum int) (string, error) {
+	const (
+		concatenationSegmentThreshold = 2
+	)
+
 	if maximum < 0 || len(e.Children()) != 0 {
 		return "", profile.ErrSchema
 	}
@@ -138,7 +142,7 @@ func SimpleText(e document.Element, maximum int) (string, error) {
 		segments++
 	}
 
-	if segments < 2 {
+	if segments < concatenationSegmentThreshold {
 		return single, nil
 	}
 

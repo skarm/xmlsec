@@ -73,7 +73,7 @@ func (c *compiler) compileApplyTemplates(ctx context.Context, elem *xdm.Element)
 
 func (c *compiler) compileApplyTemplatesMode(ctx context.Context, elem *xdm.Element) (string, error) {
 	raw, present := elem.GetAttribute(lexicon.AttrMode)
-	mode := strings.Trim(raw, " \t\r\n")
+	mode := strings.Trim(raw, lexicon.XMLWhitespace)
 
 	var err error
 	if !present || mode == modeDefault {
@@ -99,7 +99,7 @@ func (c *compiler) compileApplyTemplatesMode(ctx context.Context, elem *xdm.Elem
 
 func (c *compiler) appendCompiledSortKey(ctx context.Context, elem *xdm.Element, keys *[]*sortKey) error {
 	if len(*keys) > 0 {
-		if _, present := elem.GetAttribute("stable"); present {
+		if _, present := elem.GetAttribute(nameStable); present {
 			return staticError(errCodeXTSE1017, "the stable attribute is permitted only on the first xsl:sort element")
 		}
 	}
@@ -155,7 +155,7 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 	}
 
 	inst := &callTemplateInst{Name: resolveQName(name, namespaces), Compat: c.backwardsCompatible()}
-	c.pendingTemplateCalls = append(c.pendingTemplateCalls, templateCallReference{Name: inst.Name, LegacyForwards: c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion)})
+	c.pendingTemplateCalls = append(c.pendingTemplateCalls, templateCallReference{Name: inst.Name, LegacyForwards: c.stylesheet.processorLanguage() == processorXSLT10 && c.forwardsCompatible(c.effectiveVersion)})
 
 	params, err := c.compileWithParams(ctx, elem)
 	if err != nil {
@@ -303,7 +303,7 @@ func (c *compiler) pushFlowClauseTextContext(elem *xdm.Element) (bool, func()) {
 	savedExpand := c.expandText
 	hasLocal := false
 
-	if namespace, present := elem.GetAttribute(nameXpathDefaultNamespace); present {
+	if namespace, present := elem.GetAttribute(nameXPathDefaultNamespace); present {
 		c.xpathDefaultNS = namespace
 		c.hasXPathDefaultNS = true
 		hasLocal = true
@@ -462,16 +462,16 @@ func (c *compiler) compileSortKey(ctx context.Context, elem *xdm.Element) (*sort
 	// Validate boolean attribute: stable (including empty string).
 	// Skip validation for AVTs (contain '{' and '}') since the value
 	// is determined at runtime.
-	if stableAttr, hasStable := elem.GetAttribute("stable"); hasStable {
+	if stableAttr, hasStable := elem.GetAttribute(nameStable); hasStable {
 		if !strings.ContainsAny(stableAttr, "{}") {
-			if err := validateBooleanAttr("xsl:sort", "stable", stableAttr); err != nil {
+			if err := validateBooleanAttr("xsl:sort", nameStable, stableAttr); err != nil {
 				return nil, err
 			}
 		}
 	}
 
 	sk := &sortKey{
-		forwards10: c.stylesheet.processorLanguage() == 10 && forwards10(elem),
+		forwards10: c.stylesheet.processorLanguage() == processorXSLT10 && forwards10(elem),
 		backwards:  c.backwardsCompatible(),
 		BaseURI:    stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
 	}
@@ -524,7 +524,7 @@ func (c *compiler) compileSortKeyOptions(elem *xdm.Element, key *sortKey) error 
 		{nameCaseOrder, &key.CaseOrder},
 		{lexicon.AttrLang, &key.Lang},
 		{nameCollation, &key.Collation},
-		{"stable", &key.Stable},
+		{nameStable, &key.Stable},
 	} {
 		value, present := elem.GetAttribute(option.name)
 		if !present {
@@ -536,7 +536,7 @@ func (c *compiler) compileSortKeyOptions(elem *xdm.Element, key *sortKey) error 
 			return err
 		}
 
-		if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= 20 {
+		if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= processorXSLT20 {
 			if err := validateLiteralSortOption(option.name, literal); err != nil {
 				return err
 			}
@@ -588,7 +588,7 @@ func (c *compiler) compileWithParam(ctx context.Context, elem *xdm.Element) (*wi
 		}
 	}
 
-	asAttr := getAttr(elem, "as")
+	asAttr := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, asAttr, "xsl:with-param "+name); err != nil {
 		return nil, err
 	}
@@ -752,7 +752,7 @@ func (c *compiler) compileApplyImports(ctx context.Context, elem *xdm.Element) (
 func (c *compiler) compileTry(ctx context.Context, elem *xdm.Element) (*tryCatchInst, error) {
 	inst := &tryCatchInst{RollbackOutput: true}
 
-	if rb, present := elem.GetAttribute("rollback-output"); present {
+	if rb, present := elem.GetAttribute(nameRollbackOutput); present {
 		value, valid := parseXSDBool(rb)
 		if !valid {
 			return nil, staticError(errCodeXTSE0020, "invalid xsl:try rollback-output value %q", rb)
@@ -863,7 +863,7 @@ func (c *compiler) compileCatchClause(ctx context.Context, elem *xdm.Element) (*
 	// Parse errors attribute (space-separated list of error codes).
 	// Namespace declarations on xsl:catch itself must be visible
 	// when resolving prefixed error codes (e.g. err:XTDE0555).
-	if errAttr := getAttr(elem, "errors"); errAttr != "" {
+	if errAttr := getAttr(elem, nameErrors); errAttr != "" {
 		for code := range strings.FieldsSeq(errAttr) {
 			clause.Errors = append(clause.Errors, resolveQName(code, c.nsBindings))
 		}
@@ -947,7 +947,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.Composite = xsdBoolTrue(comp)
 	}
 
-	if gb, present := elem.GetAttribute("group-by"); present {
+	if gb, present := elem.GetAttribute(nameGroupBy); present {
 		gbExpr, gbErr := c.compileXPath(gb, c.nsBindings)
 		if gbErr != nil {
 			return gbErr
@@ -956,7 +956,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.GroupBy = gbExpr
 	}
 
-	if ga, present := elem.GetAttribute("group-adjacent"); present {
+	if ga, present := elem.GetAttribute(nameGroupAdjacent); present {
 		gaExpr, gaErr := c.compileXPath(ga, c.nsBindings)
 		if gaErr != nil {
 			return gaErr
@@ -965,7 +965,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.GroupAdjacent = gaExpr
 	}
 
-	if gs, present := elem.GetAttribute("group-starting-with"); present {
+	if gs, present := elem.GetAttribute(nameGroupStartingWith); present {
 		gsPat, gsErr := c.compilePattern(gs, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if gsErr != nil {
 			return gsErr
@@ -974,7 +974,7 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 		inst.GroupStartingWith = gsPat
 	}
 
-	if ge, present := elem.GetAttribute("group-ending-with"); present {
+	if ge, present := elem.GetAttribute(nameGroupEndingWith); present {
 		gePat, geErr := c.compilePattern(ge, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if geErr != nil {
 			return geErr
@@ -1029,7 +1029,7 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 		return nil, staticError(errCodeXTSE0010, "xsl:analyze-string requires select attribute")
 	}
 
-	regexAttr, regexFound := elem.GetAttribute("regex")
+	regexAttr, regexFound := elem.GetAttribute(nameRegex)
 	if !regexFound {
 		return nil, staticError(errCodeXTSE0010, "xsl:analyze-string requires regex attribute")
 	}
@@ -1049,7 +1049,7 @@ func (c *compiler) compileAnalyzeString(ctx context.Context, elem *xdm.Element) 
 		Regex:  regexAVT,
 	}
 
-	flagsAttr := getAttr(elem, "flags")
+	flagsAttr := getAttr(elem, nameFlags)
 	if flagsAttr != "" {
 		flagsAVT, err := c.compileAVT(flagsAttr, c.nsBindings)
 		if err != nil {
@@ -1135,7 +1135,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// xpath attribute is required
-	xpathAttr, present := elem.GetAttribute("xpath")
+	xpathAttr, present := elem.GetAttribute(nameXPath)
 	if !present {
 		return nil, staticError(errCodeXTSE0010, "xsl:evaluate requires an xpath attribute")
 	}
@@ -1158,7 +1158,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// base-uri (optional avt)
-	if bu := getAttr(elem, "base-uri"); bu != "" {
+	if bu := getAttr(elem, nameBaseURI); bu != "" {
 		avt, err := c.compileAVT(bu, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1168,7 +1168,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// namespace-context (optional XPath expression producing a node)
-	if nc, present := elem.GetAttribute("namespace-context"); present {
+	if nc, present := elem.GetAttribute(nameNamespaceContext); present {
 		ncExpr, err := c.compileXPath(nc, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1178,7 +1178,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// with-params (optional map expression)
-	if wp, present := elem.GetAttribute("with-params"); present {
+	if wp, present := elem.GetAttribute(nameWithParams); present {
 		wpExpr, err := c.compileXPath(wp, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1188,7 +1188,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// as (optional type name)
-	inst.As = getAttr(elem, "as")
+	inst.As = getAttr(elem, nameAs)
 	if inst.As != "" {
 		if err := c.validateAsSequenceType(ctx, elem, inst.As, "xsl:evaluate"); err != nil {
 			return nil, err
@@ -1210,7 +1210,7 @@ func (c *compiler) compileEvaluate(ctx context.Context, elem *xdm.Element) (inst
 	}
 
 	// schema-aware (optional avt that evaluates to boolean)
-	if saStr, hasSA := elem.GetAttribute("schema-aware"); hasSA {
+	if saStr, hasSA := elem.GetAttribute(nameSchemaAware); hasSA {
 		saAVT, err := c.compileAVT(saStr, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -1325,7 +1325,7 @@ func validateGroupingAttributes(elem *xdm.Element) error {
 	// group-ending-with must be present
 	groupingCount := 0
 
-	for _, name := range []string{"group-by", "group-adjacent", "group-starting-with", "group-ending-with"} {
+	for _, name := range []string{nameGroupBy, nameGroupAdjacent, nameGroupStartingWith, nameGroupEndingWith} {
 		if _, present := elem.GetAttribute(name); present {
 			groupingCount++
 		}
@@ -1340,9 +1340,9 @@ func validateGroupingAttributes(elem *xdm.Element) error {
 	}
 
 	// XTSE1090: collation/composite only with group-by or group-adjacent
-	_, hasGroupBy := elem.GetAttribute("group-by")
+	_, hasGroupBy := elem.GetAttribute(nameGroupBy)
 
-	_, hasGroupAdjacent := elem.GetAttribute("group-adjacent")
+	_, hasGroupAdjacent := elem.GetAttribute(nameGroupAdjacent)
 	if !hasGroupBy && !hasGroupAdjacent {
 		if getAttr(elem, nameCollation) != "" {
 			return staticError(errCodeXTSE1090,

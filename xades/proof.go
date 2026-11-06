@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+const (
+	indicationFailed        = "failed"
+	indicationIndeterminate = "indeterminate"
+	indicationPassed        = "passed"
+)
+
 // Indication describes the outcome within the report's named profile. The zero
 // value is Indeterminate and must never be treated as an acceptable signature.
 type Indication uint8
@@ -30,11 +36,11 @@ const (
 func (i Indication) String() string {
 	switch i {
 	case Passed:
-		return "passed"
+		return indicationPassed
 	case Failed:
-		return "failed"
+		return indicationFailed
 	default:
-		return "indeterminate"
+		return indicationIndeterminate
 	}
 }
 

@@ -53,7 +53,7 @@ func TestApplicationHelpAndUsage(t *testing.T) {
 		})
 	}
 
-	for _, args := range [][]string{{nameBogus}, {nameHelp, nameBogus}, {"version", nameExtra}, {"algorithms", nameExtra}, {nameC14n, "-unknown"}, {nameC14n, "-max-input-bytes", "0"}, {nameC14n, "-timeout", "-1s"}} {
+	for _, args := range [][]string{{nameBogus}, {nameHelp, nameBogus}, {"version", nameExtra}, {"algorithms", nameExtra}, {nameC14N, "-unknown"}, {nameC14N, "-max-input-bytes", "0"}, {nameC14N, "-timeout", "-1s"}} {
 		var out bytes.Buffer
 
 		err := run(t.Context(), args, strings.NewReader(`<r/>`), &out, io.Discard)
@@ -82,7 +82,7 @@ func TestCanceledStreamsAndDeadline(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 
-				args := []string{nameC14n}
+				args := []string{nameC14N}
 				if deadline {
 					args = append(args, "-timeout", "25ms")
 				}
@@ -142,7 +142,7 @@ func TestCanceledStreamsAndDeadline(t *testing.T) {
 
 	dir := t.TempDir()
 	out := testutil.WriteFile(t, dir, "keep.xml", []byte("original"))
-	rejectCLI(t, []byte(`<root/>`), nameC14n, "-out", out, "-max-output-bytes", "1")
+	rejectCLI(t, []byte(`<root/>`), nameC14N, "-out", out, "-max-output-bytes", "1")
 
 	b, err := os.ReadFile(out)
 	if err != nil || string(b) != "original" {
@@ -288,7 +288,94 @@ func TestEncryptionScopesAndTransports(t *testing.T) {
 	}
 }
 
-func xmlCanonical(t *testing.T, raw []byte) string { t.Helper(); return string(cli(t, raw, nameC14n)) }
+func TestExternalizeRejectsAliasedPaths(t *testing.T) {
+	secret := testutil.WriteFile(t, t.TempDir(), "aes", bytes.Repeat([]byte{9}, 32))
+	encrypted := cli(t, []byte("secret"), nameEncrypt, flagKey, secret, "-transport", transportDirect)
+
+	for _, alias := range []string{"directory symlink", "case insensitive"} {
+		for _, scenario := range []string{"input", "existing output", "new output"} {
+			t.Run(alias+"/"+scenario, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "result.xml")
+				other := filepath.Join(dir, "RESULT.xml")
+				if alias == "directory symlink" {
+					link := filepath.Join(t.TempDir(), "alias")
+					if err := os.Symlink(dir, link); err != nil {
+						t.Skipf("directory symlink unavailable: %v", err)
+					}
+					other = filepath.Join(link, "result.xml")
+				} else {
+					testutil.WriteFile(t, dir, "case-probe", nil)
+					if _, err := os.Stat(filepath.Join(dir, "CASE-PROBE")); errors.Is(err, os.ErrNotExist) {
+						t.Skip("filesystem distinguishes filename case")
+					} else if err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				args := []string{nameEncryption, "externalize", "-uri", "urn:cipher", "-cipher-out", other}
+				var original []byte
+				if scenario == "input" {
+					original = encrypted
+					testutil.WriteFile(t, dir, "result.xml", original)
+					args = append(args, "-in", path)
+				} else {
+					args = append(args, "-out", path)
+					if scenario == "existing output" {
+						original = []byte("existing output")
+						testutil.WriteFile(t, dir, "result.xml", original)
+					}
+				}
+
+				var output bytes.Buffer
+				if err := run(t.Context(), args, bytes.NewReader(encrypted), &output, io.Discard); err == nil {
+					t.Error("accepted colliding ciphertext and XML paths")
+				}
+				if output.Len() != 0 {
+					t.Error("published XML after path collision")
+				}
+				if original != nil {
+					actual, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(actual, original) {
+						t.Fatalf("original file changed: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestExternalizeDistinctOutputFiles(t *testing.T) {
+	dir := t.TempDir()
+	secret := testutil.WriteFile(t, dir, "aes", bytes.Repeat([]byte{9}, 32))
+	encrypted := cli(t, []byte("secret"), nameEncrypt, flagKey, secret, "-transport", transportDirect)
+	input := testutil.WriteFile(t, dir, "input.xml", encrypted)
+	for _, separateDirectory := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same directory", true: "separate directories"}[separateDirectory], func(t *testing.T) {
+			outputDir := t.TempDir()
+			cipherDir := outputDir
+			cipherName := "cipher.bin"
+			if separateDirectory {
+				cipherDir = t.TempDir()
+				cipherName = "output.xml"
+			}
+			output := filepath.Join(outputDir, "output.xml")
+			cipher := filepath.Join(cipherDir, cipherName)
+			cli(t, nil, nameEncryption, "externalize", "-in", input, "-out", output, "-uri", "urn:cipher", "-cipher-out", cipher)
+			resources := testutil.WriteJSON(t, outputDir, "resources.json", []resourceEntry{{URI: "urn:cipher", Path: cipher}})
+			plain := cli(t, nil, nameDecrypt, "-in", output, flagKey, secret, "-transport", transportDirect, "-resources", resources)
+			if string(plain) != "secret" {
+				t.Fatal("distinct ciphertext/XML files did not decrypt")
+			}
+			original, err := os.ReadFile(input)
+			if err != nil || !bytes.Equal(original, encrypted) {
+				t.Fatal("input XML changed", err)
+			}
+		})
+	}
+}
+
+func xmlCanonical(t *testing.T, raw []byte) string { t.Helper(); return string(cli(t, raw, nameC14N)) }
 
 func testEncryptionRoundtrip(t *testing.T, dir string, source []byte, transport, scope, private, public, secret string) {
 	encKey, decKey := secret, secret
@@ -381,7 +468,7 @@ func TestKeyKeyInfoAndTransformCommands(t *testing.T) {
 		}
 	}
 
-	filtered := cli(t, []byte(`<r><keep>yes</keep><omit>no</omit></r>`), nameC14n, "-xpath", "not(ancestor-or-self::omit)")
+	filtered := cli(t, []byte(`<r><keep>yes</keep><omit>no</omit></r>`), nameC14N, "-xpath", "not(ancestor-or-self::omit)")
 	if string(filtered) != `<r><keep>yes</keep></r>` {
 		t.Fatal(string(filtered))
 	}
@@ -452,7 +539,7 @@ func TestRejectedOptionsDoNotPublishOutput(t *testing.T) {
 	password := testutil.WriteFile(t, dir, "password", []byte("password"))
 	secret := testutil.WriteFile(t, dir, "aes", bytes.Repeat([]byte{5}, 32))
 	output := testutil.WriteFile(t, dir, "keep", []byte("original"))
-	rejectCLI(t, nil, "key", "convert", "-in", private, "-output-format", namePkcs8, "-output-password-file", password, "-encryption-bits", "129", "-out", output)
+	rejectCLI(t, nil, "key", "convert", "-in", private, "-output-format", namePKCS8, "-output-password-file", password, "-encryption-bits", "129", "-out", output)
 	rejectCLI(t, []byte("secret"), nameEncrypt, "-transport", transportDirect, flagKey, secret, "-algorithm", "urn:unsupported", "-out", output)
 
 	for _, args := range [][]string{{nameCMS, nameVerify, flagKey, private}, {"timestamp", nameInspect, "-nonce-file", password}, {"key", nameInspect, "-output-password-file", password}, {nameEncryption, nameDecrypt, "-cipher-out", output}} {
@@ -463,60 +550,6 @@ func TestRejectedOptionsDoNotPublishOutput(t *testing.T) {
 	if err != nil || string(raw) != "original" {
 		t.Fatal("failure replaced output", err, string(raw))
 	}
-}
-
-func verificationDetails(t *testing.T, raw []byte) json.RawMessage {
-	t.Helper()
-
-	var report struct {
-		Status  string          `json:"status"`
-		Version int             `json:"schema_version"`
-		Details json.RawMessage `json:"details"`
-	}
-	if err := json.Unmarshal(raw, &report); err != nil {
-		t.Fatal(err, string(raw))
-	}
-
-	if report.Version != 1 || report.Status == "" {
-		t.Fatal("missing report envelope", string(raw))
-	}
-
-	return report.Details
-}
-
-func coreVerificationChecks(t *testing.T, raw []byte) json.RawMessage {
-	t.Helper()
-
-	var detail struct {
-		Checks json.RawMessage `json:"checks"`
-	}
-	if err := json.Unmarshal(verificationDetails(t, raw), &detail); err != nil {
-		t.Fatal(err)
-	}
-
-	return detail.Checks
-}
-
-func cli(t *testing.T, input []byte, args ...string) []byte {
-	t.Helper()
-
-	var out, stderr bytes.Buffer
-	if err := run(t.Context(), args, bytes.NewReader(input), &out, &stderr); err != nil {
-		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), out.String())
-	}
-
-	return out.Bytes()
-}
-
-func rejectCLI(t *testing.T, input []byte, args ...string) []byte {
-	t.Helper()
-
-	var out, stderr bytes.Buffer
-	if err := run(t.Context(), args, bytes.NewReader(input), &out, &stderr); err == nil {
-		t.Fatalf("accepted invalid invocation %v", args)
-	}
-
-	return out.Bytes()
 }
 
 func TestEncryptionLegacyCBCPolicy(t *testing.T) {
@@ -583,6 +616,113 @@ func TestStreamingOutputPublication(t *testing.T) {
 				temps, err := filepath.Glob(filepath.Join(dir, ".xmlsec-*"))
 				if err != nil || len(temps) != 0 {
 					t.Fatal("temporary output leaked", temps, err)
+				}
+			})
+		}
+	}
+}
+
+func verificationDetails(t *testing.T, raw []byte) json.RawMessage {
+	t.Helper()
+
+	var report struct {
+		Status  string          `json:"status"`
+		Version int             `json:"schema_version"`
+		Details json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err, string(raw))
+	}
+
+	if report.Version != 1 || report.Status == "" {
+		t.Fatal("missing report envelope", string(raw))
+	}
+
+	return report.Details
+}
+
+func coreVerificationChecks(t *testing.T, raw []byte) json.RawMessage {
+	t.Helper()
+
+	var detail struct {
+		Checks json.RawMessage `json:"checks"`
+	}
+	if err := json.Unmarshal(verificationDetails(t, raw), &detail); err != nil {
+		t.Fatal(err)
+	}
+
+	return detail.Checks
+}
+
+func cli(t *testing.T, input []byte, args ...string) []byte {
+	t.Helper()
+
+	var out, stderr bytes.Buffer
+	if err := run(t.Context(), args, bytes.NewReader(input), &out, &stderr); err != nil {
+		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), out.String())
+	}
+
+	return out.Bytes()
+}
+
+func rejectCLI(t *testing.T, input []byte, args ...string) []byte {
+	t.Helper()
+
+	var out, stderr bytes.Buffer
+	if err := run(t.Context(), args, bytes.NewReader(input), &out, &stderr); err == nil {
+		t.Fatalf("accepted invalid invocation %v", args)
+	}
+
+	return out.Bytes()
+}
+
+func TestLanguageXMLScopeLimits(t *testing.T) {
+	sheet := filepath.Join(t.TempDir(), "scope-limits.xsl")
+	if err := os.WriteFile(sheet, []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:output method="text"/><xsl:template match="/">ok</xsl:template></xsl:stylesheet>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, xml, flag, limit, canonical string
+		reject                            bool
+	}{
+		{"attributes below", `<r a="1" b="2"/>`, "-max-attributes", "1", "", true},
+		{"attributes exact", `<r a="1" b="2"/>`, "-max-attributes", "2", `<r a="1" b="2"></r>`, false},
+		{"attributes raised", `<r a="1" b="2"/>`, "-max-attributes", "3", `<r a="1" b="2"></r>`, false},
+		{"namespaces below implicit", `<r xmlns:p="urn:p" xmlns:q="urn:q"/>`, "-max-namespaces", "1", "", true},
+		{"namespaces below", `<r xmlns:p="urn:p" xmlns:q="urn:q"/>`, "-max-namespaces", "2", "", true},
+		{"namespaces exact", `<r xmlns:p="urn:p" xmlns:q="urn:q"/>`, "-max-namespaces", "3", `<r></r>`, false},
+		{"namespaces raised", `<r xmlns:p="urn:p" xmlns:q="urn:q"/>`, "-max-namespaces", "4", `<r></r>`, false},
+		{"one namespace below", `<r xmlns:p="urn:p"/>`, "-max-namespaces", "1", "", true},
+		{"one namespace exact", `<r xmlns:p="urn:p"/>`, "-max-namespaces", "2", `<r></r>`, false},
+	}
+	for _, command := range []string{"c14n", "xpath", "xslt"} {
+		for _, tc := range cases {
+			t.Run(command+"/"+tc.name, func(t *testing.T) {
+				args := []string{command}
+				switch command {
+				case "xpath":
+					args = append(args, "-expression", `'ok'`)
+				case "xslt":
+					args = append(args, "-stylesheet", sheet)
+				}
+				args = append(args, tc.flag, tc.limit)
+				var output, diagnostics bytes.Buffer
+				err := run(t.Context(), args, strings.NewReader(tc.xml), &output, &diagnostics)
+				if tc.reject {
+					if !errors.Is(err, document.ErrLimit) || exitCode(err) != 1 || output.Len() != 0 {
+						t.Fatalf("rejection: output=%q, error=%v, exit=%d", output.String(), err, exitCode(err))
+					}
+					return
+				}
+				expected := tc.canonical
+				switch command {
+				case "xpath":
+					expected = "ok\n"
+				case "xslt":
+					expected = "ok"
+				}
+				if err != nil || exitCode(err) != 0 || output.String() != expected {
+					t.Fatalf("accepted boundary: output=%q, error=%v", output.String(), err)
 				}
 			})
 		}

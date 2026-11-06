@@ -14,6 +14,14 @@ import (
 	"github.com/skarm/xmlsec/timestamp"
 )
 
+// Trusted CRL/OCSP vectors and their aggregate encoded bytes are bounded independently; each OCSP file also has its own cap.
+const (
+	cliMaxCRLFiles      = 256
+	cliMaxOCSPFiles     = 256
+	cliMaxEvidenceBytes = 64 << 20
+	cliMaxOCSPFileBytes = 4 << 20
+)
+
 type evidenceFiles struct {
 	Intermediates []string `json:"intermediates,omitempty"`
 	CRLs          []string `json:"crls,omitempty"`
@@ -30,7 +38,7 @@ func (c evidenceFiles) load(ctx context.Context, base string) (pki.Evidence, err
 		return e, err
 	}
 
-	if len(c.CRLs) > 256 || len(c.OCSP) > 256 {
+	if len(c.CRLs) > cliMaxCRLFiles || len(c.OCSP) > cliMaxOCSPFiles {
 		return e, usageError("too many revocation evidence files")
 	}
 
@@ -48,7 +56,7 @@ func (c evidenceFiles) load(ctx context.Context, base string) (pki.Evidence, err
 		}
 
 		total += len(crl.Raw)
-		if total > 64<<20 {
+		if total > cliMaxEvidenceBytes {
 			return e, usageError("evidence exceeds 64 MiB")
 		}
 
@@ -56,13 +64,13 @@ func (c evidenceFiles) load(ctx context.Context, base string) (pki.Evidence, err
 	}
 
 	for _, path := range c.OCSP {
-		raw, err := readInputContext(ctx, localPath(base, path), nil, 4<<20)
+		raw, err := readInputContext(ctx, localPath(base, path), nil, cliMaxOCSPFileBytes)
 		if err != nil {
 			return e, err
 		}
 
 		total += len(raw)
-		if total > 64<<20 {
+		if total > cliMaxEvidenceBytes {
 			return e, usageError("evidence exceeds 64 MiB")
 		}
 

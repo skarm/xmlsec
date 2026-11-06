@@ -12,8 +12,17 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+const (
+	// Histories above this fact count use an earliest-proof index; no fact limit changes.
+	earliestProofIndexThreshold = 64
+	// maximumContainmentDepth bounds nested containment edges, including cached tails.
+	maximumContainmentDepth = 64
+	// Larger covered-object sets index proof origins while retaining first-source order.
+	proofOriginsIndexThreshold = 64
+)
+
 type graph struct {
-	objects     map[[32]byte]Object
+	objects     map[[sha256.Size]byte]Object
 	facts       []historicalproof.Fact
 	now         time.Time
 	maximum     int
@@ -24,20 +33,20 @@ type graph struct {
 }
 
 type proofIdentity struct {
-	digest [32]byte
+	digest [sha256.Size]byte
 	kind   historicalproof.Kind
 }
 
 type proofOrigin struct {
 	at     time.Time
-	source [32]byte
+	source [sha256.Size]byte
 }
 
 type containmentWalk struct {
 	ctx     context.Context
-	objects map[[32]byte]Object
+	objects map[[sha256.Size]byte]Object
 	// 1 means active; completed entries store their subtree height plus 2.
-	states  map[[32]byte]uint8
+	states  map[[sha256.Size]byte]uint8
 	maximum int
 }
 
@@ -46,7 +55,7 @@ func newGraph(ctx context.Context, c Config, in Input, now time.Time) (*graph, e
 		return nil, ErrLimit
 	}
 
-	g := &graph{objects: make(map[[32]byte]Object, len(in.Objects)), now: now, maximum: c.MaxEdges}
+	g := &graph{objects: make(map[[sha256.Size]byte]Object, len(in.Objects)), now: now, maximum: c.MaxEdges}
 	g.constraints = slices.Clone(c.SignerHistory.CryptoConstraints)
 	remaining, edges := c.MaxBytes, 0
 
@@ -140,7 +149,7 @@ func (g *graph) checkHashReference(ref HashReference) error {
 }
 
 func (g *graph) checkAcyclic(ctx context.Context, maximum int) error {
-	walk := containmentWalk{ctx: ctx, objects: g.objects, states: make(map[[32]byte]uint8, len(g.objects)), maximum: maximum}
+	walk := containmentWalk{ctx: ctx, objects: g.objects, states: make(map[[sha256.Size]byte]uint8, len(g.objects)), maximum: maximum}
 	for key := range g.objects {
 		if _, err := walk.visit(key, 0); err != nil {
 			return err
@@ -154,7 +163,7 @@ func (g *graph) set(ctx context.Context) (*historicalproof.Set, error) {
 	return historicalproof.New(ctx, g.now, g.facts)
 }
 
-func (g *graph) extract(ctx context.Context, candidate Candidate, source [32]byte, upper time.Time) error {
+func (g *graph) extract(ctx context.Context, candidate Candidate, source [sha256.Size]byte, upper time.Time) error {
 	seen, err := g.extractCovered(ctx, candidate, source, upper)
 	if err != nil {
 		return err
@@ -163,8 +172,8 @@ func (g *graph) extract(ctx context.Context, candidate Candidate, source [32]byt
 	return g.extractReferences(ctx, seen, source)
 }
 
-func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source [32]byte, upper time.Time) (map[[32]byte]struct{}, error) {
-	seen := make(map[[32]byte]struct{})
+func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source [sha256.Size]byte, upper time.Time) (map[[sha256.Size]byte]struct{}, error) {
+	seen := make(map[[sha256.Size]byte]struct{})
 	stack := slices.Clone(candidate.Covered)
 
 	for len(stack) != 0 {
@@ -201,7 +210,7 @@ func (g *graph) extractCovered(ctx context.Context, candidate Candidate, source 
 
 // Hash indirection follows §5.6.2.3(4), using separately established
 // existence of the actual object. It never treats a digest as object bytes.
-func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{}, source [32]byte) error {
+func (g *graph) extractReferences(ctx context.Context, seen map[[sha256.Size]byte]struct{}, source [sha256.Size]byte) error {
 	for changed := true; changed; {
 		changed = false
 
@@ -210,8 +219,8 @@ func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{
 			return err
 		}
 
-		var sources map[[32]byte]proofOrigin
-		if len(seen) > 64 {
+		var sources map[[sha256.Size]byte]proofOrigin
+		if len(seen) > proofOriginsIndexThreshold {
 			sources = g.proofOrigins()
 		}
 
@@ -226,7 +235,7 @@ func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{
 				continue
 			}
 
-			var proofSource [32]byte
+			var proofSource [sha256.Size]byte
 			if origin, ok := sources[key]; ok {
 				proofSource = origin.source
 			} else {
@@ -250,8 +259,8 @@ func (g *graph) extractReferences(ctx context.Context, seen map[[32]byte]struct{
 // proofOrigins indexes the first source of each hash-reference container's
 // earliest proof. Later appends cannot precede an existing first matching fact.
 // Histories without hash references do not need an index allocation.
-func (g *graph) proofOrigins() map[[32]byte]proofOrigin {
-	var origins map[[32]byte]proofOrigin
+func (g *graph) proofOrigins() map[[sha256.Size]byte]proofOrigin {
+	var origins map[[sha256.Size]byte]proofOrigin
 
 	for _, fact := range g.facts {
 		if len(g.objects[fact.Digest].Refs) == 0 {
@@ -259,7 +268,7 @@ func (g *graph) proofOrigins() map[[32]byte]proofOrigin {
 		}
 
 		if origins == nil {
-			origins = make(map[[32]byte]proofOrigin, min(len(g.facts), len(g.objects)))
+			origins = make(map[[sha256.Size]byte]proofOrigin, min(len(g.facts), len(g.objects)))
 		}
 
 		previous, exists := origins[fact.Digest]
@@ -271,7 +280,7 @@ func (g *graph) proofOrigins() map[[32]byte]proofOrigin {
 	return origins
 }
 
-func (g *graph) containerSource(key [32]byte, at time.Time, fallback [32]byte) [32]byte {
+func (g *graph) containerSource(key [sha256.Size]byte, at time.Time, fallback [sha256.Size]byte) [sha256.Size]byte {
 	for _, fact := range g.facts {
 		if fact.Digest == key && fact.At.Equal(at) {
 			return fact.Source
@@ -281,7 +290,7 @@ func (g *graph) containerSource(key [32]byte, at time.Time, fallback [32]byte) [
 	return fallback
 }
 
-func (g *graph) extractReference(ctx context.Context, set *historicalproof.Set, ref HashReference, source [32]byte, at time.Time) (bool, error) {
+func (g *graph) extractReference(ctx context.Context, set *historicalproof.Set, ref HashReference, source [sha256.Size]byte, at time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -314,7 +323,7 @@ func (g *graph) extractReference(ctx context.Context, set *historicalproof.Set, 
 func (g *graph) add(fact historicalproof.Fact) error {
 	key := proofIdentity{fact.Digest, fact.Kind}
 
-	if g.earliest == nil && len(g.facts) > 64 {
+	if g.earliest == nil && len(g.facts) > earliestProofIndexThreshold {
 		g.earliest = make(map[proofIdentity]time.Time, len(g.facts))
 
 		for _, existing := range g.facts {
@@ -350,30 +359,35 @@ func (g *graph) add(fact historicalproof.Fact) error {
 	return nil
 }
 
-func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
+func (w *containmentWalk) visit(key [sha256.Size]byte, depth int) (int, error) {
+	const (
+		activeState          = 1
+		completedStateOffset = 2 // Completed states encode subtree height above unseen/active.
+	)
+
 	if err := w.ctx.Err(); err != nil {
 		return 0, err
 	}
 
-	if depth > 64 || depth > w.maximum {
+	if depth > maximumContainmentDepth || depth > w.maximum {
 		return 0, ErrLimit
 	}
 
 	state := w.states[key]
-	if state == 1 {
+	if state == activeState {
 		return 0, fmt.Errorf("%w: containment cycle", ErrInput)
 	}
 
-	if state >= 2 {
-		height := int(state) - 2
-		if height > 64-depth || height > w.maximum-depth {
+	if state >= completedStateOffset {
+		height := int(state) - completedStateOffset
+		if height > maximumContainmentDepth-depth || height > w.maximum-depth {
 			return 0, ErrLimit
 		}
 
 		return height, nil
 	}
 
-	w.states[key] = 1
+	w.states[key] = activeState
 	height := 0
 
 	for _, child := range w.objects[key].Contains {
@@ -385,7 +399,7 @@ func (w *containmentWalk) visit(key [32]byte, depth int) (int, error) {
 		height = max(height, childHeight+1)
 	}
 	// #nosec G115 -- Each child passed the depth/height checks above; height is 0..64.
-	w.states[key] = uint8(height) + 2
+	w.states[key] = uint8(height) + completedStateOffset
 
 	return height, nil
 }

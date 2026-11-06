@@ -62,7 +62,7 @@ func testLegacyXMLDSigFixture(t *testing.T, name, method string) {
 		t.Fatal("default accepted legacy", err)
 	}
 
-	opt := xmldsig.SignatureOptions{Policy: xmldsig.LegacyVerificationPolicy(), ExpectedURIs: []string{"#root", nameData}, RequiredElements: []document.Element{d.Root(), d.Root().Children()[0]}}
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.LegacyVerificationPolicy(), ExpectedURIs: []string{"#root", dataReferenceURI}, RequiredElements: []document.Element{d.Root(), d.Root().Children()[0]}}
 
 	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, selected, key, opt)
 	if err != nil || result == nil || report == nil {
@@ -275,17 +275,17 @@ func TestCoreForms(t *testing.T) {
 		bytes         string
 		canonical     bool
 	}{
-		{"enveloping", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), obj), nameObject, nameData2, false, true, "", true},
-		{"sibling", `<root><item ID="data">original</item>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), "") + `<unsigned>mutable</unsigned></root>`, "item", nameData2, false, true, "", true},
-		{"nested", `<root><item ID="data">original</item><container>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Canonical11), "") + `</container></root>`, "item", nameData2, false, true, "", true},
-		{"whole", `<!--before--><root ID="data"><item>original</item>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef("", xmldsig.EnvelopedSignature, c14n.Exclusive), "") + `</root>`, nameRoot, nameData2, true, true, "", true},
-		{"root-id", `<root ID="data">` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, xmldsig.EnvelopedSignature, c14n.Exclusive), "") + `</root>`, nameRoot, nameData2, true, true, "", true},
-		{"xpointer-document", `<!--before--><root ID="data">` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef("#xpointer(/)", xmldsig.EnvelopedSignature, c14n.Canonical11WithComments), "") + `</root>`, nameRoot, nameData2, true, true, "", true},
-		{"xpointer-id", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef("#xpointer(id('data'))", c14n.ExclusiveWithComments), obj), nameObject, nameData2, false, true, "", true},
-		{"implicit-c14n", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData), obj), nameObject, nameData2, false, true, "", true},
-		{"base64", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, reference.Base64), `<ds:Object Id="data">aGVsbG8=</ds:Object>`), nameObject, nameData2, false, false, "hello", false},
-		{"base64-xml", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, reference.Base64, c14n.Canonical11), `<ds:Object Id="data">`+base64.StdEncoding.EncodeToString([]byte(`<item/>`))+`</ds:Object>`), nameObject, nameData2, false, false, "<item></item>", true},
-		{"reparse", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive, c14n.Exclusive), obj), nameObject, nameData2, false, false, "", true},
+		{"enveloping", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Exclusive), obj), nameObject, dataLiteral, false, true, "", true},
+		{"sibling", `<root><item ID="data">original</item>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Exclusive), "") + `<unsigned>mutable</unsigned></root>`, "item", dataLiteral, false, true, "", true},
+		{"nested", `<root><item ID="data">original</item><container>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Canonical11), "") + `</container></root>`, "item", dataLiteral, false, true, "", true},
+		{"whole", `<!--before--><root ID="data"><item>original</item>` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef("", xmldsig.EnvelopedSignature, c14n.Exclusive), "") + `</root>`, nameRoot, dataLiteral, true, true, "", true},
+		{"root-id", `<root ID="data">` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, xmldsig.EnvelopedSignature, c14n.Exclusive), "") + `</root>`, nameRoot, dataLiteral, true, true, "", true},
+		{"xpointer-document", `<!--before--><root ID="data">` + coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef("#xpointer(/)", xmldsig.EnvelopedSignature, c14n.Canonical11WithComments), "") + `</root>`, nameRoot, dataLiteral, true, true, "", true},
+		{"xpointer-id", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef("#xpointer(id('data'))", c14n.ExclusiveWithComments), obj), nameObject, dataLiteral, false, true, "", true},
+		{"implicit-c14n", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI), obj), nameObject, dataLiteral, false, true, "", true},
+		{"base64", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, reference.Base64), `<ds:Object Id="data">aGVsbG8=</ds:Object>`), nameObject, dataLiteral, false, false, "hello", false},
+		{"base64-xml", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, reference.Base64, c14n.Canonical11), `<ds:Object Id="data">`+base64.StdEncoding.EncodeToString([]byte(`<item/>`))+`</ds:Object>`), nameObject, dataLiteral, false, false, "<item></item>", true},
+		{"reparse", coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Exclusive, c14n.Exclusive), obj), nameObject, dataLiteral, false, false, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { testCoreFormsCase(t, &tc, &key) })
@@ -388,8 +388,8 @@ func TestCoreAlgorithmsAndCanonicalization(t *testing.T) {
 	for i, tc := range cases {
 		for j, cm := range cms {
 			t.Run(fmt.Sprintf("key%d-cm%d", i, j), func(t *testing.T) {
-				d := coreParse(t, `<root xmlns:z="urn:unused" xml:lang="en"><item ID="data">original</item>`+coreTemplate("s", tc.method, cm, coreRef(nameData, cm), "")+`</root>`)
-				opt := xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{cm}, ExpectedURIs: []string{nameData}}
+				d := coreParse(t, `<root xmlns:z="urn:unused" xml:lang="en"><item ID="data">original</item>`+coreTemplate("s", tc.method, cm, coreRef(dataReferenceURI, cm), "")+`</root>`)
+				opt := xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{cm}, ExpectedURIs: []string{dataReferenceURI}}
 
 				signed := coreSign(t, d, tc.key, opt)
 				if _, err := xmldsig.VerifySignature(t.Context(), signed, xmldsig.Signatures(signed)[0], tc.key.Public(), opt); err != nil {
@@ -408,11 +408,11 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 	}
 
 	t.Run("independent", func(t *testing.T) {
-		d := coreParse(t, `<root><item ID="data">payload</item>`+tmpl("s1", nameData, c14n.Exclusive)+tmpl("s2", nameData, c14n.Canonical11)+`</root>`)
+		d := coreParse(t, `<root><item ID="data">payload</item>`+tmpl("s1", dataReferenceURI, c14n.Exclusive)+tmpl("s2", dataReferenceURI, c14n.Canonical11)+`</root>`)
 		first := coreSign(t, d, key1, xmldsig.SignatureOptions{})
 		sigs := xmldsig.Signatures(first)
-		target := coreFind(first, "item", nameData2)
-		ownOpt := xmldsig.SignatureOptions{RequiredElements: []document.Element{target}, ExpectedURIs: []string{nameData}}
+		target := coreFind(first, "item", dataLiteral)
+		ownOpt := xmldsig.SignatureOptions{RequiredElements: []document.Element{target}, ExpectedURIs: []string{dataReferenceURI}}
 
 		denied, err := xmldsig.SignTemplate(ctx, first, sigs[1], key2, xmldsig.TemplateSignOptions{Validation: ownOpt})
 		if denied != nil || !errors.Is(err, xmldsig.ErrPolicy) {
@@ -428,7 +428,7 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 
 		for i, key := range []*ecdsa.PrivateKey{key1, key2} {
 			r, err := xmldsig.VerifySignature(ctx, both, xmldsig.Signatures(both)[i], &key.PublicKey, xmldsig.SignatureOptions{})
-			if err != nil || !r.CoversElement(coreFind(both, "item", nameData2)) {
+			if err != nil || !r.CoversElement(coreFind(both, "item", dataLiteral)) {
 				t.Fatal(err)
 			}
 		}
@@ -438,6 +438,8 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 		}
 		// Wrong key for the chosen signature is not rescued by another signature.
 		r, report, err := xmldsig.VerifySignatureDetailed(ctx, both, xmldsig.Signatures(both)[1], &key1.PublicKey, xmldsig.SignatureOptions{})
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if r != nil || err == nil || report.SignatureValue != xmldsig.Invalid {
 			t.Fatal("another signature/key trusted")
 		}
@@ -454,7 +456,7 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 		}
 	})
 	t.Run("would-invalidate", func(t *testing.T) {
-		d := coreParse(t, `<root><item ID="data">payload</item>`+tmpl("s1", "", xmldsig.EnvelopedSignature, c14n.Exclusive)+tmpl("s2", nameData, c14n.Exclusive)+`</root>`)
+		d := coreParse(t, `<root><item ID="data">payload</item>`+tmpl("s1", "", xmldsig.EnvelopedSignature, c14n.Exclusive)+tmpl("s2", dataReferenceURI, c14n.Exclusive)+`</root>`)
 		first := coreSign(t, d, key1, xmldsig.SignatureOptions{})
 		before := coreXML(t, first)
 		sigs := xmldsig.Signatures(first)
@@ -523,6 +525,8 @@ func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 		bad := coreParse(t, strings.Replace(coreXML(t, d), `URI="#second"`, `URI="https://invalid.example/never-fetched"`, 1))
 
 		r, report, err := xmldsig.VerifySignatureDetailed(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{})
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if r != nil || !errors.Is(err, xmldsig.ErrPolicy) || report.SignatureValue != xmldsig.NotChecked || report.References[1].Status != xmldsig.Disallowed {
 			t.Fatal(err, report)
 		}
@@ -531,12 +535,12 @@ func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 
 func TestCoreRepeatedURIAndExpectedSet(t *testing.T) {
 	key := coreEC(t)
-	refs := coreRef(nameData, c14n.Exclusive) + coreRef(nameData, c14n.Canonical11)
+	refs := coreRef(dataReferenceURI, c14n.Exclusive) + coreRef(dataReferenceURI, c14n.Canonical11)
 	d := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, refs, `<ds:Object Id="data">payload</ds:Object>`))
-	opt := xmldsig.SignatureOptions{ExpectedURIs: []string{nameData, nameData}}
+	opt := xmldsig.SignatureOptions{ExpectedURIs: []string{dataReferenceURI, dataReferenceURI}}
 
 	signed := coreSign(t, d, key, opt)
-	for _, uris := range [][]string{{nameData}, {nameData, "#other"}, {}, {nameData, nameData, nameData}} {
+	for _, uris := range [][]string{{dataReferenceURI}, {dataReferenceURI, "#other"}, {}, {dataReferenceURI, dataReferenceURI, dataReferenceURI}} {
 		r, e := xmldsig.VerifySignature(t.Context(), signed, xmldsig.Signatures(signed)[0], &key.PublicKey, xmldsig.SignatureOptions{ExpectedURIs: uris})
 		if r != nil || !errors.Is(e, xmldsig.ErrPolicy) {
 			t.Fatal("URI multiset accepted", e)
@@ -593,7 +597,7 @@ func TestCoreTemplateSafety(t *testing.T) {
 			}
 		}
 	})
-	base := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), `<ds:Object Id="data">payload</ds:Object>`))
+	base := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Exclusive), `<ds:Object Id="data">payload</ds:Object>`))
 	signed := coreSign(t, base, key, xmldsig.SignatureOptions{})
 	t.Run("no-overwrite", func(t *testing.T) {
 		out, e := xmldsig.SignTemplate(ctx, signed, xmldsig.Signatures(signed)[0], key, xmldsig.TemplateSignOptions{})
@@ -610,7 +614,7 @@ func TestCoreTemplateSafety(t *testing.T) {
 		}
 	})
 	t.Run("untyped-id-is-not-guessed", func(t *testing.T) {
-		bad := coreParse(t, `<root><x Id="data"/>`+coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), "")+`</root>`)
+		bad := coreParse(t, `<root><x Id="data"/>`+coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Exclusive), "")+`</root>`)
 
 		out, e := xmldsig.SignTemplate(ctx, bad, xmldsig.Signatures(bad)[0], key, xmldsig.TemplateSignOptions{})
 		if out != nil || !errors.Is(e, reference.ErrInput) {
@@ -647,7 +651,7 @@ func TestCoreTemplateSafety(t *testing.T) {
 func TestCoreInvalidOptions(t *testing.T) {
 	key := coreEC(t)
 	ctx := t.Context()
-	base := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(nameData, c14n.Exclusive), `<ds:Object Id="data">payload</ds:Object>`))
+	base := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, c14n.Exclusive), `<ds:Object Id="data">payload</ds:Object>`))
 	d := coreSign(t, base, key, xmldsig.SignatureOptions{})
 	sig := xmldsig.Signatures(d)[0]
 
@@ -706,14 +710,14 @@ func TestCoreCommentAndManifestSemantics(t *testing.T) {
 	key := coreEC(t)
 	ctx := t.Context()
 
-	for _, uri := range []string{nameData, "#xpointer(id('data'))"} {
+	for _, uri := range []string{dataReferenceURI, "#xpointer(id('data'))"} {
 		t.Run(uri, func(t *testing.T) {
 			raw := coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(uri, c14n.ExclusiveWithComments), `<ds:Object Id="data">text<!--original--></ds:Object>`)
 			signed := coreSign(t, coreParse(t, raw), key, xmldsig.SignatureOptions{})
 			bad := coreParse(t, strings.Replace(coreXML(t, signed), "<!--original-->", "<!--changed-->", 1))
 
 			r, e := xmldsig.VerifySignature(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{})
-			if uri == nameData {
+			if uri == dataReferenceURI {
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -794,14 +798,9 @@ func FuzzVerifySignature(f *testing.F) {
 	})
 }
 
-func coreFixtureKey(t testing.TB, name string) crypto.PublicKey {
-	t.Helper()
-	return testutil.ReadPublicKey(t, filepath.Join("..", "testdata", "core", name))
-}
-
 func FuzzSignTemplate(f *testing.F) {
 	key := coreEC(f)
-	f.Add([]byte(coreTemplate("s", xmldsig.ECDSASHA256, "http://www.w3.org/2001/10/xml-exc-c14n#", coreRef(nameData, "http://www.w3.org/2001/10/xml-exc-c14n#"), `<ds:Object Id="data">payload</ds:Object>`)))
+	f.Add([]byte(coreTemplate("s", xmldsig.ECDSASHA256, "http://www.w3.org/2001/10/xml-exc-c14n#", coreRef(dataReferenceURI, "http://www.w3.org/2001/10/xml-exc-c14n#"), `<ds:Object Id="data">payload</ds:Object>`)))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		if len(raw) > 16<<10 {
 			t.Skip()
@@ -841,6 +840,11 @@ func FuzzSignTemplate(f *testing.F) {
 			t.Fatal("invalid signed output", err)
 		}
 	})
+}
+
+func coreFixtureKey(t testing.TB, name string) crypto.PublicKey {
+	t.Helper()
+	return testutil.ReadPublicKey(t, filepath.Join("..", "testdata", "core", name))
 }
 
 func coreParse(t testing.TB, s string) *document.Document {

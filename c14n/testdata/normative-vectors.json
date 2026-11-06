@@ -7,7 +7,7 @@
     "oracle_sha256": "41939fc4e57d351fb8f2d8cff8f9cd98db9935e020863989ca90c07cf61784e0",
     "checked_on": "2026-10-22",
     "libxml2_oracle": "tests/interop/testdata/c14n-oracle.c",
-    "libxml2_oracle_sha256": "c67454d8702fbc574b60cda20d9863dc847098b0592f759240b03c6783969487",
+    "libxml2_oracle_sha256": "1ce7e654f35f75be596ab3cd9b782acff5c8368ef5083b11ae4609fd13c50af1",
     "verification": "Docker xmlsec-interop:local, network disabled; existing JDK/libxml2 adapters unchanged. Normative divergences have per-case reasons; they are diagnostics, not oracle agreement."
   },
   "input_model": "DTD-free parsed node model; sparse node-set results may be XML fragments.",

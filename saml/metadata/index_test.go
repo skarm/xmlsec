@@ -51,7 +51,9 @@ func TestMetadataIndexLexicalValues(t *testing.T) {
 				t.Fatal(err)
 			}
 			endpoint, err := role.ACS(metadata.HTTPPost, &test.want)
-			if err != nil || endpoint.Index != test.want {
+			if err != nil {
+				t.Fatal(err)
+			} else if endpoint.Index != test.want {
 				t.Fatalf("index=%d error=%v; want %d", endpoint.Index, err, test.want)
 			}
 		})

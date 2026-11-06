@@ -11,6 +11,15 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Direct-path parsing preallocates these numbers of steps/predicates as hints,
+// not acceptance limits. A negative predicate position means no concrete lexer
+// was available to record a rewind point.
+const (
+	directPathStepCapacity    = 4
+	directPredicateCapacity   = 2
+	noDirectPredicatePosition = -1
+)
+
 func compileFromLexer(l *lexer) (*vmProgram, prefixValidationPlan, error) {
 	if program, prefixPlan, ok, err := tryCompileDirectFromLexer(l); ok || err != nil {
 		return program, prefixPlan, err
@@ -94,7 +103,7 @@ func (p *parseOptions) tryParseDirectFunctionCall() (Expr, bool, error) {
 		switch tok.Value {
 		case lexicon.KindNode, lexicon.KindText, lexicon.KindComment, lexicon.KindPI,
 			lexicon.KindElement, lexicon.KindAttribute, lexicon.KindDocumentNode, lexicon.KindSchemaElement,
-			lexicon.KindSchemaAttribute, lexicon.KindNamespaceNode, "item", nameEmptySequence:
+			lexicon.KindSchemaAttribute, lexicon.KindNamespaceNode, lexicon.KindItem, nameEmptySequence:
 			return nil, false, nil
 		}
 	}
@@ -156,7 +165,7 @@ func (p *parseOptions) tryParseDirectLocationPath() (Expr, bool, error) {
 	}
 
 	absolute := false
-	steps := make([]vmLocationStep, 0, 4)
+	steps := make([]vmLocationStep, 0, directPathStepCapacity)
 
 	switch tok.Type {
 	case TokenSlash:
@@ -240,8 +249,11 @@ func (p *parseOptions) tryParseDirectStep() (vmLocationStep, bool, error) {
 	}
 
 	axis := AxisChild
+	axisSpecified := false
+
 	if tok.Type == TokenAt {
 		axis = AxisAttribute
+		axisSpecified = true
 
 		p.lexer.Next()
 	}
@@ -254,6 +266,7 @@ func (p *parseOptions) tryParseDirectStep() (vmLocationStep, bool, error) {
 			}
 
 			axis = a
+			axisSpecified = true
 
 			p.lexer.Next()
 			p.lexer.Next()
@@ -271,9 +284,10 @@ func (p *parseOptions) tryParseDirectStep() (vmLocationStep, bool, error) {
 	}
 
 	return vmLocationStep{
-		Axis:       axis,
-		NodeTest:   nodeTest,
-		Predicates: predicates,
+		Axis:         axis,
+		ExplicitAxis: axisSpecified,
+		NodeTest:     nodeTest,
+		Predicates:   predicates,
 	}, true, nil
 }
 
@@ -328,7 +342,7 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 
 		p.lexer.Next()
 
-		return xdm.NameTest{URI: uri, Local: local}, true, nil
+		return xdm.NameTest{URI: uri, Local: local, URIQualified: true}, true, nil
 	}
 
 	if p.joinedQNameAt(1) {
@@ -364,13 +378,13 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 func (p *parseOptions) parseDirectPredicates() ([]Expr, error) {
 	var predicates []Expr
 	if p.lexer.Peek().Type == TokenLBracket {
-		predicates = make([]Expr, 0, 2)
+		predicates = make([]Expr, 0, directPredicateCapacity)
 	}
 
 	for p.lexer.Peek().Type == TokenLBracket {
 		p.lexer.Next()
 
-		predStart := -1
+		predStart := noDirectPredicatePosition
 		if l, ok := p.lexer.(*lexer); ok {
 			predStart = l.idx
 		}

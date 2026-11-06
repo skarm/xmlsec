@@ -51,8 +51,8 @@ const uriManifest = "urn:manifest"
 func TestXMLSecExternalManifestURIContext(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
-	key := generateKey(t, fixture.work, nameRsaSha256)
-	_, privateArg := nativeKeyArgs(nameRsa, "")
+	key := generateKey(t, fixture.work, nameRSASHA256)
+	_, privateArg := nativeKeyArgs(nameRSA, "")
 
 	const resourceURI = "urn:external#manifest"
 
@@ -103,7 +103,7 @@ func TestXMLSecExternalManifestURIContext(t *testing.T) {
 
 	ours := write(t, filepath.Join(fixture.work, "fragment-go.xml"), xmlBytes(t, signed))
 	nativeArgs := []string{"--url-map:urn:external", nativeManifest, "--url-map:urn:attachment", payloadPath}
-	native(t, fixture, true, nameVerify, append(append([]string{flagPubkeyPem, key.public}, nativeArgs...), ours)...)
+	native(t, fixture, true, nameVerify, append(append([]string{flagPublicKeyPEM, key.public}, nativeArgs...), ours)...)
 	theirs := filepath.Join(fixture.work, "fragment-native.xml")
 	native(t, fixture, true, nameSign, append(append([]string{privateArg, key.private, flagNativeOutput, theirs}, nativeArgs...), template)...)
 	nativeDoc := xmlDoc(t, read(t, theirs))
@@ -116,25 +116,27 @@ func TestXMLSecExternalManifestURIContext(t *testing.T) {
 	write(t, payloadPath, []byte("changed fragment payload"))
 
 	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), nativeDoc, nativeDoc.Root(), key.signer.Public(), opt)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || report.References[0].Status != xmldsig.Valid {
 		t.Fatal(result, report, err)
 	}
 
 	// xmlsec1 validates this external Manifest's incoming Reference, but does
 	// not recursively discover its children. Record that boundary explicitly.
-	native(t, fixture, true, nameVerify, append(append([]string{flagPubkeyPem, key.public}, nativeArgs...), ours)...)
+	native(t, fixture, true, nameVerify, append(append([]string{flagPublicKeyPEM, key.public}, nativeArgs...), ours)...)
 
 	changedDigest := sha256.Sum256([]byte("different nested digest"))
 	changedManifest := strings.Replace(manifestXML, base64.StdEncoding.EncodeToString(digest[:]), base64.StdEncoding.EncodeToString(changedDigest[:]), 1)
 	write(t, nativeManifest, []byte(`<!DOCTYPE ds:Manifest [<!ATTLIST ds:Manifest Id ID #REQUIRED>]>`+changedManifest))
-	native(t, fixture, false, nameVerify, append(append([]string{flagPubkeyPem, key.public}, nativeArgs...), ours)...)
+	native(t, fixture, false, nameVerify, append(append([]string{flagPublicKeyPEM, key.public}, nativeArgs...), ours)...)
 }
 
 func TestXMLSecRelativeURIContext(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
-	key := generateKey(t, fixture.work, nameRsaSha256)
-	_, privateArg := nativeKeyArgs(nameRsa, "")
+	key := generateKey(t, fixture.work, nameRSASHA256)
+	_, privateArg := nativeKeyArgs(nameRSA, "")
 
 	const resolved = "https://example.test/payload.bin?version=1"
 
@@ -168,9 +170,9 @@ func TestXMLSecRelativeURIContext(t *testing.T) {
 	// xmlsec1's CLI opens the literal relative URI in this profile instead of
 	// applying inherited xml:base. Keep that difference visible, then exchange
 	// identical octets through an explicit literal mapping in the native adapter.
-	native(t, fixture, false, nameVerify, append(append([]string{flagPubkeyPem, key.public}, args...), ours)...)
+	native(t, fixture, false, nameVerify, append(append([]string{flagPublicKeyPEM, key.public}, args...), ours)...)
 	args = []string{"--url-map:../payload.bin?version=1", payload}
-	native(t, fixture, true, nameVerify, append(append([]string{flagPubkeyPem, key.public}, args...), ours)...)
+	native(t, fixture, true, nameVerify, append(append([]string{flagPublicKeyPEM, key.public}, args...), ours)...)
 	template := write(t, filepath.Join(fixture.work, "relative-template.xml"), xmlBytes(t, draft))
 	theirs := filepath.Join(fixture.work, "relative-native.xml")
 	native(t, fixture, true, nameSign, append(append([]string{privateArg, key.private, flagNativeOutput, theirs}, args...), template)...)
@@ -181,7 +183,7 @@ func TestXMLSecRelativeURIContext(t *testing.T) {
 	}
 
 	write(t, payload, []byte("changed relative resource"))
-	native(t, fixture, false, nameVerify, append(append([]string{flagPubkeyPem, key.public}, args...), ours)...)
+	native(t, fixture, false, nameVerify, append(append([]string{flagPublicKeyPEM, key.public}, args...), ours)...)
 
 	if result, _, err := xmldsig.VerifySignatureDetailed(t.Context(), nativeDoc, xmldsig.Signatures(nativeDoc)[0], key.signer.Public(), opt); !errors.Is(err, xmldsig.ErrDigest) || result != nil {
 		t.Fatal(result, err)
@@ -191,7 +193,7 @@ func TestXMLSecRelativeURIContext(t *testing.T) {
 func TestExternalManifestInterop(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "portable")
-	key := generateKey(t, fixture.work, nameRsaSha256)
+	key := generateKey(t, fixture.work, nameRSASHA256)
 	theirs := filepath.Join(fixture.work, "jdk-external.xml")
 	manifest := filepath.Join(fixture.work, "external-manifest.xml")
 	payload := write(t, filepath.Join(fixture.work, "external-payload.bin"), []byte("external Manifest payload\x00\xff"))
@@ -254,6 +256,8 @@ func TestExternalManifestInterop(t *testing.T) {
 	write(t, payload, []byte("changed external payload"))
 
 	result, report, err = xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.signer.Public(), options)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if !errors.Is(err, xmldsig.ErrDigest) || result != nil || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid {
 		t.Fatal(result, report, err)
 	}
@@ -270,9 +274,9 @@ func TestManifestProfiles(t *testing.T) {
 	attachment := write(t, filepath.Join(dir, "attachment.bin"), []byte("external bytes\x00\xff"))
 
 	resources := write(t, filepath.Join(dir, "resources.json"), []byte(`[{"uri":"urn:attachment","path":"attachment.bin"}]`))
-	for _, name := range []string{nameRsaSha256, nameRsaSha384, nameRsaSha512, nameEcdsaSha256} {
+	for _, name := range []string{nameRSASHA256, nameRSASHA384, nameRSASHA512, nameECDSASHA256} {
 		key := generateKey(t, dir, name)
-		if strings.HasPrefix(name, nameRsa) {
+		if strings.HasPrefix(name, nameRSA) {
 			key.method = pssURI + strings.TrimPrefix(name, "rsa-") + "-rsa-MGF1"
 		}
 
@@ -321,7 +325,7 @@ func TestSAMLProfiles(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
 
 	p := binary(t, fixture, "samlprobe")
-	for _, name := range []string{nameRsaSha256, nameEcdsaSha256} {
+	for _, name := range []string{nameRSASHA256, nameECDSASHA256} {
 		key := generateKey(t, dir, name)
 
 		cert := write(t, filepath.Join(dir, "cert.der"), key.cert.Raw)
@@ -350,6 +354,9 @@ func TestSAMLProfiles(t *testing.T) {
 		Valid       bool
 	}
 	decode(t, read(t, filepath.Join(base, "manifest.json")), &cases)
+	if len(cases) != 16 {
+		t.Fatalf("independent SAML fixture count = %d, want 16", len(cases))
+	}
 
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -437,11 +444,11 @@ func TestRedirectProfiles(t *testing.T) {
 	relay := "state/ü?x=1&y=two"
 
 	cases := []redirectProfileCase{
-		{nameRsaSha256, nameSha256},
-		{nameRsaSha384, "sha384"},
-		{nameRsaSha512, "sha512"},
-		{nameEcdsaSha256, nameSha256},
-		{nameEd25519, nameSha256},
+		{nameRSASHA256, nameSHA256},
+		{nameRSASHA384, "sha384"},
+		{nameRSASHA512, "sha512"},
+		{nameECDSASHA256, nameSHA256},
+		{nameEd25519, nameSHA256},
 	}
 	for _, scenario := range cases {
 		key := generateKey(t, dir, scenario.name)
@@ -548,152 +555,15 @@ func TestCRLFixtures(t *testing.T) {
 	base := filepath.Join(fixture.root, "testdata/next")
 	leaf := filepath.Join(base, "pki-leaf.der")
 	rootDER := filepath.Join(base, "pki-root.der")
-	rootPEM := write(t, filepath.Join(dir, "root.pem"), pem.EncodeToMemory(&pem.Block{Type: nameCERTIFICATE, Bytes: read(t, rootDER)}))
+	rootPEM := write(t, filepath.Join(dir, "root.pem"), pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: read(t, rootDER)}))
 
-	leafPEM := write(t, filepath.Join(dir, "leaf.pem"), pem.EncodeToMemory(&pem.Block{Type: nameCERTIFICATE, Bytes: read(t, leaf)}))
+	leafPEM := write(t, filepath.Join(dir, "leaf.pem"), pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: read(t, leaf)}))
 	for _, mode := range []string{nameFresh, "revoked", "stale"} {
 		crl := filepath.Join(base, "pki-"+mode+".crl.der")
 		probe(t, fixture, "nextprobe", map[string]any{nameMode: "pki-verify", nameInput: leaf, "Root": rootDER, "CRL": crl, "At": "2026-10-07T12:00:00Z"}, mode == nameFresh)
 		crlPEM := write(t, filepath.Join(dir, "crl.pem"), pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: read(t, crl)}))
 		command(t, fixture, mode == nameFresh, nil, "openssl", nameVerify, "-CAfile", rootPEM, "-CRLfile", crlPEM, "-crl_check", "-attime", "1791374400", leafPEM)
 	}
-}
-
-func referenceInput(t *testing.T, fixture *interopFixture, d *tree.Document, sig, ref *tree.Node, attachment []byte) []byte {
-	t.Helper()
-
-	uri := attr(ref, "URI")
-
-	var (
-		target *tree.Node
-		octets []byte
-	)
-	if uri == uriAttachment {
-		octets = bytes.Clone(attachment)
-	} else if uri == "" {
-		target = tree.Root(d)
-	} else if strings.HasPrefix(uri, "#") {
-		ident := strings.TrimPrefix(uri, "#")
-
-		var walk func(*tree.Node)
-
-		walk = func(n *tree.Node) { testreferenceInputCase(n, &ident, &target, &t, &walk) }
-		walk(tree.Root(d))
-
-		if target == nil {
-			t.Fatalf("unresolved ID %s", uri)
-		}
-	} else {
-		t.Fatalf("unallowlisted test URI %s", uri)
-	}
-
-	var canonical string
-
-	enveloped := false
-
-	for _, tr := range nodes(ref, ds, "Transform") {
-		alg := attr(tr, "Algorithm")
-		if alg == ds+"enveloped-signature" {
-			enveloped = true
-		} else if alg == ds+"base64" {
-			if target != nil {
-				octets = []byte(text(target))
-				target = nil
-			}
-
-			octets = decode64(t, string(octets))
-		} else if strings.HasPrefix(alg, exc) || strings.HasPrefix(alg, c10) || strings.HasPrefix(alg, c11) {
-			canonical = alg
-		} else {
-			t.Fatalf("unsupported fixed profile transform %s", alg)
-		}
-	}
-
-	if target == nil {
-		if canonical != "" {
-			doc := xmlDoc(t, octets)
-			return externalCanonical(t, fixture, doc, nil, canonical)
-		}
-
-		return octets
-	}
-
-	if canonical == "" {
-		canonical = c10
-	}
-	// Bare ID references strip comments before transforms, even WithComments.
-	removed := make(map[*tree.Node][]*tree.Node)
-
-	var prune func(*tree.Node)
-
-	prune = func(n *tree.Node) { testreferenceInputCase2(n, &sig, &enveloped, &prune, &removed) }
-	prune(target)
-
-	defer func() {
-		for n, children := range removed {
-			n.Children = children
-		}
-	}()
-
-	return externalCanonical(t, fixture, d, target, canonical)
-}
-
-func checkReferences(t *testing.T, fixture *interopFixture, d *tree.Document, sig *tree.Node) bool {
-	t.Helper()
-
-	valid := true
-
-	for _, ref := range nodes(sig, ds, "Reference") {
-		alg := attr(one(t, ref, ds, "DigestMethod"), "Algorithm")
-
-		bits := 256
-		if strings.HasSuffix(alg, "384") {
-			bits = 384
-		} else if strings.HasSuffix(alg, "512") {
-			bits = 512
-		}
-
-		input := referenceInput(t, fixture, d, sig, ref, nil)
-
-		digest := hashBytes(bits, input)
-		if !bytes.Equal(digest, decode64(t, text(one(t, ref, ds, "DigestValue")))) {
-			valid = false
-		}
-	}
-
-	return valid
-}
-
-func testreferenceInputCase(n *tree.Node, ident *string, target **tree.Node, t **testing.T, walk *func(*tree.Node)) {
-	if attr(n, "Id") == (*ident) || attr(n, "ID") == (*ident) {
-		if (*target) != nil {
-			(*t).Fatal("duplicate ID")
-		}
-
-		(*target) = n
-	}
-
-	for _, c := range n.Children {
-		(*walk)(c)
-	}
-}
-
-func testreferenceInputCase2(n *tree.Node, sig **tree.Node, enveloped *bool, prune *func(*tree.Node), removed *map[*tree.Node][]*tree.Node) {
-	original := n.Children
-
-	var kept []*tree.Node
-
-	for _, c := range original {
-		if c == (*sig) && (*enveloped) || c.Kind == tree.CommentNode {
-			continue
-		}
-
-		kept = append(kept, c)
-		(*prune)(c)
-	}
-
-	(*removed)[n] = original
-	n.Children = kept
 }
 
 func TestCRLCompositionsOpenSSL(t *testing.T) {
@@ -841,6 +711,359 @@ func TestCRLCompositionsOpenSSL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDSSHistoricalValidation(t *testing.T) {
+	selected(t, "portable")
+
+	manifestPath := os.Getenv("XMLSEC_DSS_FIXTURES")
+	endpoint := os.Getenv("XMLSEC_DSS_URL")
+	runtimeJar := os.Getenv("XMLSEC_DSS_RUNTIME_JAR")
+	if manifestPath == "" || endpoint == "" || runtimeJar == "" {
+		if os.Getenv("XMLSEC_REQUIRE_P7_PROOFS") == "1" {
+			t.Fatal("XMLSEC_DSS_FIXTURES, XMLSEC_DSS_URL and XMLSEC_DSS_RUNTIME_JAR are required")
+		}
+
+		t.Skip("optional local DSS historical compatibility fixtures/runtime")
+	}
+
+	base, err := dssLoopbackURL(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var manifest dssHistoricalManifest
+	decoder := json.NewDecoder(bytes.NewReader(dssReadFile(t, filepath.Dir(manifestPath), filepath.Base(manifestPath), 256<<10)))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err = decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		t.Fatal("trailing DSS manifest data:", err)
+	}
+
+	if manifest.Version != "6.5.1" || manifest.ValidationTime.IsZero() || len(manifest.Pairs) == 0 || len(manifest.Pairs) > 16 {
+		t.Fatal("invalid DSS fixture version, explicit validation time or bounded pair count")
+	}
+	anchor, err := hex.DecodeString(manifest.TrustAnchorSHA256)
+	if err != nil || len(anchor) != sha256.Size {
+		t.Fatal("missing exact DSS trust-anchor certificate SHA-256")
+	}
+	anchorID := "C-" + strings.ToUpper(manifest.TrustAnchorSHA256)
+
+	client := &http.Client{Timeout: time.Minute, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	t.Cleanup(client.CloseIdleConnections)
+	dssCheckRuntime(t, client, base, runtimeJar, manifest.Version)
+
+	directory := filepath.Dir(manifestPath)
+	var policy *dssRemoteDocument
+	if manifest.Policy != "" {
+		policy = &dssRemoteDocument{Bytes: dssReadFile(t, directory, manifest.Policy, 1<<20), Name: filepath.Base(manifest.Policy)}
+	}
+
+	seen := map[string]struct{}{}
+	for _, pair := range manifest.Pairs {
+		if _, exists := seen[pair.Name]; pair.Name == "" || exists {
+			t.Fatal("empty or duplicate historical pair name")
+		}
+
+		seen[pair.Name] = struct{}{}
+		t.Run(pair.Name, func(t *testing.T) {
+			sufficient := dssReadFile(t, directory, pair.Sufficient, 16<<20)
+			insufficient := dssReadFile(t, directory, pair.Insufficient, 16<<20)
+			dssCheckSameSignature(t, sufficient, insufficient)
+			if pair.WantSufficient.Indication != "TOTAL_PASSED" || pair.WantSufficient.SubIndication != "" || pair.WantInsufficient.Indication != "INDETERMINATE" || pair.WantInsufficient.SubIndication == "" {
+				t.Fatal("pair must specify total success and one exact indeterminate reason")
+			}
+
+			for _, item := range []struct {
+				name string
+				raw  []byte
+				want dssExpectation
+			}{{"sufficient", sufficient, pair.WantSufficient}, {"insufficient", insufficient, pair.WantInsufficient}} {
+				t.Run(item.name, func(t *testing.T) {
+					raw := dssPostValidation(t, client, base, dssValidationRequest{SignedDocument: dssRemoteDocument{Bytes: item.raw, Name: pair.Name + ".xml"}, Policy: policy, ValidationTime: manifest.ValidationTime})
+					dssSaveReport(t, item.raw, raw)
+					var report dssReports
+					if err := json.Unmarshal(raw, &report); err != nil {
+						t.Fatal(err)
+					}
+
+					if err := report.check(manifest.ValidationTime, item.want, anchorID); err != nil {
+						t.Fatalf("DSS verdict: %v; summary=%+v\n%.4096s", err, report.SimpleReport, raw)
+					}
+					if err := report.checkArchiveRecovery(item.want.Indication == "TOTAL_PASSED"); err != nil {
+						t.Fatal("DSS archive workflow:", err)
+					}
+
+					t.Logf("DSS %s %s/%s input-sha256=%x best-signature-time=%s", manifest.Version, item.want.Indication, item.want.SubIndication, sha256.Sum256(item.raw), item.want.BestSignatureTime.Format(time.RFC3339Nano))
+				})
+			}
+		})
+	}
+}
+
+func TestDSSHistoricalReportContracts(t *testing.T) {
+	at := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+	proof := at.AddDate(-1, 0, 0)
+	const raw = `{"DiagnosticData":{"ValidationDate":"2026-10-25T00:00:00Z","Signature":[{"Id":"s","StructuralValidation":{"valid":true},"BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true},{"DataFound":true,"DataIntact":true}]}]},"SimpleReport":{"ValidationTime":"2026-10-25T00:00:00Z","SignaturesCount":1,"ValidSignaturesCount":1,"signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s","Indication":"TOTAL_PASSED","SubIndication":null,"BestSignatureTime":"2025-10-25T00:00:00Z","CertificateChain":{"Certificate":[{"Id":"C-ROOT","trusted":true}]}}}]},"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z","signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s"}}]}}`
+	want := dssExpectation{Indication: "TOTAL_PASSED", BestSignatureTime: proof}
+	for _, test := range []struct {
+		name string
+		from string
+		to   string
+	}{
+		{"complete report", "", ""},
+		{"missing diagnostic", `"DiagnosticData"`, `"OtherData"`},
+		{"wrong signature identity", `"Id":"s","Indication"`, `"Id":"other","Indication"`},
+		{"unrelated indeterminate reason", `"TOTAL_PASSED"`, `"INDETERMINATE"`},
+		{"missing proof time", `"2025-10-25T00:00:00Z"`, `null`},
+		{"wrong proof time", `"2025-10-25T00:00:00Z"`, `"2025-10-24T00:00:00Z"`},
+		{"wrong trusted anchor", `"Id":"C-ROOT"`, `"Id":"C-OTHER"`},
+		{"untrusted anchor", `"trusted":true`, `"trusted":false`},
+		{"signature invalid", `"SignatureValid":true`, `"SignatureValid":false`},
+		{"missing signature validity", `"SignatureValid":true`, `"SignatureValid":null`},
+		{"damaged reference", `"DataIntact":true`, `"DataIntact":false`},
+		{"wrong explicit validation time", `"ValidationDate":"2026-10-25T00:00:00Z"`, `"ValidationDate":"2026-10-24T00:00:00Z"`},
+		{"detailed report signature mismatch", `"Signature":{"Id":"s"}`, `"Signature":{"Id":"other"}`},
+		{"detailed report time mismatch", `"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z"`, `"DetailedReport":{"ValidationTime":"2026-10-24T00:00:00Z"`},
+		{"no detailed report", `"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z","signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s"}}]}`, `"DetailedReport":null`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := raw
+			if test.from != "" {
+				value = strings.Replace(value, test.from, test.to, 1)
+				if value == raw {
+					t.Fatal("test mutation missed")
+				}
+			}
+
+			var report dssReports
+			if err := json.Unmarshal([]byte(value), &report); err != nil {
+				t.Fatal(err)
+			}
+
+			err := report.check(at, want, "C-ROOT")
+			if (err == nil) != (test.from == "") {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	for _, endpoint := range []string{"https://127.0.0.1:8080/", "http://example.test/", "http://localhost/", "http://127.0.0.1/?query=1", "http://user@127.0.0.1/"} {
+		if _, err := dssLoopbackURL(endpoint); err == nil {
+			t.Fatal("nonlocal or ambiguous endpoint accepted:", endpoint)
+		}
+	}
+
+	if _, err := dssLoopbackURL("http://127.0.0.1:8080/"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("exact indeterminate cause with intact signature", func(t *testing.T) {
+		value := strings.NewReplacer(`"TOTAL_PASSED"`, `"INDETERMINATE"`, `"ValidSignaturesCount":1`, `"ValidSignaturesCount":0`, `"SubIndication":null`, `"SubIndication":"OUT_OF_BOUNDS_NO_POE"`, `"2025-10-25T00:00:00Z"`, `"2026-10-25T00:00:00Z"`).Replace(raw)
+		var report dssReports
+		if err := json.Unmarshal([]byte(value), &report); err != nil {
+			t.Fatal(err)
+		}
+
+		want := dssExpectation{Indication: "INDETERMINATE", SubIndication: "OUT_OF_BOUNDS_NO_POE", BestSignatureTime: at}
+		if err := report.check(at, want, "C-ROOT"); err != nil {
+			t.Fatal(err)
+		}
+
+		want.SubIndication = "NO_CERTIFICATE_CHAIN_FOUND"
+		if err := report.check(at, want, "C-ROOT"); err == nil {
+			t.Fatal("unrelated missing trust cause accepted as missing historical proof")
+		}
+	})
+
+	for _, metadata := range []string{"artifactId=dss-validation\nversion=6.5.1", "# generated\nversion=6.5.1\nartifactId=dss-validation\n", "artifactId=dss-validation\r\nversion=6.5.1\r\n"} {
+		if !dssPinnedMetadata([]byte(metadata), "6.5.1") {
+			t.Fatal("valid Maven runtime version metadata rejected")
+		}
+	}
+	for _, metadata := range []string{"artifactId=other\nversion=6.5.1\n", "artifactId=dss-validation\nversion=6.5.10\n", "artifactId=dss-validation\nversion=6.5\n"} {
+		if dssPinnedMetadata([]byte(metadata), "6.5.1") {
+			t.Fatal("different DSS implementation version accepted")
+		}
+	}
+}
+
+func TestDSSArchiveRecoveryReportContracts(t *testing.T) {
+	const raw = `{"DetailedReport":{"signatureOrTimestampOrEvidenceRecord":[{"Signature":{"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"INDETERMINATE"}},"ValidationProcessLongTermData":{"Conclusion":{"Indication":"INDETERMINATE"}},"ValidationProcessArchivalData":{"Conclusion":{"Indication":"PASSED"}},"Timestamp":[{"Id":"st","Conclusion":{"Indication":"PASSED"}},{"Id":"at","Conclusion":{"Indication":"PASSED"}}]}}]},"DiagnosticData":{"Timestamp":[{"Id":"st","Type":"SIGNATURE_TIMESTAMP","BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true}]},{"Id":"at","Type":"ARCHIVE_TIMESTAMP","BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true}]}]}}`
+	for _, test := range []struct {
+		name string
+		from string
+		to   string
+	}{
+		{"archive required and verified", "", ""},
+		{"current signature passed instead", `"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"INDETERMINATE"}}`, `"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"PASSED"}}`},
+		{"LT passed instead", `"ValidationProcessLongTermData":{"Conclusion":{"Indication":"INDETERMINATE"}}`, `"ValidationProcessLongTermData":{"Conclusion":{"Indication":"PASSED"}}`},
+		{"archive process did not pass", `"ValidationProcessArchivalData":{"Conclusion":{"Indication":"PASSED"}}`, `"ValidationProcessArchivalData":{"Conclusion":{"Indication":"INDETERMINATE"}}`},
+		{"missing archive timestamp", `"ARCHIVE_TIMESTAMP"`, `"OTHER_TIMESTAMP"`},
+		{"timestamp signature invalid", `"SignatureValid":true`, `"SignatureValid":false`},
+		{"timestamp imprint invalid", `"DataIntact":true`, `"DataIntact":false`},
+		{"missing detailed report", `"DetailedReport"`, `"OtherReport"`},
+		{"old timestamp ignored", `"Id":"st","Conclusion":{"Indication":"PASSED"}`, `"Id":"st","Conclusion":{"Indication":"INDETERMINATE"}`},
+		{"missing old timestamp trust result", `{"Id":"st","Conclusion":{"Indication":"PASSED"}},`, ``},
+		{"duplicate timestamp trust identity", `"Id":"at","Conclusion"`, `"Id":"st","Conclusion"`},
+		{"different timestamp trust identity", `"Id":"at","Conclusion"`, `"Id":"other","Conclusion"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := raw
+			if test.from != "" {
+				value = strings.Replace(value, test.from, test.to, 1)
+				if value == raw {
+					t.Fatal("test mutation missed")
+				}
+			}
+			var report dssReports
+			if err := json.Unmarshal([]byte(value), &report); err != nil {
+				t.Fatal(err)
+			}
+			if err := report.checkArchiveRecovery(true); (err == nil) != (test.from == "") {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func referenceInput(t *testing.T, fixture *interopFixture, d *tree.Document, sig, ref *tree.Node, attachment []byte) []byte {
+	t.Helper()
+
+	uri := attr(ref, "URI")
+
+	var (
+		target *tree.Node
+		octets []byte
+	)
+	if uri == uriAttachment {
+		octets = bytes.Clone(attachment)
+	} else if uri == "" {
+		target = tree.Root(d)
+	} else if strings.HasPrefix(uri, "#") {
+		ident := strings.TrimPrefix(uri, "#")
+
+		var walk func(*tree.Node)
+
+		walk = func(n *tree.Node) { testreferenceInputCase(n, &ident, &target, &t, &walk) }
+		walk(tree.Root(d))
+
+		if target == nil {
+			t.Fatalf("unresolved ID %s", uri)
+		}
+	} else {
+		t.Fatalf("unallowlisted test URI %s", uri)
+	}
+
+	var canonical string
+
+	enveloped := false
+
+	for _, tr := range nodes(ref, ds, "Transform") {
+		alg := attr(tr, "Algorithm")
+		if alg == ds+"enveloped-signature" {
+			enveloped = true
+		} else if alg == ds+"base64" {
+			if target != nil {
+				octets = []byte(text(target))
+				target = nil
+			}
+
+			octets = decode64(t, string(octets))
+		} else if strings.HasPrefix(alg, exc) || strings.HasPrefix(alg, c10) || strings.HasPrefix(alg, c11) {
+			canonical = alg
+		} else {
+			t.Fatalf("unsupported fixed profile transform %s", alg)
+		}
+	}
+
+	if target == nil {
+		if canonical != "" {
+			doc := xmlDoc(t, octets)
+			return externalCanonical(t, fixture, doc, nil, canonical)
+		}
+
+		return octets
+	}
+
+	if canonical == "" {
+		canonical = c10
+	}
+	// Bare ID references strip comments before transforms, even WithComments.
+	removed := make(map[*tree.Node][]*tree.Node)
+
+	var prune func(*tree.Node)
+
+	prune = func(n *tree.Node) { testreferenceInputCase2(n, &sig, &enveloped, &prune, &removed) }
+	prune(target)
+
+	defer func() {
+		for n, children := range removed {
+			n.Children = children
+		}
+	}()
+
+	return externalCanonical(t, fixture, d, target, canonical)
+}
+
+func checkReferences(t *testing.T, fixture *interopFixture, d *tree.Document, sig *tree.Node) bool {
+	t.Helper()
+
+	valid := true
+
+	for _, ref := range nodes(sig, ds, "Reference") {
+		alg := attr(one(t, ref, ds, "DigestMethod"), "Algorithm")
+
+		bits := 256
+		if strings.HasSuffix(alg, "384") {
+			bits = 384
+		} else if strings.HasSuffix(alg, "512") {
+			bits = 512
+		}
+
+		input := referenceInput(t, fixture, d, sig, ref, nil)
+
+		digest := hashBytes(bits, input)
+		if !bytes.Equal(digest, decode64(t, text(one(t, ref, ds, "DigestValue")))) {
+			valid = false
+		}
+	}
+
+	return valid
+}
+
+func testreferenceInputCase(n *tree.Node, ident *string, target **tree.Node, t **testing.T, walk *func(*tree.Node)) {
+	if attr(n, "Id") == (*ident) || attr(n, "ID") == (*ident) {
+		if (*target) != nil {
+			(*t).Fatal("duplicate ID")
+		}
+
+		(*target) = n
+	}
+
+	for _, c := range n.Children {
+		(*walk)(c)
+	}
+}
+
+func testreferenceInputCase2(n *tree.Node, sig **tree.Node, enveloped *bool, prune *func(*tree.Node), removed *map[*tree.Node][]*tree.Node) {
+	original := n.Children
+
+	var kept []*tree.Node
+
+	for _, c := range original {
+		if c == (*sig) && (*enveloped) || c.Kind == tree.CommentNode {
+			continue
+		}
+
+		kept = append(kept, c)
+		(*prune)(c)
+	}
+
+	(*removed)[n] = original
+	n.Children = kept
 }
 
 // DSS is a separately started, offline demonstration runtime. Only its loopback
@@ -1051,96 +1274,6 @@ func (r *dssReports) checkArchiveRecovery(success bool) error {
 	return nil
 }
 
-func TestDSSHistoricalValidation(t *testing.T) {
-	selected(t, "portable")
-
-	manifestPath := os.Getenv("XMLSEC_DSS_FIXTURES")
-	endpoint := os.Getenv("XMLSEC_DSS_URL")
-	runtimeJar := os.Getenv("XMLSEC_DSS_RUNTIME_JAR")
-	if manifestPath == "" || endpoint == "" || runtimeJar == "" {
-		if os.Getenv("XMLSEC_REQUIRE_P7_PROOFS") == "1" {
-			t.Fatal("XMLSEC_DSS_FIXTURES, XMLSEC_DSS_URL and XMLSEC_DSS_RUNTIME_JAR are required")
-		}
-
-		t.Skip("optional local DSS historical compatibility fixtures/runtime")
-	}
-
-	base, err := dssLoopbackURL(endpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var manifest dssHistoricalManifest
-	decoder := json.NewDecoder(bytes.NewReader(dssReadFile(t, filepath.Dir(manifestPath), filepath.Base(manifestPath), 256<<10)))
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&manifest); err != nil {
-		t.Fatal(err)
-	}
-	if err = decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		t.Fatal("trailing DSS manifest data:", err)
-	}
-
-	if manifest.Version != "6.5.1" || manifest.ValidationTime.IsZero() || len(manifest.Pairs) == 0 || len(manifest.Pairs) > 16 {
-		t.Fatal("invalid DSS fixture version, explicit validation time or bounded pair count")
-	}
-	anchor, err := hex.DecodeString(manifest.TrustAnchorSHA256)
-	if err != nil || len(anchor) != sha256.Size {
-		t.Fatal("missing exact DSS trust-anchor certificate SHA-256")
-	}
-	anchorID := "C-" + strings.ToUpper(manifest.TrustAnchorSHA256)
-
-	client := &http.Client{Timeout: time.Minute, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	t.Cleanup(client.CloseIdleConnections)
-	dssCheckRuntime(t, client, base, runtimeJar, manifest.Version)
-
-	directory := filepath.Dir(manifestPath)
-	var policy *dssRemoteDocument
-	if manifest.Policy != "" {
-		policy = &dssRemoteDocument{Bytes: dssReadFile(t, directory, manifest.Policy, 1<<20), Name: filepath.Base(manifest.Policy)}
-	}
-
-	seen := map[string]struct{}{}
-	for _, pair := range manifest.Pairs {
-		if _, exists := seen[pair.Name]; pair.Name == "" || exists {
-			t.Fatal("empty or duplicate historical pair name")
-		}
-
-		seen[pair.Name] = struct{}{}
-		t.Run(pair.Name, func(t *testing.T) {
-			sufficient := dssReadFile(t, directory, pair.Sufficient, 16<<20)
-			insufficient := dssReadFile(t, directory, pair.Insufficient, 16<<20)
-			dssCheckSameSignature(t, sufficient, insufficient)
-			if pair.WantSufficient.Indication != "TOTAL_PASSED" || pair.WantSufficient.SubIndication != "" || pair.WantInsufficient.Indication != "INDETERMINATE" || pair.WantInsufficient.SubIndication == "" {
-				t.Fatal("pair must specify total success and one exact indeterminate reason")
-			}
-
-			for _, item := range []struct {
-				name string
-				raw  []byte
-				want dssExpectation
-			}{{"sufficient", sufficient, pair.WantSufficient}, {"insufficient", insufficient, pair.WantInsufficient}} {
-				t.Run(item.name, func(t *testing.T) {
-					raw := dssPostValidation(t, client, base, dssValidationRequest{SignedDocument: dssRemoteDocument{Bytes: item.raw, Name: pair.Name + ".xml"}, Policy: policy, ValidationTime: manifest.ValidationTime})
-					dssSaveReport(t, item.raw, raw)
-					var report dssReports
-					if err := json.Unmarshal(raw, &report); err != nil {
-						t.Fatal(err)
-					}
-
-					if err := report.check(manifest.ValidationTime, item.want, anchorID); err != nil {
-						t.Fatalf("DSS verdict: %v; summary=%+v\n%.4096s", err, report.SimpleReport, raw)
-					}
-					if err := report.checkArchiveRecovery(item.want.Indication == "TOTAL_PASSED"); err != nil {
-						t.Fatal("DSS archive workflow:", err)
-					}
-
-					t.Logf("DSS %s %s/%s input-sha256=%x best-signature-time=%s", manifest.Version, item.want.Indication, item.want.SubIndication, sha256.Sum256(item.raw), item.want.BestSignatureTime.Format(time.RFC3339Nano))
-				})
-			}
-		})
-	}
-}
-
 func dssSaveReport(t *testing.T, input, report []byte) {
 	t.Helper()
 	directory := os.Getenv("XMLSEC_DSS_REPORT_DIR")
@@ -1325,129 +1458,3 @@ func dssCheckSameSignature(t *testing.T, left, right []byte) {
 }
 
 func dssTrue(value *bool) bool { return value != nil && *value }
-
-func TestDSSHistoricalReportContracts(t *testing.T) {
-	at := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
-	proof := at.AddDate(-1, 0, 0)
-	const raw = `{"DiagnosticData":{"ValidationDate":"2026-10-25T00:00:00Z","Signature":[{"Id":"s","StructuralValidation":{"valid":true},"BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true},{"DataFound":true,"DataIntact":true}]}]},"SimpleReport":{"ValidationTime":"2026-10-25T00:00:00Z","SignaturesCount":1,"ValidSignaturesCount":1,"signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s","Indication":"TOTAL_PASSED","SubIndication":null,"BestSignatureTime":"2025-10-25T00:00:00Z","CertificateChain":{"Certificate":[{"Id":"C-ROOT","trusted":true}]}}}]},"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z","signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s"}}]}}`
-	want := dssExpectation{Indication: "TOTAL_PASSED", BestSignatureTime: proof}
-	for _, test := range []struct {
-		name string
-		from string
-		to   string
-	}{
-		{"complete report", "", ""},
-		{"missing diagnostic", `"DiagnosticData"`, `"OtherData"`},
-		{"wrong signature identity", `"Id":"s","Indication"`, `"Id":"other","Indication"`},
-		{"unrelated indeterminate reason", `"TOTAL_PASSED"`, `"INDETERMINATE"`},
-		{"missing proof time", `"2025-10-25T00:00:00Z"`, `null`},
-		{"wrong proof time", `"2025-10-25T00:00:00Z"`, `"2025-10-24T00:00:00Z"`},
-		{"wrong trusted anchor", `"Id":"C-ROOT"`, `"Id":"C-OTHER"`},
-		{"untrusted anchor", `"trusted":true`, `"trusted":false`},
-		{"signature invalid", `"SignatureValid":true`, `"SignatureValid":false`},
-		{"missing signature validity", `"SignatureValid":true`, `"SignatureValid":null`},
-		{"damaged reference", `"DataIntact":true`, `"DataIntact":false`},
-		{"wrong explicit validation time", `"ValidationDate":"2026-10-25T00:00:00Z"`, `"ValidationDate":"2026-10-24T00:00:00Z"`},
-		{"detailed report signature mismatch", `"Signature":{"Id":"s"}`, `"Signature":{"Id":"other"}`},
-		{"detailed report time mismatch", `"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z"`, `"DetailedReport":{"ValidationTime":"2026-10-24T00:00:00Z"`},
-		{"no detailed report", `"DetailedReport":{"ValidationTime":"2026-10-25T00:00:00Z","signatureOrTimestampOrEvidenceRecord":[{"Signature":{"Id":"s"}}]}`, `"DetailedReport":null`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			value := raw
-			if test.from != "" {
-				value = strings.Replace(value, test.from, test.to, 1)
-				if value == raw {
-					t.Fatal("test mutation missed")
-				}
-			}
-
-			var report dssReports
-			if err := json.Unmarshal([]byte(value), &report); err != nil {
-				t.Fatal(err)
-			}
-
-			err := report.check(at, want, "C-ROOT")
-			if (err == nil) != (test.from == "") {
-				t.Fatal(err)
-			}
-		})
-	}
-
-	for _, endpoint := range []string{"https://127.0.0.1:8080/", "http://example.test/", "http://localhost/", "http://127.0.0.1/?query=1", "http://user@127.0.0.1/"} {
-		if _, err := dssLoopbackURL(endpoint); err == nil {
-			t.Fatal("nonlocal or ambiguous endpoint accepted:", endpoint)
-		}
-	}
-
-	if _, err := dssLoopbackURL("http://127.0.0.1:8080/"); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("exact indeterminate cause with intact signature", func(t *testing.T) {
-		value := strings.NewReplacer(`"TOTAL_PASSED"`, `"INDETERMINATE"`, `"ValidSignaturesCount":1`, `"ValidSignaturesCount":0`, `"SubIndication":null`, `"SubIndication":"OUT_OF_BOUNDS_NO_POE"`, `"2025-10-25T00:00:00Z"`, `"2026-10-25T00:00:00Z"`).Replace(raw)
-		var report dssReports
-		if err := json.Unmarshal([]byte(value), &report); err != nil {
-			t.Fatal(err)
-		}
-
-		want := dssExpectation{Indication: "INDETERMINATE", SubIndication: "OUT_OF_BOUNDS_NO_POE", BestSignatureTime: at}
-		if err := report.check(at, want, "C-ROOT"); err != nil {
-			t.Fatal(err)
-		}
-
-		want.SubIndication = "NO_CERTIFICATE_CHAIN_FOUND"
-		if err := report.check(at, want, "C-ROOT"); err == nil {
-			t.Fatal("unrelated missing trust cause accepted as missing historical proof")
-		}
-	})
-
-	for _, metadata := range []string{"artifactId=dss-validation\nversion=6.5.1", "# generated\nversion=6.5.1\nartifactId=dss-validation\n", "artifactId=dss-validation\r\nversion=6.5.1\r\n"} {
-		if !dssPinnedMetadata([]byte(metadata), "6.5.1") {
-			t.Fatal("valid Maven runtime version metadata rejected")
-		}
-	}
-	for _, metadata := range []string{"artifactId=other\nversion=6.5.1\n", "artifactId=dss-validation\nversion=6.5.10\n", "artifactId=dss-validation\nversion=6.5\n"} {
-		if dssPinnedMetadata([]byte(metadata), "6.5.1") {
-			t.Fatal("different DSS implementation version accepted")
-		}
-	}
-}
-
-func TestDSSArchiveRecoveryReportContracts(t *testing.T) {
-	const raw = `{"DetailedReport":{"signatureOrTimestampOrEvidenceRecord":[{"Signature":{"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"INDETERMINATE"}},"ValidationProcessLongTermData":{"Conclusion":{"Indication":"INDETERMINATE"}},"ValidationProcessArchivalData":{"Conclusion":{"Indication":"PASSED"}},"Timestamp":[{"Id":"st","Conclusion":{"Indication":"PASSED"}},{"Id":"at","Conclusion":{"Indication":"PASSED"}}]}}]},"DiagnosticData":{"Timestamp":[{"Id":"st","Type":"SIGNATURE_TIMESTAMP","BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true}]},{"Id":"at","Type":"ARCHIVE_TIMESTAMP","BasicSignature":{"SignatureIntact":true,"SignatureValid":true},"DigestMatcher":[{"DataFound":true,"DataIntact":true}]}]}}`
-	for _, test := range []struct {
-		name string
-		from string
-		to   string
-	}{
-		{"archive required and verified", "", ""},
-		{"current signature passed instead", `"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"INDETERMINATE"}}`, `"ValidationProcessBasicSignature":{"Conclusion":{"Indication":"PASSED"}}`},
-		{"LT passed instead", `"ValidationProcessLongTermData":{"Conclusion":{"Indication":"INDETERMINATE"}}`, `"ValidationProcessLongTermData":{"Conclusion":{"Indication":"PASSED"}}`},
-		{"archive process did not pass", `"ValidationProcessArchivalData":{"Conclusion":{"Indication":"PASSED"}}`, `"ValidationProcessArchivalData":{"Conclusion":{"Indication":"INDETERMINATE"}}`},
-		{"missing archive timestamp", `"ARCHIVE_TIMESTAMP"`, `"OTHER_TIMESTAMP"`},
-		{"timestamp signature invalid", `"SignatureValid":true`, `"SignatureValid":false`},
-		{"timestamp imprint invalid", `"DataIntact":true`, `"DataIntact":false`},
-		{"missing detailed report", `"DetailedReport"`, `"OtherReport"`},
-		{"old timestamp ignored", `"Id":"st","Conclusion":{"Indication":"PASSED"}`, `"Id":"st","Conclusion":{"Indication":"INDETERMINATE"}`},
-		{"missing old timestamp trust result", `{"Id":"st","Conclusion":{"Indication":"PASSED"}},`, ``},
-		{"duplicate timestamp trust identity", `"Id":"at","Conclusion"`, `"Id":"st","Conclusion"`},
-		{"different timestamp trust identity", `"Id":"at","Conclusion"`, `"Id":"other","Conclusion"`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			value := raw
-			if test.from != "" {
-				value = strings.Replace(value, test.from, test.to, 1)
-				if value == raw {
-					t.Fatal("test mutation missed")
-				}
-			}
-			var report dssReports
-			if err := json.Unmarshal([]byte(value), &report); err != nil {
-				t.Fatal(err)
-			}
-			if err := report.checkArchiveRecovery(true); (err == nil) != (test.from == "") {
-				t.Fatal(err)
-			}
-		})
-	}
-}

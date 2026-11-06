@@ -6,9 +6,10 @@
 // style and XML version before the first write.
 //
 // StartDocument, StartElement and the Write methods emit content. EndElement
-// and EndDocument finish open structures. Errors are sticky: check Writer.Error
-// after a sequence of calls. A failed operation can leave partial output, and
-// the writer never closes the destination.
+// and EndDocument finish open structures. Destination errors are sticky: check
+// Writer.Error after a sequence of calls. Validation errors leave the writer
+// usable. A failed write can leave partial output, and the writer never closes
+// the destination.
 //
 // Writer retains open-element and namespace state, so memory use depends on
 // nesting and declarations. A Writer is not safe for concurrent use, and copies

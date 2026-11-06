@@ -12,6 +12,29 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Standard calls distinguish constructor/collection arities from callee and
+// diagnostic singleton fast paths. Diagnostic argument numbers are one-based.
+const (
+	qnameConstructorArity    = 1
+	currentDateTimeArity     = 0
+	collectionLookupArity    = 1
+	singleFunctionCallee     = 1
+	singleDiagnosticArgument = 1
+	functionArgumentOrigin   = 1
+	fnNameCurrentDateTime    = "current-dateTime"
+	mapLookupFunctionLabel   = "map lookup"
+	arrayLookupFunctionLabel = "array lookup"
+)
+
+// A map key must atomize to one value; probing two detects excess cardinality.
+// Capture analysis and each map value retain independent minimum logical work.
+const (
+	mapKeyCardinality         = 1
+	mapKeyAtomizationProbe    = 2
+	minimumClosureCaptureWork = 1
+	minimumMapValueWork       = 1
+)
+
 func evalFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e FunctionCall) (xdm.Sequence, error) {
 	args := make([]xdm.Sequence, len(e.Args))
 	hasPlaceholders := false
@@ -49,11 +72,11 @@ func evalFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 // callResolvedFunction coerces args to the declared parameter types of r and
 // calls it. args holds evaluated, enriched arguments and no placeholders.
 func callResolvedFunction(ctx context.Context, ec *evalContext, r resolvedFunction, args []xdm.Sequence, sourceArgs []Expr) (xdm.Sequence, error) {
-	if ec.version == 10 && r.isBuiltin {
+	if ec.version == xpathVersion10 && r.isBuiltin {
 		return callXPath10Builtin(ctx, ec, r, args)
 	}
 
-	if ec.version == 20 && r.isBuiltin && r.uri == NSXS && r.name == lexicon.TypeQName && len(args) == 1 {
+	if ec.version == xpathVersion20 && r.isBuiltin && r.uri == NSXS && r.name == lexicon.TypeQName && len(args) == qnameConstructorArity {
 		value, empty, err := atomizeConstructorArg(args[0], xdm.TypeQName)
 		if err != nil {
 			return nil, err
@@ -102,14 +125,14 @@ func lookupParamTypes(ec *evalContext, r resolvedFunction, arity int) ([]xdm.Seq
 }
 
 func resolvedFunctionSignature(ec *evalContext, r resolvedFunction, arity int) *functionSignature {
-	version := 0
+	version := xpathVersionDefault
 	if ec != nil {
 		version = ec.version
 	}
 
-	if r.isBuiltin && r.uri == NSFn && r.name == "current-dateTime" && arity == 0 && ec != nil && ec.xmlSchemaVersion == 10 {
+	if r.isBuiltin && r.uri == NSFn && r.name == fnNameCurrentDateTime && arity == currentDateTimeArity && ec != nil && ec.xmlSchemaVersion == schemaEdition10 {
 		// F&O permits xs:dateTime when XSD 1.1 datatypes are unavailable.
-		return lookupStandardSignature(20, sigKey{URI: NSFn, Name: r.name, Arity: arity})
+		return lookupStandardSignature(xpathVersion20, sigKey{URI: NSFn, Name: r.name, Arity: arity})
 	}
 
 	if r.isBuiltin {
@@ -135,7 +158,7 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 		return nil, err
 	}
 
-	if xdm.SequenceLen(funcSeq) != 1 {
+	if xdm.SequenceLen(funcSeq) != singleFunctionCallee {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "dynamic function call requires single function item"}
 	}
 
@@ -159,7 +182,7 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "partial application requires function item"}
 		}
 
-		if fi.Arity >= 0 && len(e.Args) != fi.Arity {
+		if fi.Arity >= finiteArityFloor && len(e.Args) != fi.Arity {
 			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, fi.Arity, len(e.Args)), lexicon.ErrXPTY0004, ec.version)
 		}
 
@@ -176,17 +199,17 @@ func evalDynamicFunctionCall(evalFn exprEvaluator, ctx context.Context, ec *eval
 
 	switch v := funcSeq.Get(0).(type) {
 	case xdm.FunctionItem:
-		if v.Arity >= 0 && len(args) != v.Arity {
+		if v.Arity >= finiteArityFloor && len(args) != v.Arity {
 			return nil, languageError(fmt.Errorf("%w: expected %d arguments, got %d", ErrArityMismatch, v.Arity, len(args)), lexicon.ErrXPTY0004, ec.version)
 		}
 
 		return v.Invoke(withDynamicCall(ec.fnContext(ctx)), args)
 	case xdm.MapItem:
 		// Maps are functions: $map($key) → value
-		return mapLookup(v, args)
+		return mapLookup(ec.fnContext(ctx), v, args)
 	case xdm.ArrayItem:
 		// Arrays are functions: $array($index) → member
-		return arrayLookup(v, args)
+		return arrayLookup(ec.fnContext(ctx), v, args)
 	default:
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("dynamic function call requires function item, got %T", funcSeq.Get(0))}
 	}
@@ -239,16 +262,16 @@ func asFunctionItem(item xdm.Item) (xdm.FunctionItem, bool) {
 		return v, true
 	case xdm.MapItem:
 		return xdm.FunctionItem{
-			Arity:      1,
+			Arity:      collectionLookupArity,
 			ParamTypes: []xdm.SequenceType{stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne)},
 			ReturnType: &resultType,
-			Invoke:     func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return mapLookup(v, args) },
+			Invoke:     func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return mapLookup(ctx, v, args) },
 		}, true
 	case xdm.ArrayItem:
 		return xdm.FunctionItem{
-			Arity:      1,
+			Arity:      collectionLookupArity,
 			ParamTypes: []xdm.SequenceType{stAtomic(xdm.TypeInteger, xdm.OccurrenceExactlyOne)}, ReturnType: &resultType,
-			Invoke: func(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return arrayLookup(v, args) },
+			Invoke: func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) { return arrayLookup(ctx, v, args) },
 		}, true
 	default:
 		return xdm.FunctionItem{}, false
@@ -256,52 +279,44 @@ func asFunctionItem(item xdm.Item) (xdm.FunctionItem, bool) {
 }
 
 // mapLookup implements the map-as-function call $map($key) → value.
-func mapLookup(m xdm.MapItem, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) != 1 || xdm.SequenceLen(args[0]) != 1 {
+func mapLookup(ctx context.Context, m xdm.MapItem, args []xdm.Sequence) (xdm.Sequence, error) {
+	if len(args) != collectionLookupArity {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map lookup requires exactly one argument"}
 	}
 
-	key, err := AtomizeItem(args[0].Get(0))
+	key, err := coerceFuncallArg(ctx, args[0], stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceExactlyOne), mapLookupFunctionLabel, 0, getFnContext(ctx))
 	if err != nil {
 		return nil, err
 	}
 
-	val, ok := m.Get(key)
-	if !ok {
-		return nil, nil
-	}
-
-	return val, nil
+	return fnMapGet(ctx, []xdm.Sequence{xdm.ItemSlice{m}, key})
 }
 
-// arrayLookup implements the array-as-function call $array($index) → member.
-func arrayLookup(a xdm.ArrayItem, args []xdm.Sequence) (xdm.Sequence, error) {
-	if len(args) != 1 || xdm.SequenceLen(args[0]) != 1 {
+// arrayLookup applies the same function conversion and bounded retrieval to raw
+// calls, partial applications and maps/arrays adapted for higher-order calls.
+func arrayLookup(ctx context.Context, a xdm.ArrayItem, args []xdm.Sequence) (xdm.Sequence, error) {
+	if len(args) != collectionLookupArity {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "array lookup requires exactly one argument"}
 	}
 
-	key, err := AtomizeItem(args[0].Get(0))
+	key, err := coerceFuncallArg(ctx, args[0], stAtomic(xdm.TypeInteger, xdm.OccurrenceExactlyOne), arrayLookupFunctionLabel, 0, getFnContext(ctx))
 	if err != nil {
 		return nil, err
 	}
 
-	if key.TypeName == xdm.TypeUntypedAtomic {
-		key, err = CastAtomic(key, xdm.TypeInteger)
-		if err != nil {
-			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "array lookup requires xs:integer index"}
-		}
-	}
-
-	if !xdm.IsIntegerDerived(key.TypeName) {
-		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "array lookup requires xs:integer index"}
-	}
-
-	idx, err := checkedArrayIndex(key)
+	idx, err := extractArrayIndex(key)
 	if err != nil {
 		return nil, err
 	}
 
-	return a.Get(idx)
+	value, err := a.GetView(idx)
+	if err != nil {
+		return nil, err
+	}
+
+	ec := getFnContext(ctx)
+
+	return appendBoundedClonedSeq(ctx, ec, nil, value, fnMaxNodes(ec))
 }
 
 func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionRef) (xdm.Sequence, error) {
@@ -320,7 +335,7 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	}
 
 	minArity := fn.MinArity()
-	ns, _ := resolvePrefix(ec, e.Prefix)
+	ns := r.uri
 	// Per XPath 3.1 Section 3.1.6: if the function is focus-dependent,
 	// the dynamic context (including focus) is fixed at reference creation time.
 	// Capture the evalContext snapshot for focus/variables, but use the caller's
@@ -344,8 +359,8 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 	// If so, create a function item that always raises the specified error.
 	if dr, ok := fn.(DynamicRefRestricted); ok && dr.NoDynamicRef() {
 		errCode := dr.DynRefErrorCode()
-		fnName := e.Name
-		ns, _ := resolvePrefix(ec, e.Prefix)
+		fnName := r.name
+		ns := r.uri
 		fi := xdm.FunctionItem{
 			Arity:      e.Arity,
 			ParamTypes: paramTypes, RepeatParamType: repeated, ReturnType: returnType,
@@ -361,7 +376,7 @@ func evalNamedFunctionRef(ctx context.Context, ec *evalContext, e NamedFunctionR
 
 	fi := xdm.FunctionItem{
 		Arity:           e.Arity,
-		Name:            e.Name,
+		Name:            r.name,
 		Namespace:       ns,
 		ParamTypes:      paramTypes,
 		RepeatParamType: repeated,
@@ -413,7 +428,7 @@ func evalInlineFunctionExpr(evalFn exprEvaluator, ctx context.Context, ec *evalC
 
 		collector.walkInlineFunction(definition)
 
-		if err := fnCountOps(ctx, ec, max(collector.visits, 1)); err != nil {
+		if err := fnCountOps(ctx, ec, max(collector.visits, minimumClosureCaptureWork)); err != nil {
 			return nil, err
 		}
 
@@ -611,9 +626,9 @@ func coerceFuncallArg(ctx context.Context, arg xdm.Sequence, st xdm.SequenceType
 			return nil, err
 		}
 
-		message := fmt.Sprintf("fn:%s: argument %d does not match required type %v", fnName, idx+1, st)
+		message := fmt.Sprintf("fn:%s: argument %d does not match required type %v", fnName, idx+functionArgumentOrigin, st)
 
-		if xdm.SequenceLen(arg) == 1 {
+		if xdm.SequenceLen(arg) == singleDiagnosticArgument {
 			if actual, atomic := arg.Get(0).(xdm.AtomicValue); atomic {
 				message += "; got " + actual.TypeName
 			}
@@ -627,6 +642,10 @@ func coerceFuncallArg(ctx context.Context, arg xdm.Sequence, st xdm.SequenceType
 
 func evalMapConstructorExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e MapConstructorExpr) (xdm.Sequence, error) {
 	maxNodes := ec.maxNodes
+	if maxNodes > disabledSequenceLimit && len(e.Pairs) > maxNodes {
+		return nil, ErrNodeSetLimit
+	}
+
 	entries := make([]xdm.MapEntry, 0, len(e.Pairs))
 
 	seen := make(map[xdm.MapKey]struct{}, len(e.Pairs))
@@ -640,12 +659,12 @@ func evalMapConstructorExpr(evalFn exprEvaluator, ctx context.Context, ec *evalC
 
 		if err := atomizeBounded(ctx, ec, keySeq, func(atom xdm.AtomicValue) (bool, error) {
 			keyAtoms = append(keyAtoms, atom)
-			return len(keyAtoms) < 2, nil
+			return len(keyAtoms) < mapKeyAtomizationProbe, nil
 		}); err != nil {
 			return nil, err
 		}
 
-		if len(keyAtoms) != 1 {
+		if len(keyAtoms) != mapKeyCardinality {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map key must atomize to a single atomic value"}
 		}
 
@@ -653,7 +672,7 @@ func evalMapConstructorExpr(evalFn exprEvaluator, ctx context.Context, ec *evalC
 		// Per XPath 3.1, duplicate keys in a map constructor raise XQDY0137
 		nk := xdm.NormalizeMapKey(ka)
 		if _, dup := seen[nk]; dup {
-			return nil, &xdm.Error{Code: "XQDY0137", Message: fmt.Sprintf("duplicate key in map constructor: %v", ka.Value)}
+			return nil, &xdm.Error{Code: errCodeXQDY0137, Message: fmt.Sprintf("duplicate key in map constructor: %v", ka.Value)}
 		}
 
 		seen[nk] = struct{}{}
@@ -668,11 +687,11 @@ func evalMapConstructorExpr(evalFn exprEvaluator, ctx context.Context, ec *evalC
 		// value is rejected here via the O(1) seqLen check instead of OOMing the
 		// engine when NewMap materializes it.
 		vLen := xdm.SequenceLen(valSeq)
-		if maxNodes > 0 && vLen > maxNodes {
+		if maxNodes > disabledSequenceLimit && vLen > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 
-		if err := fnCountOps(ctx, ec, max(vLen, 1)); err != nil {
+		if err := fnCountOps(ctx, ec, max(vLen, minimumMapValueWork)); err != nil {
 			return nil, err
 		}
 

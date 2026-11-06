@@ -71,10 +71,6 @@ func TestAVTCommentOnlyExpressions(t *testing.T) {
 	}
 }
 
-func stringItem(value string) xdm.AtomicValue {
-	return xdm.AtomicValue{TypeName: "xs:string", Value: value}
-}
-
 func TestSimpleContentNormalization(t *testing.T) {
 	t.Parallel()
 	doc := xdm.NewDefaultDocument()
@@ -179,4 +175,8 @@ func TestAVTContentCompatibility(t *testing.T) {
 			t.Fatalf("backwards=%v: %q, %v; want %q", test.backwards, got, err, test.want)
 		}
 	}
+}
+
+func stringItem(value string) xdm.AtomicValue {
+	return xdm.AtomicValue{TypeName: "xs:string", Value: value}
 }

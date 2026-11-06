@@ -12,12 +12,19 @@ import (
 	"github.com/skarm/xmlsec/internal/ecdsakey"
 )
 
+const (
+	maximumRSAKeyBits = 16384
+	// Smallest permitted odd RSA public exponent in the supported key profile.
+	minimumRSAExponent = 3
+	minimumRSAKeyBits  = 2048
+)
+
 // This package currently uses a fixed modern offline validation profile. It does
 // not inherit GODEBUG exceptions allowing SHA-1 or small RSA keys.
 func allowedPublicKey(key crypto.PublicKey) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		if k == nil || k.N == nil || k.N.BitLen() < 2048 || k.N.BitLen() > 16384 || k.E < 3 || k.E%2 == 0 {
+		if k == nil || k.N == nil || k.N.BitLen() < minimumRSAKeyBits || k.N.BitLen() > maximumRSAKeyBits || k.E < minimumRSAExponent || k.E%2 == 0 {
 			return fmt.Errorf("%w: RSA key strength", ErrPolicy)
 		}
 	case *ecdsa.PublicKey:

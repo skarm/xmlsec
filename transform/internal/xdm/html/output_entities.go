@@ -2,11 +2,6 @@
 
 package html
 
-const (
-	encISO88591    = "ISO-8859-1"
-	encWindows1252 = "Windows-1252"
-)
-
 func (d *htmlDumper) lookupEntityByRune(r rune) string {
 	if d.entities == nil {
 		d.entities = newHTMLEntityTable()

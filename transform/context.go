@@ -7,11 +7,46 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	lexicalpkg "github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
+
+// Go reports zone offsets in seconds; XML Schema implicit timezones use whole minutes with magnitude at most fourteen hours.
+const (
+	maximumImplicitTimezoneSeconds = 14 * 60 * 60
+)
+
+// DynamicContext supplies shared XPath and XSLT execution settings.
+// The current time and implicit timezone are fixed for each invocation.
+type DynamicContext struct {
+	// CurrentTime is shared by all current-date/time calls in one invocation.
+	// Zero samples the clock once at invocation start, in UTC.
+	CurrentTime time.Time
+	// ImplicitTimezone defaults to CurrentTime.Location(). Its offset at the
+	// invocation time must be a whole minute within -14 to +14 hours.
+	ImplicitTimezone *time.Location
+	// DefaultLanguage is an xs:language value; XML whitespace is collapsed.
+	// Empty selects the default language, en.
+	DefaultLanguage string
+	// TraceWriter receives XPath trace and XSLT trace output. Nil discards it.
+	// The caller owns the writer and synchronizes concurrent invocations.
+	TraceWriter io.Writer
+}
+
+// CollectionResolver supplies immutable collections and their member URIs.
+// Callbacks must honor context and support concurrent use. Empty URI identifies
+// the default collection; no implicit collection is provided by the engine.
+type CollectionResolver interface {
+	// ResolveCollection returns the members of collection(uri).
+	// An empty URI requests the default collection.
+	ResolveCollection(context.Context, string) (Sequence, error)
+	// ResolveURICollection returns the member URIs of uri-collection(uri).
+	// An empty URI requests the default URI collection.
+	ResolveURICollection(context.Context, string) ([]string, error)
+}
 
 func (e *Engine) xpathDecimalFormats(ctx context.Context, evaluator xpath.Evaluator, formats map[Name]map[string]string, version XPathVersion) (xpath.Evaluator, error) {
 	if len(formats) == 0 {
@@ -91,7 +126,7 @@ func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (co
 	}
 
 	_, offset := now.In(zone).Zone()
-	if offset%60 != 0 || offset < -14*60*60 || offset > 14*60*60 {
+	if offset%60 != 0 || offset < -maximumImplicitTimezoneSeconds || offset > maximumImplicitTimezoneSeconds {
 		return nil, ErrInput
 	}
 
@@ -112,15 +147,15 @@ func (e *Engine) collectionResolver() xpath.CollectionResolver {
 func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, error) {
 	format := xpath.DefaultDecimalFormat()
 	characters := map[string]*rune{
-		"decimal-separator":  &format.DecimalSeparator,
-		"grouping-separator": &format.GroupingSeparator,
-		"minus-sign":         &format.MinusSign,
-		"percent":            &format.Percent,
-		"per-mille":          &format.PerMille,
-		"zero-digit":         &format.ZeroDigit,
-		"digit":              &format.Digit,
-		"pattern-separator":  &format.PatternSeparator,
-		"exponent-separator": &format.ExponentSeparator,
+		lexicon.DecimalFormatDecimalSeparator:  &format.DecimalSeparator,
+		lexicon.DecimalFormatGroupingSeparator: &format.GroupingSeparator,
+		lexicon.DecimalFormatMinusSign:         &format.MinusSign,
+		lexicon.DecimalFormatPercent:           &format.Percent,
+		lexicon.DecimalFormatPerMille:          &format.PerMille,
+		lexicon.DecimalFormatZeroDigit:         &format.ZeroDigit,
+		lexicon.DecimalFormatDigit:             &format.Digit,
+		lexicon.DecimalFormatPatternSeparator:  &format.PatternSeparator,
+		lexicon.DecimalFormatExponentSeparator: &format.ExponentSeparator,
 	}
 
 	for property, v := range properties {
@@ -136,9 +171,9 @@ func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, erro
 			*character, _ = utf8.DecodeRuneInString(v)
 		} else {
 			switch property {
-			case "infinity":
+			case lexicon.DecimalFormatInfinity:
 				format.Infinity = v
-			case "NaN":
+			case lexicon.DecimalFormatNaN:
 				format.NaN = v
 			default:
 				return format, ErrInput
@@ -164,35 +199,6 @@ func xpathDecimalFormat(properties map[string]string) (xpath.DecimalFormat, erro
 	}
 
 	return format, nil
-}
-
-// DynamicContext supplies shared XPath and XSLT execution settings.
-// The current time and implicit timezone are fixed for each invocation.
-type DynamicContext struct {
-	// CurrentTime is shared by all current-date/time calls in one invocation.
-	// Zero samples the clock once at invocation start, in UTC.
-	CurrentTime time.Time
-	// ImplicitTimezone defaults to CurrentTime.Location(). Its offset at the
-	// invocation time must be a whole minute within -14 to +14 hours.
-	ImplicitTimezone *time.Location
-	// DefaultLanguage is an xs:language value; XML whitespace is collapsed.
-	// Empty selects the default language, en.
-	DefaultLanguage string
-	// TraceWriter receives XPath trace and XSLT trace output. Nil discards it.
-	// The caller owns the writer and synchronizes concurrent invocations.
-	TraceWriter io.Writer
-}
-
-// CollectionResolver supplies immutable collections and their member URIs.
-// Callbacks must honor context and support concurrent use. Empty URI identifies
-// the default collection; no implicit collection is provided by the engine.
-type CollectionResolver interface {
-	// ResolveCollection returns the members of collection(uri).
-	// An empty URI requests the default collection.
-	ResolveCollection(context.Context, string) (Sequence, error)
-	// ResolveURICollection returns the member URIs of uri-collection(uri).
-	// An empty URI requests the default URI collection.
-	ResolveURICollection(context.Context, string) ([]string, error)
 }
 
 type checkedTrace struct {

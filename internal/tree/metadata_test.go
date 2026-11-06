@@ -1,10 +1,73 @@
 package tree_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/tree"
 )
+
+func TestParserOwnsReusedAttributeTokens(t *testing.T) {
+	t.Parallel()
+	doc, err := tree.Parse(t.Context(), []byte(`<r xmlns:p="urn:outer" marker="root"><p:a p:first="1" b="2" c="3"/><n only="4"/><plain/><p:b xmlns:p="urn:inner" p:second="5" other="6"/><tail marker="last"/></r>`), tree.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := tree.Root(doc)
+	want := [][]tree.Attribute{
+		{{Name: tree.Name{Local: "marker"}, Value: "root"}},
+		{{Name: tree.Name{Space: "urn:outer", Local: "first"}, Prefix: "p", Value: "1"}, {Name: tree.Name{Local: "b"}, Value: "2"}, {Name: tree.Name{Local: "c"}, Value: "3"}},
+		{{Name: tree.Name{Local: "only"}, Value: "4"}},
+		{},
+		{{Name: tree.Name{Space: "urn:inner", Local: "second"}, Prefix: "p", Value: "5"}, {Name: tree.Name{Local: "other"}, Value: "6"}},
+		{{Name: tree.Name{Local: "marker"}, Value: "last"}},
+	}
+	nodes := append([]*tree.Node{root}, root.Children...)
+	if len(nodes) != len(want) {
+		t.Fatal("self-closing elements changed", len(nodes))
+	}
+	for i, node := range nodes {
+		if !slices.Equal(node.Attrs, want[i]) {
+			t.Fatalf("node %d attributes overwritten: got %+v; want %+v", i, node.Attrs, want[i])
+		}
+	}
+	if root.Children[0].Name.Space != "urn:outer" || root.Children[3].Name.Space != "urn:inner" || root.NS[0].URI != "urn:outer" {
+		t.Fatal("namespace token storage escaped into another element")
+	}
+}
+
+func TestParserOwnsReusedContentTokens(t *testing.T) {
+	t.Parallel()
+	doc, err := tree.Parse(t.Context(), []byte(`<r>first<!--one--><?p x?><a>inner</a>last<![CDATA[ tail]]><!--two--><?q y?></r>`), tree.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		kind tree.Kind
+		name string
+		data string
+	}{
+		{tree.TextNode, "", "first"},
+		{tree.CommentNode, "", "one"},
+		{tree.PINode, "p", "x"},
+		{tree.ElementNode, "a", ""},
+		{tree.TextNode, "", "last tail"},
+		{tree.CommentNode, "", "two"},
+		{tree.PINode, "q", "y"},
+	}
+	nodes := tree.Root(doc).Children
+	if len(nodes) != len(want) {
+		t.Fatal("token kinds or text coalescing changed", len(nodes))
+	}
+	for i, node := range nodes {
+		if node.Kind != want[i].kind || node.Name.Local != want[i].name || node.Data != want[i].data {
+			t.Fatalf("node %d changed after token reuse: %+v", i, node)
+		}
+	}
+	if got := nodes[3].Children; len(got) != 1 || got[0].Data != "inner" {
+		t.Fatal("child text changed after the next character token")
+	}
+}
 
 func TestDraftMetadataCloneIsolation(t *testing.T) {
 	root := &tree.Node{Kind: tree.ElementNode, Name: tree.Name{Local: "r"}, Attrs: []tree.Attribute{

@@ -56,7 +56,7 @@ func (p prefixValidationPlan) Validate(namespaces map[string]string, strict bool
 		}
 	}
 
-	if version == 20 {
+	if version == xpathVersion20 {
 		for _, literal := range p.qnameLiterals {
 			if err := validateLiteralQName(literal, namespaces, strict, decls); err != nil {
 				return err
@@ -104,7 +104,7 @@ func validateAtomicTypeRequirement(req atomicTypeRequirement, namespaces map[str
 
 	uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
 	if uri == lexicon.NamespaceXSD {
-		if knownXSTypeForVersion(local, version) && !isBuiltinListLocalName(local) && (version != 20 || local != lexicon.TypeError) {
+		if knownXSTypeForVersion(local, version) && !isBuiltinListLocalName(local) && (version != xpathVersion20 || local != lexicon.TypeError) {
 			return nil
 		}
 	} else if decls != nil {
@@ -197,11 +197,11 @@ func validateCastTarget(target AtomicTypeName, namespaces map[string]string, dec
 
 	uri := resolveStaticNameURI(lexical, namespaces, namespaces[""])
 	if uri == lexicon.NamespaceXSD {
-		if local == lexicon.TypeAnyAtomicType || local == lexicon.TypeNotation || local == lexicon.TypeAnySimpleType && version != 20 {
+		if local == lexicon.TypeAnyAtomicType || local == lexicon.TypeNotation || local == lexicon.TypeAnySimpleType && version != xpathVersion20 {
 			return &xdm.Error{Code: errCodeXPST0080, Message: "abstract cast target " + lexical}
 		}
 
-		if knownXSTypeForVersion(local, version) && (version != 20 || !isBuiltinListLocalName(local) && local != lexicon.TypeError) {
+		if knownXSTypeForVersion(local, version) && (version != xpathVersion20 || !isBuiltinListLocalName(local) && local != lexicon.TypeError) {
 			return nil
 		}
 	} else if decls != nil {
@@ -210,13 +210,13 @@ func validateCastTarget(target AtomicTypeName, namespaces map[string]string, dec
 		union := len(decls.UnionMemberTypes(name)) > 0
 
 		base := resolveToBuiltinBase(local, uri, decls)
-		if version != 20 && (list || union) || !list && !union && strings.HasPrefix(base, "xs:") && knownXSTypeNames(strings.TrimPrefix(base, "xs:")) {
+		if version != xpathVersion20 && (list || union) || !list && !union && strings.HasPrefix(base, lexicon.PrefixXS+":") && knownXSTypeNames(strings.TrimPrefix(base, lexicon.PrefixXS+":")) {
 			return nil
 		}
 	}
 
-	code := "XQST0052"
-	if version == 20 {
+	code := errCodeXQST0052
+	if version == xpathVersion20 {
 		code = errCodeXPST0051
 	}
 
@@ -226,7 +226,7 @@ func validateCastTarget(target AtomicTypeName, namespaces map[string]string, dec
 func knownXSTypeForVersion(local string, version int) bool {
 	// Earlier libraries use bare "numeric" only as signature shorthand;
 	// xs:numeric becomes an implicitly imported union type in F&O 3.1.
-	return knownXSTypeNames(local) && (local != lexicon.TypeNumeric || version == 0 || version >= 31)
+	return knownXSTypeNames(local) && (local != lexicon.TypeNumeric || version == xpathVersionDefault || version >= xpathVersion31)
 }
 
 func isBuiltinListLocalName(local string) bool {
@@ -237,7 +237,7 @@ func isBuiltinListLocalName(local string) bool {
 // for use in SequenceType (instance of, cast as, etc.).
 func knownXSTypeNames(key string) bool {
 	switch key {
-	case lexicon.TypeString, "integer", lexicon.TypeDecimal, "double", "float", fnNameBoolean, lexicon.TypeDate, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration, "anyURI", lexicon.TypeQName, lexicon.TypeBase64Binary, lexicon.TypeHexBinary, lexicon.TypeUntypedAtomic, lexicon.TypeAnyAtomicType, "long", "int", "short", "byte", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte", "nonNegativeInteger", "nonPositiveInteger", "positiveInteger", "negativeInteger", "normalizedString", "token", "language", lexicon.TypeName, "NCName", lexicon.TypeNMToken, lexicon.TypeENTITY, "ID", "IDREF", lexicon.TypeGDay, lexicon.TypeGMonth, lexicon.TypeGMonthDay, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeDateTimeStamp, lexicon.TypeError, lexicon.TypeNumeric, lexicon.TypeNotation, lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
+	case lexicon.TypeString, lexicon.TypeInteger, lexicon.TypeDecimal, lexicon.TypeDouble, lexicon.TypeFloat, lexicon.TypeBoolean, lexicon.TypeDate, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration, lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeBase64Binary, lexicon.TypeHexBinary, lexicon.TypeUntypedAtomic, lexicon.TypeAnyAtomicType, lexicon.TypeLong, lexicon.TypeInt, lexicon.TypeShort, lexicon.TypeByte, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt, lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte, lexicon.TypeNonNegativeInteger, lexicon.TypeNonPositiveInteger, lexicon.TypePositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeNormalizedString, lexicon.TypeToken, lexicon.TypeLanguage, lexicon.TypeName, lexicon.TypeNCName, lexicon.TypeNMToken, lexicon.TypeENTITY, lexicon.TypeID, lexicon.TypeIDREF, lexicon.TypeGDay, lexicon.TypeGMonth, lexicon.TypeGMonthDay, lexicon.TypeGYear, lexicon.TypeGYearMonth, lexicon.TypeDateTimeStamp, lexicon.TypeError, lexicon.TypeNumeric, lexicon.TypeNotation, lexicon.TypeNMTokens, lexicon.TypeIDREFS, lexicon.TypeENTITIES:
 		return true
 	}
 

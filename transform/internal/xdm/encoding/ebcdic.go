@@ -4,19 +4,23 @@
 package encoding
 
 import (
+	"fmt"
 	"unicode/utf8"
 
 	enc "golang.org/x/text/encoding"
 	"golang.org/x/text/transform"
 )
 
+// A single-byte code page has one mapping for every possible octet.
+const singleByteCodePageEntries = 256
+
 // cp1141Table maps IBM Code Page 1141 (EBCDIC Austria/Germany + euro)
 // byte values to Unicode code points. CP1141 is CP273 with the currency
 // sign (U+00A4) at position 0x9F replaced by the euro sign (U+20AC).
 //
 // Source: ibm-1141_P100-1997.ucm from unicode-org/icu-data.
-func cp1141Table() [256]rune {
-	return [256]rune{
+func cp1141Table() [singleByteCodePageEntries]rune {
+	return [singleByteCodePageEntries]rune{
 		// 0x00-0x0F
 		0x0000, 0x0001, 0x0002, 0x0003, 0x009C, 0x0009, 0x0086, 0x007F, 0x0097, 0x008D, 0x008E, 0x000B, 0x000C, 0x000D, 0x000E, 0x000F,
 		// 0x10-0x1F
@@ -66,7 +70,7 @@ func newCodePage1141() enc.Encoding {
 }
 
 type ebcdicEncoding struct {
-	forward [256]rune
+	forward [singleByteCodePageEntries]rune
 	reverse map[rune]byte
 }
 
@@ -80,7 +84,7 @@ func (e *ebcdicEncoding) NewEncoder() *enc.Encoder {
 
 type ebcdicDecoder struct {
 	transform.NopResetter
-	table *[256]rune
+	table *[singleByteCodePageEntries]rune
 }
 
 func (d *ebcdicDecoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
@@ -109,7 +113,7 @@ type ebcdicEncoder struct {
 func (e *ebcdicEncoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
 	for nSrc < len(src) {
 		r, size := utf8.DecodeRune(src[nSrc:])
-		if r == utf8.RuneError && size <= 1 {
+		if r == utf8.RuneError && size <= malformedUTF8Width {
 			if !atEOF && !utf8.FullRune(src[nSrc:]) {
 				err = transform.ErrShortSrc
 				return
@@ -123,7 +127,7 @@ func (e *ebcdicEncoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, 
 
 		b, ok := e.table[r]
 		if !ok {
-			b = 0x3F // EBCDIC question mark (substitution character)
+			return nDst, nSrc, fmt.Errorf("encoding: character %U cannot be represented in IBM1141", r)
 		}
 
 		dst[nDst] = b

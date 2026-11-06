@@ -40,9 +40,13 @@ type task struct {
 type answer struct {
 	Data          []byte                      `json:"data,omitempty"`
 	Valid         bool                        `json:"valid"`
-	Error         string                      `json:"error,omitempty"`
 	Report        *xmldsig.VerificationReport `json:"report,omitempty"`
 	ProviderCalls int                         `json:"provider_calls,omitempty"`
+}
+
+type reply struct {
+	answer
+	Error string `json:"error,omitempty"`
 }
 
 func main() {
@@ -59,7 +63,11 @@ func main() {
 			return
 		}
 
-		a, err := run(t)
+		a := reply{}
+
+		var err error
+
+		a.answer, err = run(t)
 		if err != nil {
 			a.Error = err.Error()
 		}

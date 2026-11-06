@@ -8,6 +8,7 @@ func NodeBase(d *Document, node *Node) string { return d.nodeBases[node] }
 // destination draft d. Callers must not mutate published snapshots.
 func CopyUnparsedEntities(d, source *Document) {
 	d.unparsedEntities = source.unparsedEntities
+	d.dtdInfo = source.dtdInfo
 }
 
 // SetNodeBase changes retrieval metadata on an internal draft. An empty base removes the

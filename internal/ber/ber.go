@@ -5,7 +5,27 @@ package ber
 import (
 	"bytes"
 	"context"
+	"encoding/asn1"
 	"errors"
+	"math"
+)
+
+// BER identifier and length octets. These are wire-format values; callers
+// supply independent work and content budgets through Limits.
+const (
+	constructedBit      = 0x20
+	highTagNumber       = 0x1f
+	base128Continuation = 0x80
+	base128PayloadMask  = 0x7f
+	base128Radix        = 128
+	maximumTagOctets    = 5
+	indefiniteLength    = 0x80
+	longLengthCountMask = 0x7f
+	maximumLengthOctets = 8
+	lengthOctetRadix    = 256
+	minimumHeaderBytes  = 2
+	endOfContentsBytes  = 2
+	constructedOctetTag = constructedBit | asn1.TagOctetString
 )
 
 // ErrSyntax reports malformed BER, including misplaced or missing EOC.
@@ -16,16 +36,25 @@ var ErrLimit = errors.New("BER limit exceeded")
 
 // Limits bounds a complete structural scan, with the root at depth one.
 type Limits struct {
+	// MaxBytes bounds the complete input encoding in bytes and must be positive.
 	MaxBytes int
+	// MaxDepth bounds ASN.1 nesting with the root at depth one.
 	MaxDepth int
+	// MaxNodes bounds the total number of scanned ASN.1 values.
 	MaxNodes int
 }
 
 // Value preserves the original tag, complete encoding, body and child order.
 type Value struct {
-	Tag      byte
-	Full     []byte
-	Body     []byte
+	// Tag retains the original single-octet ASN.1 tag.
+	Tag byte
+	// Full borrows the complete original encoding, including an indefinite value's
+	// end marker.
+	Full []byte
+	// Body borrows the value's content octets, excluding its outer end marker.
+	Body []byte
+	// Children preserves the scanned children of a constructed value in source
+	// order.
 	Children []Value
 }
 
@@ -77,7 +106,7 @@ func (s *berScanner) value(b []byte, depth int) (Value, int, error) {
 	}
 
 	v := Value{Tag: b[0]}
-	if indefinite && v.Tag&0x20 == 0 {
+	if indefinite && v.Tag&constructedBit == 0 {
 		return v, 0, ErrSyntax
 	}
 
@@ -87,14 +116,14 @@ func (s *berScanner) value(b []byte, depth int) (Value, int, error) {
 	}
 
 	at := header
-	if v.Tag&0x20 == 0 {
+	if v.Tag&constructedBit == 0 {
 		at = end
 	}
 
 	for at < end {
-		if indefinite && end-at >= 2 && b[at] == 0 && b[at+1] == 0 {
-			v.Body, v.Full = b[header:at], b[:at+2]
-			return v, at + 2, nil
+		if indefinite && end-at >= endOfContentsBytes && b[at] == 0 && b[at+1] == 0 {
+			v.Body, v.Full = b[header:at], b[:at+endOfContentsBytes]
+			return v, at + endOfContentsBytes, nil
 		}
 
 		child, used, err := s.value(b[at:end], depth+1)
@@ -123,13 +152,13 @@ func AppendOctets(ctx context.Context, value Value, dst *bytes.Buffer, maximum i
 	}
 
 	switch value.Tag {
-	case 4:
+	case asn1.TagOctetString:
 		if len(value.Body) > maximum-dst.Len() {
 			return ErrLimit
 		}
 
 		dst.Write(value.Body)
-	case 0x24:
+	case constructedOctetTag:
 		for _, child := range value.Children {
 			if err := AppendOctets(ctx, child, dst, maximum); err != nil {
 				return err
@@ -150,13 +179,13 @@ func OctetLength(ctx context.Context, value Value, maximum int) (int, error) {
 	}
 
 	switch value.Tag {
-	case 4:
+	case asn1.TagOctetString:
 		if len(value.Body) > maximum {
 			return 0, ErrLimit
 		}
 
 		return len(value.Body), nil
-	case 0x24:
+	case constructedOctetTag:
 		total := 0
 		for _, child := range value.Children {
 			size, err := OctetLength(ctx, child, maximum-total)
@@ -176,33 +205,35 @@ func OctetLength(ctx context.Context, value Value, maximum int) (int, error) {
 // BER permits nonminimal length octets; only the selected wrapper headers are
 // normalized. Opaque fields reach the strict DER parser with their original bytes.
 func berHeader(b []byte) (header, length int, indefinite bool, err error) {
-	if len(b) < 2 || b[0] == 0 {
+	// Universal tag zero is reserved for the primitive 00 00 terminator,
+	// consumed only by an indefinite parent's loop. It has no constructed form.
+	if len(b) < minimumHeaderBytes || b[0] == 0 || b[0] == constructedBit {
 		return 0, 0, false, ErrSyntax
 	}
 
 	at := 1
 
-	if b[0]&31 == 31 {
+	if b[0]&highTagNumber == highTagNumber {
 		tag := 0
 
 		for {
-			if at >= len(b) || at > 5 || at == 1 && b[at]&127 == 0 {
+			if at >= len(b) || at > maximumTagOctets || at == 1 && b[at]&base128PayloadMask == 0 {
 				return 0, 0, false, ErrSyntax
 			}
 
-			if tag > (0x7fffffff-int(b[at]&127))/128 {
+			if tag > (math.MaxInt32-int(b[at]&base128PayloadMask))/base128Radix {
 				return 0, 0, false, ErrSyntax
 			}
 
-			tag = tag*128 + int(b[at]&127)
+			tag = tag*base128Radix + int(b[at]&base128PayloadMask)
 
 			at++
-			if b[at-1]&128 == 0 {
+			if b[at-1]&base128Continuation == 0 {
 				break
 			}
 		}
 
-		if tag < 31 {
+		if tag < highTagNumber {
 			return 0, 0, false, ErrSyntax
 		}
 	}
@@ -214,23 +245,23 @@ func berHeader(b []byte) (header, length int, indefinite bool, err error) {
 	length = int(b[at])
 
 	at++
-	if length == 128 {
+	if length == indefiniteLength {
 		return at, 0, true, nil
 	}
 
-	if length > 128 {
-		count := length & 127
-		if count > 8 || count > len(b)-at {
+	if length > indefiniteLength {
+		count := length & longLengthCountMask
+		if count > maximumLengthOctets || count > len(b)-at {
 			return 0, 0, false, ErrSyntax
 		}
 
 		length = 0
 		for _, c := range b[at : at+count] {
-			if length > len(b)/256 {
+			if length > len(b)/lengthOctetRadix {
 				return 0, 0, false, ErrSyntax
 			}
 
-			length = length*256 + int(c)
+			length = length*lengthOctetRadix + int(c)
 		}
 
 		at += count

@@ -33,7 +33,9 @@ func TestResultsRetainTypesOrderAndOutputDefinitions(t *testing.T) {
 	}
 	secondary := r.Secondary()
 	value, err := secondary["https://result.test/secondary.json"].Single()
-	if err != nil || value.Kind() != transform.MapValue {
+	if err != nil {
+		t.Fatal(err)
+	} else if value.Kind() != transform.MapValue {
 		t.Fatal(value.Kind(), err)
 	}
 	delete(secondary, "https://result.test/secondary.json")
@@ -493,21 +495,6 @@ func TestWriterSerializationSupportsBufferedOptions(t *testing.T) {
 	}
 }
 
-func streamingResult(t *testing.T, input, output, body string) *transform.Result {
-	t.Helper()
-	e := newEngine(t, transform.Config{Limits: transform.Limits{MaxInputBytes: 16 << 20, MaxOutputBytes: 16 << 20, Timeout: time.Minute}})
-	s := compileSheet(t, e, `<xsl:output `+output+`/><xsl:template match="/">`+body+`</xsl:template>`)
-	d, err := e.ParseReader(t.Context(), strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := s.Execute(t.Context(), d, transform.XSLTContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
-}
-
 func TestSerializeBoundsCharacterMapExpansion(t *testing.T) {
 	e := newEngine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: 64 << 10}})
 	variables := transform.Bindings{
@@ -523,7 +510,7 @@ func TestSerializeBoundsCharacterMapExpansion(t *testing.T) {
 			// The requested expansion is 16 MiB; the invocation permits 64 KiB.
 			allocated := allocatedDuring(t, func() error {
 				got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: variables})
-				if !errors.Is(err, transform.ErrLimit) || got.Len() != 0 {
+				if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
 					return errors.New("serialization output budget was ignored")
 				}
 				return nil
@@ -554,4 +541,19 @@ func TestXSLTBoundsCharacterMapExpansion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func streamingResult(t *testing.T, input, output, body string) *transform.Result {
+	t.Helper()
+	e := newEngine(t, transform.Config{Limits: transform.Limits{MaxInputBytes: 16 << 20, MaxOutputBytes: 16 << 20, Timeout: time.Minute}})
+	s := compileSheet(t, e, `<xsl:output `+output+`/><xsl:template match="/">`+body+`</xsl:template>`)
+	d, err := e.ParseReader(t.Context(), strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Execute(t.Context(), d, transform.XSLTContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

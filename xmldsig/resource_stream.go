@@ -18,12 +18,18 @@ import (
 // Explicit external Manifest traversal also retains its bounded original bytes
 // until they can be authenticated and parsed in their own document scope.
 type referenceSource struct {
-	resolver        Resolver
-	uri             string
-	limits          ResourceLimits
-	rawDigest       []byte
+	// resolver reopens the explicitly authorized external resource.
+	resolver Resolver
+	// uri is the exact resolved URI passed to the resolver.
+	uri string
+	// limits retains the resource bounds used for verification and replay.
+	limits ResourceLimits
+	// rawDigest binds replay to the originally verified raw resource bytes.
+	rawDigest []byte
+	// captureManifest permits retaining bounded original Manifest bytes.
 	captureManifest bool
-	rawManifest     []byte
+	// rawManifest retains those original bytes when Manifest capture is enabled.
+	rawManifest []byte
 }
 
 func (s *referenceSource) write(ctx context.Context, dst io.Writer, ts []reference.Transform, opt reference.Options, remaining, resources *int) (*reference.Report, error) {

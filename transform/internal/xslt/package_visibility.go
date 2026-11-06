@@ -14,6 +14,13 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Acceptance and exposure selection distinguish absent declarations from
+// wildcard, declared-visibility and exact-name precedence tiers.
+const (
+	exposePriorityAbsent = -1
+	exposePriorityExact  = 3
+)
+
 // componentVisibility tracks the effective visibility of a component.
 // The default visibility for package components is "private" per XSLT 3.0 §3.6.1.
 // The default for stylesheet (non-package) components is "public".
@@ -85,8 +92,8 @@ func parseComponentRules(ctx context.Context, elem *xdm.Element, accept bool) ([
 		}
 	}
 
-	component := strings.Trim(getAttr(elem, xslAttrComponent), " \t\r\n")
-	visibility := strings.Trim(getAttr(elem, xslAttrVisibility), " \t\r\n")
+	component := strings.Trim(getAttr(elem, xslAttrComponent), lexicon.XMLWhitespace)
+	visibility := strings.Trim(getAttr(elem, xslAttrVisibility), lexicon.XMLWhitespace)
 
 	switch component {
 	case xslElemTemplate, xslElemFunction, xslElemVariable, xslElemAttributeSet, xslElemMode, xslWildcard:
@@ -136,6 +143,10 @@ func parseComponentRules(ctx context.Context, elem *xdm.Element, accept bool) ([
 }
 
 func resolveComponentReference(name, component string, elem *xdm.Element) (string, error) {
+	const (
+		wildcardProbeLocalName = "x"
+	)
+
 	base, arity, present := splitComponentArity(name)
 	if present {
 		if component != xslElemFunction || arity == "" {
@@ -170,7 +181,7 @@ func resolveComponentReference(name, component string, elem *xdm.Element) (strin
 			return xdm.ClarkName(ns[prefix], "*"), nil
 		}
 	case strings.HasPrefix(base, "Q{") && strings.HasSuffix(base, "}*"):
-		if isValidEQName(base[:len(base)-1] + "x") {
+		if isValidEQName(base[:len(base)-1] + wildcardProbeLocalName) {
 			return base[1:], nil
 		}
 	default:
@@ -209,7 +220,7 @@ func applyAcceptRules(compType, compName string, rules []acceptRule, declared st
 		bestVis = visPrivate
 	}
 
-	bestPriority := -1
+	bestPriority := exposePriorityAbsent
 
 	for _, rule := range rules {
 		if rule.component != xslWildcard && rule.component != compType || !componentNameMatches(compName, rule.names) || !isAcceptVisibilityCompatible(declared, rule.visibility) {
@@ -508,11 +519,15 @@ func (component exposedComponent) matches(rule acceptRule) bool {
 }
 
 func (component exposedComponent) exposedVisibility(ctx context.Context, rules []acceptRule) (string, bool, error) {
+	const (
+		exposePriorityDeclared = 2
+	)
+
 	visibility := component.declared
 
-	priority := -1
+	priority := exposePriorityAbsent
 	if visibility != "" {
-		priority = 2
+		priority = exposePriorityDeclared
 	} else {
 		visibility = visPrivate
 	}
@@ -533,7 +548,7 @@ func (component exposedComponent) exposedVisibility(ctx context.Context, rules [
 		candidate := componentRulePriority(rule.names)
 		if candidate >= priority {
 			priority, visibility = candidate, rule.visibility
-			explicit = candidate == 3
+			explicit = candidate == exposePriorityExact
 		}
 	}
 
@@ -550,15 +565,20 @@ func (component exposedComponent) exposedVisibility(ctx context.Context, rules [
 }
 
 func componentRulePriority(name string) int {
+	const (
+		exposePriorityPartialWildcard = 1
+		exposePriorityWildcard        = 0
+	)
+
 	if name == xslWildcard {
-		return 0
+		return exposePriorityWildcard
 	}
 
 	if isWildcard(name) {
-		return 1
+		return exposePriorityPartialWildcard
 	}
 
-	return 3
+	return exposePriorityExact
 }
 
 func collectOverrideBlockNames(block *xdm.Element, bindings map[string]string, excluded map[*xdm.Element]struct{}, names map[string]struct{}) {
@@ -579,6 +599,10 @@ func collectOverrideBlockNames(block *xdm.Element, bindings map[string]string, e
 }
 
 func overrideComponentKey(elem *xdm.Element, bindings map[string]string) string {
+	const (
+		componentArityFormat = "#%d"
+	)
+
 	kind := elem.LocalName()
 	switch kind {
 	case xslElemTemplate, xslElemVariable, xslElemParam, xslElemAttributeSet:
@@ -595,7 +619,7 @@ func overrideComponentKey(elem *xdm.Element, bindings map[string]string) string 
 	case xslElemFunction:
 		name := getAttr(elem, xslAttrName)
 		if name != "" {
-			return xslElemFunction + ":" + resolveQName(name, bindings) + fmt.Sprintf("#%d", overrideFunctionArity(elem))
+			return xslElemFunction + ":" + resolveQName(name, bindings) + fmt.Sprintf(componentArityFormat, overrideFunctionArity(elem))
 		}
 	}
 
@@ -709,5 +733,9 @@ func isWildcard(pattern string) bool {
 
 // functionVisKey creates a visibility map key for a function (name#arity).
 func functionVisKey(qn xpath.QualifiedName, arity int) string {
-	return fmt.Sprintf("{%s}%s#%d", qn.URI, qn.Name, arity)
+	const (
+		functionVisibilityKeyFormat = "{%s}%s#%d"
+	)
+
+	return fmt.Sprintf(functionVisibilityKeyFormat, qn.URI, qn.Name, arity)
 }

@@ -9,8 +9,19 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+)
+
+// Detached draft views retain storage ownership without occupying a child or
+// attribute position. Sibling selectors advance one slot in the requested direction.
+const (
+	detachedNodeSlot       = -1
+	detachedAttributeIndex = -1
+	nextSiblingStep        = 1
+	previousSiblingStep    = -1
+	attributeOwnerName     = "attribute-owner"
 )
 
 var nextNodeIdentity atomic.Uint64 //nolint:gochecknoglobals // Process-unique, non-retaining identities must survive node collection.
@@ -110,7 +121,7 @@ func CopyNode(src Node, d *Document) (Node, error) {
 	}
 
 	r := tree.Children(cp)[0]
-	if err = d.wrap(context.Background(), r, -1); err != nil {
+	if err = d.wrap(context.Background(), r, detachedNodeSlot); err != nil {
 		return nil, err
 	}
 
@@ -225,7 +236,7 @@ type sharedViewKey struct{}
 // NewDocument creates an empty mutable draft with explicit XML declaration metadata.
 func NewDocument(version, encoding string, standalone DocumentStandaloneType) *Document {
 	d := &Document{nodes: map[*tree.Node]Node{}, attrs: map[attrKey]*Attribute{}, ids: map[string]*Element{}, version: version, encoding: encoding, standalone: standalone}
-	d.nodeView = nodeView{raw: &tree.Node{Kind: tree.DocumentNode}, doc: d, slot: -1, kind: DocumentNode, self: d}
+	d.nodeView = nodeView{raw: &tree.Node{Kind: tree.DocumentNode}, doc: d, slot: detachedNodeSlot, kind: DocumentNode, self: d}
 	d.native = tree.FromNodes(nil, tree.DefaultLimits())
 
 	return d
@@ -254,7 +265,9 @@ func WrapDocument(ctx context.Context, d *tree.Document) (*Document, error) {
 
 // NewDefaultDocument creates an empty mutable XML 1.0 UTF-8 draft with implicit
 // standalone=no metadata.
-func NewDefaultDocument() *Document { return NewDocument("1.0", "UTF-8", StandaloneImplicitNo) }
+func NewDefaultDocument() *Document {
+	return NewDocument(lexicon.XMLVersion10, lexicon.EncodingUTF8U, StandaloneImplicitNo)
+}
 
 // CopyDoc clones tree storage and document metadata into a mutable independent
 // document.
@@ -339,7 +352,7 @@ func (d *Document) CreateElement(name string) (*Element, error) {
 	prefix, local := splitName(name)
 
 	r := &tree.Node{Kind: tree.ElementNode, Name: tree.Name{Local: local}, Prefix: prefix}
-	_ = d.wrap(context.Background(), r, -1)
+	_ = d.wrap(context.Background(), r, detachedNodeSlot)
 
 	return mustNode[*Element](d.nodes[r]), nil
 }
@@ -362,7 +375,7 @@ func (d *Document) CreateAttribute(name, value string, ns *Namespace) (*Attribut
 		return nil, tree.ErrMalformed
 	}
 
-	e, _ := d.CreateElement("attribute-owner")
+	e, _ := d.CreateElement(attributeOwnerName)
 
 	if ns == nil {
 		prefix, local := splitName(name)
@@ -392,7 +405,7 @@ func (d *Document) CreateNamespace(prefix, uri string) (*Namespace, error) {
 // CreateText stores immutable text without copying its bytes.
 func (d *Document) CreateText(value string) *Text {
 	r := &tree.Node{Kind: tree.TextNode, Data: value}
-	_ = d.wrap(context.Background(), r, -1)
+	_ = d.wrap(context.Background(), r, detachedNodeSlot)
 
 	return mustNode[*Text](d.nodes[r])
 }
@@ -400,7 +413,7 @@ func (d *Document) CreateText(value string) *Text {
 // CreateComment stores immutable text; serialization checks XML comment syntax.
 func (d *Document) CreateComment(value string) *Comment {
 	r := &tree.Node{Kind: tree.CommentNode, Data: value}
-	_ = d.wrap(context.Background(), r, -1)
+	_ = d.wrap(context.Background(), r, detachedNodeSlot)
 
 	return mustNode[*Comment](d.nodes[r])
 }
@@ -409,7 +422,7 @@ func (d *Document) CreateComment(value string) *Comment {
 // target and data syntax.
 func (d *Document) CreatePI(name, data string) *ProcessingInstruction {
 	r := &tree.Node{Kind: tree.PINode, Name: tree.Name{Local: name}, Data: data}
-	_ = d.wrap(context.Background(), r, -1)
+	_ = d.wrap(context.Background(), r, detachedNodeSlot)
 
 	return mustNode[*ProcessingInstruction](d.nodes[r])
 }
@@ -417,7 +430,7 @@ func (d *Document) CreatePI(name, data string) *ProcessingInstruction {
 // CreateCDATASection retains immutable text with a CDATA node identity.
 func (d *Document) CreateCDATASection(value string) *CDATASection {
 	r := &tree.Node{Kind: tree.TextNode, Data: value}
-	n := &CDATASection{raw: r, doc: d, slot: -1, kind: CDATASectionNode}
+	n := &CDATASection{raw: r, doc: d, slot: detachedNodeSlot, kind: CDATASectionNode}
 	n.self = n
 	d.nodes[r] = n
 
@@ -434,7 +447,7 @@ func (d *Document) SetURL(s string) { d.url = s }
 // Encoding returns the encoding metadata, defaulting to UTF-8 when empty.
 func (d *Document) Encoding() string {
 	if d.encoding == "" {
-		return "UTF-8"
+		return lexicon.EncodingUTF8U
 	}
 
 	return d.encoding
@@ -511,7 +524,7 @@ func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 		for i, a := range r.Attrs {
 			d.attribute(e, a.Name, i)
 
-			if tree.AttributeDTDType(d.native, r, a.Name) == tree.DTDID || a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+			if tree.AttributeDTDType(d.native, r, a.Name) == tree.DTDID || a.Name == (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrID}) {
 				d.ids[d.attrs[attrKey{r, a.Name}].Value()] = e
 			}
 		}
@@ -540,7 +553,7 @@ func (d *Document) adopt(n Node) {
 	d.nodes[n.view().raw] = n
 	if e, ok := n.(*Element); ok {
 		for i, entry := range e.raw.Attrs {
-			if entry.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+			if entry.Name == (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrID}) {
 				d.ids[xmlchar.CollapseSpace(entry.Value)] = e
 			}
 
@@ -576,53 +589,10 @@ func (d *Document) attribute(e *Element, name tree.Name, index int) {
 		return
 	}
 
-	a := &Attribute{raw: e.raw, doc: d, kind: AttributeNode, slot: -1, parent: e, key: name, owner: e, attributeIndex: index}
+	a := &Attribute{raw: e.raw, doc: d, kind: AttributeNode, slot: detachedNodeSlot, parent: e, key: name, owner: e, attributeIndex: index}
 	a.self = a
 	a.refreshXMLID()
 	d.attrs[key] = a
-}
-
-func copyIDProperties(source, destination Node) {
-	first, ok := source.(*Element)
-	if ok {
-		if second, ok := destination.(*Element); ok {
-			for _, attribute := range first.Attributes() {
-				if kind := attribute.IDType(); kind != UntypedAttribute {
-					if target := second.GetAttributeNodeNS(attribute.LocalName(), attribute.URI()); target != nil {
-						target.SetIDType(kind)
-					}
-				}
-			}
-		}
-	}
-
-	a, b := source.FirstChild(), destination.FirstChild()
-	for a != nil && b != nil {
-		copyIDProperties(a, b)
-		a, b = a.NextSibling(), b.NextSibling()
-	}
-}
-
-// Snapshot cloning preserves construction bases stored outside XML attributes.
-// Language copies into new parents apply their own inheritance rules separately.
-func copyDocumentBases(source, destination Node) {
-	destination.view().baseURI = source.view().baseURI
-	tree.SetNodeBase(destination.OwnerDocument().native, destination.view().raw, source.view().baseURI)
-
-	first, second := source.FirstChild(), destination.FirstChild()
-	for first != nil && second != nil {
-		copyDocumentBases(first, second)
-		first, second = first.NextSibling(), second.NextSibling()
-	}
-}
-
-func checkedDocumentView(v any) *Document {
-	d, ok := v.(*Document)
-	if !ok || d == nil {
-		panic("invalid internal snapshot view")
-	}
-
-	return d
 }
 
 type (
@@ -761,7 +731,7 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 	}
 
 	name := tree.Name{Space: uri, Local: local}
-	if uri == tree.XMLNamespace && local == "id" {
+	if uri == tree.XMLNamespace && local == lexicon.AttrID {
 		value = xmlchar.CollapseSpace(value)
 	}
 
@@ -779,7 +749,7 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 
 				e.doc.RegisterID(value, e)
 
-				if uri == tree.XMLNamespace && local == "id" {
+				if uri == tree.XMLNamespace && local == lexicon.AttrID {
 					view.xmlIDValue = value
 				}
 			}
@@ -791,7 +761,7 @@ func (e *Element) SetAttributeNS(local, value string, ns *Namespace) error {
 	e.raw.Attrs = append(e.raw.Attrs, tree.Attribute{Name: name, Prefix: prefix, Value: value})
 	e.doc.attribute(e, name, len(e.raw.Attrs)-1)
 
-	if uri == tree.XMLNamespace && local == "id" {
+	if uri == tree.XMLNamespace && local == lexicon.AttrID {
 		e.doc.RegisterID(value, e)
 	}
 
@@ -917,7 +887,7 @@ func (e *Element) RemoveAttributeNS(local, uri string) bool {
 
 			if view != nil {
 				view.detached = true
-				view.attributeIndex = -1
+				view.attributeIndex = detachedAttributeIndex
 			}
 
 			tree.SetAttributeDTDType(e.doc.native, e.raw, a.Name, tree.DTDNoType)
@@ -943,7 +913,7 @@ func (e *Element) FindAttribute(p AttributePredicate) (*Attribute, bool) {
 }
 
 func (e *Element) attributeValue(a tree.Attribute) string {
-	if a.Name == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+	if a.Name == (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrID}) {
 		return e.doc.attrs[attrKey{e.raw, a.Name}].Value()
 	}
 
@@ -985,7 +955,7 @@ func (a *Attribute) URI() string { return a.key.Space }
 // Value exposes the XDM-normalized xml:id while retaining the original snapshot
 // for references and export. Other attributes keep the XML parser's value.
 func (a *Attribute) Value() string {
-	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrID}) {
 		return a.xmlIDValue
 	}
 
@@ -1033,11 +1003,11 @@ func (a *Attribute) LastChild() Node { return nil }
 // IDType returns the retained ID or IDREF classification, recognizing xml:id
 // independently of DTD metadata.
 func (a *Attribute) IDType() AttributeIDType {
-	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrID}) {
 		return IDAttribute
 	}
 
-	if a.atype != 0 {
+	if a.atype != UntypedAttribute {
 		return a.atype
 	}
 
@@ -1080,7 +1050,7 @@ func (a *Attribute) SetIDType(t AttributeIDType) {
 }
 
 func (a *Attribute) refreshXMLID() {
-	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: "id"}) {
+	if a.key == (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrID}) {
 		a.xmlIDValue = xmlchar.CollapseSpace(a.entry().Value)
 	}
 }
@@ -1147,8 +1117,8 @@ func NewNamespace(prefix, uri string) *Namespace {
 // LookupNSByPrefix searches the node and its ancestors for a prefix binding. The xml
 // prefix always has its predefined binding.
 func LookupNSByPrefix(n Node, prefix string) *Namespace {
-	if prefix == "xml" {
-		return NewNamespace("xml", tree.XMLNamespace)
+	if prefix == lexicon.PrefixXML {
+		return NewNamespace(lexicon.PrefixXML, tree.XMLNamespace)
 	}
 
 	for ; n != nil; n = n.Parent() {
@@ -1238,7 +1208,7 @@ func NewNamespaceNodeWrapper(ns *Namespace, owner Node) *NamespaceNodeWrapper {
 		doc = owner.OwnerDocument()
 	}
 
-	n := &NamespaceNodeWrapper{doc: doc, kind: NamespaceNode, parent: owner, slot: -1, ns: ns}
+	n := &NamespaceNodeWrapper{doc: doc, kind: NamespaceNode, parent: owner, slot: detachedNodeSlot, ns: ns}
 	n.self = n
 
 	return n
@@ -1263,7 +1233,7 @@ func UnlinkNode(n MutableNode) {
 	}
 
 	p.view().raw.Children = slices.Delete(p.view().raw.Children, v.slot, v.slot+1)
-	v.slot = -1
+	v.slot = detachedNodeSlot
 	v.raw.Parent = nil
 	v.parent = nil
 
@@ -1379,7 +1349,7 @@ func NodeGetBase(doc *Document, n Node) string {
 		}
 
 		if e, ok := p.(*Element); ok {
-			if s, ok := e.GetAttributeNS("base", tree.XMLNamespace); ok {
+			if s, ok := e.GetAttributeNS(lexicon.AttrBase, tree.XMLNamespace); ok {
 				base = BuildURI(s, base)
 			}
 		}
@@ -1425,7 +1395,7 @@ func FilterChildren(n Node, keep func(Node) bool) {
 		if keep(child) {
 			out = append(out, r)
 		} else {
-			child.view().slot = -1
+			child.view().slot = detachedNodeSlot
 			r.Parent = nil
 		}
 	}
@@ -1434,6 +1404,22 @@ func FilterChildren(n Node, keep func(Node) bool) {
 	v.raw.Children = out
 
 	reindex(n)
+}
+
+// NodeIdentity returns a non-recycled number without retaining the node. Lazy
+// assignment is safe for shared immutable snapshots and survives node adoption.
+func NodeIdentity(n Node) uint64 {
+	nv := n.view()
+	if id := nv.identity.Load(); id != 0 {
+		return id
+	}
+
+	id := nextNodeIdentity.Add(1)
+	if nv.identity.CompareAndSwap(0, id) {
+		return id
+	}
+
+	return nv.identity.Load()
 }
 
 // Views are initialized in place; an assigned identity stays with its node.
@@ -1528,9 +1514,9 @@ func (nv *nodeView) LastChild() Node {
 	return nv.doc.nodes[nv.raw.Children[len(nv.raw.Children)-1]]
 }
 
-func (nv *nodeView) NextSibling() Node { return nv.sibling(1) }
+func (nv *nodeView) NextSibling() Node { return nv.sibling(nextSiblingStep) }
 
-func (nv *nodeView) PrevSibling() Node { return nv.sibling(-1) }
+func (nv *nodeView) PrevSibling() Node { return nv.sibling(previousSiblingStep) }
 
 func (nv *nodeView) AddChild(child Node) error {
 	if err := nv.mutable(); err != nil {
@@ -1781,20 +1767,47 @@ func (nv *nodeView) mutable() error {
 	return nil
 }
 
-// NodeIdentity returns a non-recycled number without retaining the node. Lazy
-// assignment is safe for shared immutable snapshots and survives node adoption.
-func NodeIdentity(n Node) uint64 {
-	nv := n.view()
-	if id := nv.identity.Load(); id != 0 {
-		return id
+func copyIDProperties(source, destination Node) {
+	first, ok := source.(*Element)
+	if ok {
+		if second, ok := destination.(*Element); ok {
+			for _, attribute := range first.Attributes() {
+				if kind := attribute.IDType(); kind != UntypedAttribute {
+					if target := second.GetAttributeNodeNS(attribute.LocalName(), attribute.URI()); target != nil {
+						target.SetIDType(kind)
+					}
+				}
+			}
+		}
 	}
 
-	id := nextNodeIdentity.Add(1)
-	if nv.identity.CompareAndSwap(0, id) {
-		return id
+	a, b := source.FirstChild(), destination.FirstChild()
+	for a != nil && b != nil {
+		copyIDProperties(a, b)
+		a, b = a.NextSibling(), b.NextSibling()
+	}
+}
+
+// Snapshot cloning preserves construction bases stored outside XML attributes.
+// Language copies into new parents apply their own inheritance rules separately.
+func copyDocumentBases(source, destination Node) {
+	destination.view().baseURI = source.view().baseURI
+	tree.SetNodeBase(destination.OwnerDocument().native, destination.view().raw, source.view().baseURI)
+
+	first, second := source.FirstChild(), destination.FirstChild()
+	for first != nil && second != nil {
+		copyDocumentBases(first, second)
+		first, second = first.NextSibling(), second.NextSibling()
+	}
+}
+
+func checkedDocumentView(v any) *Document {
+	d, ok := v.(*Document)
+	if !ok || d == nil {
+		panic("invalid internal snapshot view")
 	}
 
-	return nv.identity.Load()
+	return d
 }
 
 func reindex(p Node) {

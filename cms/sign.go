@@ -17,6 +17,11 @@ import (
 	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
+const (
+	signingAlgorithmIdentifierBytes = 4096
+	signingOutputChunkBytes         = 32 << 10
+)
+
 // Signer supplies a signing key, its matching certificate and additional signed
 // attributes.
 type Signer struct {
@@ -100,9 +105,9 @@ func SignReader(ctx context.Context, dst io.Writer, src io.Reader, signers []Sig
 		return 0, ErrPolicy
 	}
 
-	encoder := signedDataEncoder{contentType: ct, limits: l, certSeen: certificateSet{}, digestSeen: map[crypto.Hash]struct{}{}, version: 1}
+	encoder := signedDataEncoder{contentType: ct, limits: l, certSeen: certificateSet{}, digestSeen: map[crypto.Hash]struct{}{}, version: signedDataVersion1}
 	if !o.ContentType.Equal(oidData()) {
-		encoder.version = 3
+		encoder.version = signedDataVersion3
 	}
 
 	certificates, hashes, err := encoder.prepareSigners(ctx, signers)
@@ -231,15 +236,15 @@ func (e *signedDataEncoder) addSigner(ctx context.Context, s Signer, c *x509.Cer
 	}
 
 	// The IMPLICIT [0] tag preserves the authenticated SET length and contents.
-	signed[0] = 0xa0
+	signed[0] = encodedContext0Tag
 
 	sid, sidVersion, err := signerIdentifier(s, c)
 	if err != nil {
 		return err
 	}
 
-	if sidVersion == 3 {
-		e.version = 3
+	if sidVersion == signerSubjectKeyIDVersion {
+		e.version = signedDataVersion3
 	}
 
 	e.infos = append(e.infos, der.Seq(der.Int(sidVersion), sid, digestAI, signed, algAI, der.Octets(value)))
@@ -252,12 +257,12 @@ func (e *signedDataEncoder) addSigner(ctx context.Context, s Signer, c *x509.Cer
 }
 
 func (e *signedDataEncoder) signerCertificate(s Signer) (*x509.Certificate, error) {
-	if nilcheck.IsNil(s.Key) || len(s.CertificateDER) > 1<<20 || len(s.Attributes) > e.limits.MaxAttributes {
+	if nilcheck.IsNil(s.Key) || len(s.CertificateDER) > maximumCertificateBytes || len(s.Attributes) > e.limits.MaxAttributes {
 		return nil, ErrPolicy
 	}
 
 	c, err := x509cert.ParseDefault(bytes.Clone(s.CertificateDER))
-	if err != nil || c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 160 {
+	if err != nil || c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > maximumSerialBits {
 		return nil, ErrCertificate
 	}
 
@@ -281,8 +286,8 @@ func (e *signedDataEncoder) signedAttributes(s Signer, c *x509.Certificate, dige
 		attrs = append(attrs, a)
 	}
 
-	av, _ := der.Read(algAI, 4096)
-	protect := der.Seq(digestAI, der.Wrap(2, 1, true, av.Bytes))
+	av, _ := der.Read(algAI, signingAlgorithmIdentifierBytes)
+	protect := der.Seq(digestAI, der.Wrap(asn1.ClassContextSpecific, algorithmProtectionSignatureTag, true, av.Bytes))
 
 	attrs = append(attrs, Attribute{oidAlgorithmProtect(), [][]byte{protect}})
 	for _, a := range s.Attributes {
@@ -302,7 +307,7 @@ func (e *signedDataEncoder) addCertificates(ctx context.Context, extra [][]byte)
 			return err
 		}
 
-		if len(b) > 1<<20 {
+		if len(b) > maximumCertificateBytes {
 			return ErrPolicy
 		}
 
@@ -349,14 +354,14 @@ func (e *signedDataEncoder) encodeTo(dst io.Writer, o SignOptions) error {
 		return ErrPolicy
 	}
 	// ContentInfo, SignedData and EncapsulatedContentInfo nesting is definite-length.
-	for _, part := range [][]byte{der.Header(0x30, outerLength), oid, der.Header(0xa0, derSize(signedLength)), der.Header(0x30, signedLength), version, digests, der.Header(0x30, contentLength), e.contentType} {
+	for _, part := range [][]byte{der.Header(encodedSequenceTag, outerLength), oid, der.Header(encodedContext0Tag, derSize(signedLength)), der.Header(encodedSequenceTag, signedLength), version, digests, der.Header(encodedSequenceTag, contentLength), e.contentType} {
 		if err := writeDERPart(dst, part); err != nil {
 			return err
 		}
 	}
 
 	if !o.Detached {
-		for _, part := range [][]byte{der.Header(0xa0, derSize(len(e.content))), der.Header(4, len(e.content)), e.content} {
+		for _, part := range [][]byte{der.Header(encodedContext0Tag, derSize(len(e.content))), der.Header(asn1.TagOctetString, len(e.content)), e.content} {
 			if err := writeDERPart(dst, part); err != nil {
 				return err
 			}
@@ -364,7 +369,7 @@ func (e *signedDataEncoder) encodeTo(dst io.Writer, o SignOptions) error {
 	}
 
 	if !o.OmitCertificates {
-		if err := writeDERPart(dst, der.Header(0xa0, certificateLength)); err != nil {
+		if err := writeDERPart(dst, der.Header(encodedContext0Tag, certificateLength)); err != nil {
 			return err
 		}
 
@@ -375,7 +380,7 @@ func (e *signedDataEncoder) encodeTo(dst io.Writer, o SignOptions) error {
 		}
 	}
 
-	if err := writeDERPart(dst, der.Header(0x31, infosLength)); err != nil {
+	if err := writeDERPart(dst, der.Header(encodedSetTag, infosLength)); err != nil {
 		return err
 	}
 
@@ -454,21 +459,21 @@ func signerIdentifier(s Signer, c *x509.Certificate) ([]byte, int, error) {
 
 	sid := der.Seq(c.RawIssuer, serial)
 	if !s.SubjectKeyIdentifier {
-		return sid, 1, nil
+		return sid, signerIssuerSerialVersion, nil
 	}
 
-	if len(c.SubjectKeyId) < 1 || len(c.SubjectKeyId) > 128 {
+	if len(c.SubjectKeyId) < 1 || len(c.SubjectKeyId) > maximumSubjectKeyIDBytes {
 		return nil, 0, ErrCertificate
 	}
 
-	return der.Wrap(2, 0, false, c.SubjectKeyId), 3, nil
+	return der.Wrap(asn1.ClassContextSpecific, 0, false, c.SubjectKeyId), signerSubjectKeyIDVersion, nil
 }
 
 func derSize(length int) int { return len(der.Header(0, length)) + length }
 
 func writeDERPart(dst io.Writer, value []byte) error {
 	for len(value) > 0 {
-		chunk := value[:min(len(value), 32<<10)]
+		chunk := value[:min(len(value), signingOutputChunkBytes)]
 
 		n, err := dst.Write(chunk)
 		if err != nil {

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	prefixXades141             = "xades141"
+	prefixXAdES141             = "xades141"
 	qualifierOIDAsURI          = "OIDAsURI"
 	qualifierOIDAsURN          = "OIDAsURN"
 	attributeEncoding          = "Encoding"
@@ -254,18 +254,36 @@ func (r CertificateReference) URI() string { return r.uri }
 // grants no PKIX, timestamp, role, policy or legal trust. Closed enveloped APIs
 // retain their separate, stricter contracts.
 type BaselineResult struct {
+	// dataTimestamps retains signed data-timestamp bindings awaiting timestamp
+	// trust checks.
 	dataTimestamps []DataTimestamp
-	basic          *BasicResult
-	signingTime    string
-	certificates   []CertificateReference
-	data           []DataObjectFormat
-	place          *ProductionPlace
-	roles          []document.Element
+	// basic retains the authenticated signature, properties and certificate
+	// binding.
+	basic *BasicResult
+	// signingTime preserves the complete signed UTC lexical value without precision
+	// loss.
+	signingTime string
+	// certificates retains authenticated signing-certificate references without
+	// granting PKIX trust.
+	certificates []CertificateReference
+	// data retains signed data-object format claims and their reference bindings.
+	data []DataObjectFormat
+	// place retains the claimed signature production place, if present.
+	place *ProductionPlace
+	// roles retains signed claimed roles without authorizing those roles.
+	roles []document.Element
+	// certifiedRoles retains role certificates requiring independent validation.
 	certifiedRoles []document.Element
-	assertions     []document.Element
-	commitments    []CommitmentType
-	policy         *SignaturePolicy
-	unsigned       document.Element
+	// assertions retains signed assertion properties requiring independent
+	// validation.
+	assertions []document.Element
+	// commitments retains signed commitment-type claims.
+	commitments []CommitmentType
+	// policy retains the signed signature-policy claim.
+	policy *SignaturePolicy
+	// unsigned identifies unsigned properties; signature verification does not
+	// authenticate them.
+	unsigned document.Element
 }
 
 // Basic returns the authenticated common signature/property/certificate core
@@ -309,7 +327,7 @@ func (r *BaselineResult) UnsignedSignatureProperties() []document.Element {
 	}
 
 	for _, child := range r.unsigned.Children() {
-		if child.Name() == name("UnsignedSignatureProperties") {
+		if child.Name() == name(nameUnsignedSignatureProperties) {
 			return child.Children()
 		}
 	}

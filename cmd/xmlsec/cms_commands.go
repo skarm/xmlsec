@@ -11,6 +11,12 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+// The default content OID describes CMS data; signer-vector admission is counted before reading signer files.
+const (
+	cliDefaultCMSContentType = "1.2.840.113549.1.7.1"
+	cliMaxCMSSigners         = 16
+)
+
 func runCMS(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := args[0]
 	fs := flag.NewFlagSet("cms "+cmd, flag.ContinueOnError)
@@ -21,12 +27,12 @@ func runCMS(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	keyFile := fs.String("key", "", "single signer private key")
 	certFile := fs.String("certificate", "", "single signer certificate")
 	config := fs.String("signers", "", "trusted JSON signer array for multiple signers; paths relative to JSON")
-	hashName := fs.String("hash", "sha256", "signer digest hash")
+	hashName := fs.String("hash", cliDefaultHashName, "signer digest hash")
 	pss := fs.Bool("pss", false, "use fixed RSA-PSS for signing")
 	ski := fs.Bool("subject-key-identifier", false, "identify signer by certificate SKI")
 	detached := fs.Bool("detached", false, "create detached SignedData")
 	contentFile := fs.String("content", "", "exact detached content file for verification")
-	contentType := fs.String("content-type", "1.2.840.113549.1.7.1", "expected/created content type OID")
+	contentType := fs.String("content-type", cliDefaultCMSContentType, "expected/created content type OID")
 	extract := fs.String("extract", "", "write authenticated content to this local file after verification")
 	omitCerts := fs.Bool("omit-certificates", false, "omit embedded certificates when signing")
 	legacyESS := fs.Bool("allow-legacy-ess", false, "allow legacy ESS certificate binding when verifying")
@@ -208,7 +214,7 @@ func (c cmsCommand) signers(ctx context.Context) ([]cms.Signer, error) {
 		return nil, err
 	}
 
-	if len(specs) < 1 || len(specs) > 16 {
+	if len(specs) < 1 || len(specs) > cliMaxCMSSigners {
 		return nil, usageError("require 1..16 signers")
 	}
 
@@ -301,6 +307,10 @@ func (c cmsCommand) verify(ctx context.Context, container *cms.SignedData, opt c
 			}
 
 			if err := writeOutputContext(ctx, c.extract, stdout, result.Content()); err != nil {
+				return err
+			}
+
+			if err := separateOutput(c.extract, c.output, "extract"); err != nil {
 				return err
 			}
 		}

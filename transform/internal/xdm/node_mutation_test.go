@@ -9,44 +9,6 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-func newDraftElement(t *testing.T, d *xdm.Document, name string) *xdm.Element {
-	t.Helper()
-	e, err := d.CreateElement(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return e
-}
-
-func requireNodeSuccess(t *testing.T, errs ...error) {
-	t.Helper()
-	for index, err := range errs {
-		if err != nil {
-			t.Fatalf("node operation %d failed: %v", index+1, err)
-		}
-	}
-}
-
-func assertNodeChildren(t *testing.T, parent xdm.Node, want ...xdm.Node) {
-	t.Helper()
-	got := slices.Collect(xdm.Children(parent))
-	if !slices.Equal(got, want) {
-		t.Fatalf("children of %s=%v; want %v", parent.Name(), got, want)
-	}
-	for i, child := range got {
-		var prev, next xdm.Node
-		if i > 0 {
-			prev = got[i-1]
-		}
-		if i+1 < len(got) {
-			next = got[i+1]
-		}
-		if child.Parent() != parent || child.PrevSibling() != prev || child.NextSibling() != next {
-			t.Fatalf("child %d has stale parent/sibling links", i)
-		}
-	}
-}
-
 //nolint:tparallel // These rejection cases intentionally mutate and inspect the same draft graph in sequence.
 func TestNodeDraftRejectsCyclesAndInvalidChildrenWithoutDetaching(t *testing.T) {
 	t.Parallel()
@@ -308,5 +270,43 @@ func TestNodeDraftFrozenMutationsAndCopyOnAttach(t *testing.T) {
 	}
 	if namespace := xdm.LookupNSByPrefix(child, "p"); namespace == nil || namespace.URI() != "urn:source" {
 		t.Fatal("panicking frozen mutation changed source namespace")
+	}
+}
+
+func newDraftElement(t *testing.T, d *xdm.Document, name string) *xdm.Element {
+	t.Helper()
+	e, err := d.CreateElement(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func requireNodeSuccess(t *testing.T, errs ...error) {
+	t.Helper()
+	for index, err := range errs {
+		if err != nil {
+			t.Fatalf("node operation %d failed: %v", index+1, err)
+		}
+	}
+}
+
+func assertNodeChildren(t *testing.T, parent xdm.Node, want ...xdm.Node) {
+	t.Helper()
+	got := slices.Collect(xdm.Children(parent))
+	if !slices.Equal(got, want) {
+		t.Fatalf("children of %s=%v; want %v", parent.Name(), got, want)
+	}
+	for i, child := range got {
+		var prev, next xdm.Node
+		if i > 0 {
+			prev = got[i-1]
+		}
+		if i+1 < len(got) {
+			next = got[i+1]
+		}
+		if child.Parent() != parent || child.PrevSibling() != prev || child.NextSibling() != next {
+			t.Fatalf("child %d has stale parent/sibling links", i)
+		}
 	}
 }

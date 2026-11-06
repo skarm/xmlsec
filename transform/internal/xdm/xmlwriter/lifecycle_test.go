@@ -55,6 +55,51 @@ func TestDocumentDeclarationAndAutomaticConstructClosing(t *testing.T) {
 	}
 }
 
+func TestDocumentDeclarationSetsItsOwnCharacterPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, reuse := range []bool{false, true} {
+		var output strings.Builder
+		w := stream.NewWriter(&output).XMLVersion("1.1")
+		if reuse {
+			writeSteps(t, func() error { return w.StartDocument("1.1", "", "") }, func() error { return w.WriteElement("root", "\x01") }, w.EndDocument)
+			output.Reset()
+		}
+		writeSteps(t, func() error { return w.StartDocument("1.0", "", "") })
+		before := output.String()
+		if err := w.WriteElement("root", "\x01"); err == nil || output.String() != before {
+			t.Fatalf("XML 1.0 declaration retained XML 1.1 controls (reuse=%v): %q, %v", reuse, output.String(), err)
+		}
+		writeSteps(t, func() error { return w.WriteElement("root", "safe") }, w.EndDocument)
+		if output.String() != "<?xml version=\"1.0\"?>\n<root>safe</root>\n" {
+			t.Fatal("rejected control changed subsequent output", output.String())
+		}
+	}
+}
+
+func TestRejectedDocumentDeclarationPreservesCharacterPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, invalidEncoding := range []string{"bad encoding", "X-No-Such-Encoding"} {
+		var output strings.Builder
+		w := stream.NewWriter(&output)
+		if err := w.StartDocument("1.1", invalidEncoding, ""); err == nil || output.Len() != 0 {
+			t.Fatal("invalid encoding accepted", output.String(), err)
+		}
+		if err := w.WriteElement("root", "\x01"); err == nil || output.Len() != 0 {
+			t.Fatal("rejected XML 1.1 declaration changed the XML 1.0 policy", output.String(), err)
+		}
+		w = stream.NewWriter(&output).XMLVersion("1.1")
+		if err := w.StartDocument("1.0", invalidEncoding, ""); err == nil || output.Len() != 0 {
+			t.Fatal("invalid encoding accepted", output.String(), err)
+		}
+		writeSteps(t, func() error { return w.WriteElement("root", "\x01") })
+		if output.String() != "<root>&#1;</root>" {
+			t.Fatal("rejected XML 1.0 declaration changed the XML 1.1 policy", output.String())
+		}
+	}
+}
+
 func TestWriterQuoteEscapingRawOutputAndFullEnd(t *testing.T) {
 	t.Parallel()
 
@@ -198,5 +243,44 @@ func TestFlushFailureIsStickyAndDestinationRemainsBorrowed(t *testing.T) {
 	}
 	if dst.flushes != 1 || dst.closes != 0 || dst.String() != before {
 		t.Fatal("destination used after sticky failure or closed by borrower", dst.flushes, dst.closes, dst.String())
+	}
+}
+
+func TestStickyDestinationErrorsPrecedeEmptyNames(t *testing.T) {
+	t.Parallel()
+
+	for _, operation := range []struct {
+		name string
+		call func(*stream.Writer) error
+	}{
+		{"StartElement", func(w *stream.Writer) error { return w.StartElement("") }},
+		{"StartAttribute", func(w *stream.Writer) error { return w.StartAttribute("") }},
+		{"StartPI", func(w *stream.Writer) error { return w.StartPI("") }},
+		{"StartDTD", func(w *stream.Writer) error { return w.StartDTD("", "", "") }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			t.Parallel()
+
+			failure := errors.New("destination failed before empty name")
+			dst := &failingWriter{err: failure}
+			w := stream.NewWriter(dst)
+			if err := w.StartElement("root"); !errors.Is(err, failure) {
+				t.Fatal(err)
+			}
+			calls := dst.calls
+			if err := operation.call(&w); !errors.Is(err, failure) || dst.calls != calls || !errors.Is(w.Error(), failure) {
+				t.Fatalf("empty name replaced sticky failure or wrote again: %v, calls=%d; want %d", err, dst.calls, calls)
+			}
+
+			var healthyOutput strings.Builder
+			healthy := stream.NewWriter(&healthyOutput)
+			if err := operation.call(&healthy); err == nil || healthyOutput.Len() != 0 || healthy.Error() != nil {
+				t.Fatalf("healthy validation changed state/output: %v, %q, sticky=%v", err, healthyOutput.String(), healthy.Error())
+			}
+			writeSteps(t, func() error { return healthy.WriteElement("root", "safe") })
+			if healthyOutput.String() != "<root>safe</root>" {
+				t.Fatal("healthy writer did not recover", healthyOutput.String())
+			}
+		})
 	}
 }

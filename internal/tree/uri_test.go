@@ -7,16 +7,16 @@ import (
 )
 
 const (
-	name2         = "../"
-	name3         = "../../"
-	name4         = "../../../"
-	nameYes       = "..yes/"
-	nameYes2      = "/..yes/"
-	nameYes3      = "/yes/"
-	nameAB        = "a/b/"
-	uriHTTPABCDPQ = "http://a/b/c/d;p?q"
-	uriHTTPAG     = "http://a/g"
-	nameYes4      = "yes/"
+	parentPath                  = "../"
+	twoParentsPath              = "../../"
+	threeParentsPath            = "../../../"
+	dotPrefixedRelativePath     = "..yes/"
+	dotPrefixedAbsolutePath     = "/..yes/"
+	absoluteDirectoryPath       = "/yes/"
+	nestedRelativeDirectoryPath = "a/b/"
+	baseURIWithQuery            = "http://a/b/c/d;p?q"
+	resolvedRootURI             = "http://a/g"
+	relativeDirectoryPath       = "yes/"
 )
 
 // TestRemoveDotSegmentsAppendixA checks the private dot-segment primitive against
@@ -32,46 +32,46 @@ func TestRemoveDotSegmentsAppendixA(t *testing.T) {
 		{"no/..//.///pseudo-netpath/seg/file.ext", "pseudo-netpath/seg/file.ext"},
 		{"yes/no//..//.///pseudo-netpath/seg/file.ext", "yes/pseudo-netpath/seg/file.ext"},
 		{"no/../yes", "yes"},
-		{"no/../yes/", nameYes4},
-		{"no/../yes/no/..", nameYes4},
-		{"../../no/../..", name4},
-		{"no/../..", name2},
+		{"no/../yes/", relativeDirectoryPath},
+		{"no/../yes/no/..", relativeDirectoryPath},
+		{"../../no/../..", threeParentsPath},
+		{"no/../..", parentPath},
 		{"no/..", ""},
 		{"no/../", ""},
 		{"/a/b/c/./../../g", "/a/g"},
 		{"mid/content=5/../6", "mid/6"},
-		{"../../..", name4},
-		{"no/../../", name2},
+		{"../../..", threeParentsPath},
+		{"no/../../", parentPath},
 		{"..yes/..no/..no/..no/../../../..yes", "..yes/..yes"},
 		{"..yes/..no/..no/..no/../../../..yes/", "..yes/..yes/"},
-		{"../..", name3},
-		{name4, name4},
+		{"../..", twoParentsPath},
+		{threeParentsPath, threeParentsPath},
 		{".", ""},
 		{"./", ""},
 		{"./.", ""},
 		{"//no/..", "/"},
-		{"../../no/..", name3},
-		{"../../no/../", name3},
-		{"yes/no/../", nameYes4},
-		{"yes/no/no/../..", nameYes4},
-		{"yes/no/no/no/../../..", nameYes4},
+		{"../../no/..", twoParentsPath},
+		{"../../no/../", twoParentsPath},
+		{"yes/no/../", relativeDirectoryPath},
+		{"yes/no/no/../..", relativeDirectoryPath},
+		{"yes/no/no/no/../../..", relativeDirectoryPath},
 		{"yes/no/../yes/no/no/../..", "yes/yes/"},
 		{"yes/no/no/no/../../../yes", "yes/yes"},
 		{"yes/no/no/no/../../../yes/", "yes/yes/"},
 		{"/no/../", "/"},
-		{"/yes/no/../", nameYes3},
-		{"/yes/no/no/../..", nameYes3},
-		{"/yes/no/no/no/../../..", nameYes3},
-		{"../../..no/..", name3},
-		{"../../..no/../", name3},
-		{"..yes/..no/../", nameYes},
-		{"..yes/..no/..no/../..", nameYes},
-		{"..yes/...no/..no/..no/../../..", nameYes},
+		{"/yes/no/../", absoluteDirectoryPath},
+		{"/yes/no/no/../..", absoluteDirectoryPath},
+		{"/yes/no/no/no/../../..", absoluteDirectoryPath},
+		{"../../..no/..", twoParentsPath},
+		{"../../..no/../", twoParentsPath},
+		{"..yes/..no/../", dotPrefixedRelativePath},
+		{"..yes/..no/..no/../..", dotPrefixedRelativePath},
+		{"..yes/...no/..no/..no/../../..", dotPrefixedRelativePath},
 		{"..yes/..no/../..yes/..no/..no/../..", "..yes/..yes/"},
 		{"/..no/../", "/"},
-		{"/..yes/..no/../", nameYes2},
-		{"/..yes/..no/..no/../..", nameYes2},
-		{"/..yes/..no/..no/..no/../../..", nameYes2},
+		{"/..yes/..no/../", dotPrefixedAbsolutePath},
+		{"/..yes/..no/..no/../..", dotPrefixedAbsolutePath},
+		{"/..yes/..no/..no/..no/../../..", dotPrefixedAbsolutePath},
 		{"/", "/"},
 		{"/.", "/"},
 		{"/./", "/"},
@@ -86,8 +86,8 @@ func TestRemoveDotSegmentsAppendixA(t *testing.T) {
 		{"/./..", "/"},
 		{"/./.././..", "/"},
 		{"/./.././.././..", "/"},
-		{"..", name2},
-		{name2, name2},
+		{"..", parentPath},
+		{parentPath, parentPath},
 	}
 	for _, tt := range cases {
 		t.Run(tt.in, func(t *testing.T) {
@@ -104,26 +104,26 @@ func TestJoinURIReferences(t *testing.T) {
 		ref  string
 		want string
 	}{
-		{"abc/", name2, ""},
-		{name2, name2, name3},
-		{"..", "..", name3},
-		{uriHTTPABCDPQ, "g", "http://a/b/c/g"},
-		{uriHTTPABCDPQ, "./g", "http://a/b/c/g"},
-		{uriHTTPABCDPQ, "/g", uriHTTPAG},
-		{uriHTTPABCDPQ, "//g", "http://g"},
-		{uriHTTPABCDPQ, "?y", "http://a/b/c/d;p?y"},
-		{uriHTTPABCDPQ, "#s", uriHTTPABCDPQ},
-		{uriHTTPABCDPQ, "g?y#s", "http://a/b/c/g?y"},
-		{uriHTTPABCDPQ, "../../../g", uriHTTPAG},
-		{"http://a", "g", uriHTTPAG},
-		{"http://a/..", "g", uriHTTPAG},
+		{"abc/", parentPath, ""},
+		{parentPath, parentPath, twoParentsPath},
+		{"..", "..", twoParentsPath},
+		{baseURIWithQuery, "g", "http://a/b/c/g"},
+		{baseURIWithQuery, "./g", "http://a/b/c/g"},
+		{baseURIWithQuery, "/g", resolvedRootURI},
+		{baseURIWithQuery, "//g", "http://g"},
+		{baseURIWithQuery, "?y", "http://a/b/c/d;p?y"},
+		{baseURIWithQuery, "#s", baseURIWithQuery},
+		{baseURIWithQuery, "g?y#s", "http://a/b/c/g?y"},
+		{baseURIWithQuery, "../../../g", resolvedRootURI},
+		{"http://a", "g", resolvedRootURI},
+		{"http://a/..", "g", resolvedRootURI},
 		{"foo", "bar", "bar"},
-		{nameAB, "%2e%2e/c", "a/b/%2e%2e/c"},
+		{nestedRelativeDirectoryPath, "%2e%2e/c", "a/b/%2e%2e/c"},
 		{"a/b/?x", "?", "a/b/?"},
-		{nameAB, "urn:test:thing", "urn:test:thing"},
-		{nameAB, "http://z/x//y/../", "http://z/x/"},
+		{nestedRelativeDirectoryPath, "urn:test:thing", "urn:test:thing"},
+		{nestedRelativeDirectoryPath, "http://z/x//y/../", "http://z/x/"},
 		{"a/", "//host/x//y", "//host/x/y"},
-		{nameAB, "x//y", "a/b/x/y"},
+		{nestedRelativeDirectoryPath, "x//y", "a/b/x/y"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.base+"+"+tt.ref, func(t *testing.T) {

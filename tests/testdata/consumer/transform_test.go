@@ -453,3 +453,43 @@ func (e readerReferenceExtension) WriteTransform(ctx context.Context, w io.Write
 	_, err := io.Copy(w, r)
 	return err
 }
+
+func TestPublicXMLScopeLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name, xml string
+		limits    transform.Limits
+		reject    bool
+	}{
+		{"attribute policy", `<r a="1" b="2"/>`, transform.Limits{MaxAttributesPerElement: 1}, true},
+		{"attribute exact", `<r a="1" b="2"/>`, transform.Limits{MaxAttributesPerElement: 2}, false},
+		{"namespace policy", `<r xmlns:p="urn:p"/>`, transform.Limits{MaxInScopeNamespaces: 1}, true},
+		{"namespace exact", `<r xmlns:p="urn:p"/>`, transform.Limits{MaxInScopeNamespaces: 2}, false},
+		{"old custom limits", `<r xmlns:p="urn:p" a="1" b="2"/>`, transform.Limits{MaxInputBytes: 1024}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := newEngine(t, transform.Config{Limits: tc.limits})
+			result, err := engine.ParseReader(t.Context(), strings.NewReader(tc.xml))
+			if tc.reject {
+				if result != nil || !errors.Is(err, transform.ErrLimit) || !errors.Is(err, document.ErrLimit) {
+					t.Fatal("public reader lost XML policy", result, err)
+				}
+			} else if err != nil || result == nil {
+				t.Fatal(result, err)
+			}
+			snapshot, err := document.Parse(t.Context(), []byte(tc.xml), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			imported, err := engine.Import(t.Context(), snapshot)
+			if tc.reject {
+				if imported != nil || !errors.Is(err, transform.ErrLimit) || !errors.Is(err, document.ErrLimit) {
+					t.Fatal("public import lost XML policy", imported, err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			} else if exported, err := engine.Export(t.Context(), imported); err != nil || exported != snapshot {
+				t.Fatal("snapshot identity changed", err)
+			}
+		})
+	}
+}

@@ -11,36 +11,54 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Math namespace dispatch uses standard function local names, without prefixes.
+const (
+	fnNameMathPi    = "pi"
+	fnNameMathExp   = "exp"
+	fnNameMathExp10 = "exp10"
+	fnNameMathLog   = "log"
+	fnNameMathLog10 = "log10"
+	fnNameMathPow   = "pow"
+	fnNameMathSqrt  = "sqrt"
+	fnNameMathSin   = "sin"
+	fnNameMathCos   = "cos"
+	fnNameMathTan   = "tan"
+	fnNameMathAsin  = "asin"
+	fnNameMathAcos  = "acos"
+	fnNameMathAtan  = "atan"
+	fnNameMathAtan2 = "atan2"
+)
+
 func lookupFunctionsMath(name string) (*builtinFunc, bool) {
 	switch name {
-	case "pi":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnMathPi}, true
-	case "exp":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathExp}, true
-	case "exp10":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathExp10}, true
-	case "log":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathLog}, true
-	case "log10":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathLog10}, true
-	case "pow":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMathPow}, true
-	case "sqrt":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathSqrt}, true
-	case "sin":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathSin}, true
-	case "cos":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathCos}, true
-	case "tan":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathTan}, true
-	case "asin":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathAsin}, true
-	case "acos":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathAcos}, true
-	case "atan":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMathAtan}, true
-	case "atan2":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMathAtan2}, true
+	case fnNameMathPi:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnMathPi}, true
+	case fnNameMathExp:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathExp}, true
+	case fnNameMathExp10:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathExp10}, true
+	case fnNameMathLog:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathLog}, true
+	case fnNameMathLog10:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathLog10}, true
+	case fnNameMathPow:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMathPow}, true
+	case fnNameMathSqrt:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathSqrt}, true
+	case fnNameMathSin:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathSin}, true
+	case fnNameMathCos:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathCos}, true
+	case fnNameMathTan:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathTan}, true
+	case fnNameMathAsin:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathAsin}, true
+	case fnNameMathAcos:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathAcos}, true
+	case fnNameMathAtan:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMathAtan}, true
+	case fnNameMathAtan2:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMathAtan2}, true
 	}
 
 	return nil, false
@@ -85,7 +103,10 @@ func fnMathExp(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 }
 
 func fnMathExp10(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return mathUnary(ctx, args, func(x float64) float64 { return math.Pow(10, x) })
+	// This function raises decimal base ten to its argument.
+	const mathDecimalExponentBase = 10
+
+	return mathUnary(ctx, args, func(x float64) float64 { return math.Pow(mathDecimalExponentBase, x) })
 }
 
 func fnMathLog(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -136,6 +157,14 @@ func fnMathPow(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 // F&O 4.8.6 without first rounding the exponent to xs:double. The wider working
 // precision also avoids accumulating binary64 rounding at every multiplication.
 func mathIntegerPower(ctx context.Context, base float64, exponent *big.Int) (float64, error) {
+	// Working precision is in bits; surrogate exponents retain odd/even signs
+	// for zero, infinite and unit bases without converting the full exponent.
+	const (
+		mathIntegerPowerPrecision = 256
+		mathOddExponentSurrogate  = 1
+		mathEvenExponentSurrogate = 2.0
+	)
+
 	if err := fnCountOp(ctx, getFnContext(ctx)); err != nil {
 		return 0, err
 	}
@@ -150,9 +179,9 @@ func mathIntegerPower(ctx context.Context, base float64, exponent *big.Int) (flo
 	}
 
 	if base == 0 || math.IsInf(base, 0) || math.Abs(base) == 1 {
-		surrogate := 2.0
+		surrogate := mathEvenExponentSurrogate
 		if negative {
-			surrogate = 1
+			surrogate = mathOddExponentSurrogate
 		}
 
 		if exponent.Sign() < 0 {
@@ -162,13 +191,13 @@ func mathIntegerPower(ctx context.Context, base float64, exponent *big.Int) (flo
 		return math.Pow(base, surrogate), nil
 	}
 
-	if err := preflightNumeric(ctx, exponent.BitLen(), 256); err != nil {
+	if err := preflightNumeric(ctx, exponent.BitLen(), mathIntegerPowerPrecision); err != nil {
 		return 0, err
 	}
 
 	magnitude := new(big.Int).Abs(exponent)
-	factor := new(big.Float).SetPrec(256).SetFloat64(math.Abs(base))
-	result := new(big.Float).SetPrec(256).SetInt64(1)
+	factor := new(big.Float).SetPrec(mathIntegerPowerPrecision).SetFloat64(math.Abs(base))
+	result := new(big.Float).SetPrec(mathIntegerPowerPrecision).SetInt64(1)
 
 	if exponent.Sign() < 0 {
 		factor.Quo(result, factor)

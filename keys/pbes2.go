@@ -13,6 +13,22 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
+// AlgorithmIdentifier has an OID and optional parameters. Key-structure and
+// password-encryption parsers share these ASN.1 cardinalities.
+const (
+	algorithmIdentifierMinimumFields = 1
+	algorithmIdentifierMaximumFields = 2
+)
+
+const (
+	aes128KeyBytes        = 16
+	aes192KeyBytes        = 24
+	aes256KeyBytes        = 32
+	defaultPBES2SaltBytes = 16
+	// Caps chunks emitted by key/container exporters, in bytes.
+	exportChunkBytes = 32 << 10
+)
+
 type pbes2Parameters struct {
 	hash       crypto.Hash
 	salt       []byte
@@ -22,17 +38,17 @@ type pbes2Parameters struct {
 }
 
 func algorithm(v asn1.RawValue) (asn1.ObjectIdentifier, asn1.RawValue, error) {
-	f, err := der.Sequence(v, 1, 2)
+	f, err := der.Sequence(v, algorithmIdentifierMinimumFields, algorithmIdentifierMaximumFields)
 	if err != nil {
 		return nil, asn1.RawValue{}, ErrFormat
 	}
 
 	var oid asn1.ObjectIdentifier
-	if !der.Is(f[0], 0, asn1.TagOID, false) || der.Decode(f[0], &oid) != nil {
+	if !der.Is(f[0], asn1.ClassUniversal, asn1.TagOID, false) || der.Decode(f[0], &oid) != nil {
 		return nil, asn1.RawValue{}, ErrFormat
 	}
 
-	if len(f) == 1 {
+	if len(f) == algorithmIdentifierMinimumFields {
 		return oid, asn1.RawValue{}, nil
 	}
 
@@ -49,7 +65,7 @@ func parseHMACHash(v asn1.RawValue, legacy bool) (crypto.Hash, error) {
 		return 0, err
 	}
 
-	if len(param.FullBytes) > 0 && !der.Is(param, 0, asn1.TagNull, false) {
+	if len(param.FullBytes) > 0 && !der.Is(param, asn1.ClassUniversal, asn1.TagNull, false) {
 		return 0, ErrFormat
 	}
 
@@ -80,7 +96,7 @@ func hmacOID(h crypto.Hash) asn1.ObjectIdentifier {
 
 func integer(v asn1.RawValue) (int, error) {
 	var n int
-	if !der.Is(v, 0, asn1.TagInteger, false) || der.Decode(v, &n) != nil {
+	if !der.Is(v, asn1.ClassUniversal, asn1.TagInteger, false) || der.Decode(v, &n) != nil {
 		return 0, ErrFormat
 	}
 
@@ -88,6 +104,9 @@ func integer(v asn1.RawValue) (int, error) {
 }
 
 func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parameters, error) {
+	// PBKDF2-params has two required and two optional fields.
+	const maximumPBKDF2Fields = 4
+
 	oid, params, err := algorithm(v)
 	if err != nil {
 		return pbes2Parameters{}, err
@@ -97,13 +116,13 @@ func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parame
 		return pbes2Parameters{}, ErrPolicy
 	}
 
-	f, err := der.Sequence(params, 2, 4)
-	if err != nil || !der.Is(f[0], 0, asn1.TagOctetString, false) {
+	f, err := der.Sequence(params, 2, maximumPBKDF2Fields)
+	if err != nil || !der.Is(f[0], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		return pbes2Parameters{}, ErrFormat
 	}
 
 	p := pbes2Parameters{salt: f[0].Bytes, keyBytes: expectedSize, hash: crypto.SHA1}
-	if len(p.salt) < 8 || len(p.salt) > 64 {
+	if len(p.salt) < minimumSaltBytes || len(p.salt) > maximumSaltBytes {
 		return p, ErrPolicy
 	}
 
@@ -113,7 +132,7 @@ func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parame
 	}
 
 	at := 2
-	if at < len(f) && der.Is(f[at], 0, asn1.TagInteger, false) {
+	if at < len(f) && der.Is(f[at], asn1.ClassUniversal, asn1.TagInteger, false) {
 		n, err := integer(f[at])
 		if err != nil || n < 1 {
 			return p, ErrFormat
@@ -121,7 +140,7 @@ func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parame
 
 		// PBES2 fixes the key size through its cipher. RFC 9879 only recommends
 		// matching the MAC size; another explicitly encoded bounded size is valid.
-		if n > 64 || !requiredSize && n != expectedSize {
+		if n > maximumDerivedKeyBytes || !requiredSize && n != expectedSize {
 			return p, ErrPolicy
 		}
 
@@ -148,6 +167,8 @@ func parseKDF(v asn1.RawValue, expectedSize int, requiredSize bool) (pbes2Parame
 }
 
 func parsePBES2(v asn1.RawValue) (pbes2Parameters, error) {
+	const pbes2ParameterFields = 2 // key derivation and encryption scheme
+
 	oid, params, err := algorithm(v)
 	if err != nil {
 		return pbes2Parameters{}, err
@@ -157,7 +178,7 @@ func parsePBES2(v asn1.RawValue) (pbes2Parameters, error) {
 		return pbes2Parameters{}, ErrPolicy
 	}
 
-	f, err := der.Sequence(params, 2, 2)
+	f, err := der.Sequence(params, pbes2ParameterFields, pbes2ParameterFields)
 	if err != nil {
 		return pbes2Parameters{}, ErrFormat
 	}
@@ -171,16 +192,16 @@ func parsePBES2(v asn1.RawValue) (pbes2Parameters, error) {
 
 	switch {
 	case enc.Equal(oidAES128CBC()):
-		size = 16
+		size = aes128KeyBytes
 	case enc.Equal(oidAES192CBC()):
-		size = 24
+		size = aes192KeyBytes
 	case enc.Equal(oidAES256CBC()):
-		size = 32
+		size = aes256KeyBytes
 	default:
 		return pbes2Parameters{}, ErrPolicy
 	}
 
-	if !der.Is(iv, 0, asn1.TagOctetString, false) || len(iv.Bytes) != aes.BlockSize {
+	if !der.Is(iv, asn1.ClassUniversal, asn1.TagOctetString, false) || len(iv.Bytes) != aes.BlockSize {
 		return pbes2Parameters{}, ErrFormat
 	}
 
@@ -253,7 +274,7 @@ func decryptPBES2(state *passwordState, algorithm asn1.RawValue, encrypted []byt
 }
 
 func kdfEncoding(salt []byte, iterations, size int, hash crypto.Hash) []byte {
-	params := der.Seq(der.Octets(salt), der.Int(iterations), der.Int(size), der.Seq(der.OID(hmacOID(hash)), []byte{5, 0}))
+	params := der.Seq(der.Octets(salt), der.Int(iterations), der.Int(size), der.Seq(der.OID(hmacOID(hash)), []byte{asn1.TagNull, 0}))
 	return der.Seq(der.OID(oidPBKDF2()), params)
 }
 
@@ -267,7 +288,7 @@ func encryptPBES2Parts(state *passwordState, plain derParts, options EncryptionO
 		return nil, nil, ErrLimit
 	}
 
-	salt, iv := make([]byte, 16), make([]byte, 16)
+	salt, iv := make([]byte, defaultPBES2SaltBytes), make([]byte, aes.BlockSize)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, nil, err
 	}
@@ -276,7 +297,7 @@ func encryptPBES2Parts(state *passwordState, plain derParts, options EncryptionO
 		return nil, nil, err
 	}
 
-	key, err := state.derive(options.Hash, salt, options.Iterations, options.KeyBits/8)
+	key, err := state.derive(options.Hash, salt, options.Iterations, options.KeyBits/bitsPerOctet)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -307,13 +328,13 @@ func encryptPBES2Parts(state *passwordState, plain derParts, options EncryptionO
 	oid := oidAES256CBC()
 
 	switch options.KeyBits {
-	case 128:
+	case aes128KeyBits:
 		oid = oidAES128CBC()
-	case 192:
+	case aes192KeyBits:
 		oid = oidAES192CBC()
 	}
 
-	params := der.Seq(kdfEncoding(salt, options.Iterations, options.KeyBits/8, options.Hash), der.Seq(der.OID(oid), der.Octets(iv)))
+	params := der.Seq(kdfEncoding(salt, options.Iterations, options.KeyBits/bitsPerOctet, options.Hash), der.Seq(der.OID(oid), der.Octets(iv)))
 
 	return der.Seq(der.OID(oidPBES2()), params), out, nil
 }
@@ -324,7 +345,7 @@ func cryptCBC(ctx context.Context, mode cipher.BlockMode, dst, src []byte) error
 			return err
 		}
 
-		size := min(len(src), 32<<10)
+		size := min(len(src), exportChunkBytes)
 		mode.CryptBlocks(dst[:size], src[:size])
 		dst, src = dst[size:], src[size:]
 	}

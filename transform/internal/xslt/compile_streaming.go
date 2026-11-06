@@ -263,7 +263,7 @@ func (c *compiler) compileIterateBody(ctx context.Context, inst *iterateInst, ch
 
 // compileIterateParam compiles an xsl:param inside xsl:iterate.
 func (c *compiler) compileIterateParam(ctx context.Context, elem *xdm.Element) (*iterateParam, error) {
-	for _, attribute := range []string{ctxItemRequired, nameTunnel, nameStatic} {
+	for _, attribute := range []string{xslAttrRequired, nameTunnel, nameStatic} {
 		if xsdBoolTrue(getAttr(elem, attribute)) {
 			return nil, staticError(errCodeXTSE0020, "xsl:iterate parameter must not specify %s=\"yes\"", attribute)
 		}
@@ -483,7 +483,7 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 
 	acc := &accumulatorDef{
 		Name:       expandedName,
-		As:         getAttr(elem, "as"),
+		As:         getAttr(elem, nameAs),
 		Streamable: xsdBoolTrue(getAttr(elem, nameStreamable)),
 		ImportPrec: c.importPrec,
 	}
@@ -505,7 +505,7 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 	}
 
 	// Read initial-value attribute (required per XSLT 3.0 §10.4)
-	iv, hasInitial := elem.GetAttribute("initial-value")
+	iv, hasInitial := elem.GetAttribute(nameInitialValue)
 	if !hasInitial {
 		return staticError(errCodeXTSE0010, "xsl:accumulator %q requires initial-value attribute", expandedName)
 	}
@@ -575,6 +575,10 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 
 // compileAccumulatorRule compiles an xsl:accumulator-rule element.
 func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulatorDef, elem *xdm.Element) error {
+	const (
+		nameAccumulatorNewValue = "new-value"
+	)
+
 	defer c.pushElementVersion(elem)()
 
 	matchAttr, hasMatch := elem.GetAttribute(lexicon.AttrMatch)
@@ -589,13 +593,13 @@ func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulat
 
 	rule := &accumulatorRule{
 		Match: matchPat,
-		Phase: getAttr(elem, "phase"),
-		New:   getAttr(elem, "new-value") == lexicon.ValueYes,
+		Phase: getAttr(elem, namePhase),
+		New:   getAttr(elem, nameAccumulatorNewValue) == lexicon.ValueYes,
 	}
 
 	// Default phase is "start" per XSLT 3.0 spec §14
 	if rule.Phase == "" {
-		rule.Phase = "start"
+		rule.Phase = accumulatorPhaseStart
 	}
 
 	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
@@ -775,7 +779,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 		}
 	}
 
-	if sortAttr, hasSBM := elem.GetAttribute("sort-before-merge"); hasSBM {
+	if sortAttr, hasSBM := elem.GetAttribute(nameSortBeforeMerge); hasSBM {
 		sortVal := strings.TrimSpace(sortAttr)
 		if v, ok := parseXSDBool(sortVal); ok {
 			src.SortBeforeMerge = v
@@ -785,7 +789,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 	}
 
 	// for-each-source: XPath expression evaluating to sequence of URI strings
-	if fes, present := elem.GetAttribute("for-each-source"); present {
+	if fes, present := elem.GetAttribute(nameForEachSource); present {
 		expr, err := c.compileXPath(fes, c.nsBindings)
 		if err != nil {
 			return err
@@ -795,7 +799,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 	}
 
 	// for-each-item: XPath expression evaluating to sequence of items (nodes)
-	if fei, present := elem.GetAttribute("for-each-item"); present {
+	if fei, present := elem.GetAttribute(nameForEachItem); present {
 		expr, err := c.compileXPath(fei, c.nsBindings)
 		if err != nil {
 			return err
@@ -987,6 +991,8 @@ func instructionChildren(inst instruction) [][]instruction {
 		return result
 	case *sequenceInst:
 		return [][]instruction{v.Body}
+	case *wherePopulatedInst:
+		return [][]instruction{v.Body}
 	case *variableInst:
 		return [][]instruction{v.Body}
 	case *literalResultElement:
@@ -1132,6 +1138,11 @@ func validateMergeKeyAttrs(elem *xdm.Element) error {
 // Cyclic dependencies (including self-references) are detected and the
 // involved accumulators are marked with CyclicDeps=true for XTDE3400.
 func sortAccumulatorOrder(ss *Stylesheet) {
+	const (
+		accumulatorVisitActive = 1
+		accumulatorVisitDone   = 2
+	)
+
 	deps := accumulatorDependencies(ss)
 
 	// Detect self-cycles: an accumulator that references itself.
@@ -1160,13 +1171,13 @@ func sortAccumulatorOrder(ss *Stylesheet) {
 
 	visit = func(name string) bool {
 		switch state[name] {
-		case 2:
+		case accumulatorVisitDone:
 			return false // already processed
-		case 1:
+		case accumulatorVisitActive:
 			return true // cycle detected
 		}
 
-		state[name] = 1
+		state[name] = accumulatorVisitActive
 		for dep := range deps[name] {
 			if visit(dep) {
 				// Mark all accumulators in the cycle
@@ -1180,7 +1191,7 @@ func sortAccumulatorOrder(ss *Stylesheet) {
 			}
 		}
 
-		state[name] = 2
+		state[name] = accumulatorVisitDone
 		sorted = append(sorted, name)
 
 		return false
@@ -1200,72 +1211,50 @@ func accumulatorDependencies(ss *Stylesheet) map[string]map[string]struct{} {
 		deps[name] = make(map[string]struct{})
 
 		for _, rule := range acc.Rules {
-			var src string
-			if rule.Select != nil {
-				src = rule.Select.String()
-			}
-
-			if src == "" {
+			if rule.Select == nil {
 				continue
 			}
 
-			for _, ref := range extractAccumulatorRefs(src) {
-				resolved := resolveQName(ref, ss.namespaces)
+			// The match and select attributes share the rule's lexical namespaces.
+			bindings := rule.Match.nsBindings
+			xpath.WalkExpr(rule.Select.AST(), func(expr xpath.Expr) bool {
+				call, ok := expr.(xpath.FunctionCall)
+				if !ok || len(call.Args) != 1 {
+					return true
+				}
+
+				uri, local := patternFunctionIdentity(call, bindings)
+				if uri != lexicon.NamespaceFn || (local != nameAccumulatorBefore && local != nameAccumulatorAfter) {
+					return true
+				}
+
+				literal, ok := call.Args[0].(xpath.LiteralExpr)
+				if !ok {
+					return true
+				}
+
+				ref, ok := literal.Value.(string)
+				if !ok {
+					return true
+				}
+
+				resolved := resolveQName(ref, bindings)
 				if _, ok := ss.accumulators[resolved]; ok {
 					deps[name][resolved] = struct{}{}
 				}
-			}
+
+				return true
+			})
 		}
 	}
 
 	return deps
 }
 
-// extractAccumulatorRefs extracts accumulator names referenced by
-// accumulator-before('name') and accumulator-after('name') calls
-// from an XPath expression source string.
-func extractAccumulatorRefs(src string) []string {
-	var refs []string
-
-	for _, prefix := range []string{"accumulator-before(", "accumulator-after("} {
-		s := src
-		for {
-			idx := strings.Index(s, prefix)
-			if idx < 0 {
-				break
-			}
-
-			s = s[idx+len(prefix):]
-
-			s = strings.TrimSpace(s)
-			if len(s) == 0 {
-				break
-			}
-			// Expect a quote character
-			q := s[0]
-			if q != '\'' && q != '"' {
-				break
-			}
-
-			s = s[1:]
-
-			end := strings.IndexByte(s, q)
-			if end < 0 {
-				break
-			}
-
-			refs = append(refs, s[:end])
-			s = s[end+1:]
-		}
-	}
-
-	return refs
-}
-
 // mergeSourceAllowedAttrs reports attributes permitted on xsl:merge-source.
 func mergeSourceAllowedAttrs(name string) bool {
 	switch name {
-	case xslAttrName, "for-each-item", "for-each-source", xslAttrSelect, nameStreamable, "sort-before-merge", nameUseAccumulators, nameValidation, lexicon.AttrType:
+	case xslAttrName, nameForEachItem, nameForEachSource, xslAttrSelect, nameStreamable, nameSortBeforeMerge, nameUseAccumulators, nameValidation, lexicon.AttrType:
 		return true
 	default:
 		return false

@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/skarm/xmlsec/saml/internal/profile"
+
 	"github.com/skarm/xmlsec/document"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -20,9 +22,44 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+// Decoded Redirect signature byte ceiling shared by Base64 decoding and encoded-query preflight; canonical XML has an independent budget.
 const (
+	maximumRedirectSignatureBytes = 2048
+)
+
+// Poll cancellation every 4096 encoded query octets. This bit mask bounds uninterrupted scanning work; it is not a query-size limit.
+const (
+	contextPollMask = 4095
+)
+
+// Retain at most four idle DEFLATE writers. Busy callers never wait for a cache slot, and Reset detaches the previous output.
+const (
+	idleRedirectCompressors = 4
+)
+
+// SigAlg is a signed Redirect query field and a forbidden collision in Artifact URLs; never normalize the received signed octets.
+const (
+	fieldSignatureAlgorithm = "SigAlg"
+)
+
+// The optional Redirect codec declaration must name the fixed raw-DEFLATE encoding; it never enables an arbitrary decompressor.
+const (
+	fieldSAMLEncoding = "SAMLEncoding"
+)
+
+// These separators are part of the exact Redirect signature input. Sign and verify retain field order and original encoded octets rather than normalizing the query.
+const (
+	relayQueryPrefix              = "&" + fieldRelayState + "="
+	signatureAlgorithmQueryPrefix = "&" + fieldSignatureAlgorithm + "="
+)
+
+const (
+	// Opaque HTTP binding correlation data, never a return URL or an identity;
+	// all codecs apply the shared byte ceiling before publishing the value.
 	fieldRelayState = "RelayState"
-	nameSignature   = "Signature"
+	// Redirect query field, distinct from the XMLDSig element of the same name.
+	// This field is excluded from the exact octets that its value authenticates.
+	nameSignature = "Signature"
 )
 
 // ProtocolNamespace is the SAML 2.0 protocol namespace URI.
@@ -46,7 +83,7 @@ var (
 // The retained compression workspace is bounded independently of caller input.
 //
 //nolint:gochecknoglobals // Bounded workspace reuse, not a shared protocol policy.
-var redirectCompressors = make(chan *flate.Writer, 4)
+var redirectCompressors = make(chan *flate.Writer, idleRedirectCompressors)
 
 // Kind identifies the SAMLRequest or SAMLResponse field in a supported binding.
 type Kind string
@@ -133,7 +170,7 @@ func VerifyRedirect(ctx context.Context, rawQuery string, key crypto.PublicKey, 
 		kind, msg = Response, response
 	}
 
-	sm, ok := params["SigAlg"]
+	sm, ok := params[fieldSignatureAlgorithm]
 	if !ok || sm.value == "" {
 		return nil, ErrEncoding
 	}
@@ -143,23 +180,23 @@ func VerifyRedirect(ctx context.Context, rawQuery string, key crypto.PublicKey, 
 		return nil, ErrEncoding
 	}
 
-	if enc, ok := params["SAMLEncoding"]; ok && enc.value != DeflateEncoding {
+	if enc, ok := params[fieldSAMLEncoding]; ok && enc.value != DeflateEncoding {
 		return nil, ErrPolicy
 	}
 
 	relay, hasRelay := params[fieldRelayState]
-	if hasRelay && len(relay.value) > 80 {
+	if hasRelay && len(relay.value) > profile.HTTPRelayStateMaxBytes {
 		return nil, ErrPolicy
 	}
 
 	signedParts := []io.Reader{strings.NewReader(string(kind) + "="), strings.NewReader(msg.raw)}
 	if hasRelay {
-		signedParts = append(signedParts, strings.NewReader("&RelayState="), strings.NewReader(relay.raw))
+		signedParts = append(signedParts, strings.NewReader(relayQueryPrefix), strings.NewReader(relay.raw))
 	}
 
-	signedParts = append(signedParts, strings.NewReader("&SigAlg="), strings.NewReader(sm.raw))
+	signedParts = append(signedParts, strings.NewReader(signatureAlgorithmQueryPrefix), strings.NewReader(sm.raw))
 
-	signature, err := decodeBase64(sv.value, 2048)
+	signature, err := decodeBase64(sv.value, maximumRedirectSignatureBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +289,10 @@ func (r *RedirectResult) SignatureMethod() string {
 // Any direct ds:Signature on the protocol root is removed in a private snapshot;
 // nested signatures remain. RelayState nil and a present empty string differ.
 func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *string, signer crypto.Signer, opt Options) (string, error) {
+	const (
+		signatureQueryPrefix = "&" + nameSignature + "="
+	)
+
 	if ctx == nil {
 		return "", ErrPolicy
 	}
@@ -274,7 +315,7 @@ func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *s
 		return "", ErrEncoding
 	}
 
-	if relay != nil && len(*relay) > 80 {
+	if relay != nil && len(*relay) > profile.HTTPRelayStateMaxBytes {
 		return "", fmt.Errorf("%w: RelayState exceeds 80 bytes", ErrPolicy)
 	}
 
@@ -336,12 +377,12 @@ func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *s
 	}
 
 	if relay != nil {
-		if _, err := queryWriter.WriteString("&RelayState=" + url.QueryEscape(*relay)); err != nil {
+		if _, err := queryWriter.WriteString(relayQueryPrefix + url.QueryEscape(*relay)); err != nil {
 			return "", err
 		}
 	}
 
-	if _, err := queryWriter.WriteString("&SigAlg=" + url.QueryEscape(opt.SignatureMethod)); err != nil {
+	if _, err := queryWriter.WriteString(signatureAlgorithmQueryPrefix + url.QueryEscape(opt.SignatureMethod)); err != nil {
 		return "", err
 	}
 
@@ -350,7 +391,7 @@ func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *s
 		return "", err
 	}
 
-	if _, err := queryWriter.WriteString("&Signature=" + url.QueryEscape(base64.StdEncoding.EncodeToString(signature))); err != nil {
+	if _, err := queryWriter.WriteString(signatureQueryPrefix + url.QueryEscape(base64.StdEncoding.EncodeToString(signature))); err != nil {
 		return "", err
 	}
 
@@ -364,14 +405,20 @@ func SignRedirect(ctx context.Context, d *document.Document, kind Kind, relay *s
 }
 
 func parseQuery(ctx context.Context, raw string) (map[string]queryPart, error) {
+	const (
+		firstURIASCII             = 0x21
+		lastURIASCII              = 0x7e
+		maximumRedirectParameters = 32
+	)
+
 	for i := range len(raw) {
-		if i&4095 == 0 {
+		if i&contextPollMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
 
-		if raw[i] < 0x21 || raw[i] > 0x7e {
+		if raw[i] < firstURIASCII || raw[i] > lastURIASCII {
 			return nil, fmt.Errorf("%w: query must be ASCII URI octets", ErrEncoding)
 		}
 	}
@@ -379,7 +426,7 @@ func parseQuery(ctx context.Context, raw string) (map[string]queryPart, error) {
 	out := make(map[string]queryPart)
 
 	for count := 0; ; count++ {
-		if count == 32 {
+		if count == maximumRedirectParameters {
 			return nil, ErrPolicy
 		}
 
@@ -417,20 +464,24 @@ func parseQuery(ctx context.Context, raw string) (map[string]queryPart, error) {
 }
 
 func queryMetadata(name, raw string, size int) (string, error) {
+	const (
+		maximumEncodingURIBytes = 4096
+	)
+
 	switch name {
 	case fieldRelayState:
-		if size > 80 {
+		if size > profile.HTTPRelayStateMaxBytes {
 			return "", ErrPolicy
 		}
 	case nameSignature:
-		if size > base64.StdEncoding.EncodedLen(2048) {
+		if size > base64.StdEncoding.EncodedLen(maximumRedirectSignatureBytes) {
 			return "", ErrEncoding
 		}
-	case "SigAlg":
-		if size > 4096 {
+	case fieldSignatureAlgorithm:
+		if size > maximumEncodingURIBytes {
 			return "", ErrPolicy
 		}
-	case "SAMLEncoding":
+	case fieldSAMLEncoding:
 		if size != len(DeflateEncoding) {
 			return "", ErrPolicy
 		}
@@ -455,7 +506,7 @@ func queryValueSize(ctx context.Context, value string) (int, error) {
 	size := 0
 
 	for i := 0; i < len(value); i++ {
-		if i&4095 == 0 {
+		if i&contextPollMask == 0 {
 			if err := ctx.Err(); err != nil {
 				return 0, err
 			}
@@ -476,7 +527,7 @@ func queryValueSize(ctx context.Context, value string) (int, error) {
 }
 
 func decodeBase64(value string, maximum int) ([]byte, error) {
-	if strings.ContainsAny(value, " \t\r\n") || len(value) > base64.StdEncoding.EncodedLen(maximum) {
+	if strings.ContainsAny(value, lexicon.XMLWhitespace) || len(value) > base64.StdEncoding.EncodedLen(maximum) {
 		return nil, ErrEncoding
 	}
 
@@ -508,19 +559,28 @@ func releaseRedirectCompressor(writer *flate.Writer) {
 }
 
 func normalize(o Options) (Options, error) {
+	const (
+		defaultRedirectCompressedBytes = 64 << 10
+		defaultRedirectMessageBytes    = 2 << 20
+		defaultRedirectQueryBytes      = 128 << 10
+		maximumRedirectCompressedBytes = 2 << 20
+		maximumRedirectMessageBytes    = 16 << 20
+		maximumRedirectQueryBytes      = 4 << 20
+	)
+
 	if o.MaxQueryBytes == 0 {
-		o.MaxQueryBytes = 128 << 10
+		o.MaxQueryBytes = defaultRedirectQueryBytes
 	}
 
 	if o.MaxCompressedBytes == 0 {
-		o.MaxCompressedBytes = 64 << 10
+		o.MaxCompressedBytes = defaultRedirectCompressedBytes
 	}
 
 	if o.MaxMessageBytes == 0 {
-		o.MaxMessageBytes = 2 << 20
+		o.MaxMessageBytes = defaultRedirectMessageBytes
 	}
 
-	if o.MaxQueryBytes < 1 || o.MaxQueryBytes > 4<<20 || o.MaxCompressedBytes < 1 || o.MaxCompressedBytes > 2<<20 || o.MaxMessageBytes < 1 || o.MaxMessageBytes > 16<<20 {
+	if o.MaxQueryBytes < 1 || o.MaxQueryBytes > maximumRedirectQueryBytes || o.MaxCompressedBytes < 1 || o.MaxCompressedBytes > maximumRedirectCompressedBytes || o.MaxMessageBytes < 1 || o.MaxMessageBytes > maximumRedirectMessageBytes {
 		return o, ErrPolicy
 	}
 
@@ -544,15 +604,19 @@ func normalize(o Options) (Options, error) {
 }
 
 func kindOf(d *document.Document) (Kind, error) {
+	const (
+		xmlNameSubjectQuery = "SubjectQuery"
+	)
+
 	n := d.Root().Name()
 	if n.Space != ProtocolNamespace {
 		return "", fmt.Errorf("%w: expected SAML 2.0 protocol root", ErrEncoding)
 	}
 
 	switch n.Local {
-	case "AuthnRequest", "LogoutRequest", "ArtifactResolve", "ManageNameIDRequest", "NameIDMappingRequest", "AuthnQuery", "AttributeQuery", "AuthzDecisionQuery", "AssertionIDRequest", "SubjectQuery":
+	case lexicon.SAMLElementAuthnRequest, lexicon.SAMLElementLogoutRequest, lexicon.SAMLElementArtifactResolve, lexicon.SAMLElementManageNameIDRequest, lexicon.SAMLElementNameIDMappingRequest, lexicon.SAMLElementAuthnQuery, lexicon.SAMLElementAttributeQuery, lexicon.SAMLElementAuthzDecisionQuery, lexicon.SAMLElementAssertionIDRequest, xmlNameSubjectQuery:
 		return Request, nil
-	case "Response", "LogoutResponse", "ArtifactResponse", "ManageNameIDResponse", "NameIDMappingResponse":
+	case lexicon.SAMLElementResponse, lexicon.SAMLElementLogoutResponse, lexicon.SAMLElementArtifactResponse, lexicon.SAMLElementManageNameIDResponse, lexicon.SAMLElementNameIDMappingResponse:
 		return Response, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported protocol message", ErrPolicy)

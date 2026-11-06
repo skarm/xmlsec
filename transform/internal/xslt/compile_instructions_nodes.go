@@ -13,15 +13,20 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Modern XSLT shadow-attribute local names are distinct from their evaluated target attributes; support and namespace checks remain unchanged.
+const (
+	shadowAttrCopyNamespaces = "_copy-namespaces"
+)
+
 func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valueOfInst, error) {
 	inst := &valueOfInst{}
 
 	selectAttr, hasSelect := elem.GetAttribute(xslAttrSelect)
-	if !hasSelect && c.stylesheet.processorLanguage() == 10 {
+	if !hasSelect && c.stylesheet.processorLanguage() == processorXSLT10 {
 		return nil, staticError(errCodeXTSE0010, "xsl:value-of requires select in XSLT 1.0")
 	}
 
-	if !hasSelect && c.stylesheet.processorLanguage() == 20 && !c.hasEffectiveContent(ctx, elem) {
+	if !hasSelect && c.stylesheet.processorLanguage() == processorXSLT20 && !c.hasEffectiveContent(ctx, elem) {
 		return nil, staticError(errCodeXTSE0870, "XSLT 2.0 xsl:value-of requires select or non-empty content")
 	}
 
@@ -34,7 +39,7 @@ func (c *compiler) compileValueOf(ctx context.Context, elem *xdm.Element) (*valu
 		inst.Select = expr
 	}
 
-	if sep, ok := elem.GetAttribute("separator"); ok {
+	if sep, ok := elem.GetAttribute(nameSeparator); ok {
 		avt, err := c.compileAVT(sep, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -227,7 +232,7 @@ func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*at
 		return nil, err
 	}
 
-	inst := &attributeInst{Name: nameAVT}
+	inst := &attributeInst{Name: nameAVT, Namespaces: inScopeNamespaces(elem)}
 
 	if typeAttr := getAttr(elem, lexicon.AttrType); typeAttr != "" {
 		if err := c.checkTypeAttrSchemaAware(ctx, "xsl:attribute", typeAttr); err != nil {
@@ -258,7 +263,7 @@ func (c *compiler) compileAttribute(ctx context.Context, elem *xdm.Element) (*at
 		inst.Namespace = nsAVT
 	}
 
-	if sep, hasSep := elem.GetAttribute("separator"); hasSep {
+	if sep, hasSep := elem.GetAttribute(nameSeparator); hasSep {
 		sepAVT, err := c.compileAVT(sep, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -321,6 +326,10 @@ func (c *compiler) compileComment(ctx context.Context, elem *xdm.Element) (*comm
 }
 
 func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, error) {
+	const (
+		errCodeXTSE0880 = "XTSE0880"
+	)
+
 	nameAttr, hasName := elem.GetAttribute(xslAttrName)
 	if !hasName {
 		return nil, staticError(errCodeXTSE0010, "xsl:processing-instruction requires name attribute")
@@ -337,7 +346,7 @@ func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, e
 	if hasSelect {
 		// XTSE0940: select and non-empty content are mutually exclusive.
 		if err := c.validateEmptyElement(ctx, elem, "xsl:processing-instruction"); err != nil {
-			return nil, staticError("XTSE0880", "xsl:processing-instruction has both @select and content")
+			return nil, staticError(errCodeXTSE0880, "xsl:processing-instruction has both @select and content")
 		}
 
 		expr, err := c.compileXPath(selectAttr, c.nsBindings)
@@ -359,7 +368,11 @@ func (c *compiler) compilePI(ctx context.Context, elem *xdm.Element) (*piInst, e
 }
 
 func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyInst, error) {
-	if err := validateCopyBooleanAttrs(elem, "xsl:copy", nameInheritNamespaces, "copy-namespaces"); err != nil {
+	const (
+		shadowAttrInheritNamespaces = "_inherit-namespaces"
+	)
+
+	if err := validateCopyBooleanAttrs(elem, "xsl:copy", nameInheritNamespaces, nameCopyNamespaces); err != nil {
 		return nil, err
 	}
 
@@ -368,7 +381,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 		InheritNamespaces: true,
 	}
 
-	if cn := getAttr(elem, "copy-namespaces"); cn != "" {
+	if cn := getAttr(elem, nameCopyNamespaces); cn != "" {
 		if v, ok := parseXSDBool(cn); ok && !v {
 			inst.CopyNamespaces = false
 		}
@@ -381,7 +394,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 	}
 
 	// Shadow attributes (_attr overrides attr via avt at runtime)
-	if scn := getAttr(elem, "_copy-namespaces"); scn != "" {
+	if scn := getAttr(elem, shadowAttrCopyNamespaces); scn != "" {
 		avt, err := c.compileAVT(scn, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -390,7 +403,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 		inst.CopyNamespacesAVT = avt
 	}
 
-	if sin := getAttr(elem, "_inherit-namespaces"); sin != "" {
+	if sin := getAttr(elem, shadowAttrInheritNamespaces); sin != "" {
 		avt, err := c.compileAVT(sin, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -443,7 +456,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 		return nil, err
 	}
 
-	if err := validateCopyBooleanAttrs(elem, "xsl:copy-of", "copy-namespaces"); err != nil {
+	if err := validateCopyBooleanAttrs(elem, "xsl:copy-of", nameCopyNamespaces); err != nil {
 		return nil, err
 	}
 
@@ -462,13 +475,13 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 		CopyNamespaces: true,
 	}
 
-	if cn := getAttr(elem, "copy-namespaces"); cn != "" {
+	if cn := getAttr(elem, nameCopyNamespaces); cn != "" {
 		if v, ok := parseXSDBool(cn); ok && !v {
 			inst.CopyNamespaces = false
 		}
 	}
 	// Shadow attribute _copy-namespaces overrides at runtime
-	if scn := getAttr(elem, "_copy-namespaces"); scn != "" {
+	if scn := getAttr(elem, shadowAttrCopyNamespaces); scn != "" {
 		avt, err := c.compileAVT(scn, c.nsBindings)
 		if err != nil {
 			return nil, err
@@ -489,7 +502,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 		inst.TypeName = resolveXSDTypeName(typeAttr, c.nsBindings)
 	}
 
-	if ca := getAttr(elem, "copy-accumulators"); ca != "" {
+	if ca := getAttr(elem, nameCopyAccumulators); ca != "" {
 		if v, ok := parseXSDBool(ca); ok && v {
 			inst.CopyAccumulators = true
 		}
@@ -500,7 +513,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 
 func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberInst, error) {
 	inst := &numberInst{
-		Level: getAttr(elem, "level"),
+		Level: getAttr(elem, nameLevel),
 	}
 	if inst.Level == "" {
 		inst.Level = nameSingle
@@ -539,7 +552,7 @@ func (c *compiler) compileNumber(_ context.Context, elem *xdm.Element) (*numberI
 }
 
 func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) error {
-	if countAttr, present := elem.GetAttribute("count"); present {
+	if countAttr, present := elem.GetAttribute(lexicon.AttrCount); present {
 		p, err := c.compilePattern(countAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
 			return err
@@ -548,7 +561,7 @@ func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) er
 		inst.Count = p
 	}
 
-	if fromAttr, present := elem.GetAttribute("from"); present {
+	if fromAttr, present := elem.GetAttribute(lexicon.AttrFrom); present {
 		p, err := c.compilePattern(fromAttr, elem, c.xpathDefaultNS, c.hasXPathDefaultNS)
 		if err != nil {
 			return err
@@ -559,9 +572,9 @@ func (c *compiler) compileNumberCounting(elem *xdm.Element, inst *numberInst) er
 
 	inst.memoizable = !patternReadsVariables(inst.Count) && !patternReadsVariables(inst.From)
 
-	if valueAttr, present := elem.GetAttribute("value"); present {
+	if valueAttr, present := elem.GetAttribute(lexicon.AttrValue); present {
 		// XTSE0975: when value is present, select/level/count/from must be absent.
-		for _, attribute := range []string{xslAttrSelect, "level", lexicon.AttrCount, lexicon.AttrFrom} {
+		for _, attribute := range []string{xslAttrSelect, nameLevel, lexicon.AttrCount, lexicon.AttrFrom} {
 			if _, specified := elem.GetAttribute(attribute); specified {
 				return staticError(errCodeXTSE0975, "xsl:number: when @value is present, @select, @level, @count, and @from must be absent")
 			}
@@ -586,7 +599,7 @@ func (c *compiler) compileNumberFormatting(elem *xdm.Element, inst *numberInst) 
 		{nameFormat, &inst.Format},
 		{nameGroupingSeparator, &inst.GroupingSeparator},
 		{nameGroupingSize, &inst.GroupingSize},
-		{"ordinal", &inst.Ordinal},
+		{nameOrdinal, &inst.Ordinal},
 		{nameStartAt, &inst.StartAt},
 	} {
 		if err := c.compileNumberOption(elem, option.name, option.value); err != nil {
@@ -608,7 +621,7 @@ func (c *compiler) compileNumberOption(elem *xdm.Element, name string, target **
 		return err
 	}
 
-	if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= 20 && !validNumberOption(name, literal) {
+	if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= processorXSLT20 && !validNumberOption(name, literal) {
 		return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:number/@%s", literal, name)
 	}
 
@@ -696,7 +709,7 @@ func (c *compiler) compileSequence(ctx context.Context, elem *xdm.Element) (inst
 		// XTSE3185: when @select is present, only xsl:fallback children are allowed.
 		if hasSignificantChildren(elem) {
 			code := errCodeXTSE3185
-			if c.stylesheet.processorLanguage() == 20 {
+			if c.stylesheet.processorLanguage() == processorXSLT20 {
 				code = errCodeXTSE0010
 			}
 
@@ -823,6 +836,10 @@ func (c *compiler) pushResultNamespacePolicy(elem *xdm.Element) (func(), error) 
 }
 
 func (c *compiler) elementResultExcludes(elem *xdm.Element) (map[string]struct{}, error) {
+	const (
+		literalExclusionSpareCapacity = 4
+	)
+
 	erp, hasERP := elem.GetAttributeNS(nameExcludeResultPrefixes, lexicon.NamespaceXSLT)
 
 	eep, hasEEP := elem.GetAttributeNS(nameExtensionElementPrefixes, lexicon.NamespaceXSLT)
@@ -835,7 +852,7 @@ func (c *compiler) elementResultExcludes(elem *xdm.Element) (map[string]struct{}
 		return c.localExcludes, nil
 	}
 
-	excludes := make(map[string]struct{}, len(c.localExcludes)+4)
+	excludes := make(map[string]struct{}, len(c.localExcludes)+literalExclusionSpareCapacity)
 	maps.Copy(excludes, c.localExcludes)
 
 	if hasERP {
@@ -1140,7 +1157,7 @@ func validateCopyOfStructure(elem *xdm.Element) error {
 			continue
 		}
 
-		if attr.LocalName() == lexicon.AttrMatch || attr.LocalName() == lexicon.AttrCount || attr.LocalName() == "from" {
+		if attr.LocalName() == lexicon.AttrMatch || attr.LocalName() == lexicon.AttrCount || attr.LocalName() == lexicon.AttrFrom {
 			return staticError(errCodeXTSE0090,
 				"attribute %q is not allowed on xsl:copy-of", attr.LocalName())
 		}

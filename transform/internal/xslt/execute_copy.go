@@ -71,10 +71,9 @@ func (ec *execContext) execCopy(ctx context.Context, inst *copyInst) error {
 	}
 
 	if contextNode == nil {
-		// An atomic context item is copied as text without evaluating the body.
-		if av, ok := ec.contextItem.(xdm.AtomicValue); ok {
-			out := ec.currentOutput()
-			return ec.emitAtomicText(av, &out.prevWasAtomic)
+		// Non-node items are returned unchanged without evaluating the body.
+		if ec.contextItem != nil {
+			return ec.outputSequence(xdm.ItemSlice{ec.contextItem})
 		}
 
 		return dynamicError(errCodeXTTE0945, "xsl:copy: no context item")
@@ -115,9 +114,8 @@ func (ec *execContext) execCopySelected(ctx context.Context, inst *copyInst, con
 		switch value := item.(type) {
 		case xdm.NodeItem:
 			return ec.execCopySelectedNode(ctx, inst, value.Node, opts)
-		case xdm.AtomicValue:
-			out := ec.currentOutput()
-			return ec.emitAtomicText(value, &out.prevWasAtomic)
+		default:
+			return ec.outputSequence(xdm.ItemSlice{item})
 		}
 	}
 
@@ -452,7 +450,7 @@ func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
 
 	seq := result.Sequence()
 
-	capture := out.captureItems && ec.stylesheet.processorLanguage() >= 20
+	capture := out.captureItems && ec.stylesheet.processorLanguage() >= processorXSLT20
 	if !capture {
 		seq = flattenArraysInSequence(seq)
 	}
@@ -760,7 +758,7 @@ func (ec *execContext) copyNodeToOutput(node xdm.Node, copyNamespaces ...bool) e
 func (ec *execContext) copyDocumentToOutput(node xdm.Node, copyNS bool) error {
 	out := ec.currentOutput()
 	if out.sequenceMode || out.captureItems {
-		return ec.captureCopiedDocument(node)
+		return ec.captureCopiedDocument(node, copyNS)
 	}
 
 	// A document copy contributes its children and preserves DTD metadata
@@ -781,12 +779,20 @@ func (ec *execContext) copyDocumentToOutput(node xdm.Node, copyNS bool) error {
 }
 
 // copyDocumentNode preserves one document item and its separate output metadata.
-func (ec *execContext) copyDocumentNode(source xdm.Node) (*xdm.Document, error) {
+func (ec *execContext) copyDocumentNode(source xdm.Node, copyNamespaces ...bool) (*xdm.Document, error) {
 	if err := xpath.ChargeTree(ec.budgetCtx, source); err != nil {
 		return nil, err
 	}
 
 	doc := newCopyDocument(source)
+	if len(copyNamespaces) > 0 && !copyNamespaces[0] {
+		if err := ec.copyDocumentChildrenNoNamespaces(source, doc); err != nil {
+			return nil, err
+		}
+
+		return doc, nil
+	}
+
 	for child := range xdm.Children(source) {
 		if !xdm.IsXDMChild(child) {
 			continue
@@ -805,8 +811,30 @@ func (ec *execContext) copyDocumentNode(source xdm.Node) (*xdm.Document, error) 
 	return doc, nil
 }
 
-func (ec *execContext) captureCopiedDocument(source xdm.Node) error {
-	doc, err := ec.copyDocumentNode(source)
+// Reuse the element copy constructor so only required namespace bindings survive.
+func (ec *execContext) copyDocumentChildrenNoNamespaces(source xdm.Node, doc *xdm.Document) error {
+	savedResult := ec.resultDoc
+	ec.resultDoc = doc
+
+	ec.outputStack = append(ec.outputStack, &outputFrame{doc: doc, current: doc})
+	defer func() {
+		ec.resultDoc = savedResult
+		ec.outputStack = ec.outputStack[:len(ec.outputStack)-1]
+	}()
+
+	for child := range xdm.Children(source) {
+		if xdm.IsXDMChild(child) {
+			if err := ec.copyNodeToOutput(child, false); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (ec *execContext) captureCopiedDocument(source xdm.Node, copyNS bool) error {
+	doc, err := ec.copyDocumentNode(source, copyNS)
 	if err != nil {
 		return err
 	}
@@ -1121,7 +1149,7 @@ func propagateAncestorNamespaces(src, dst *xdm.Element) {
 
 		for _, ns := range pElem.Namespaces() {
 			prefix := ns.Prefix()
-			if prefix == lexicon.MethodXML {
+			if prefix == lexicon.PrefixXML {
 				continue
 			}
 
@@ -1172,7 +1200,7 @@ func undeclareParentCopyNS(parent *xdm.Element) {
 
 		for _, ns := range parentNS {
 			prefix := ns.Prefix()
-			if prefix == lexicon.MethodXML {
+			if prefix == lexicon.PrefixXML {
 				continue
 			}
 
@@ -1194,9 +1222,9 @@ func undeclareParentCopyNS(parent *xdm.Element) {
 // xs:NOTATION, or common derived forms.
 func isNamespaceSensitiveType(typeName string) bool {
 	switch typeName {
-	case "xs:QName", "xs:NOTATION",
-		"Q{http://www.w3.org/2001/XMLSchema}QName",
-		"Q{http://www.w3.org/2001/XMLSchema}NOTATION":
+	case xdm.TypeQName, xdm.TypeNOTATION,
+		"Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeQName,
+		"Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeNotation:
 		return true
 	}
 

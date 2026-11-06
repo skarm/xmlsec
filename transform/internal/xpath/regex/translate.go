@@ -17,6 +17,41 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// Unicode block escapes use the Is prefix. Property ranges are split at the
+// BMP boundary into contiguous 16-bit and 32-bit RangeTable records.
+const (
+	unicodeBlockPrefix     = "Is"
+	maxBMPRune             = 0xFFFF
+	supplementaryRuneStart = 0x10000
+	contiguousRangeStride  = 1
+)
+
+// Class expansion spellings retain XPath/XSD character semantics both inside
+// and outside bracketed groups. A simple backslash escape consumes two runes.
+const (
+	multiCharacterEscapes = "pPdDsSwWiIcC"
+	simpleEscapeRunes     = 2
+	anyCharacterClass     = `[\s\S]`
+	nonLineBreakClass     = `[^\n\r]`
+	decimalDigitClass     = `\p{Nd}`
+	nonDecimalDigitClass  = `[^\p{Nd}]`
+	wordCharacterClass    = `[^\p{P}\p{Z}\p{C}]`
+	nonWordCharacterClass = `[\p{P}\p{Z}\p{C}]`
+	whitespaceClass       = `[\t\n\r ]`
+	nonWhitespaceClass    = `[^\t\n\r ]`
+	nonDecimalDigitRange  = `\P{Nd}`
+	wordCharacterRange    = `\p{L}\p{M}\p{N}\p{S}`
+	nonWordCharacterRange = `\p{P}\p{Z}\p{C}`
+)
+
+// Hex property ranges are parsed into int64 endpoints; numeric backreferences
+// accumulate decimal digits while the existing capture-count bound is applied.
+const (
+	hexadecimalRadix   = 16
+	codepointParseBits = 64
+	decimalRadix       = 10
+)
+
 // XML NameStartChar as a character class (for use outside [])
 const (
 	xmlNameStartCharClass    = `[a-zA-Z_:\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]`
@@ -457,6 +492,49 @@ func ValidateXSD10(pattern string) error {
 	return nil
 }
 
+// Validate enforces the XPath/XSD pattern grammar before compilation.
+func Validate(pattern string, allowBackrefs bool) error {
+	return validateXPathRegex(pattern, allowBackrefs)
+}
+
+// HasBackrefs reports whether the pattern contains a back-reference.
+func HasBackrefs(pattern string) bool { return hasXPathBackrefs(pattern) }
+
+// RejectPerlSpecific rejects Perl-only constructs not allowed in XPath regex.
+func RejectPerlSpecific(pattern string) error { return rejectPerlSpecific(pattern) }
+
+// ResolveProperty preserves Unicode block escapes as predicates, so the i flag
+// cannot accidentally case-fold them after expansion into character ranges.
+func ResolveProperty(name string) *unicode.RangeTable {
+	if !strings.HasPrefix(name, unicodeBlockPrefix) {
+		return nil
+	}
+
+	spec, ok := lookupUnicodeBlockRange(name[len(unicodeBlockPrefix):])
+	if !ok {
+		return nil
+	}
+
+	ranges, err := parseClassRanges(spec)
+	if err != nil {
+		return nil
+	}
+
+	table := &unicode.RangeTable{}
+
+	for _, r := range ranges {
+		if r.low <= maxBMPRune {
+			table.R16 = append(table.R16, unicode.Range16{Lo: uint16(r.low), Hi: uint16(min(r.high, maxBMPRune)), Stride: contiguousRangeStride}) // #nosec G115 -- The Unicode block table supplies nonnegative scalar ranges; the R16 branch caps the high bound.
+		}
+
+		if r.high > maxBMPRune {
+			table.R32 = append(table.R32, unicode.Range32{Lo: uint32(max(r.low, supplementaryRuneStart)), Hi: uint32(r.high), Stride: contiguousRangeStride}) // #nosec G115 -- The Unicode block table bounds every range by 0x10FFFF.
+		}
+	}
+
+	return table
+}
+
 type xsd10Class struct {
 	first    bool
 	negated  bool
@@ -503,17 +581,6 @@ func (c *xsd10Class) character(ch rune, next byte) error {
 	return nil
 }
 
-// Validate enforces the XPath/XSD pattern grammar before compilation.
-func Validate(pattern string, allowBackrefs bool) error {
-	return validateXPathRegex(pattern, allowBackrefs)
-}
-
-// HasBackrefs reports whether the pattern contains a back-reference.
-func HasBackrefs(pattern string) bool { return hasXPathBackrefs(pattern) }
-
-// RejectPerlSpecific rejects Perl-only constructs not allowed in XPath regex.
-func RejectPerlSpecific(pattern string) error { return rejectPerlSpecific(pattern) }
-
 func xsd10Escape(pattern string, at int) (int, bool) {
 	if at >= len(pattern) {
 		return at, false
@@ -522,7 +589,7 @@ func xsd10Escape(pattern string, at int) (int, bool) {
 	escaped, size := utf8.DecodeRuneInString(pattern[at:])
 	at += size
 
-	single := !strings.ContainsRune("pPdDsSwWiIcC", escaped)
+	single := !strings.ContainsRune(multiCharacterEscapes, escaped)
 	if (escaped == 'p' || escaped == 'P') && at < len(pattern) && pattern[at] == '{' {
 		if end := strings.IndexByte(pattern[at:], '}'); end >= 0 {
 			at += end + 1
@@ -584,9 +651,9 @@ func translateXPathRegex(pattern string, dotAll, ignoreCase bool) (string, error
 		if r == '.' {
 			// XPath's dot excludes both CR and LF unless dotAll is set.
 			if dotAll {
-				b.WriteString(`[\s\S]`)
+				b.WriteString(anyCharacterClass)
 			} else {
-				b.WriteString(`[^\n\r]`)
+				b.WriteString(nonLineBreakClass)
 			}
 		} else {
 			b.WriteRune(r)
@@ -620,27 +687,27 @@ func translateRegexEscape(runes []rune, start int, ignoreCase bool) (string, int
 
 	switch next {
 	case 'i':
-		return xmlNameStartCharClass, 2, nil
+		return xmlNameStartCharClass, simpleEscapeRunes, nil
 	case 'I':
-		return xmlNameStartCharClassNeg, 2, nil
+		return xmlNameStartCharClassNeg, simpleEscapeRunes, nil
 	case 'c':
-		return xpathRegexNameCharClass, 2, nil
+		return xpathRegexNameCharClass, simpleEscapeRunes, nil
 	case 'C':
-		return xpathRegexNameCharClassNeg, 2, nil
+		return xpathRegexNameCharClassNeg, simpleEscapeRunes, nil
 	case 'd':
-		return `\p{Nd}`, 2, nil
+		return decimalDigitClass, simpleEscapeRunes, nil
 	case 'D':
-		return `[^\p{Nd}]`, 2, nil
+		return nonDecimalDigitClass, simpleEscapeRunes, nil
 	case 'w':
-		return `[^\p{P}\p{Z}\p{C}]`, 2, nil
+		return wordCharacterClass, simpleEscapeRunes, nil
 	case 'W':
-		return `[\p{P}\p{Z}\p{C}]`, 2, nil
+		return nonWordCharacterClass, simpleEscapeRunes, nil
 	case 's':
-		return `[\t\n\r ]`, 2, nil
+		return whitespaceClass, simpleEscapeRunes, nil
 	case 'S':
-		return `[^\t\n\r ]`, 2, nil
+		return nonWhitespaceClass, simpleEscapeRunes, nil
 	default:
-		return string(runes[start : start+2]), 2, nil
+		return string(runes[start : start+2]), simpleEscapeRunes, nil
 	}
 }
 
@@ -845,21 +912,21 @@ func translateClassEscape(runes []rune, start int) (string, int, error) {
 
 	switch next {
 	case 'i':
-		return xmlNameStartCharRange, 2, nil
+		return xmlNameStartCharRange, simpleEscapeRunes, nil
 	case 'I':
-		return xmlNameStartCharRangeNeg, 2, nil
+		return xmlNameStartCharRangeNeg, simpleEscapeRunes, nil
 	case 'c':
-		return xpathRegexNameCharRange, 2, nil
+		return xpathRegexNameCharRange, simpleEscapeRunes, nil
 	case 'C':
-		return xpathRegexNameCharRangeNeg, 2, nil
+		return xpathRegexNameCharRangeNeg, simpleEscapeRunes, nil
 	case 'd':
-		return `\p{Nd}`, 2, nil
+		return decimalDigitClass, simpleEscapeRunes, nil
 	case 'D':
-		return `\P{Nd}`, 2, nil
+		return nonDecimalDigitRange, simpleEscapeRunes, nil
 	case 'w':
-		return `\p{L}\p{M}\p{N}\p{S}`, 2, nil
+		return wordCharacterRange, simpleEscapeRunes, nil
 	case 'W':
-		return `\p{P}\p{Z}\p{C}`, 2, nil
+		return nonWordCharacterRange, simpleEscapeRunes, nil
 	default:
 		return "", 0, nil
 	}
@@ -937,6 +1004,8 @@ func hasXPathBackrefs(pattern string) bool {
 
 func rejectPerlSpecific(pattern string) error {
 	runes := []rune(pattern)
+	inCharClass := 0
+
 	for i := 0; i < len(runes); i++ {
 		if runes[i] == '\\' && i+1 < len(runes) {
 			switch runes[i+1] {
@@ -951,8 +1020,17 @@ func rejectPerlSpecific(pattern string) error {
 
 			continue
 		}
+
+		switch runes[i] {
+		case '[':
+			inCharClass++
+		case ']':
+			if inCharClass > 0 {
+				inCharClass--
+			}
+		}
 		// Reject inline flags (?...) — XPath uses flags parameter instead
-		if runes[i] == '(' && i+1 < len(runes) && runes[i+1] == '?' {
+		if inCharClass == 0 && runes[i] == '(' && i+1 < len(runes) && runes[i+1] == '?' {
 			// Allow (?:...) for non-capturing groups
 			if i+2 < len(runes) && runes[i+2] == ':' {
 				continue
@@ -971,38 +1049,6 @@ func rejectPerlSpecific(pattern string) error {
 type classRange struct {
 	low  int64
 	high int64
-}
-
-// ResolveProperty preserves Unicode block escapes as predicates, so the i flag
-// cannot accidentally case-fold them after expansion into character ranges.
-func ResolveProperty(name string) *unicode.RangeTable {
-	if !strings.HasPrefix(name, "Is") {
-		return nil
-	}
-
-	spec, ok := lookupUnicodeBlockRange(name[2:])
-	if !ok {
-		return nil
-	}
-
-	ranges, err := parseClassRanges(spec)
-	if err != nil {
-		return nil
-	}
-
-	table := &unicode.RangeTable{}
-
-	for _, r := range ranges {
-		if r.low <= 0xFFFF {
-			table.R16 = append(table.R16, unicode.Range16{Lo: uint16(r.low), Hi: uint16(min(r.high, 0xFFFF)), Stride: 1}) // #nosec G115 -- The Unicode block table supplies nonnegative scalar ranges; the R16 branch caps the high bound.
-		}
-
-		if r.high > 0xFFFF {
-			table.R32 = append(table.R32, unicode.Range32{Lo: uint32(max(r.low, 0x10000)), Hi: uint32(r.high), Stride: 1}) // #nosec G115 -- The Unicode block table bounds every range by 0x10FFFF.
-		}
-	}
-
-	return table
 }
 
 func parseClassRanges(spec string) ([]classRange, error) {
@@ -1066,7 +1112,7 @@ func parseClassRune(runes []rune, start int) (int64, int, error) {
 		return 0, start, fmt.Errorf("unterminated hex escape in character class range")
 	}
 
-	value, err := strconv.ParseInt(string(runes[start+3:end]), 16, 64)
+	value, err := strconv.ParseInt(string(runes[start+3:end]), hexadecimalRadix, codepointParseBits)
 	if err != nil {
 		return 0, start, err
 	}
@@ -1102,8 +1148,8 @@ func translateUnicodeProperty(name string, neg bool) (string, error) {
 		prefix = `\P`
 	}
 
-	if strings.HasPrefix(name, "Is") {
-		blockName := name[2:]
+	if strings.HasPrefix(name, unicodeBlockPrefix) {
+		blockName := name[len(unicodeBlockPrefix):]
 		if _, ok := lookupUnicodeBlockRange(blockName); ok {
 			return prefix + "{" + name + "}", nil
 		}
@@ -1127,6 +1173,7 @@ func lookupUnicodeBlockRange(name string) (string, bool) {
 }
 
 // XML Schema category escapes use general categories, not Unicode scripts.
+// The switch lists the complete general-category vocabulary admitted by this grammar.
 func isGoSupportedProperty(name string) bool {
 	switch name {
 	case "L", "Lu", "Ll", "Lt", "Lm", "Lo", "M", "Mn", "Mc", "Me",
@@ -1254,7 +1301,7 @@ func resolveXPathBackref(runes []rune, start, captureCount int, groupStack []int
 		// grow it, and a long digit run would wrap int (past 2^31-1 where int
 		// is 32 bits) back into the capture range.
 		if value <= captureCount {
-			value = value*10 + int(runes[end]-'0')
+			value = value*decimalRadix + int(runes[end]-'0')
 		}
 
 		end++
@@ -1274,7 +1321,7 @@ func resolveXPathBackref(runes []rune, start, captureCount int, groupStack []int
 			break
 		}
 
-		value = value*10 + int(runes[i]-'0')
+		value = value*decimalRadix + int(runes[i]-'0')
 		if value > 0 && value <= captureCount && !isOpenCaptureGroup(groupStack, value) {
 			ref = value
 			validEnd = i + 1

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	_ "crypto/sha1" // #nosec G505 -- Explicit legacy OAEP policy only.
@@ -53,6 +54,21 @@ func rsaEncryptProfile(ctx context.Context, options Options, recipient *rsa.Publ
 		return profile{}, err
 	}
 
+	if options.KeyTransportAlgorithm != "" {
+		if !legacyRSAAllowed(options) {
+			return profile{}, ErrPolicy
+		}
+
+		p.transport = keyTransport{
+			algorithm: RSA15, wrappedBytes: recipient.Size(), keyBits: recipient.N.BitLen(),
+			wrap: func(key []byte) ([]byte, error) {
+				return rsa.EncryptPKCS1v15(rand.Reader, recipient, key) //nolint:staticcheck // Explicit SAML 2.0 Conformance 4.2 legacy interoperability; never selected by default.
+			},
+		}
+
+		return p, nil
+	}
+
 	oaep, err := normalizeOAEP(options.OAEP)
 	if err != nil {
 		return profile{}, err
@@ -90,6 +106,28 @@ func rsaDecryptProfile(ctx context.Context, options Options, recipient crypto.De
 		return profile{}, ErrPolicy
 	}
 
+	if options.KeyTransportAlgorithm != "" {
+		if !legacyRSAAllowed(options) {
+			return profile{}, ErrPolicy
+		}
+
+		p.transport = keyTransport{
+			algorithm: RSA15, wrappedBytes: public.Size(), keyBits: public.N.BitLen(),
+			unwrap: func(ctx context.Context, ciphertext []byte) ([]byte, error) {
+				// SessionKeyLen requests implicit rejection from the provider:
+				// invalid padding yields a random key, not a padding error.
+				parameters := &rsa.PKCS1v15DecryptOptions{SessionKeyLen: p.keyBytes} //nolint:staticcheck // Explicit legacy transport requires implicit rejection and authenticated ciphertext.
+				if provider, ok := recipient.(contextualDecrypter); ok {
+					return provider.decrypt(ctx, rand.Reader, ciphertext, parameters)
+				}
+
+				return recipient.Decrypt(rand.Reader, ciphertext, parameters)
+			},
+		}
+
+		return p, nil
+	}
+
 	oaep, err := normalizeOAEP(options.OAEP)
 	if err != nil {
 		return profile{}, err
@@ -111,4 +149,8 @@ func rsaDecryptProfile(ctx context.Context, options Options, recipient crypto.De
 	}
 
 	return p, nil
+}
+
+func legacyRSAAllowed(options Options) bool {
+	return options.KeyTransportAlgorithm == RSA15 && options.AllowLegacy && options.OAEP == nil && !fips140.Enabled()
 }

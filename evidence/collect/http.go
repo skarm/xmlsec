@@ -19,8 +19,30 @@ import (
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/evidence"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
+)
+
+const (
+	defaultMaxBytes             = 4 << 20
+	defaultMaxRequestBytes      = 64 << 10
+	defaultMaxResources         = 8
+	defaultMaxTotalBytes        = 16 << 20
+	defaultMaxTotalRequestBytes = 512 << 10
+	defaultTimeout              = 10 * time.Second
+	maximumAllowedURIs          = 256
+	maximumBytes                = 64 << 20
+	maximumRedirects            = 10
+	maximumRequestBytes         = 64 << 10
+	maximumResources            = 64
+	maximumTotalBytes           = 64 << 20
+	maximumTotalRequestBytes    = 4 << 20
+	maximumURIBytes             = 8192
+)
+
+const (
+	ocspRequestMediaType = "application/ocsp-request"
 )
 
 // Limits bounds one complete collection call. Zero fields select their documented
@@ -89,15 +111,19 @@ type Request struct {
 // with NewHTTP. Concurrent calls use separate counters and redirect state; the
 // shared transport, cookie jar and optional clock must also support concurrent use.
 type HTTP struct {
-	client  http.Client
+	// client is the private HTTP client configured with collection policy.
+	client http.Client
+	// allowed contains the exact URIs authorized for collection.
 	allowed map[string]struct{}
-	limits  Limits
-	now     func() time.Time
+	// limits retains normalized response and aggregate collection budgets.
+	limits Limits
+	// now supplies observation times for collected objects.
+	now func() time.Time
 }
 
 // NewHTTP snapshots a bounded exact URI policy without performing I/O.
 func NewHTTP(config Config) (*HTTP, error) {
-	if config.Client == nil || config.Client.Transport != nil && nilcheck.IsNil(config.Client.Transport) || len(config.AllowedURIs) == 0 || len(config.AllowedURIs) > 256 {
+	if config.Client == nil || config.Client.Transport != nil && nilcheck.IsNil(config.Client.Transport) || len(config.AllowedURIs) == 0 || len(config.AllowedURIs) > maximumAllowedURIs {
 		return nil, evidence.ErrInput
 	}
 
@@ -113,7 +139,7 @@ func NewHTTP(config Config) (*HTTP, error) {
 
 	for _, raw := range config.AllowedURIs {
 		u, err := collectionURI(raw)
-		if err != nil || u.Scheme != "https" && !(config.AllowHTTP && u.Scheme == "http") {
+		if err != nil || u.Scheme != lexicon.SchemeHTTPS && !(config.AllowHTTP && u.Scheme == lexicon.SchemeHTTP) {
 			return nil, evidence.ErrInput
 		}
 
@@ -147,16 +173,21 @@ func (c *HTTP) CollectTo(ctx context.Context, store *evidence.Store, requests []
 }
 
 func normalizeLimits(limits Limits) (Limits, error) {
+	const (
+		minimumTimeout = time.Millisecond
+		maximumTimeout = 2 * time.Minute
+	)
+
 	for _, field := range []struct {
 		value    *int
 		fallback int
 		maximum  int
 	}{
-		{value: &limits.MaxResources, fallback: 8, maximum: 64},
-		{value: &limits.MaxBytes, fallback: 4 << 20, maximum: 64 << 20},
-		{value: &limits.MaxTotalBytes, fallback: 16 << 20, maximum: 64 << 20},
-		{value: &limits.MaxRequestBytes, fallback: 64 << 10, maximum: 64 << 10},
-		{value: &limits.MaxTotalRequestBytes, fallback: 512 << 10, maximum: 4 << 20},
+		{value: &limits.MaxResources, fallback: defaultMaxResources, maximum: maximumResources},
+		{value: &limits.MaxBytes, fallback: defaultMaxBytes, maximum: maximumBytes},
+		{value: &limits.MaxTotalBytes, fallback: defaultMaxTotalBytes, maximum: maximumTotalBytes},
+		{value: &limits.MaxRequestBytes, fallback: defaultMaxRequestBytes, maximum: maximumRequestBytes},
+		{value: &limits.MaxTotalRequestBytes, fallback: defaultMaxTotalRequestBytes, maximum: maximumTotalRequestBytes},
 	} {
 		if *field.value == 0 {
 			*field.value = field.fallback
@@ -167,15 +198,15 @@ func normalizeLimits(limits Limits) (Limits, error) {
 		}
 	}
 
-	if limits.MaxRedirects < 0 || limits.MaxRedirects > 10 {
+	if limits.MaxRedirects < 0 || limits.MaxRedirects > maximumRedirects {
 		return Limits{}, evidence.ErrInput
 	}
 
 	if limits.Timeout == 0 {
-		limits.Timeout = 10 * time.Second
+		limits.Timeout = defaultTimeout
 	}
 
-	if limits.Timeout < time.Millisecond || limits.Timeout > 2*time.Minute {
+	if limits.Timeout < minimumTimeout || limits.Timeout > maximumTimeout {
 		return Limits{}, evidence.ErrInput
 	}
 
@@ -183,12 +214,18 @@ func normalizeLimits(limits Limits) (Limits, error) {
 }
 
 func collectionURI(raw string) (*url.URL, error) {
-	if len(raw) > 8192 || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
+	if len(raw) > maximumURIBytes || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
 		return nil, evidence.ErrPolicy
 	}
 
 	u, err := url.Parse(raw)
 	if err != nil || u.Opaque != "" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || strings.ContainsRune(u.Path, '\\') || u.String() != raw {
+		return nil, evidence.ErrPolicy
+	}
+
+	// url.Parse does not validate query escapes. Keep the exact URI spelling for
+	// authorization, using the decoded value only to check percent encoding.
+	if _, err := url.QueryUnescape(u.RawQuery); err != nil {
 		return nil, evidence.ErrPolicy
 	}
 
@@ -339,7 +376,7 @@ func fetch[T collected](s *collection, ctx context.Context, input Request, read 
 	}
 
 	if input.Method == http.MethodPost {
-		request.Header.Set("Content-Type", "application/ocsp-request")
+		request.Header.Set(lexicon.HeaderContentType, ocspRequestMediaType)
 	}
 
 	response, err := client.Do(request)
@@ -409,9 +446,10 @@ func (t *responseTransport) RoundTrip(request *http.Request) (*http.Response, er
 
 func (t *responseTransport) failure() error {
 	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	err := t.failureError
+	t.mutex.Unlock()
 
-	return t.failureError
+	return err
 }
 
 func (t *responseTransport) record(err error) {
@@ -420,9 +458,9 @@ func (t *responseTransport) record(err error) {
 	}
 
 	t.mutex.Lock()
-	defer t.mutex.Unlock()
 
 	t.failureError = errors.Join(t.failureError, err)
+	t.mutex.Unlock()
 }
 
 type responseBody struct {

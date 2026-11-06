@@ -232,7 +232,7 @@ func (ec *execContext) applyOneAttributeSet(ctx context.Context, asDef *attribut
 
 	if _, ok := active[asDef]; ok {
 		code := errCodeXTSE0720
-		if ec.stylesheet.processorLanguage() >= 30 {
+		if ec.stylesheet.processorLanguage() >= processorXSLT30 {
 			code = errCodeXTDE0640
 		}
 
@@ -412,7 +412,7 @@ func (ec *execContext) fixupExcludedElementNS(elem *xdm.Element, origPrefix, ori
 				return // already correct
 			}
 			// Prefix is claimed by a different URI — invent a new prefix
-			newPrefix := uniqueNSPrefix(elem, origPrefix+"_0", origURI)
+			newPrefix := uniqueNSPrefix(elem, origPrefix+namespaceCollisionSeedSuffix, origURI)
 			_ = elem.DeclareNamespace(newPrefix, origURI)
 			_ = elem.SetActiveNamespace(newPrefix, origURI)
 
@@ -600,7 +600,11 @@ func inheritConstructedNamespaces(ctx context.Context, parent *xdm.Element) erro
 }
 
 func inheritConstructedNamespacesWalk(ctx context.Context, parent *xdm.Element, bindings map[string]string, depth int) error {
-	if depth > xpath.DepthLimit(ctx, 128) {
+	const (
+		namespaceInheritanceDepthFallback = 128
+	)
+
+	if depth > xpath.DepthLimit(ctx, namespaceInheritanceDepthFallback) {
 		return xpath.ErrBudget
 	}
 

@@ -13,6 +13,37 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Calendar conversions use months per year and seconds per calendar unit.
+// Nanoseconds retain time.Time's resolution; the duration selector requests
+// total day-time seconds and month rounding uses zero fractional decimal digits.
+const (
+	calendarMonthsPerYear     = 12
+	calendarDaysPerCommonYear = 365
+	calendarSecondsPerMinute  = 60
+	calendarSecondsPerHour    = 3600
+	calendarSecondsPerDay     = 86400
+	nanosecondsPerSecond      = int64(time.Second)
+	durationSecondsMode       = false
+	wholeMonthPrecision       = 0
+	eitherInfinitySign        = 0
+)
+
+// Meeus' Gregorian Julian-day formula shifts January/February into the preceding
+// March-based year. These coefficients retain its exact integer floor arithmetic
+// and Julian-day epoch offset, including the existing negative-year handling.
+const (
+	jdnMonthOrigin        = 14
+	jdnYearShift          = 4800
+	jdnMarchOffset        = 3
+	jdnMonthScale         = 153
+	jdnMonthBias          = 2
+	jdnMonthDivisor       = 5
+	jdnEpochOffset        = 32045
+	gregorianLeapInterval = 4
+	gregorianCenturyYears = 100
+	gregorianCycleYears   = 400
+)
+
 // Conservative magnitude bounds for time.AddDate operands. time.Time can
 // represent years up to roughly ±2.9e11, but time.AddDate adds years, months and
 // days as plain ints whose internal normalization silently wraps for magnitudes
@@ -26,7 +57,7 @@ import (
 // 5.4e8 years): a larger move would produce a year that int cannot hold.
 const (
 	maxSafeAddDateYears  = min(100_000_000_000, math.MaxInt/4)
-	maxSafeAddDateMonths = int64(maxSafeAddDateYears * 12)
+	maxSafeAddDateMonths = int64(maxSafeAddDateYears * calendarMonthsPerYear)
 	// addDateDayChunk is the largest day count passed to one time.AddDate call.
 	// Where int is 64 bits it exceeds maxSafeAddDateDays, so a day move is a
 	// single call; where int is 32 bits a larger move takes several calls.
@@ -77,11 +108,11 @@ func arithmeticType(a xdm.AtomicValue) string {
 // using the standard Julian Day Number algorithm. Works for negative years.
 func julianDayNumber(year, month, day int) int64 {
 	// Algorithm from Meeus, Astronomical Algorithms
-	a := int64(14-month) / 12
-	y := int64(year) + 4800 - a
-	m := int64(month) + 12*a - 3
+	a := int64(jdnMonthOrigin-month) / calendarMonthsPerYear
+	y := int64(year) + jdnYearShift - a
+	m := int64(month) + calendarMonthsPerYear*a - jdnMarchOffset
 
-	return int64(day) + (153*m+2)/5 + 365*y + floorYearDivision(y, 4) - floorYearDivision(y, 100) + floorYearDivision(y, 400) - 32045
+	return int64(day) + (jdnMonthScale*m+jdnMonthBias)/jdnMonthDivisor + calendarDaysPerCommonYear*y + floorYearDivision(y, gregorianLeapInterval) - floorYearDivision(y, gregorianCenturyYears) + floorYearDivision(y, gregorianCycleYears) - jdnEpochOffset
 }
 
 // Meeus' Gregorian formula uses floor, including for years before -4800.
@@ -234,8 +265,8 @@ func arithmeticDurationDuration(op TokenType, la, ra xdm.AtomicValue) (xdm.Seque
 	// dayTimeDuration ± dayTimeDuration: compute the result in exact rational
 	// seconds so that fractional seconds (e.g. PT0.05S + PT0.05S) canonicalize
 	// identically to a parsed PT0.1S.
-	lRat := xdm.DurationToRat(ld, false)
-	rRat := xdm.DurationToRat(rd, false)
+	lRat := xdm.DurationToRat(ld, durationSecondsMode)
+	rRat := xdm.DurationToRat(rd, durationSecondsMode)
 
 	var resRat *big.Rat
 	if op == TokenPlus {
@@ -364,7 +395,7 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 	// secsRat is the EXACT total dayTime seconds to add (signed), read from the
 	// SecRat-aware rational so a fraction arbitrarily close to a whole second is
 	// not rounded up via float64.
-	secsRat := xdm.DurationToRat(d, false)
+	secsRat := xdm.DurationToRat(d, durationSecondsMode)
 	if op == TokenMinus {
 		secsRat = new(big.Rat).Neg(secsRat)
 	}
@@ -372,8 +403,8 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 	if dt.TypeName == xdm.TypeTime {
 		// F&O 9.7.13 discards whole days before adding to the reference date.
 		// A large valid duration must not overflow a date that is not returned.
-		days := new(big.Int).Quo(secsRat.Num(), new(big.Int).Mul(secsRat.Denom(), big.NewInt(86400)))
-		wholeDays := new(big.Rat).SetInt(new(big.Int).Mul(days, big.NewInt(86400)))
+		days := new(big.Int).Quo(secsRat.Num(), new(big.Int).Mul(secsRat.Denom(), big.NewInt(calendarSecondsPerDay)))
+		wholeDays := new(big.Rat).SetInt(new(big.Int).Mul(days, big.NewInt(calendarSecondsPerDay)))
 		secsRat = new(big.Rat).Sub(secsRat, wholeDays)
 	}
 
@@ -385,7 +416,7 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 			return nil, true, &xdm.Error{Code: errCodeFODT0001, Message: "date/time arithmetic overflow: month count out of range"}
 		}
 
-		if !resultYearFits(t, int64(max(months, -months)/12+1)) {
+		if !resultYearFits(t, int64(max(months, -months)/calendarMonthsPerYear+1)) {
 			return nil, true, &xdm.Error{Code: errCodeFODT0001, Message: "date/time arithmetic overflow: result year out of range"}
 		}
 
@@ -408,12 +439,12 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 		frac := new(big.Rat).Sub(abs, new(big.Rat).SetInt(whole))
 		// Nanosecond remainder (truncated; sub-nanosecond precision is below the
 		// representable resolution of time.Time).
-		nanoRat := new(big.Rat).Mul(frac, big.NewRat(1e9, 1))
+		nanoRat := new(big.Rat).Mul(frac, big.NewRat(nanosecondsPerSecond, 1))
 		nanos := new(big.Int).Quo(nanoRat.Num(), nanoRat.Denom()).Int64()
 
 		days := new(big.Int)
 		remSecs := new(big.Int)
-		days.QuoRem(whole, big.NewInt(86400), remSecs)
+		days.QuoRem(whole, big.NewInt(calendarSecondsPerDay), remSecs)
 		// The day count can exceed int (e.g. P9223372036854775808D). Even within the
 		// int range, time.AddDate computes the result via int day arithmetic that
 		// silently wraps for magnitudes near math.MaxInt (e.g. 2^60 days returns the
@@ -423,7 +454,7 @@ func arithmeticDateTimeDuration(op TokenType, dt, dur xdm.AtomicValue) (xdm.Sequ
 			return nil, true, &xdm.Error{Code: errCodeFODT0001, Message: "date/time arithmetic overflow: day count out of range"}
 		}
 
-		if !resultYearFits(t, days.Int64()/365+1) {
+		if !resultYearFits(t, days.Int64()/calendarDaysPerCommonYear+1) {
 			return nil, true, &xdm.Error{Code: errCodeFODT0001, Message: "date/time arithmetic overflow: result year out of range"}
 		}
 
@@ -466,8 +497,8 @@ func resultYearFits(t time.Time, moveYears int64) bool {
 // into years exactly, so the split does not change the result. The caller
 // bounds |months| by maxSafeAddDateMonths.
 func addMonths(t time.Time, months int64) time.Time {
-	years := int(months / 12)
-	rem := int(months % 12)
+	years := int(months / calendarMonthsPerYear)
+	rem := int(months % calendarMonthsPerYear)
 
 	result := t.AddDate(years, rem, 0)
 	if result.Day() != t.Day() {
@@ -515,8 +546,8 @@ func arithmeticDateTimeDatetime(ec *evalContext, la, ra xdm.AtomicValue) (xdm.Se
 	aDays := julianDayNumber(ta.Year(), int(ta.Month()), ta.Day())
 	bDays := julianDayNumber(tb.Year(), int(tb.Month()), tb.Day())
 
-	aTimeSecs := int64(ta.Hour())*3600 + int64(ta.Minute())*60 + int64(ta.Second())
-	bTimeSecs := int64(tb.Hour())*3600 + int64(tb.Minute())*60 + int64(tb.Second())
+	aTimeSecs := int64(ta.Hour())*calendarSecondsPerHour + int64(ta.Minute())*calendarSecondsPerMinute + int64(ta.Second())
+	bTimeSecs := int64(tb.Hour())*calendarSecondsPerHour + int64(tb.Minute())*calendarSecondsPerMinute + int64(tb.Second())
 
 	_, aOff := ta.Zone()
 	_, bOff := tb.Zone()
@@ -525,7 +556,7 @@ func arithmeticDateTimeDatetime(ec *evalContext, la, ra xdm.AtomicValue) (xdm.Se
 	// added via big.Int so the day count (which can exceed the int64 second range
 	// for very distant dates) never overflows.
 	dayDelta := new(big.Int).Sub(big.NewInt(aDays), big.NewInt(bDays))
-	wholeSecsInt := new(big.Int).Mul(dayDelta, big.NewInt(86400))
+	wholeSecsInt := new(big.Int).Mul(dayDelta, big.NewInt(calendarSecondsPerDay))
 	wholeSecsInt.Add(wholeSecsInt, big.NewInt(aTimeSecs-bTimeSecs))
 	wholeSecsInt.Sub(wholeSecsInt, big.NewInt(int64(aOff)-int64(bOff)))
 
@@ -534,7 +565,7 @@ func arithmeticDateTimeDatetime(ec *evalContext, la, ra xdm.AtomicValue) (xdm.Se
 
 	secRat := new(big.Rat).SetInt(wholeSecsInt)
 	if nanoDelta != 0 {
-		secRat.Add(secRat, new(big.Rat).SetFrac(big.NewInt(nanoDelta), big.NewInt(1e9)))
+		secRat.Add(secRat, new(big.Rat).SetFrac(big.NewInt(nanoDelta), big.NewInt(nanosecondsPerSecond)))
 	}
 
 	negative := secRat.Sign() < 0
@@ -571,7 +602,7 @@ func arithmeticDurationDivDuration(ctx context.Context, la, ra xdm.AtomicValue) 
 	// beyond 2^53, so reject them. When SecRat is present the exact magnitude is
 	// authoritative and durationToRat reads it directly, so no cap applies.
 	if !isYM {
-		const maxExactFloat64 = 1 << 53
+		const maxExactFloat64 = 1 << xdm.PrecisionDouble
 		if ld.SecRat == nil && ld.Seconds > maxExactFloat64 {
 			return nil, true, &xdm.Error{Code: errCodeFODT0002, Message: "dayTimeDuration value too large for exact division"}
 		}
@@ -636,24 +667,24 @@ func resultDurationType(a, b string) string {
 
 func arithmeticDurationFloat(op TokenType, typeName string, d xdm.Duration, n float64) (xdm.Sequence, error) {
 	if math.IsNaN(n) {
-		return nil, &xdm.Error{Code: "FOCA0005", Message: "NaN in duration arithmetic"}
+		return nil, &xdm.Error{Code: errCodeFOCA0005, Message: "NaN in duration arithmetic"}
 	}
 
 	if op == TokenDiv && n == 0 {
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: "division of duration by zero"}
 	}
 
-	if op == TokenStar && math.IsInf(n, 0) {
+	if op == TokenStar && math.IsInf(n, eitherInfinitySign) {
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: textDurationOverflow}
 	}
 
-	if op == TokenStar && n == 0 || op == TokenDiv && math.IsInf(n, 0) {
+	if op == TokenStar && n == 0 || op == TokenDiv && math.IsInf(n, eitherInfinitySign) {
 		return xdm.SingleAtomic(xdm.AtomicValue{TypeName: typeName, Value: xdm.Duration{}}), nil
 	}
 
 	value := float64(d.Months)
 	if typeName == xdm.TypeDayTimeDuration {
-		value, _ = xdm.DurationToRat(d, false).Float64()
+		value, _ = xdm.DurationToRat(d, durationSecondsMode).Float64()
 	} else if d.Negative {
 		value = -value
 	}
@@ -664,7 +695,7 @@ func arithmeticDurationFloat(op TokenType, typeName string, d xdm.Duration, n fl
 		value /= n
 	}
 
-	if math.IsInf(value, 0) || math.IsNaN(value) {
+	if math.IsInf(value, eitherInfinitySign) || math.IsNaN(value) {
 		return nil, &xdm.Error{Code: errCodeFODT0002, Message: textDurationOverflow}
 	}
 
@@ -687,7 +718,7 @@ func durationFromExactSeconds(typeName string, seconds *big.Rat) xdm.Sequence {
 }
 
 func durationFromRoundedMonths(value float64) (xdm.Sequence, error) {
-	rounded, _ := new(big.Float).SetFloat64(roundHalfUpFloat(value, 0)).Int(nil)
+	rounded, _ := new(big.Float).SetFloat64(roundHalfUpFloat(value, wholeMonthPrecision)).Int(new(big.Int))
 
 	return durationFromMonthCount(rounded)
 }

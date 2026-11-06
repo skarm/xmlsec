@@ -547,13 +547,13 @@ func derefExprNode(node Expr) (Expr, bool) {
 // free variable. Kept in sync with eval_control.go buildCatchContext.
 func catchErrorVarKeys() [7]string {
 	return [7]string{
-		"err:code",
-		"err:description",
-		"err:value",
-		"err:module",
-		"err:line-number",
-		"err:column-number",
-		"err:additional",
+		catchVariableCode,
+		catchVariableDescription,
+		catchVariableValue,
+		catchVariableModule,
+		catchVariableLineNumber,
+		catchVariableColumnNumber,
+		catchVariableAdditional,
 	}
 }
 

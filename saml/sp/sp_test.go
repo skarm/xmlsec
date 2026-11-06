@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/url"
 	"testing"
 	"time"
@@ -520,4 +522,159 @@ func TestBeginRejectsMetadataPolicyBeforeSaving(t *testing.T) {
 			}
 		})
 	}
+}
+
+type redirectPolicySignerSpy struct {
+	crypto.Signer
+	calls int
+}
+
+func (s *redirectPolicySignerSpy) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
+	s.calls++
+	return s.Signer.Sign(random, digest, options)
+}
+
+func TestBeginRedirectIntersectsPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		redirect xmldsig.Policy
+		signing  xmldsig.Policy
+		denied   bool
+	}{
+		{name: "zero inherits"},
+		{name: "empty lists inherit", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{}, AllowedDigestMethods: []string{}}},
+		{name: "explicit permits", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}}},
+		{name: "explicit denies", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA384}}, denied: true},
+		{name: "signing denies", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}}, signing: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA384}}, denied: true},
+		{name: "invalid redirect bounds", redirect: xmldsig.Policy{MaxRSABits: -1}, denied: true},
+		{name: "incompatible bounds", redirect: xmldsig.Policy{MinRSABits: 4096}, signing: xmldsig.Policy{MaxRSABits: 2048}, denied: true},
+		{name: "disjoint digest sets", redirect: xmldsig.Policy{AllowedDigestMethods: []string{xmldsig.SHA384}}, signing: xmldsig.Policy{AllowedDigestMethods: []string{xmldsig.SHA256}}, denied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, resolver, requests, consumed := serviceProviderConfig(t)
+			signer := &redirectPolicySignerSpy{Signer: c.Signing.Key}
+			c.Signing.Key = signer
+			c.Signing.Policy = tc.signing
+			c.RedirectLimits.Policy = tc.redirect
+			resolver.entities = trustedMetadataEntities(t, c, time.Minute, time.Minute, singleSignOnURL)
+			service, err := NewServiceProvider(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := service.Begin(t.Context(), BeginOptions{IDP: idpEntityID, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)})
+			if tc.denied {
+				if out != nil || !errors.Is(err, xmldsig.ErrPolicy) || requests.puts != 0 || signer.calls != 0 {
+					t.Fatalf("policy denial: out=%v err=%v puts=%d signs=%d", out != nil, err, requests.puts, signer.calls)
+				}
+			} else if err != nil || out == nil || requests.puts != 1 || signer.calls != 1 {
+				t.Fatalf("allowed Redirect: out=%v err=%v puts=%d signs=%d", out != nil, err, requests.puts, signer.calls)
+			}
+			if consumed.calls != 0 {
+				t.Fatal("Begin consumed replay state")
+			}
+		})
+	}
+}
+
+func TestBeginRedirectPolicyRSAAndLegacy(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := testcert.New(t)
+	certificate := testcert.Issue(t, chain.Leaf, chain.Root, key.Public(), chain.RootKey)
+	for _, tc := range []struct {
+		name     string
+		method   string
+		redirect xmldsig.Policy
+		signing  xmldsig.Policy
+		denied   bool
+		wantErr  error
+	}{
+		{name: "RSA lower bound", redirect: xmldsig.Policy{MinRSABits: 4096}, denied: true, wantErr: xmldsig.ErrKey},
+		{name: "RSA exact bound", redirect: xmldsig.Policy{MinRSABits: 2048, MaxRSABits: 2048}},
+		{name: "legacy zero inherits", method: xmldsig.RSASHA1, signing: legacyRedirectSigningPolicy(), denied: fips140.Enabled()},
+		{name: "legacy empty inherits", method: xmldsig.RSASHA1, redirect: xmldsig.Policy{AllowedSignatureMethods: []string{}, AllowedDigestMethods: []string{}}, signing: legacyRedirectSigningPolicy(), denied: fips140.Enabled()},
+		{name: "legacy explicit permission denied", method: xmldsig.RSASHA1, redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.RSASHA1}}, signing: legacyRedirectSigningPolicy(), denied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, resolver, requests, _ := serviceProviderConfig(t)
+			signer := &redirectPolicySignerSpy{Signer: key}
+			c.Signing = protocol.SigningKey{Key: signer, CertificateDER: certificate.Raw, SignatureMethod: tc.method, Policy: tc.signing}
+			c.RedirectLimits.Policy = tc.redirect
+			resolver.entities = trustedMetadataEntities(t, c, time.Minute, time.Minute, singleSignOnURL)
+			service, err := NewServiceProvider(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := service.Begin(t.Context(), BeginOptions{IDP: idpEntityID, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)})
+			if tc.denied {
+				wantErr := tc.wantErr
+				if wantErr == nil {
+					wantErr = xmldsig.ErrPolicy
+				}
+				if out != nil || !errors.Is(err, wantErr) || requests.puts != 0 || signer.calls != 0 {
+					t.Fatalf("RSA policy denial: out=%v err=%v puts=%d signs=%d", out != nil, err, requests.puts, signer.calls)
+				}
+			} else if err != nil || out == nil || requests.puts != 1 || signer.calls != 1 {
+				t.Fatalf("RSA Redirect: out=%v err=%v puts=%d signs=%d", out != nil, err, requests.puts, signer.calls)
+			}
+		})
+	}
+}
+
+func legacyRedirectSigningPolicy() xmldsig.Policy {
+	p := xmldsig.LegacyVerificationPolicy()
+	p.AllowLegacySigning = true
+	return p
+}
+
+func TestRedirectPolicySnapshotAndUnusedPOST(t *testing.T) {
+	t.Run("owned lists", func(t *testing.T) {
+		c, resolver, requests, _ := serviceProviderConfig(t)
+		c.RedirectLimits.Policy = xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}, AllowedDigestMethods: []string{xmldsig.SHA256}}
+		resolver.entities = trustedMetadataEntities(t, c, time.Minute, time.Minute, singleSignOnURL)
+		service, err := NewServiceProvider(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.RedirectLimits.Policy.AllowedSignatureMethods[0] = xmldsig.ECDSASHA384
+		c.RedirectLimits.Policy.AllowedDigestMethods[0] = xmldsig.SHA384
+		if len(service.c.RedirectLimits.Policy.AllowedSignatureMethods) != 1 || len(service.c.RedirectLimits.Policy.AllowedDigestMethods) != 1 || service.c.RedirectLimits.Policy.AllowedSignatureMethods[0] != xmldsig.ECDSASHA256 || service.c.RedirectLimits.Policy.AllowedDigestMethods[0] != xmldsig.SHA256 {
+			t.Fatal("caller mutation changed Redirect policy snapshot")
+		}
+		out, err := service.Begin(t.Context(), BeginOptions{IDP: idpEntityID, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)})
+		if err != nil || out == nil || requests.puts != 1 {
+			t.Fatalf("owned Redirect policy: out=%v err=%v puts=%d", out != nil, err, requests.puts)
+		}
+	})
+	t.Run("POST ignores unused Redirect policy", func(t *testing.T) {
+		c, resolver, requests, _ := serviceProviderConfig(t)
+		c.RedirectLimits.Policy = xmldsig.Policy{MaxRSABits: -1}
+		resolver.entities = trustedMetadataEntities(t, c, time.Minute, time.Minute, singleSignOnURL)
+		doc, err := metadata.Build(t.Context(), metadata.EntityDescriptor{ID: "_post-idp", EntityID: idpEntityID, ValidUntil: testcert.Now().Add(time.Minute), IDP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: c.Signing.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPPost, Location: singleSignOnURL}}}}}, testcert.Now(), metadata.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := doc.XML(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolver.entities[idpEntityID], err = snapshot.Find(idpEntityID, testcert.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := NewServiceProvider(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := service.Begin(t.Context(), BeginOptions{IDP: idpEntityID, Binding: metadata.HTTPPost, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{7}, 32)})
+		if err != nil || out == nil || requests.puts != 1 {
+			t.Fatalf("POST with unused Redirect policy: out=%v err=%v puts=%d", out != nil, err, requests.puts)
+		}
+	})
 }

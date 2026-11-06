@@ -147,7 +147,7 @@ func (n NodeRef) Parent() NodeRef {
 		return ref(n.doc, n.node)
 	}
 
-	if n.node.Parent == nil {
+	if n.node.Parent == nil || n.doc.contextual && n.node == n.doc.root {
 		return n.doc.Node()
 	}
 
@@ -238,11 +238,36 @@ func (s NodeSet) Nodes() []NodeRef {
 		return out
 	}
 
-	axes := make(map[*Node][]NodeRef)
+	// Pack selected axes into one buffer instead of growing a slice for every
+	// element. Large selections otherwise allocate several slices per owner.
+	type axisSpan struct{ start, end, next int }
+
+	axes := make(map[*Node]axisSpan)
+	axisCount := 0
 
 	for n := range s.members {
 		if n.kind == AttributeNode || n.kind == NamespaceNode {
-			axes[n.node] = append(axes[n.node], n)
+			span := axes[n.node]
+			span.end++
+			axes[n.node] = span
+			axisCount++
+		}
+	}
+
+	axisNodes := make([]NodeRef, axisCount)
+
+	offset := 0
+	for node, span := range axes {
+		axes[node] = axisSpan{start: offset, end: offset + span.end, next: offset}
+		offset += span.end
+	}
+
+	for n := range s.members {
+		if n.kind == AttributeNode || n.kind == NamespaceNode {
+			span := axes[n.node]
+			axisNodes[span.next] = n
+			span.next++
+			axes[n.node] = span
 		}
 	}
 
@@ -258,7 +283,8 @@ func (s NodeSet) Nodes() []NodeRef {
 			out = append(out, r)
 		}
 
-		list := axes[n]
+		span := axes[n]
+		list := axisNodes[span.start:span.end]
 		slices.SortFunc(list, func(a, b NodeRef) int {
 			if a.kind != b.kind {
 				if a.kind == NamespaceNode {
@@ -528,6 +554,8 @@ func collectNodes(ctx context.Context, d *Document, start *Node) (NodeSet, error
 	var parent *Node
 	if start != nil {
 		parent = start.Parent
+	} else if d.contextual {
+		parent = d.root.Parent
 	}
 
 	scope := newNamespaceContext(parent)

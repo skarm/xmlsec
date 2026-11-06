@@ -13,6 +13,19 @@ import (
 	norm "github.com/skarm/xmlsec/internal/normalization"
 )
 
+// HTML5 is the default requested version; supported numeric values retain
+// the recognized HTML4, HTML4.01 and HTML5 profiles. The edition selector is
+// independent: zero uses the current serialization table, while 20 pins REC2.0.
+const (
+	defaultHTMLVersion          = "5"
+	htmlVersion4                = 4
+	htmlVersion401              = 4.01
+	htmlVersion5                = 5
+	htmlVersionParseBits        = 64
+	defaultSerializationEdition = 0
+	serializationEdition20      = 20
+)
+
 // IsHTMLNamespace selects names subject to the special HTML output rules.
 func IsHTMLNamespace(uri string, html5 bool) bool {
 	return uri == "" || html5 && uri == lexicon.NamespaceXHTML
@@ -29,13 +42,13 @@ func RequestedVersion(htmlVersion, version string) string {
 		return version
 	}
 
-	return "5"
+	return defaultHTMLVersion
 }
 
 // SupportedVersion identifies the HTML versions selected by this engine.
 func SupportedVersion(version string) bool {
-	value, err := strconv.ParseFloat(version, 64)
-	return err == nil && (value == 4 || value == 4.01 || value == 5)
+	value, err := strconv.ParseFloat(version, htmlVersionParseBits)
+	return err == nil && (value == htmlVersion4 || value == htmlVersion401 || value == htmlVersion5)
 }
 
 // Writer configures HTML serialization. It is a value-style wrapper:

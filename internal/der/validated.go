@@ -12,18 +12,18 @@ import (
 // Keeping this separate from Read avoids reflective decoding during schema
 // checks without bypassing the complete initial validation.
 func ValidatedValue(input []byte) (asn1.RawValue, []byte) {
-	value := asn1.RawValue{Class: int(input[0] >> 6), Tag: int(input[0] & 31), IsCompound: input[0]&32 != 0}
+	value := asn1.RawValue{Class: int(input[0] >> identifierClassShift), Tag: int(input[0] & highTagNumber), IsCompound: input[0]&constructedBit != 0}
 	at := 1
 
-	if value.Tag == 31 {
+	if value.Tag == highTagNumber {
 		value.Tag = 0
 
 		for {
 			octet := input[at]
 			at++
-			value.Tag = value.Tag<<7 | int(octet&127)
+			value.Tag = value.Tag<<base128Bits | int(octet&base128PayloadMask)
 
-			if octet&128 == 0 {
+			if octet&base128Continuation == 0 {
 				break
 			}
 		}
@@ -32,12 +32,12 @@ func ValidatedValue(input []byte) (asn1.RawValue, []byte) {
 	length := int(input[at])
 	at++
 
-	if length >= 128 {
-		count := length & 127
+	if length >= longLengthFlag {
+		count := length & longLengthCountMask
 		length = 0
 
 		for range count {
-			length = length<<8 | int(input[at])
+			length = length<<octetBits | int(input[at])
 			at++
 		}
 	}
@@ -65,7 +65,7 @@ func ValidatedChildren(value asn1.RawValue) iter.Seq[asn1.RawValue] {
 // ValidatedSequence fills caller-owned field storage from a SEQUENCE that has
 // already passed Read/ReadLimits. The storage length bounds its component count.
 func ValidatedSequence(value asn1.RawValue, minimum int, fields []asn1.RawValue) ([]asn1.RawValue, error) {
-	if !Is(value, 0, asn1.TagSequence, true) {
+	if !Is(value, asn1.ClassUniversal, asn1.TagSequence, true) {
 		return nil, ErrInvalidDER
 	}
 

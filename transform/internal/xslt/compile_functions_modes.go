@@ -14,11 +14,11 @@ import (
 )
 
 func (c *compiler) compileGlobalContextItem(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames("as", lexicon.AttrUse, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(nameAs, lexicon.AttrUse, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
-	asAttr := getAttr(elem, "as")
+	asAttr := getAttr(elem, nameAs)
 
 	// Capture the declaration-site static namespace context BEFORE validating
 	// the @as sequence type, so that schema-element()/schema-attribute() (and
@@ -36,7 +36,7 @@ func (c *compiler) compileGlobalContextItem(ctx context.Context, elem *xdm.Eleme
 	xpathDefaultNS := c.xpathDefaultNS
 
 	hasXPathDefaultNS := c.xpathDefaultNS != ""
-	if xdn, has := elem.GetAttribute(nameXpathDefaultNamespace); has {
+	if xdn, has := elem.GetAttribute(nameXPathDefaultNamespace); has {
 		xpathDefaultNS = xdn
 		hasXPathDefaultNS = true
 	}
@@ -104,7 +104,7 @@ func (c *compiler) compileGlobalContextItem(ctx context.Context, elem *xdm.Eleme
 // declarationTypeKey captures type identity in the declaration's static scope.
 func (c *compiler) declarationTypeKey(elem *xdm.Element, as string) string {
 	if strings.TrimSpace(as) == "" {
-		as = "item()*"
+		as = lexicon.NodeTestItem + "*"
 	}
 
 	defaultNS, hasDefault := c.declarationDefaultNamespace(elem)
@@ -120,9 +120,9 @@ func (c *compiler) declarationDefaultNamespace(elem *xdm.Element) (string, bool)
 
 	for node := xdm.Node(elem); node != nil; node = node.Parent() {
 		if e, ok := node.(*xdm.Element); ok {
-			value, present := e.GetAttribute(nameXpathDefaultNamespace)
+			value, present := e.GetAttribute(nameXPathDefaultNamespace)
 			if e.URI() != lexicon.NamespaceXSLT {
-				value, present = e.GetAttributeNS(nameXpathDefaultNamespace, lexicon.NamespaceXSLT)
+				value, present = e.GetAttributeNS(nameXPathDefaultNamespace, lexicon.NamespaceXSLT)
 			}
 
 			if present {
@@ -138,7 +138,7 @@ func (c *compiler) declarationDefaultNamespace(elem *xdm.Element) (string, bool)
 func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error {
 	defer c.pushElementVersion(elem)()
 
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, "as", xslAttrVisibility, nameStreamable, "streamability", "override-extension-function", xslElemOverride, "identity-sensitive", "cache", "new-each-time", xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameAs, xslAttrVisibility, nameStreamable, nameStreamability, nameOverrideExtensionFunction, xslElemOverride, nameIdentitySensitive, nameCache, nameNewEachTime, xslAttrUseWhen)); err != nil {
 		return err
 	}
 
@@ -195,13 +195,13 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		return err
 	}
 
-	fnAs := getAttr(elem, "as")
+	fnAs := getAttr(elem, nameAs)
 	if err := c.validateAsSequenceType(ctx, elem, fnAs, "xsl:function "+name); err != nil {
 		return err
 	}
 
 	// XTSE3155: xsl:function with no params and streamability != unclassified
-	streamability := getAttr(elem, "streamability")
+	streamability := getAttr(elem, nameStreamability)
 	if streamability == "" {
 		streamability = getAttr(elem, nameStreamable)
 		switch streamability {
@@ -222,10 +222,10 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		Params:        params,
 		Body:          body,
 		As:            fnAs,
-		Cache:         xsdBoolTrue(getAttr(elem, "cache")),
+		Cache:         xsdBoolTrue(getAttr(elem, nameCache)),
 		Streamability: streamability,
 		Visibility:    getAttr(elem, xslAttrVisibility),
-		NewEachTime:   getAttr(elem, "new-each-time"),
+		NewEachTime:   getAttr(elem, nameNewEachTime),
 		ImportPrec:    c.importPrec,
 	}
 	if c.stylesheet.isPackage {
@@ -269,9 +269,9 @@ func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
 		return nil
 	}
 
-	if c.stylesheet.processorLanguage() == 20 {
-		if value, present := childElem.GetAttribute(ctxItemRequired); present {
-			if err := validateBooleanAttr("xsl:param", ctxItemRequired, value); err != nil {
+	if c.stylesheet.processorLanguage() == processorXSLT20 {
+		if value, present := childElem.GetAttribute(xslAttrRequired); present {
+			if err := validateBooleanAttr("xsl:param", xslAttrRequired, value); err != nil {
 				return err
 			}
 
@@ -279,8 +279,8 @@ func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
 		}
 	}
 
-	if reqVal, hasReq := childElem.GetAttribute(ctxItemRequired); hasReq {
-		if reqVal != lexicon.ValueYes && reqVal != "1" && reqVal != lexicon.ValueTrue {
+	if reqVal, hasReq := childElem.GetAttribute(xslAttrRequired); hasReq {
+		if reqVal != lexicon.ValueYes && reqVal != booleanDigitTrue && reqVal != lexicon.ValueTrue {
 			pname := getAttr(childElem, xslAttrName)
 
 			return staticError(errCodeXTSE0020,
@@ -308,7 +308,7 @@ func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
 }
 
 func (c *compiler) compileMode(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameStreamable, "on-no-match", "on-multiple-match", "warning-on-no-match", "warning-on-multiple-match", nameTyped, xslAttrVisibility, xslAttrUseWhen, nameUseAccumulators)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameStreamable, nameOnNoMatch, nameOnMultipleMatch, nameWarningOnNoMatch, nameWarningOnMultipleMatch, nameTyped, xslAttrVisibility, xslAttrUseWhen, nameUseAccumulators)); err != nil {
 		return err
 	}
 	// xsl:mode must be empty (no children)
@@ -337,7 +337,7 @@ func (c *compiler) modeDefinition(ctx context.Context, elem *xdm.Element) (*mode
 		return nil, "", err
 	}
 
-	md := &modeDef{Name: name, Streamable: streamable, ImportPrec: c.importPrec}
+	md := &modeDef{Name: name, Streamable: streamable, HasStreamable: streamableStr != "", ImportPrec: c.importPrec}
 	if err := readModePolicies(elem, md); err != nil {
 		return nil, "", err
 	}
@@ -378,7 +378,7 @@ func (c *compiler) modeDeclarationName(_ context.Context, elem *xdm.Element) (st
 		return modeDefault, nil
 	}
 
-	return modeQName(strings.Trim(raw, " \t\r\n"), elem, errCodeXTSE0020)
+	return modeQName(strings.Trim(raw, lexicon.XMLWhitespace), elem, errCodeXTSE0020)
 }
 
 func (c *compiler) modeAccumulatorNames(elem *xdm.Element) *string {
@@ -393,7 +393,7 @@ func (c *compiler) modeAccumulatorNames(elem *xdm.Element) *string {
 		var resolvedParts []string
 
 		for tok := range strings.FieldsSeq(rawUA) {
-			if tok == "#all" {
+			if tok == lexicon.ModeAll {
 				resolvedParts = append(resolvedParts, tok)
 			} else {
 				resolvedParts = append(resolvedParts, resolveQName(tok, c.nsBindings))
@@ -417,7 +417,9 @@ func (c *compiler) mergeModeImportPrecedence(existing, md *modeDef, streamableSt
 		md.conflictOnNoMatch = existing.conflictOnNoMatch && md.OnNoMatch == ""
 		md.conflictVisibility = existing.conflictVisibility && md.Visibility == ""
 		md.conflictOnMultiple = existing.conflictOnMultiple && md.OnMultipleMatch == ""
+
 		md.conflictAccumulator = existing.conflictAccumulator && md.UseAccumulators == nil
+		inheritModeStreamable(md, existing)
 		// Inherit attributes not explicitly set in higher-precedence decl
 		if md.OnNoMatch == "" {
 			md.OnNoMatch = existing.OnNoMatch
@@ -438,6 +440,8 @@ func (c *compiler) mergeModeImportPrecedence(existing, md *modeDef, streamableSt
 		c.stylesheet.modeDefs[name] = md
 	} else {
 		// Lower precedence than existing: merge unspecified attrs into existing.
+		inheritModeStreamable(existing, md)
+
 		if existing.OnNoMatch == "" && md.OnNoMatch != "" {
 			existing.OnNoMatch = md.OnNoMatch
 		}
@@ -453,6 +457,12 @@ func (c *compiler) mergeModeImportPrecedence(existing, md *modeDef, streamableSt
 		if existing.Visibility == "" && md.Visibility != "" {
 			existing.Visibility = md.Visibility
 		}
+	}
+}
+
+func inheritModeStreamable(target, source *modeDef) {
+	if !target.HasStreamable && source.HasStreamable {
+		target.Streamable, target.HasStreamable = source.Streamable, true
 	}
 }
 
@@ -509,8 +519,8 @@ func inScopeNamespaces(elem *xdm.Element) map[string]string {
 
 func validateFunctionOptions(elem *xdm.Element) error {
 	// XTSE0020: validate override-extension-function (boolean)
-	if oef, has := elem.GetAttribute("override-extension-function"); has {
-		if err := validateBooleanAttr("xsl:function", "override-extension-function", oef); err != nil {
+	if oef, has := elem.GetAttribute(nameOverrideExtensionFunction); has {
+		if err := validateBooleanAttr("xsl:function", nameOverrideExtensionFunction, oef); err != nil {
 			return err
 		}
 	}
@@ -521,7 +531,7 @@ func validateFunctionOptions(elem *xdm.Element) error {
 		}
 		// Having both @override and @override-extension-function is only an error
 		// when they disagree (XTSE0020 per spec function-0117).
-		if oef, hasOEF := elem.GetAttribute("override-extension-function"); hasOEF {
+		if oef, hasOEF := elem.GetAttribute(nameOverrideExtensionFunction); hasOEF {
 			ovBool, _ := parseXSDBool(ov)
 
 			oefBool, _ := parseXSDBool(oef)
@@ -532,7 +542,7 @@ func validateFunctionOptions(elem *xdm.Element) error {
 		}
 	}
 	// XTSE0020: validate new-each-time (yes|no|maybe)
-	if net := getAttr(elem, "new-each-time"); net != "" {
+	if net := getAttr(elem, nameNewEachTime); net != "" {
 		switch net {
 		case lexicon.ValueYes, lexicon.ValueNo, nameMaybe:
 			// valid
@@ -579,7 +589,7 @@ func parseModeStreamable(elem *xdm.Element) (bool, string, error) {
 
 func readModePolicies(elem *xdm.Element, md *modeDef) error {
 	// Validate on-no-match
-	md.OnNoMatch = strings.TrimSpace(getAttr(elem, "on-no-match"))
+	md.OnNoMatch = strings.TrimSpace(getAttr(elem, nameOnNoMatch))
 	if md.OnNoMatch != "" {
 		switch md.OnNoMatch {
 		case onNoMatchTextOnlyCopy, onNoMatchShallowCopy, onNoMatchDeepCopy, onNoMatchShallowSkip, onNoMatchDeepSkip, onNoMatchFail:
@@ -596,7 +606,7 @@ func readModePolicies(elem *xdm.Element, md *modeDef) error {
 	}
 
 	if raw, present := elem.GetAttribute(xslAttrVisibility); present {
-		md.Visibility = strings.Trim(raw, " \t\r\n")
+		md.Visibility = strings.Trim(raw, lexicon.XMLWhitespace)
 		switch md.Visibility {
 		case visPublic, visPrivate, visFinal:
 		default:
@@ -608,7 +618,7 @@ func readModePolicies(elem *xdm.Element, md *modeDef) error {
 		return staticError(errCodeXTSE0020, "unnamed mode cannot have visibility %q", md.Visibility)
 	}
 
-	md.OnMultipleMatch = strings.TrimSpace(getAttr(elem, "on-multiple-match"))
+	md.OnMultipleMatch = strings.TrimSpace(getAttr(elem, nameOnMultipleMatch))
 	if md.OnMultipleMatch != "" {
 		switch md.OnMultipleMatch {
 		case onMultipleMatchUseLast, onNoMatchFail:
@@ -623,13 +633,13 @@ func readModePolicies(elem *xdm.Element, md *modeDef) error {
 
 func validateModeFlags(elem *xdm.Element) error {
 	// Validate boolean attributes
-	if v := getAttr(elem, "warning-on-no-match"); v != "" {
+	if v := getAttr(elem, nameWarningOnNoMatch); v != "" {
 		if _, ok := parseXSDBool(v); !ok {
 			return staticError(errCodeXTSE0020, "invalid value %q for warning-on-no-match on xsl:mode", v)
 		}
 	}
 
-	if v := getAttr(elem, "warning-on-multiple-match"); v != "" {
+	if v := getAttr(elem, nameWarningOnMultipleMatch); v != "" {
 		if _, ok := parseXSDBool(v); !ok {
 			return staticError(errCodeXTSE0020, "invalid value %q for warning-on-multiple-match on xsl:mode", v)
 		}
@@ -659,8 +669,12 @@ func mergeSamePrecedenceMode(existing, md *modeDef, hasStreamable bool) {
 		existing.conflictOnNoMatch = true
 	}
 
-	if hasStreamable && existing.Streamable != md.Streamable {
-		existing.conflictStreamable = true
+	if hasStreamable {
+		if existing.HasStreamable && existing.Streamable != md.Streamable {
+			existing.conflictStreamable = true
+		}
+
+		existing.Streamable, existing.HasStreamable = md.Streamable, true
 	}
 
 	if existing.Visibility != "" && md.Visibility != "" && existing.Visibility != md.Visibility {
@@ -791,6 +805,10 @@ func (writer canonicalTypeWriter) sequenceType(st xdm.SequenceType) {
 // resolveSequenceTypeQName, so prefixes and default-namespace differences are
 // normalized away.
 func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
+	const (
+		unknownSequenceTypeMarker = "?unknown?"
+	)
+
 	switch t := nt.(type) {
 	case xdm.AtomicOrUnionType:
 		qn := t.Name
@@ -800,7 +818,7 @@ func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
 
 		writer.qname(qn, qnameTypeName)
 	case xdm.ElementTest:
-		writer.b.WriteString("element(")
+		writer.b.WriteString(lexicon.KindElement + "(")
 		writer.qname(t.Name, qnameElementName)
 
 		if t.TypeName != "" {
@@ -814,7 +832,7 @@ func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
 
 		writer.b.WriteByte(')')
 	case xdm.AttributeTest:
-		writer.b.WriteString("attribute(")
+		writer.b.WriteString(lexicon.KindAttribute + "(")
 		writer.qname(t.Name, qnameAttributeName)
 
 		if t.TypeName != "" {
@@ -824,15 +842,15 @@ func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
 
 		writer.b.WriteByte(')')
 	case xdm.SchemaElementTest:
-		writer.b.WriteString("schema-element(")
+		writer.b.WriteString(lexicon.KindSchemaElement + "(")
 		writer.qname(t.Name, qnameElementName)
 		writer.b.WriteByte(')')
 	case xdm.SchemaAttributeTest:
-		writer.b.WriteString("schema-attribute(")
+		writer.b.WriteString(lexicon.KindSchemaAttribute + "(")
 		writer.qname(t.Name, qnameAttributeName)
 		writer.b.WriteByte(')')
 	case xdm.DocumentTest:
-		writer.b.WriteString("document-node(")
+		writer.b.WriteString(lexicon.KindDocumentNode + "(")
 
 		if t.Inner != nil {
 			writer.nodeTest(t.Inner)
@@ -840,27 +858,27 @@ func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
 
 		writer.b.WriteByte(')')
 	case xdm.PITest:
-		writer.b.WriteString("processing-instruction(")
+		writer.b.WriteString(lexicon.KindPI + "(")
 		writer.b.WriteString(t.Target)
 		writer.b.WriteByte(')')
 	case xdm.TypeTest:
 		switch t.Kind {
 		case xdm.NodeKindText:
-			writer.b.WriteString("text()")
+			writer.b.WriteString(lexicon.NodeTestText)
 		case xdm.NodeKindComment:
-			writer.b.WriteString("comment()")
+			writer.b.WriteString(lexicon.NodeTestComment)
 		case xdm.NodeKindProcessingInstruction:
-			writer.b.WriteString("processing-instruction()")
+			writer.b.WriteString(lexicon.NodeTestPI)
 		default:
-			writer.b.WriteString("node()")
+			writer.b.WriteString(lexicon.NodeTestNode)
 		}
 	case xdm.NamespaceNodeTest:
-		writer.b.WriteString("namespace-node()")
+		writer.b.WriteString(lexicon.KindNamespaceNode + "()")
 	case xdm.AnyItemTest:
-		writer.b.WriteString("item()")
+		writer.b.WriteString(lexicon.NodeTestItem)
 	case xdm.NameTest:
 		qn := t.Local
-		if t.URI != "" {
+		if t.URIQualified || t.URI != "" {
 			qn = "Q{" + t.URI + "}" + t.Local
 		} else if t.Prefix != "" {
 			qn = t.Prefix + ":" + t.Local
@@ -871,28 +889,28 @@ func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
 		writer.functionTest(t)
 	case xdm.MapTest:
 		if t.AnyType {
-			writer.b.WriteString("map(*)")
+			writer.b.WriteString(sequenceTypeMapStart + "*)")
 			return
 		}
 
-		writer.b.WriteString("map(")
+		writer.b.WriteString(sequenceTypeMapStart)
 		writer.nodeTest(t.KeyType)
 		writer.b.WriteByte(',')
 		writer.sequenceType(t.ValType)
 		writer.b.WriteByte(')')
 	case xdm.ArrayTest:
 		if t.AnyType {
-			writer.b.WriteString("array(*)")
+			writer.b.WriteString(sequenceTypeArrayStart + "*)")
 			return
 		}
 
-		writer.b.WriteString("array(")
+		writer.b.WriteString(sequenceTypeArrayStart)
 		writer.sequenceType(t.MemberType)
 		writer.b.WriteByte(')')
 	default:
 		// Unknown/absent test: a stable placeholder so two unknowns compare equal
 		// without misrepresenting them as item().
-		writer.b.WriteString("?unknown?")
+		writer.b.WriteString(unknownSequenceTypeMarker)
 	}
 }
 
@@ -911,11 +929,11 @@ func (writer canonicalTypeWriter) qname(qname string, kind qnameKind) {
 
 func (writer canonicalTypeWriter) functionTest(t xdm.FunctionTest) {
 	if t.AnyFunction {
-		writer.b.WriteString("function(*)")
+		writer.b.WriteString(sequenceTypeFunctionStart + "*)")
 		return
 	}
 
-	writer.b.WriteString("function(")
+	writer.b.WriteString(sequenceTypeFunctionStart)
 
 	for i, pt := range t.ParamTypes {
 		if i > 0 {
@@ -935,8 +953,8 @@ func (writer canonicalTypeWriter) functionTest(t xdm.FunctionTest) {
 func isBuiltinXSDLocalName(local string) bool {
 	switch local {
 	case lexicon.TypeString, lexicon.TypeInteger, lexicon.TypeDecimal, lexicon.TypeDouble, lexicon.TypeFloat,
-		lexicon.TypeBoolean, "date", lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration,
-		lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration, "anyURI", lexicon.TypeUntypedAtomic:
+		lexicon.TypeBoolean, lexicon.TypeDate, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDuration,
+		lexicon.TypeDayTimeDuration, lexicon.TypeYearMonthDuration, lexicon.TypeAnyURI, lexicon.TypeUntypedAtomic:
 		return true
 	}
 

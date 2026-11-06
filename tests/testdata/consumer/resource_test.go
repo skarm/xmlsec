@@ -66,11 +66,18 @@ func TestHTTPTextMetadataAndDecodedLimit(t *testing.T) {
 		}
 		value, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
 		if maximum == 1 {
-			if !errors.Is(err, transform.ErrLimit) || value.Len() != 0 {
+			if !errors.Is(err, transform.ErrLimit) || value != (transform.Sequence{}) {
 				t.Fatal("decoded text escaped its byte budget", value, err)
 			}
-		} else if text, textErr := value.Text(); err != nil || textErr != nil || text != "é" {
-			t.Fatal("HTTP metadata was lost", text, err, textErr)
+		} else {
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			text, textErr := value.Text()
+			if textErr != nil || text != "é" {
+				t.Fatal("HTTP metadata was lost", text, textErr)
+			}
 		}
 		if closed != 1 {
 			t.Fatal("HTTP stream close count", closed)
@@ -93,8 +100,8 @@ func TestTypedNilResourceAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, err := query.Evaluate(t.Context(), nil, transform.XPathContext{}); err == nil || value.Len() != 0 {
-		t.Fatalf("nil resolver: %d items, %v", value.Len(), err)
+	if value, err := query.Evaluate(t.Context(), nil, transform.XPathContext{}); err == nil || value != (transform.Sequence{}) {
+		t.Fatalf("nil resolver: result %+v, %v", value, err)
 	}
 
 	var absentReader *strings.Reader
@@ -297,7 +304,9 @@ func TestTextResourceChunksAndCompletion(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := query.Evaluate(t.Context(), nil, transform.XPathContext{})
-		if err != nil || result.Len() != 3 {
+		if err != nil {
+			t.Fatal(err)
+		} else if result.Len() != 3 {
 			t.Fatal(result.Len(), err)
 		}
 		for i, want := range []string{strings.Repeat("x", (32<<10)-1) + "🙂", "я", "end"} {

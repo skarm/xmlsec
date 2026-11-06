@@ -12,6 +12,45 @@ import (
 	"unicode/utf8"
 )
 
+// Compilation ceilings independently bound source bytes, VM instructions and repeat counters.
+const (
+	maxPatternBytes        = 64 << 10
+	maxProgramInstructions = 8192
+	maxRepeatCounters      = 128
+)
+
+// Zero Work limits select these defaults, measured in matching steps and logical storage cells.
+const (
+	defaultMaxSteps = 2_000_000
+	defaultMaxCells = 1 << 20
+)
+
+// CacheCost uses these conservative admission weights, not exact Go heap sizes.
+// Equal weights describe different structures and remain independently named.
+const (
+	programCacheOverhead         = 128
+	instructionCacheWeight       = 128
+	literalRuneCacheWeight       = 8
+	characterSetCacheOverhead    = 128
+	characterRangeCacheWeight    = 16
+	propertyReferenceCacheWeight = 32
+	propertyTableCacheOverhead   = 128
+	unicodeRange16CacheWeight    = 16
+	unicodeRange32CacheWeight    = 32
+)
+
+// VM state accounting counts capture offsets and counter fields in logical cells.
+// Visit keys encode integer fields as varints; their byte storage is converted to cells.
+const (
+	captureOffsetsPerGroup = 2
+	counterStateCells      = 3
+	fixedStateCells        = 2
+	visitKeyBytesPerCell   = 8
+	visitedStateOverhead   = 4
+	stateKeyHeaderBytes    = fixedStateCells * binary.MaxVarintLen64
+	stateKeyCounterBytes   = counterStateCells * binary.MaxVarintLen64
+)
+
 // ErrLimit reports an exhausted parser, work or storage limit.
 var ErrLimit = errors.New("pattern: resource limit exceeded")
 
@@ -125,7 +164,7 @@ type stateStack struct {
 
 // Compile parses a pattern without expanding counted repetitions.
 func Compile(source string, options Options) (*Program, error) {
-	if len(source) > 64<<10 {
+	if len(source) > maxPatternBytes {
 		return nil, ErrLimit
 	}
 
@@ -181,22 +220,22 @@ func (p *Program) CacheCost(limit int) int {
 
 		return true
 	}
-	if !charge(128 + cap(p.code)*128) {
+	if !charge(programCacheOverhead + cap(p.code)*instructionCacheWeight) {
 		return cost
 	}
 
 	for _, inst := range p.code {
-		if !charge(cap(inst.text) * 8) {
+		if !charge(cap(inst.text) * literalRuneCacheWeight) {
 			return cost
 		}
 
 		for set := inst.set; set != nil; set = set.subtract {
-			if !charge(128 + cap(set.ranges)*16 + cap(set.properties)*32) {
+			if !charge(characterSetCacheOverhead + cap(set.ranges)*characterRangeCacheWeight + cap(set.properties)*propertyReferenceCacheWeight) {
 				return cost
 			}
 
 			for _, property := range set.properties {
-				if !charge(128 + cap(property.table.R16)*16 + cap(property.table.R32)*32) {
+				if !charge(propertyTableCacheOverhead + cap(property.table.R16)*unicodeRange16CacheWeight + cap(property.table.R32)*unicodeRange32CacheWeight) {
 					return cost
 				}
 			}
@@ -266,7 +305,7 @@ func (p *Program) Each(ctx context.Context, s string, limit int, work Work, fn f
 }
 
 func (p *Program) append(i instruction) (int, error) {
-	if len(p.code) >= 8192 {
+	if len(p.code) >= maxProgramInstructions {
 		return 0, ErrLimit
 	}
 
@@ -339,7 +378,7 @@ func (p *Program) emitGroup(n *btGroup, next int) (int, error) {
 		return p.emit(n.node, next)
 	}
 
-	end, err := p.append(instruction{op: opSave, index: 2*n.index + 1, x: next})
+	end, err := p.append(instruction{op: opSave, index: captureOffsetsPerGroup*n.index + 1, x: next})
 	if err != nil {
 		return 0, err
 	}
@@ -349,7 +388,7 @@ func (p *Program) emitGroup(n *btGroup, next int) (int, error) {
 		return 0, err
 	}
 
-	return p.append(instruction{op: opSave, index: 2 * n.index, x: inner})
+	return p.append(instruction{op: opSave, index: captureOffsetsPerGroup * n.index, x: inner})
 }
 
 func (p *Program) emitRepeat(n *btRepeat, next int) (int, error) {
@@ -381,7 +420,7 @@ func (p *Program) emitRepeat(n *btRepeat, next int) (int, error) {
 	id := p.counters
 
 	p.counters++
-	if p.counters > 128 {
+	if p.counters > maxRepeatCounters {
 		return 0, ErrLimit
 	}
 
@@ -445,8 +484,8 @@ func replacementPart(replacement, source string, match []int, at int) (string, i
 			group, err := parseCount(replacement[at+2 : at+2+closing])
 			next := at + closing + 3
 
-			if err == nil && group < len(match)/2 && match[2*group] >= 0 {
-				return source[match[2*group]:match[2*group+1]], next, true
+			if err == nil && group < len(match)/captureOffsetsPerGroup && match[captureOffsetsPerGroup*group] >= 0 {
+				return source[match[captureOffsetsPerGroup*group]:match[captureOffsetsPerGroup*group+1]], next, true
 			}
 
 			return "", next, false
@@ -462,11 +501,11 @@ func newMachine(ctx context.Context, p *Program, s string, work Work) (*machine,
 	}
 
 	if work.MaxSteps == 0 {
-		work.MaxSteps = 2_000_000
+		work.MaxSteps = defaultMaxSteps
 	}
 
 	if work.MaxCells == 0 {
-		work.MaxCells = 1 << 20
+		work.MaxCells = defaultMaxCells
 	}
 
 	if work.MaxSteps < 0 || work.MaxCells < 0 {
@@ -506,16 +545,16 @@ func (m *machine) find(from int) ([]int, error) {
 
 func (m *machine) attempt(start int) ([]int, error) {
 	p := m.program
-	if err := m.charge(2*(p.groups+1) + 3*p.counters + 2); err != nil {
+	if err := m.charge(captureOffsetsPerGroup*(p.groups+1) + counterStateCells*p.counters + fixedStateCells); err != nil {
 		return nil, err
 	}
 
-	s := state{pc: p.start, pos: start, caps: make([]int, 2*(p.groups+1)), counters: make([]counter, p.counters)}
+	s := state{pc: p.start, pos: start, caps: make([]int, captureOffsetsPerGroup*(p.groups+1)), counters: make([]counter, p.counters)}
 	for i := range s.caps {
 		s.caps[i] = -1
 	}
 
-	stack := stateStack{weight: len(s.caps) + 3*len(s.counters) + 2}
+	stack := stateStack{weight: len(s.caps) + counterStateCells*len(s.counters) + fixedStateCells}
 
 	for {
 		if err := m.charge(1); err != nil {
@@ -558,11 +597,11 @@ func (m *machine) visit(s state, stackCells int) (bool, error) {
 		}
 		// Preserve the general path's exact logical cell charge, including
 		// varint-width boundaries, without allocating a serialized key.
-		var encoded [20]byte
+		var encoded [stateKeyHeaderBytes]byte
 
 		used := binary.PutVarint(encoded[:], int64(s.pc))
 		used += binary.PutVarint(encoded[used:], int64(s.pos))
-		cells := used/8 + 4
+		cells := used/visitKeyBytesPerCell + visitedStateOverhead
 
 		if cells > m.work.MaxCells-m.cells-stackCells {
 			return false, ErrLimit
@@ -579,7 +618,7 @@ func (m *machine) visit(s state, stackCells int) (bool, error) {
 		return false, nil
 	}
 
-	cells := len(key)/8 + 4
+	cells := len(key)/visitKeyBytesPerCell + visitedStateOverhead
 	if cells > m.work.MaxCells-m.cells-stackCells {
 		return false, ErrLimit
 	}
@@ -687,7 +726,7 @@ func (m *machine) reference(s *state, i instruction) (bool, error) {
 }
 
 func (m *machine) captured(s *state, i instruction) (bool, error) {
-	a, b := s.caps[2*i.index], s.caps[2*i.index+1]
+	a, b := s.caps[captureOffsetsPerGroup*i.index], s.caps[captureOffsetsPerGroup*i.index+1]
 	if a < 0 || b < a {
 		return true, nil
 	}
@@ -779,9 +818,9 @@ func (m *machine) charge(n int) error {
 }
 
 func (m *machine) stateKey(s state) string {
-	size := 20 + 30*len(s.counters)
+	size := stateKeyHeaderBytes + stateKeyCounterBytes*len(s.counters)
 	if m.program.backrefs {
-		size += 10 * len(s.caps)
+		size += binary.MaxVarintLen64 * len(s.caps)
 	}
 
 	buffer := make([]byte, 0, size)

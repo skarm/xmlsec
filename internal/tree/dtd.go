@@ -22,12 +22,13 @@ var errDTDPresent = errors.New("XML DOCTYPE present")
 type DTDEntityResolver func(context.Context, string, string) (io.ReadCloser, string, error)
 
 type dtdEntity struct {
-	value    string
-	systemID string
-	publicID string
-	notation string
-	base     string
-	external bool
+	value           string
+	systemID        string
+	publicID        string
+	notation        string
+	base            string
+	external        bool
+	declaredOutside bool
 }
 
 type dtdAttribute struct {
@@ -54,6 +55,9 @@ type dtdState struct {
 	declarations int
 	inputBytes   int
 	loaded       map[string]dtdLoaded
+	info         DocumentType
+	standalone   bool
+	inDTD        bool
 }
 
 func newDTDState(ctx context.Context, options ParseOptions) *dtdState {
@@ -67,6 +71,7 @@ func newDTDState(ctx context.Context, options ParseOptions) *dtdState {
 		active:     make(map[string]struct{}),
 		work:       options.Limits.MaxBytes,
 		loaded:     make(map[string]dtdLoaded),
+		info:       DocumentType{Notations: make(map[string]Notation)},
 	}
 }
 
@@ -123,7 +128,7 @@ func (d *dtdState) load(entity dtdEntity) (string, string, error) {
 
 	r, base, err := d.options.DTDResolver(d.ctx, entity.systemID, entity.base)
 	if err != nil {
-		if !nilcheck.IsNil(r) {
+		if r != nil && !nilcheck.IsNil(r) {
 			err = errors.Join(err, r.Close())
 		}
 
@@ -189,17 +194,9 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 		result.WriteRune(r)
 
 		if !checked {
-			prefix := result.String()
-			if len(prefix) >= 6 && (!strings.HasPrefix(prefix, "<?xml") || !spaceByte(prefix[5])) {
-				checked = true
-			}
-
-			if !checked && strings.HasSuffix(prefix, "?>") {
-				if err := processDTDDeclaration(&p, prefix, external); err != nil {
-					return "", err
-				}
-
-				p.seenDecl, checked = true, true
+			checked, err = checkDTDInputPrefix(&p, &result, external)
+			if err != nil {
+				return "", err
 			}
 		}
 	}
@@ -209,11 +206,38 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 	}
 
 	text := result.String()
-	if external {
-		return stripTextDeclaration(text)
-	}
 
 	return text, nil
+}
+
+func checkDTDInputPrefix(p *documentParser, result *strings.Builder, external bool) (bool, error) {
+	prefix := result.String()
+	// An XML declaration needs "<?xml" and a separating space. A shorter
+	// ordinary PI, such as "<?A?>", cannot be sliced as a declaration.
+	if len(prefix) < 6 {
+		return false, nil
+	}
+
+	if !strings.HasPrefix(prefix, "<?xml") || !spaceByte(prefix[5]) {
+		return true, nil
+	}
+
+	if !strings.HasSuffix(prefix, "?>") {
+		return false, nil
+	}
+
+	if err := processDTDDeclaration(p, prefix, external); err != nil {
+		return false, err
+	}
+
+	if external {
+		// A validated TextDecl is not part of replacement text.
+		result.Reset()
+	}
+
+	p.seenDecl = true
+
+	return true, nil
 }
 
 func normalizeDTDLineEndings(text string) string {
@@ -272,8 +296,13 @@ func (o ParseOptions) parseDTDText(ctx context.Context, text string) (*Document,
 
 	for name, entity := range state.entities {
 		if entity.notation != "" {
-			doc.unparsedEntities[name] = UnparsedEntity{SystemID: entity.systemID, PublicID: entity.publicID, BaseURI: entity.base}
+			doc.unparsedEntities[name] = UnparsedEntity{SystemID: entity.systemID, PublicID: entity.publicID, BaseURI: entity.base, Notation: entity.notation}
 		}
+	}
+
+	if state.info.Name != "" {
+		state.info.UnparsedEntities = doc.unparsedEntities
+		doc.dtdInfo = &state.info
 	}
 
 	doc.inputBytes = state.inputBytes
@@ -282,6 +311,10 @@ func (o ParseOptions) parseDTDText(ctx context.Context, text string) (*Document,
 }
 
 func (o ParseOptions) parseDTDReader(ctx context.Context, source io.Reader) (*Document, error) {
+	if nilcheck.IsNil(source) {
+		return nil, ErrMalformed
+	}
+
 	captured := dtdProbeReader{source: source}
 
 	probe, err := newDocumentReader(ctx, &captured, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
@@ -289,7 +322,7 @@ func (o ParseOptions) parseDTDReader(ctx context.Context, source io.Reader) (*Do
 		return nil, err
 	}
 
-	probe.input.dtdProbe, probe.stopAtRoot = true, true
+	probe.input.dtdProbe, probe.stopAtRoot, probe.compatibleVersions = true, true, true
 
 	_, probeErr := probe.parse(ctx)
 	if probeErr != nil && !errors.Is(probeErr, errDTDPresent) {
@@ -300,7 +333,14 @@ func (o ParseOptions) parseDTDReader(ctx context.Context, source io.Reader) (*Do
 
 	replay := io.MultiReader(bytes.NewReader(captured.prefix.Bytes()), &captured)
 	if !errors.Is(probeErr, errDTDPresent) {
-		return parseXMLReader(ctx, replay, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
+		parser, err := newDocumentReader(ctx, replay, o.Limits, false, o.AllowSingleByteEncodings, o.AllowRelativeNamespaces)
+		if err != nil {
+			return nil, err
+		}
+
+		parser.compatibleVersions = true
+
+		return finishXMLParse(ctx, &parser)
 	}
 
 	text, err := decodeDTDInput(ctx, replay, o, false)
@@ -372,16 +412,16 @@ func (b *dtdOutput) writeEscaped(text string, attribute bool) error {
 
 		switch r {
 		case '&':
-			replacement = "&amp;"
+			replacement = lexicon.EscapeAmpersand
 		case '<':
-			replacement = "&lt;"
+			replacement = lexicon.EscapeLessThan
 		case '>':
 			if !attribute {
-				replacement = "&gt;"
+				replacement = lexicon.EscapeGreaterThan
 			}
 		case '"':
 			if attribute {
-				replacement = "&quot;"
+				replacement = lexicon.EscapeQuote
 			}
 		case '\r':
 			replacement = "&#13;"
@@ -447,13 +487,13 @@ func dtdPredefined(name string) (string, bool) {
 	switch name {
 	case entityAmp:
 		return "&", true
-	case "lt":
+	case entityLt:
 		return "<", true
-	case "gt":
+	case entityGt:
 		return ">", true
-	case "apos":
+	case entityApos:
 		return "'", true
-	case "quot":
+	case entityQuot:
 		return `"`, true
 	default:
 		return "", false
@@ -480,10 +520,9 @@ func dtdNameEnd(text string) int {
 	return at
 }
 
-// dtdMarkupEnd respects quotes, comments and processing instructions. The
-// scanner used for a DOCTYPE additionally tracks internal-subset brackets.
+// dtdDelimitedEnd finds the end of a leading comment or processing instruction.
 func dtdDelimitedEnd(text string) (int, bool, error) {
-	if strings.HasPrefix(text, "<!--") {
+	if strings.HasPrefix(text, dtdCommentOpen) {
 		end := strings.Index(text[4:], "-->")
 		if end < 0 || strings.Contains(text[4:4+end], "--") || strings.HasSuffix(text[4:4+end], "-") {
 			return 0, true, fmt.Errorf("%w: comment", ErrMalformed)
@@ -492,7 +531,7 @@ func dtdDelimitedEnd(text string) (int, bool, error) {
 		return end + 7, true, nil
 	}
 
-	if strings.HasPrefix(text, "<?") {
+	if strings.HasPrefix(text, dtdPIOpen) {
 		end := strings.Index(text[2:], "?>")
 		if end < 0 {
 			return 0, true, ErrMalformed
@@ -504,6 +543,8 @@ func dtdDelimitedEnd(text string) (int, bool, error) {
 	return 0, false, nil
 }
 
+// dtdMarkupEnd respects quotes, comments and processing instructions. The
+// DOCTYPE scanner also tracks internal-subset brackets.
 func dtdMarkupEnd(text string, doctype bool) (int, error) {
 	if end, special, err := dtdDelimitedEnd(text); special {
 		return end, err
@@ -588,6 +629,9 @@ func (r *dtdProbeReader) Read(dst []byte) (int, error) {
 	}
 
 	n, err := r.source.Read(dst)
+	if n < 0 || n > len(dst) {
+		return 0, errors.Join(io.ErrShortBuffer, err)
+	}
 
 	r.total += n
 	if !r.replay {
@@ -611,7 +655,11 @@ func (r *dtdCountingReader) Read(dst []byte) (int, error) {
 }
 
 func processDTDDeclaration(p *documentParser, prefix string, external bool) error {
-	declaration := []byte(prefix[5 : len(prefix)-2])
+	declaration, err := normalizeDTDVersion([]byte(prefix[5 : len(prefix)-2]))
+	if err != nil {
+		return err
+	}
+
 	if external {
 		attrs, err := declarationAttributes(declaration)
 		if err != nil {
@@ -622,7 +670,7 @@ func processDTDDeclaration(p *documentParser, prefix string, external bool) erro
 			declaration = append([]byte(` version="1.0" `), declaration...)
 		}
 
-		if _, err := stripTextDeclaration(prefix); err != nil {
+		if _, err := stripTextDeclaration("<?xml" + string(declaration) + "?>"); err != nil {
 			return err
 		}
 	}
@@ -632,6 +680,32 @@ func processDTDDeclaration(p *documentParser, prefix string, external bool) erro
 	}
 
 	return nil
+}
+
+// XML 1.0 Fifth Edition [26] accepts VersionNum 1.x. The expanded document
+// is processed as XML 1.0; this does not enable XML 1.1-only characters/syntax.
+func normalizeDTDVersion(declaration []byte) ([]byte, error) {
+	attrs, err := declarationAttributes(declaration)
+	if err != nil {
+		return nil, err
+	}
+
+	if attrs[0].Name.Local != lexicon.DeclVersion || attrs[0].Name.Space != "" {
+		return declaration, nil
+	}
+
+	version := attrs[0].Value
+	if !strings.HasPrefix(version, "1.") || len(version) < 3 {
+		return nil, fmt.Errorf("%w: XML 1.x is required", ErrUnsupported)
+	}
+
+	for _, c := range version[2:] {
+		if c < '0' || c > '9' {
+			return nil, fmt.Errorf("%w: XML VersionNum", ErrMalformed)
+		}
+	}
+
+	return bytes.Replace(declaration, []byte(version), []byte(lexicon.XMLVersion10), 1), nil
 }
 
 type dtdMetadata struct {
@@ -679,11 +753,11 @@ func (m *dtdMetadata) visit(node *Node) error {
 			if declaration, ok := m.state.attributes[name][attrName]; ok {
 				kind := DTDNoType
 				switch declaration.kind {
-				case "ID":
+				case lexicon.TypeID:
 					kind = DTDID
-				case "IDREF":
+				case lexicon.TypeIDREF:
 					kind = DTDIDRef
-				case "IDREFS":
+				case lexicon.TypeIDREFS:
 					kind = DTDIDRefs
 				}
 

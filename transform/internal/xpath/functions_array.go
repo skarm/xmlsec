@@ -12,53 +12,81 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// These local names are in the array function namespace; extension=true
+// keeps flat-map static-call-only under the existing dynamic-lookup policy.
+const (
+	fnNameArraySize          = "size"
+	fnNameArrayGet           = "get"
+	fnNameArrayPut           = "put"
+	fnNameArrayAppend        = "append"
+	fnNameArraySubarray      = "subarray"
+	fnNameArrayInsertBefore  = "insert-before"
+	fnNameArrayJoin          = "join"
+	fnNameArrayFlatten       = "flatten"
+	fnNameArrayFlatMap       = "flat-map"
+	staticOnlyArrayExtension = true
+)
+
+// Array member positions are one-based; zero requests a new member during
+// update preflight. Argument/index/predicate cardinalities and callback arity
+// are distinct contracts, not materialization limits.
+const (
+	arrayFirstMemberPosition        = 1
+	arrayTailStartPosition          = 2
+	arrayNewMemberPosition          = 0
+	arrayArgumentCardinality        = 1
+	arrayIndexCardinality           = 1
+	arrayPredicateResultCardinality = 1
+	arrayPairCallbackArity          = 2
+)
+
 func lookupFunctionsArray(name string) (*builtinFunc, bool) {
 	switch name {
-	case "size":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnArraySize}, true
-	case "get":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnArrayGet}, true
-	case "put":
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnArrayPut}, true
-	case "append":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnArrayAppend}, true
-	case "subarray":
-		return &builtinFunc{name: name, min: 2, max: 3, fn: fnArraySubarray}, true
+	case fnNameArraySize:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArraySize}, true
+	case fnNameArrayGet:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnArrayGet}, true
+	case fnNameArrayPut:
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnArrayPut}, true
+	case fnNameArrayAppend:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnArrayAppend}, true
+	case fnNameArraySubarray:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityThree, fn: fnArraySubarray}, true
 	case nameRemove:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnArrayRemove}, true
-	case "insert-before":
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnArrayInsertBefore}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnArrayRemove}, true
+	case fnNameArrayInsertBefore:
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnArrayInsertBefore}, true
 	case fnNameHead:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnArrayHead}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArrayHead}, true
 	case nameTail:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnArrayTail}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArrayTail}, true
 	case nameReverse:
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnArrayReverse}, true
-	case "join":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnArrayJoin}, true
-	case "flatten":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnArrayFlatten}, true
-	case "flat-map":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnArrayFlatMap, extension: true}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArrayReverse}, true
+	case fnNameArrayJoin:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArrayJoin}, true
+	case fnNameArrayFlatten:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArrayFlatten}, true
+	case fnNameArrayFlatMap:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnArrayFlatMap, extension: staticOnlyArrayExtension}, true
 	case nameFilter:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnArrayFilter}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnArrayFilter}, true
 	case nameFoldLeft:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnArrayFoldLeft}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnArrayFoldLeft}, true
 	case nameFoldRight:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnArrayFoldRight}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnArrayFoldRight}, true
 	case nameForEach:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnArrayForEach}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnArrayForEach}, true
 	case nameForEachPair:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnArrayForEachPair}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnArrayForEachPair}, true
 	case nameSort:
-		return &builtinFunc{name: name, min: 1, max: 3, fn: fnArraySort}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityThree, fn: fnArraySort}, true
 	}
 
 	return nil, false
 }
 
 func extractArray(seq xdm.Sequence) (xdm.ArrayItem, error) {
-	if xdm.SequenceLen(seq) != 1 {
+	if xdm.SequenceLen(seq) != arrayArgumentCardinality {
 		return xdm.ArrayItem{}, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected single array"}
 	}
 
@@ -100,7 +128,7 @@ func extractArrayIndex(seq xdm.Sequence) (int, error) {
 }
 
 func extractArrayInteger(seq xdm.Sequence, negativeOverflowCode string) (int, error) {
-	if xdm.SequenceLen(seq) != 1 {
+	if xdm.SequenceLen(seq) != arrayIndexCardinality {
 		return 0, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "array index must be a single xs:integer"}
 	}
 
@@ -137,7 +165,7 @@ func extractArrayInteger(seq xdm.Sequence, negativeOverflowCode string) (int, er
 	return int(iv), nil
 }
 
-func fnArrayPut(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnArrayPut(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	a, err := extractArray(args[0])
 	if err != nil {
 		return nil, err
@@ -145,6 +173,15 @@ func fnArrayPut(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	idx, err := extractArrayIndex(args[1])
 	if err != nil {
+		return nil, err
+	}
+
+	// Preserve the index error before checking the replacement's resource cost.
+	if _, err := a.GetView(idx); err != nil {
+		return nil, err
+	}
+
+	if err := preflightArrayUpdate(ctx, a, args[2], idx); err != nil {
 		return nil, err
 	}
 
@@ -156,13 +193,56 @@ func fnArrayPut(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return xdm.ItemSlice{result}, nil
 }
 
-func fnArrayAppend(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnArrayAppend(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	a, err := extractArray(args[0])
 	if err != nil {
 		return nil, err
 	}
 
+	if err := preflightArrayUpdate(ctx, a, args[1], arrayNewMemberPosition); err != nil {
+		return nil, err
+	}
+
 	return xdm.ItemSlice{a.Append(args[1])}, nil
+}
+
+// preflightArrayUpdate applies the builder's member/item limits before copying.
+// replaced is a one-based member position, or zero when adding a new member.
+func preflightArrayUpdate(ctx context.Context, a xdm.ArrayItem, value xdm.Sequence, replaced int) error {
+	ec := getFnContext(ctx)
+
+	limit := fnMaxNodes(ec)
+	if a.Size() > limit || (replaced == arrayNewMemberPosition && a.Size() == limit) {
+		return ErrNodeSetLimit
+	}
+
+	total := xdm.SequenceLen(value)
+	if total > limit {
+		return ErrNodeSetLimit
+	}
+
+	if err := fnCountOps(ctx, ec, a.Size()+1); err != nil {
+		return err
+	}
+
+	for i, member := range a.MembersView() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if i+1 == replaced {
+			continue
+		}
+
+		length := xdm.SequenceLen(member)
+		if length > limit-total {
+			return ErrNodeSetLimit
+		}
+
+		total += length
+	}
+
+	return fnCountOps(ctx, ec, total)
 }
 
 func fnArraySubarray(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -180,7 +260,7 @@ func fnArraySubarray(_ context.Context, args []xdm.Sequence) (xdm.Sequence, erro
 	if len(args) > 2 {
 		// A negative length remains FOAY0002 even beyond the machine index
 		// range; positive out-of-range lengths and positions use FOAY0001.
-		length, err = extractArrayInteger(args[2], "FOAY0002")
+		length, err = extractArrayInteger(args[2], lexicon.ErrFOAY0002)
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +299,7 @@ func fnArrayRemove(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		}
 		// Range-check on int64 before converting so an out-of-int value cannot
 		// wrap into a valid-looking position (e.g. on 32-bit platforms).
-		if iv < 1 || iv > int64(size) {
+		if iv < arrayFirstMemberPosition || iv > int64(size) {
 			return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: fmt.Sprintf("array:remove: position %d out of range 1..%d", iv, size)}
 		}
 
@@ -231,7 +311,7 @@ func fnArrayRemove(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	var result []xdm.Sequence
 
 	for i, m := range members {
-		if _, skip := positions[i+1]; !skip {
+		if _, skip := positions[i+arrayFirstMemberPosition]; !skip {
 			result = append(result, m)
 		}
 	}
@@ -239,7 +319,7 @@ func fnArrayRemove(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	return xdm.ItemSlice{xdm.NewArray(result)}, nil
 }
 
-func fnArrayInsertBefore(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnArrayInsertBefore(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	a, err := extractArray(args[0])
 	if err != nil {
 		return nil, err
@@ -251,8 +331,12 @@ func fnArrayInsertBefore(_ context.Context, args []xdm.Sequence) (xdm.Sequence, 
 	}
 
 	members := a.MembersView()
-	if pos < 1 || pos > len(members)+1 {
+	if pos < arrayFirstMemberPosition || pos > len(members)+1 {
 		return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array index out of bounds"}
+	}
+
+	if err := preflightArrayUpdate(ctx, a, args[2], arrayNewMemberPosition); err != nil {
+		return nil, err
 	}
 
 	result := make([]xdm.Sequence, 0, len(members)+1)
@@ -273,7 +357,7 @@ func fnArrayHead(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array:head on empty array"}
 	}
 
-	return a.Get(1)
+	return a.Get(arrayFirstMemberPosition)
 }
 
 func fnArrayTail(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -286,7 +370,7 @@ func fnArrayTail(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrFOAY0001, Message: "array:tail on empty array"}
 	}
 
-	sub, err := a.SubArray(2, a.Size()-1)
+	sub, err := a.SubArray(arrayTailStartPosition, a.Size()-1)
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +655,7 @@ func fnArrayFilter(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, erro
 			return nil, err
 		}
 		// Per XPath 3.1, the callback must return exactly one xs:boolean
-		if xdm.SequenceLen(r) != 1 {
+		if xdm.SequenceLen(r) != arrayPredicateResultCardinality {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "array:filter callback must return a single xs:boolean value"}
 		}
 
@@ -624,7 +708,7 @@ func fnArrayFoldLeft(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		}
 		// The accumulator can grow without bound across iterations; reject once
 		// it would exceed the configured sequence/node-set limit.
-		if maxNodes > 0 && xdm.SequenceLen(acc) > maxNodes {
+		if maxNodes > accumulatingSequenceLimitDisabled && xdm.SequenceLen(acc) > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 	}
@@ -660,7 +744,7 @@ func fnArrayFoldRight(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 		}
 		// The accumulator can grow without bound across iterations; reject once
 		// it would exceed the configured sequence/node-set limit.
-		if maxNodes > 0 && xdm.SequenceLen(acc) > maxNodes {
+		if maxNodes > accumulatingSequenceLimitDisabled && xdm.SequenceLen(acc) > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 	}
@@ -725,7 +809,7 @@ func fnArrayForEachPair(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 		return nil, err
 	}
 
-	if fi.Arity >= 0 && fi.Arity != 2 {
+	if fi.Arity >= finiteArityFloor && fi.Arity != arrayPairCallbackArity {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("array:for-each-pair callback must have arity 2, got %d", fi.Arity)}
 	}
 
@@ -739,7 +823,7 @@ func fnArrayForEachPair(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 	// compare is overflow-safe (rLen > maxNodes-total).
 	total := 0
 
-	for i := 1; i <= size; i++ {
+	for i := arrayFirstMemberPosition; i <= size; i++ {
 		if err := fnCountOp(ctx, ec); err != nil {
 			return nil, err
 		}

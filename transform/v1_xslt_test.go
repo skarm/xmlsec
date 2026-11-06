@@ -74,9 +74,10 @@ func TestXSLTLimitsAndContext(t *testing.T) {
 		}
 
 		out, err := p.Apply(ctx, text, reference.Octets([]byte(`<r>long</r>`)), reference.ExtensionContext{})
-		if !errors.Is(err, reference.ErrLimit) || out.Kind() != reference.Invalid {
-			t.Fatalf("input=%d nodes=%d output=%d: %v, %v", cfg.Limits.MaxInputBytes, cfg.Limits.MaxNodes, cfg.Limits.MaxOutputBytes, out.Kind(), err)
+		if !errors.Is(err, reference.ErrLimit) {
+			t.Fatalf("input=%d nodes=%d output=%d: %v, %v", cfg.Limits.MaxInputBytes, cfg.Limits.MaxNodes, cfg.Limits.MaxOutputBytes, out, err)
 		}
+		requireInvalidReferenceResult(t, out)
 	}
 
 	recursive := style(`<xsl:template match="/"><xsl:call-template name="loop"/></xsl:template><xsl:template name="loop"><xsl:call-template name="loop"/></xsl:template>`)
@@ -87,9 +88,10 @@ func TestXSLTLimitsAndContext(t *testing.T) {
 	}
 
 	out, err := p.Apply(ctx, recursive, reference.Octets([]byte(`<r/>`)), reference.ExtensionContext{})
-	if !errors.Is(err, reference.ErrLimit) || out.Kind() != reference.Invalid {
-		t.Fatalf("recursion: %v, %v", out.Kind(), err)
+	if !errors.Is(err, reference.ErrLimit) {
+		t.Fatalf("recursion: %v, %v", out, err)
 	}
+	requireInvalidReferenceResult(t, out)
 
 	p = newProcessor(t, text)
 	cancelled, cancel := context.WithCancel(ctx)
@@ -159,7 +161,8 @@ func TestXSLTExecutionTimeout(t *testing.T) {
 	}
 
 	out, err := p.Apply(t.Context(), tr, reference.Octets([]byte(`<r/>`)), reference.ExtensionContext{})
-	if !errors.Is(err, context.DeadlineExceeded) || out.Kind() != reference.Invalid {
-		t.Fatalf("unbounded execution: %v, %v", out.Kind(), err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unbounded execution: %v, %v", out, err)
 	}
+	requireInvalidReferenceResult(t, out)
 }

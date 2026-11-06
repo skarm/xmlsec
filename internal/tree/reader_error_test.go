@@ -3,6 +3,7 @@ package tree_test
 import (
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -42,3 +43,32 @@ func TestParseReaderPreservesSourceFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestDTDProbeRejectsInvalidReaderCounts(t *testing.T) {
+	failure := errors.New("source failed")
+	for _, count := range []int{-1, 4097} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			options := tree.ParseOptions{Limits: tree.DefaultLimits(), AllowDTD: true}
+			doc, err := options.ParseReader(t.Context(), invalidCountReader{count: count, err: failure})
+			if doc != nil || !errors.Is(err, io.ErrShortBuffer) || !errors.Is(err, failure) {
+				t.Fatalf("document=%v error=%v; want invalid reader count and source failure", doc != nil, err)
+			}
+		})
+	}
+}
+
+func TestDTDProbeRejectsNilReaders(t *testing.T) {
+	for _, source := range []io.Reader{nil, (*strings.Reader)(nil)} {
+		options := tree.ParseOptions{Limits: tree.DefaultLimits(), AllowDTD: true}
+		if doc, err := options.ParseReader(t.Context(), source); doc != nil || !errors.Is(err, tree.ErrMalformed) {
+			t.Fatalf("document=%v error=%v; want malformed input", doc != nil, err)
+		}
+	}
+}
+
+type invalidCountReader struct {
+	count int
+	err   error
+}
+
+func (r invalidCountReader) Read([]byte) (int, error) { return r.count, r.err }

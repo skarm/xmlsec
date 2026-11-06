@@ -18,6 +18,25 @@ import (
 	"github.com/skarm/xmlsec/internal/historicalproof"
 )
 
+const (
+	clause562241                  = "5.6.2.2.4(1)"
+	clause562242B                 = "5.6.2.2.4(2b)"
+	clause562242C                 = "5.6.2.2.4(2c)"
+	clause562242D                 = "5.6.2.2.4(2d)"
+	clause5622Note5               = "5.6.2.2.note5"
+	stageCryptographicConstraints = "cryptographic-constraints"
+	stageFreshness                = "freshness"
+	stageRevocation               = "revocation"
+	stageSourceSignerPath         = "source-signer-path"
+	stageTrustAnchorSunset        = "trust-anchor-sunset"
+	maxPastValidationWork         = 4096
+)
+
+const (
+	codeNoCertificateChainFound = "NO_CERTIFICATE_CHAIN_FOUND"
+	codeNoPoe                   = "NO_POE"
+)
+
 type historicalStatus struct {
 	claims    []historicalClaim
 	primary   historicalClaim
@@ -31,7 +50,7 @@ type historicalStatus struct {
 type pastEvaluation struct {
 	session *HistoricalSession
 	proofs  *historicalproof.Set
-	active  map[[32]byte]struct{}
+	active  map[[sha256.Size]byte]struct{}
 	steps   []TimeTransition
 	used    []*VerifiedEvidence
 	work    int
@@ -70,7 +89,7 @@ func (e *pastEvaluation) slide(ctx context.Context, path *HistoricalPath, contro
 
 func (e *pastEvaluation) slideCertificate(ctx context.Context, path *HistoricalPath, index int, claims []historicalClaim, control time.Time, skipLeaf, authorizationLeaf bool) (time.Time, error) {
 	e.work++
-	if e.work > 4096 {
+	if e.work > maxPastValidationWork {
 		return time.Time{}, fmt.Errorf("%w: %w: historical certificate work", ErrPolicy, ErrLimit)
 	}
 
@@ -104,7 +123,7 @@ func (e *pastEvaluation) slideCertificate(ctx context.Context, path *HistoricalP
 
 	bound := e.cryptoBound(certificate, selected, control)
 	if bound.Before(control) {
-		e.transition(certificate, selected.primary.fact, "5.6.2.2.4(2d)", "cryptographic-constraints", control, bound)
+		e.transition(certificate, selected.primary.fact, clause562242D, stageCryptographicConstraints, control, bound)
 		control = bound
 	}
 
@@ -129,7 +148,7 @@ func (e *pastEvaluation) slideExemptCertificate(certificate, issuer *x509.Certif
 	}
 
 	if cutoff.Before(control) {
-		e.transition(certificate, nil, "5.6.2.2.4(2d)", "cryptographic-constraints", control, cutoff)
+		e.transition(certificate, nil, clause562242D, stageCryptographicConstraints, control, cutoff)
 		control = cutoff
 	}
 
@@ -148,7 +167,7 @@ func (e *pastEvaluation) slideSourcePaths(ctx context.Context, path *HistoricalP
 		}
 
 		if bound.Before(control) {
-			e.transition(path.chain[index], claim.fact, "5.6.2.2.note5", "source-signer-path", control, bound)
+			e.transition(path.chain[index], claim.fact, clause5622Note5, stageSourceSignerPath, control, bound)
 			control = bound
 		}
 	}
@@ -163,7 +182,7 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 		}
 
 		if e.session.options.Model == ShellModel || status.reason <= 2 {
-			e.transition(certificate, status.primary.fact, "5.6.2.2.4(2b)", "revocation", control, status.revokedAt)
+			e.transition(certificate, status.primary.fact, clause562242B, stageRevocation, control, status.revokedAt)
 			control = status.revokedAt
 		}
 
@@ -176,7 +195,7 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 		}
 
 		if bound := claim.fact.this; bound.Before(control) {
-			e.transition(certificate, claim.fact, "5.6.2.2.4(2c)", "freshness", control, bound)
+			e.transition(certificate, claim.fact, clause562242C, stageFreshness, control, bound)
 			control = bound
 		}
 	}
@@ -281,7 +300,7 @@ func (e *pastEvaluation) cryptoBound(certificate *x509.Certificate, status histo
 }
 
 func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
-	report := &PastCertificateReport{subIndication: "NO_CERTIFICATE_CHAIN_FOUND"}
+	report := &PastCertificateReport{subIndication: codeNoCertificateChainFound}
 
 	target, err := s.historicalTarget(ctx, targetDER)
 	if err != nil {
@@ -327,19 +346,19 @@ func (s *HistoricalSession) validatePastPath(ctx context.Context, path *Historic
 		return nil, report, err
 	}
 	if proofs == nil || !proofs.Valid() || !proofs.Now().Equal(s.now) {
-		return reject("NO_POE", ErrPolicy)
+		return reject(codeNoPoe, ErrPolicy)
 	}
 
 	if _, err := s.checkPath(ctx, path); err != nil {
 		return reject(historicalPathFailure(err), err)
 	}
 
-	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[32]byte]struct{})}
+	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[sha256.Size]byte]struct{})}
 	bound := s.now
 
 	anchor := sha256.Sum256(path.chain[len(path.chain)-1].Raw)
 	if sunset, found := s.options.TrustAnchorSunsets[hex.EncodeToString(anchor[:])]; found && sunset.Before(bound) {
-		evaluator.transition(path.chain[len(path.chain)-1], nil, "5.6.2.2.4(1)", "trust-anchor-sunset", bound, sunset)
+		evaluator.transition(path.chain[len(path.chain)-1], nil, clause562241, stageTrustAnchorSunset, bound, sunset)
 		bound = sunset
 	}
 
@@ -348,11 +367,11 @@ func (s *HistoricalSession) validatePastPath(ctx context.Context, path *Historic
 	report.evidence = canonicalEvidence(evaluator.used)
 
 	if err != nil {
-		return reject("NO_POE", err)
+		return reject(codeNoPoe, err)
 	}
 
 	if err := ctx.Err(); err != nil {
-		return reject("NO_POE", err)
+		return reject(codeNoPoe, err)
 	}
 
 	return &PastCertificateResult{path: path, at: at, evidence: report.evidence}, report, nil
@@ -406,7 +425,7 @@ func (s *HistoricalSession) selectHistoricalStatusFor(ctx context.Context, certi
 	return combineHistoricalStatuses(selected)
 }
 
-func historicalProofAt(proofs *historicalproof.Set, digest [32]byte, kind historicalproof.Kind, at time.Time) bool {
+func historicalProofAt(proofs *historicalproof.Set, digest [sha256.Size]byte, kind historicalproof.Kind, at time.Time) bool {
 	proof, found := proofs.EarliestKind(digest, kind)
 	return found && !proof.After(at)
 }
@@ -649,7 +668,7 @@ func historicalKeyBits(certificate *x509.Certificate) int {
 	case *ecdsa.PublicKey:
 		return key.Curve.Params().BitSize
 	case ed25519.PublicKey:
-		return 256
+		return ed25519.PublicKeySize * certificateOctetBits
 	}
 
 	return 0

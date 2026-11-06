@@ -7,7 +7,30 @@ import (
 	"crypto/sha1" // #nosec G505 -- XMLENC requires SHA-1 only under explicit legacy policy.
 	"crypto/sha256"
 	"encoding/binary"
+	"math"
 	"math/bits"
+)
+
+const (
+	maximumDerivedKeyBits = 8192
+	maximumKDFFieldBytes  = 4097
+	maximumKDFSecretBytes = 1024
+)
+
+// keyOctetBits converts key and digest byte widths to bits across this package.
+const keyOctetBits = 8
+
+// Representation widths shared by ConcatKDF assembly and bit-oriented SHA.
+// The counter and hash word are distinct four-byte fields; length fields below
+// count message bits rather than bytes or accepted derivation work.
+const (
+	kdfLastOctetBit         = keyOctetBits - 1
+	kdfCounterBytes         = 4
+	kdfHashWordBytes        = 4
+	kdfFieldHeaderBytes     = 1
+	concatSHA256StateWords  = sha256.Size / kdfHashWordBytes
+	concatSHA1StateWords    = sha1.Size / kdfHashWordBytes
+	concatInitialBlockWords = sha256.BlockSize / kdfHashWordBytes
 )
 
 // ConcatKDF is the XML Encryption 1.1 concatenation key derivation URI.
@@ -51,7 +74,7 @@ func DeriveConcatKey(ctx context.Context, secret []byte, keyBits int, parameters
 		return nil, err
 	}
 
-	if len(secret) == 0 || len(secret) > 1024 || keyBits < 1 || keyBits > 8192 {
+	if len(secret) == 0 || len(secret) > maximumKDFSecretBytes || keyBits < 1 || keyBits > maximumDerivedKeyBits {
 		return nil, ErrPolicy
 	}
 
@@ -76,28 +99,28 @@ func DeriveConcatKey(ctx context.Context, secret []byte, keyBits int, parameters
 		otherBits += n
 	}
 
-	if otherBits%8 != 0 && fips140.Enabled() {
+	if otherBits%keyOctetBits != 0 && fips140.Enabled() {
 		return nil, ErrPolicy
 	}
 
-	messageBits := (4+len(secret))*8 + otherBits
+	messageBits := (kdfCounterBytes+len(secret))*keyOctetBits + otherBits
 
-	message := make([]byte, (messageBits+7)/8)
+	message := make([]byte, (messageBits+kdfLastOctetBit)/keyOctetBits)
 	defer clear(message)
 
-	copy(message[4:], secret)
-	offset := (4 + len(secret)) * 8
+	copy(message[kdfCounterBytes:], secret)
+	offset := (kdfCounterBytes + len(secret)) * keyOctetBits
 
 	for _, field := range fields {
 		n, _ := concatFieldBits(field)
 		for i := range n {
-			message[(offset+i)/8] |= ((field[1+i/8] >> (7 - i%8)) & 1) << (7 - (offset+i)%8)
+			message[(offset+i)/keyOctetBits] |= ((field[kdfFieldHeaderBytes+i/keyOctetBits] >> (kdfLastOctetBit - i%keyOctetBits)) & 1) << (kdfLastOctetBit - (offset+i)%keyOctetBits)
 		}
 
 		offset += n
 	}
 
-	output := make([]byte, (keyBits+7)/8)
+	output := make([]byte, (keyBits+kdfLastOctetBit)/keyOctetBits)
 	for offset, counter := 0, uint32(1); offset < len(output); counter++ {
 		if err := ctx.Err(); err != nil {
 			clear(output)
@@ -116,8 +139,8 @@ func DeriveConcatKey(ctx context.Context, secret []byte, keyBits int, parameters
 		clear(digest)
 	}
 
-	if keyBits%8 != 0 {
-		output[len(output)-1] &= 0xff << (8 - keyBits%8)
+	if keyBits%keyOctetBits != 0 {
+		output[len(output)-1] &= math.MaxUint8 << (keyOctetBits - keyBits%keyOctetBits)
 	}
 
 	return output, nil
@@ -128,7 +151,7 @@ func concatFieldBits(field []byte) (int, bool) {
 		return 0, true
 	}
 
-	if len(field) > 4097 || field[0] > 7 || len(field) == 1 && field[0] != 0 {
+	if len(field) > maximumKDFFieldBytes || field[0] > kdfLastOctetBit || len(field) == kdfFieldHeaderBytes && field[0] != 0 {
 		return 0, false
 	}
 
@@ -137,14 +160,20 @@ func concatFieldBits(field []byte) (int, bool) {
 		return 0, false
 	}
 
-	return (len(field)-1)*8 - padding, true
+	return (len(field)-kdfFieldHeaderBytes)*keyOctetBits - padding, true
 }
 
 // Whole-octet messages use the standard library. Only XMLENC's arbitrary-bit
 // OtherInfo requires the FIPS 180-4 compression and bit-length padding below.
 // It is tested against NIST SHAVS bit-oriented SHA-1 and SHA-256 vectors.
 func concatDigest(ctx context.Context, algorithm crypto.Hash, message []byte, length int) ([]byte, error) {
-	if length%8 == 0 {
+	const (
+		lengthFieldBytes = 8
+		lengthFieldBits  = lengthFieldBytes * keyOctetBits
+		blockBits        = sha256.BlockSize * keyOctetBits
+	)
+
+	if length%keyOctetBits == 0 {
 		if algorithm == crypto.SHA1 {
 			digest := sha1.Sum(message) // #nosec G401 -- Explicit legacy policy is enforced by DeriveConcatKey.
 			return digest[:], nil
@@ -155,53 +184,58 @@ func concatDigest(ctx context.Context, algorithm crypto.Hash, message []byte, le
 		return digest[:], nil
 	}
 
-	padded := make([]byte, ((length+1+64+511)/512)*64)
+	padded := make([]byte, ((length+1+lengthFieldBits+blockBits-1)/blockBits)*sha256.BlockSize)
 	defer clear(padded)
 
 	copy(padded, message)
-	padded[length/8] &= 0xff << (8 - length%8)
-	padded[length/8] |= 1 << (7 - length%8)
-	binary.BigEndian.PutUint64(padded[len(padded)-8:], uint64(length)) // #nosec G115 -- DeriveConcatKey bounds this nonnegative bit length before allocation.
+	padded[length/keyOctetBits] &= math.MaxUint8 << (keyOctetBits - length%keyOctetBits)
+	padded[length/keyOctetBits] |= 1 << (kdfLastOctetBit - length%keyOctetBits)
+	binary.BigEndian.PutUint64(padded[len(padded)-lengthFieldBytes:], uint64(length)) // #nosec G115 -- DeriveConcatKey bounds this nonnegative bit length before allocation.
 
-	state := [8]uint32{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19}
+	state := [concatSHA256StateWords]uint32{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19}
 	defer clear(state[:])
 
-	words := 8
+	words := concatSHA256StateWords
 
 	if algorithm == crypto.SHA1 {
-		state = [8]uint32{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0}
-		words = 5
+		state = [concatSHA256StateWords]uint32{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0}
+		words = concatSHA1StateWords
 	}
 
-	for offset := 0; offset < len(padded); offset += 64 {
+	for offset := 0; offset < len(padded); offset += sha256.BlockSize {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
 		if algorithm == crypto.SHA1 {
-			concatSHA1Block(&state, padded[offset:offset+64])
+			concatSHA1Block(&state, padded[offset:offset+sha256.BlockSize])
 		} else {
-			concatSHA256Block(&state, padded[offset:offset+64])
+			concatSHA256Block(&state, padded[offset:offset+sha256.BlockSize])
 		}
 	}
 
-	output := make([]byte, words*4)
+	output := make([]byte, words*kdfHashWordBytes)
 	for i := range words {
-		binary.BigEndian.PutUint32(output[4*i:], state[i])
+		binary.BigEndian.PutUint32(output[kdfHashWordBytes*i:], state[i])
 	}
 
 	return output, nil
 }
 
-func concatSHA1Block(state *[8]uint32, block []byte) {
-	var schedule [80]uint32
+func concatSHA1Block(state *[concatSHA256StateWords]uint32, block []byte) {
+	const (
+		rounds         = 80
+		roundsPerPhase = 20
+	)
+
+	var schedule [rounds]uint32
 	defer clear(schedule[:])
 
-	for i := range 16 {
-		schedule[i] = binary.BigEndian.Uint32(block[4*i:])
+	for i := range concatInitialBlockWords {
+		schedule[i] = binary.BigEndian.Uint32(block[kdfHashWordBytes*i:])
 	}
 
-	for i := 16; i < 80; i++ {
+	for i := concatInitialBlockWords; i < rounds; i++ {
 		schedule[i] = bits.RotateLeft32(schedule[i-3]^schedule[i-8]^schedule[i-14]^schedule[i-16], 1)
 	}
 
@@ -211,11 +245,11 @@ func concatSHA1Block(state *[8]uint32, block []byte) {
 		var f, k uint32
 
 		switch {
-		case i < 20:
+		case i < roundsPerPhase:
 			f, k = b&c|(^b)&d, 0x5a827999
-		case i < 40:
+		case i < 2*roundsPerPhase:
 			f, k = b^c^d, 0x6ed9eba1
-		case i < 60:
+		case i < 3*roundsPerPhase:
 			f, k = b&c|b&d|c&d, 0x8f1bbcdc
 		default:
 			f, k = b^c^d, 0xca62c1d6
@@ -231,7 +265,7 @@ func concatSHA1Block(state *[8]uint32, block []byte) {
 	state[4] += e
 }
 
-func concatSHA256Block(state *[8]uint32, block []byte) {
+func concatSHA256Block(state *[concatSHA256StateWords]uint32, block []byte) {
 	constants := [...]uint32{
 		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
 		0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -243,14 +277,14 @@ func concatSHA256Block(state *[8]uint32, block []byte) {
 		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 	}
 
-	var schedule [64]uint32
+	var schedule [len(constants)]uint32
 	defer clear(schedule[:])
 
-	for i := range 16 {
-		schedule[i] = binary.BigEndian.Uint32(block[4*i:])
+	for i := range concatInitialBlockWords {
+		schedule[i] = binary.BigEndian.Uint32(block[kdfHashWordBytes*i:])
 	}
 
-	for i := 16; i < 64; i++ {
+	for i := concatInitialBlockWords; i < len(schedule); i++ {
 		x, y := schedule[i-15], schedule[i-2]
 		s0 := bits.RotateLeft32(x, -7) ^ bits.RotateLeft32(x, -18) ^ (x >> 3)
 		s1 := bits.RotateLeft32(y, -17) ^ bits.RotateLeft32(y, -19) ^ (y >> 10)

@@ -16,6 +16,19 @@ package uripath
 import (
 	"path"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+// File-URI prefixes preserve their serialized spelling. Scheme detection requires
+// at least two characters to distinguish a one-letter Windows drive; drive prefix
+// widths count bytes and the filename separator is the legacy filename hint.
+const (
+	fileURISchemePrefix   = lexicon.SchemeFile + ":"
+	fileURIDrivePrefix    = fileURISchemePrefix + "///"
+	minURISchemeLength    = 2
+	drivePrefixBytes      = 2
+	filenameHintSeparator = '.'
 )
 
 // IsWindowsDriveLetter reports whether b is an ASCII letter usable as a Windows
@@ -30,7 +43,7 @@ func IsWindowsDriveLetter(b byte) bool {
 // "c:/x", "D:". A lone "C:foo" (drive-relative, no separator) does NOT match,
 // matching the conservative shape used elsewhere in the tree.
 func HasWindowsDrivePrefix(s string) bool {
-	if len(s) < 2 {
+	if len(s) < drivePrefixBytes {
 		return false
 	}
 
@@ -38,11 +51,11 @@ func HasWindowsDrivePrefix(s string) bool {
 		return false
 	}
 
-	if len(s) == 2 {
+	if len(s) == drivePrefixBytes {
 		return true
 	}
 
-	return s[2] == '/' || s[2] == '\\'
+	return s[drivePrefixBytes] == '/' || s[drivePrefixBytes] == '\\'
 }
 
 // HasURIScheme reports whether s begins with an absolute-URI scheme followed by
@@ -65,7 +78,7 @@ func HasURIScheme(s string) bool {
 // lowercased because URI schemes are case-insensitive (RFC 3986 §3.1), so a
 // caller can compare against a fixed scheme name without re-normalizing.
 func URIScheme(s string) string {
-	if len(s) < 2 || !IsWindowsDriveLetter(s[0]) {
+	if len(s) < minURISchemeLength || !IsWindowsDriveLetter(s[0]) {
 		return ""
 	}
 
@@ -79,7 +92,7 @@ func URIScheme(s string) string {
 		case c == ':':
 			// A single-character scheme ("C:") is a Windows drive letter, not a
 			// URI scheme. Require at least two scheme characters.
-			if i < 2 {
+			if i < minURISchemeLength {
 				return ""
 			}
 
@@ -125,11 +138,11 @@ func IsAbsolutePath(s string) bool {
 func WindowsToFileURI(s string) string {
 	slashed := ToSlash(s)
 	if HasWindowsDrivePrefix(s) {
-		return "file:///" + slashed
+		return fileURIDrivePrefix + slashed
 	}
 	// UNC: "//server/share" already begins with the two slashes after
 	// normalization, so "file:" + slashed yields "file://server/share".
-	return "file:" + slashed
+	return fileURISchemePrefix + slashed
 }
 
 // ToSlash replaces every backslash with a forward slash. Unlike
@@ -292,7 +305,7 @@ func SlashCommonDir(a, b string) string {
 
 func containsDot(s string) bool {
 	for i := range len(s) {
-		if s[i] == '.' {
+		if s[i] == filenameHintSeparator {
 			return true
 		}
 	}

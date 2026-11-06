@@ -15,6 +15,14 @@ import (
 	"strings"
 )
 
+// Preparation bounds subprocess parallelism and sets explicit capture/oracle deadlines. The cache directory is private to the user running this developer command.
+const (
+	languageCacheDirectoryMode = 0o700
+	languagePrepareParallelism = 4
+	languageCaptureTimeout     = "-timeout=10m"
+	languageOracleTimeout      = "-timeout=15m"
+)
+
 // Inputs and generated evidence belong to a checkout-specific external cache.
 // They are never inferred from an unrelated checkout or an old audit report.
 type languageInputs struct {
@@ -85,7 +93,7 @@ func configureLanguageInputs(ctx context.Context, root string, out io.Writer) er
 		return err
 	}
 
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := os.MkdirAll(directory, languageCacheDirectoryMode); err != nil {
 		return err
 	}
 
@@ -207,11 +215,11 @@ func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writ
 	}
 
 	streams := []string{filepath.Join(work, "native.json"), filepath.Join(work, "residuals.json")}
-	if err := command("proof", "capture", "-out", streams[0], "--", "-timeout=10m", "-skip=^Test(Language(NormativeEvidence|ResidualCoverage)|(QT3|XSLT)ResidualCauses)$", "./..."); err != nil {
+	if err := command("proof", "capture", "-out", streams[0], "--", languageCaptureTimeout, "-skip=^Test(Language(NormativeEvidence|ResidualCoverage)|(QT3|XSLT)ResidualCauses)$", "./..."); err != nil {
 		return err
 	}
 
-	if err := command("proof", "capture", "-out", streams[1], "--", "-timeout=10m", "-run=^Test(QT3|XSLT)ResidualCauses$", "./tests/cmd/dev"); err != nil {
+	if err := command("proof", "capture", "-out", streams[1], "--", languageCaptureTimeout, "-run=^Test(QT3|XSLT)ResidualCauses$", "./tests/cmd/dev"); err != nil {
 		return err
 	}
 
@@ -226,7 +234,7 @@ func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writ
 		file := filepath.Join(work, fmt.Sprintf("interop-%d.json", i))
 		streams = append(streams, file)
 		jobs = append(jobs, func() error {
-			return command("proof", "capture", "-out", file, "--", "-tags=interop", "-timeout=15m", "-run="+pattern, "./transform")
+			return command("proof", "capture", "-out", file, "--", "-tags=interop", languageOracleTimeout, "-run="+pattern, "./transform")
 		})
 	}
 
@@ -254,7 +262,7 @@ func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writ
 		}
 		// Classified publisher failures remain visible in the report and are
 		// checked by TestLanguageResidualCoverage, rather than hidden here.
-		err := command("suites", "-suite="+parts[0], "-dir="+checkout, "-version="+parts[1], "-xsd-version="+parts[2], "-limits="+parts[3], "-assertions="+parts[4], "-xpath10-compatibility="+parts[5], "-timeout=1s", "-report="+reports[i])
+		err := command("suites", "-suite="+parts[0], "-dir="+checkout, "-version="+parts[1], "-xsd-version="+parts[2], "-limits="+parts[3], "-assertions="+parts[4], "-xpath10-compatibility="+parts[5], "-timeout="+suiteDefaultTimeout.String(), "-report="+reports[i])
 
 		var report suiteReport
 		if readErr := readLanguageProofFile(reports[i], &report); readErr != nil || report.SourceSHA256 != stamp.SourceSHA256 {
@@ -324,7 +332,7 @@ func languageIndependentPatterns(root string) ([]string, error) {
 		return nil, errors.New("register contains no independent comparison tests")
 	}
 
-	groups := make([][]string, min(4, len(ordered)))
+	groups := make([][]string, min(languagePrepareParallelism, len(ordered)))
 	for i, name := range ordered {
 		groups[i%len(groups)] = append(groups[i%len(groups)], regexp.QuoteMeta(name))
 	}

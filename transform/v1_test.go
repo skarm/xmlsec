@@ -3,6 +3,7 @@ package transform_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -225,9 +226,10 @@ func TestApprovalAndLimits(t *testing.T) {
 		}
 
 		out, e := p.Apply(t.Context(), tr, in, reference.ExtensionContext{})
-		if !errors.Is(e, reference.ErrLimit) || out.Kind() != reference.Invalid {
-			t.Fatal("bounded execution", c, out.Kind(), e)
+		if !errors.Is(e, reference.ErrLimit) {
+			t.Fatal("bounded execution", c, out, e)
 		}
+		requireInvalidReferenceResult(t, out)
 	}
 
 	value := xp(`string(.) != 'x'`)
@@ -297,9 +299,10 @@ func TestIDTokenPreallocationBound(t *testing.T) {
 	d := parse(t, "<r>"+strings.Repeat("a ", 70000)+"</r>")
 
 	out, e := p.Apply(t.Context(), tr, input(t, d), reference.ExtensionContext{})
-	if !errors.Is(e, reference.ErrLimit) || out.Kind() != reference.Invalid {
+	if !errors.Is(e, reference.ErrLimit) {
 		t.Fatal("unbounded ID tokens", e)
 	}
+	requireInvalidReferenceResult(t, out)
 }
 
 func FuzzApprovedXPath(f *testing.F) {
@@ -364,9 +367,7 @@ func FuzzXPathCompilation(f *testing.F) {
 
 		out, e := p.Apply(t.Context(), tr, in, reference.ExtensionContext{})
 		if e != nil {
-			if out.Kind() != reference.Invalid {
-				t.Fatal("partial result")
-			}
+			requireInvalidReferenceResult(t, out)
 
 			return
 		}
@@ -456,4 +457,42 @@ func apply(t testing.TB, p *transform.Engine, tr reference.Transform, in referen
 	}
 
 	return ns
+}
+
+func TestApprovedProgramSourceByteLimits(t *testing.T) {
+	stylesheet := style(`<xsl:output method="text"/><xsl:template match="/"><xsl:value-of select="/r"/></xsl:template>`)
+	for _, tc := range []struct {
+		name    string
+		program reference.Transform
+		size    int
+	}{
+		{"XPath", xp(`true()`), len(`true()`)},
+		{"Filter2 later expression", f2(filter("intersect", `/`), filter("intersect", `/r`)), len(`/r`)},
+		{"XSLT", stylesheet, len(stylesheet.Stylesheet)},
+	} {
+		for _, limit := range []int{tc.size - 1, tc.size} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, limit), func(t *testing.T) {
+				e, err := transform.NewEngine(transform.Config{
+					Limits:          transform.Limits{MaxProgramBytes: limit},
+					AllowedPrograms: []reference.Transform{tc.program},
+				})
+				if limit < tc.size {
+					var detail *transform.Error
+					if e != nil || !errors.Is(err, transform.ErrLimit) || !errors.As(err, &detail) || detail.Operation != "approve XMLDSig transforms" {
+						t.Fatalf("engine=%v, error=%v; want approval ErrLimit", e != nil, err)
+					}
+
+					return
+				}
+
+				if err != nil || e == nil {
+					t.Fatalf("source exactly at limit: engine=%v, error=%v", e != nil, err)
+				}
+
+				if err := e.Validate(t.Context(), tc.program); err != nil {
+					t.Fatal("approved source at limit", err)
+				}
+			})
+		}
+	}
 }

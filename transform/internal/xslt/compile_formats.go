@@ -62,14 +62,24 @@ func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) e
 			return staticError(errCodeXTSE0010, "unexpected child element in xsl:character-map: %s", childElem.Name())
 		}
 
-		charAttr := getAttr(childElem, "character")
-		if charAttr == "" {
+		charAttr, hasCharacter := childElem.GetAttribute(nameCharacter)
+		if !hasCharacter {
 			return staticError(errCodeXTSE0010,
 				"xsl:output-character requires 'character' attribute")
 		}
 
+		if utf8.RuneCountInString(charAttr) != 1 {
+			return staticError(errCodeXTSE0020, "xsl:output-character/@character must contain exactly one Unicode character")
+		}
+
 		r := firstRune(charAttr)
-		str := getAttr(childElem, "string")
+
+		str, hasString := childElem.GetAttribute(nameOutputCharacterString)
+		if !hasString {
+			return staticError(errCodeXTSE0010,
+				"xsl:output-character requires 'string' attribute")
+		}
+
 		cm.Mappings[r] = str
 	}
 
@@ -144,7 +154,7 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	savedDefaultNS, savedHasDefaultNS := c.xpathDefaultNS, c.hasXPathDefaultNS
 	defer func() { c.xpathDefaultNS, c.hasXPathDefaultNS = savedDefaultNS, savedHasDefaultNS }()
 
-	if xdn, ok := elem.GetAttribute(nameXpathDefaultNamespace); ok {
+	if xdn, ok := elem.GetAttribute(nameXPathDefaultNamespace); ok {
 		xpathDefaultNS = xdn
 		hasXPathDefaultNS = true
 		c.xpathDefaultNS, c.hasXPathDefaultNS = xdn, true
@@ -226,7 +236,7 @@ func (c *compiler) compileKeyValue(ctx context.Context, elem *xdm.Element, kd *k
 			return err
 		}
 
-		if c.stylesheet.processorLanguage() == 10 {
+		if c.stylesheet.processorLanguage() == processorXSLT10 {
 			if err := validateLegacyKeyUse(useExpr, c.nsBindings); err != nil {
 				return err
 			}
@@ -289,7 +299,7 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	// XSLT 2.0 (and 1.0) restrict them to yes/no; XSLT 3.0+ accepts the full
 	// xs:boolean lexical space. The selected processor governs these rules;
 	// XSLT 3.0 defines no differing behavior for a 2.0 declaration.
-	yesNoOnly := c.stylesheet.processorLanguage() < 30
+	yesNoOnly := c.stylesheet.processorLanguage() < processorXSLT30
 
 	if err := compileOutputBooleans(elem, outDef, yesNoOnly); err != nil {
 		return err
@@ -362,7 +372,7 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 
 	if version := getAttr(elem, lexicon.SerializationHTMLVersion); version != "" {
 		version = strings.TrimSpace(version)
-		if _, err := strconv.ParseFloat(version, 64); err != nil {
+		if _, err := strconv.ParseFloat(version, float64ParseBits); err != nil {
 			return staticError(errCodeXTSE0020, "%q is not a valid value for xsl:output/@html-version", version)
 		}
 
@@ -532,7 +542,7 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 }
 
 func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) error {
-	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameDecimalSeparator, nameGroupingSeparator, nameInfinity, nameMinusSign, lexicon.FloatNaN, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, xslAttrUseWhen)); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, nameDecimalSeparator, nameGroupingSeparator, nameInfinity, nameMinusSign, lexicon.DecimalFormatNaN, namePercent, namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator, xslAttrUseWhen)); err != nil {
 		return err
 	}
 	// Push element-local namespace declarations so prefixed names resolve correctly
@@ -568,7 +578,7 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 
 	if !exists {
 		df = xpath.DefaultDecimalFormat()
-		df.ExponentDisabled = c.stylesheet.processorLanguage() < 30
+		df.ExponentDisabled = c.stylesheet.processorLanguage() < processorXSLT30
 	}
 
 	// XTSE1290: record potential conflicts for deferred checking after all imports.
@@ -607,7 +617,7 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 		for _, attr := range []string{
 			nameDecimalSeparator, nameGroupingSeparator, namePercent,
 			namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator,
-			nameInfinity, lexicon.FloatNaN, nameMinusSign,
+			nameInfinity, lexicon.DecimalFormatNaN, nameMinusSign,
 		} {
 			if elem.HasAttribute(attr) {
 				setProps[attr] = struct{}{}
@@ -625,13 +635,16 @@ func (c *compiler) decimalFormatName(elem *xdm.Element) (xpath.QualifiedName, er
 	}
 
 	name = strings.TrimFunc(name, xmlchar.IsSpace)
-	if !xmlchar.IsValidQName(name) && !(c.stylesheet.processorLanguage() >= 30 && isValidEQName(name)) {
+	if !xmlchar.IsValidQName(name) && !(c.stylesheet.processorLanguage() >= processorXSLT30 && isValidEQName(name)) {
 		return xpath.QualifiedName{}, staticError(errCodeXTSE0020, "invalid name %q on xsl:decimal-format", name)
 	}
 
 	qn, err := resolveIntrospectionName(name, "", errCodeXTSE0280, nsResolverFromMap(inScopeNamespaces(elem)))
+	if err != nil {
+		return xpath.QualifiedName{}, err
+	}
 
-	return xpath.QualifiedName{URI: qn.URI, Name: qn.Local}, err
+	return xpath.QualifiedName{URI: qn.URI, Name: qn.Local}, nil
 }
 
 func (c *compiler) compileSpaceHandling(ctx context.Context, elem *xdm.Element, strip bool) error {
@@ -655,7 +668,7 @@ func (c *compiler) compileSpaceHandling(ctx context.Context, elem *xdm.Element, 
 
 	// Apply per-element xpath-default-namespace
 	savedXPathDefaultNS := c.xpathDefaultNS
-	if xdn, ok := elem.GetAttribute(nameXpathDefaultNamespace); ok {
+	if xdn, ok := elem.GetAttribute(nameXPathDefaultNamespace); ok {
 		c.xpathDefaultNS = xdn
 	}
 	defer func() { c.xpathDefaultNS = savedXPathDefaultNS }()
@@ -775,7 +788,7 @@ func (c *compiler) spaceDeclNamespaces(elem *xdm.Element) map[string]string {
 // does not cover the name-set of an "a" vs "a" conflict, so it must not cancel
 // that genuine same-precedence conflict.
 func (c *compiler) checkSpaceConflicts(_ context.Context) error {
-	if c.stylesheet.processorLanguage() == 20 {
+	if c.stylesheet.processorLanguage() == processorXSLT20 {
 		// XSLT 2.0 §3.4 permits recovery from XTRE0270 by using the last
 		// declaration. XSLT 3.0 makes the conflict a static error instead.
 		return nil
@@ -841,12 +854,12 @@ func (c *compiler) spaceRegionCovered(region nameTest, prec int) bool {
 func validateLegacyKeyUse(expression *xpath.Expression, bindings map[string]string) error {
 	refs := expression.StaticReferences(bindings)
 	if len(refs.FreeVariables) > 0 {
-		return staticError("XTSE1205", "variables are unavailable in XSLT 1.0 keys")
+		return staticError(errCodeXTSE1205, "variables are unavailable in XSLT 1.0 keys")
 	}
 
 	for _, fn := range refs.FunctionNames {
-		if fn.Prefix == "" && fn.Name == nameKey2 {
-			return staticError("XTSE1205", "key() is unavailable in XSLT 1.0 key declarations")
+		if fn.Prefix == "" && fn.Name == keyLocalName {
+			return staticError(errCodeXTSE1205, "key() is unavailable in XSLT 1.0 key declarations")
 		}
 	}
 
@@ -1035,11 +1048,11 @@ func outputStandalone(value string, yesNoOnly bool) (string, error) {
 	switch value {
 	case lexicon.ValueYes, lexicon.ValueNo, lexicon.ValueOmit:
 		return value, nil
-	case lexicon.ValueTrue, "1":
+	case lexicon.ValueTrue, booleanDigitTrue:
 		if !yesNoOnly {
 			return lexicon.ValueYes, nil
 		}
-	case lexicon.ValueFalse, "0":
+	case lexicon.ValueFalse, booleanDigitFalse:
 		if !yesNoOnly {
 			return lexicon.ValueNo, nil
 		}
@@ -1066,7 +1079,7 @@ func loadParameterDocumentFromFile(ctx context.Context, injected *xdm.ParseOptio
 		return values.explicit, nil, nil
 	}
 
-	parameters, err := xpath.ReadSerializationParameters(ctx, root, 31)
+	parameters, err := xpath.ReadSerializationParameters(ctx, root, xpathProfile31)
 	if err != nil {
 		return values.explicit, nil, err
 	}
@@ -1086,6 +1099,14 @@ func parameterDocumentURI(baseURI, href string) string {
 }
 
 func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, baseURI, href string, openResource func(context.Context, string) (io.ReadCloser, error), runtime bool, resourceLimit int64) (*xdm.Element, error) {
+	const (
+		serializationParametersElement = "serialization-parameters"
+	)
+
+	const (
+		errCodeSEPM0017 = "SEPM0017"
+	)
+
 	reader, err := openResource(ctx, parameterDocumentURI(baseURI, href))
 	if err != nil {
 		if failure := preserveControlFailure(ctx, err); failure != nil {
@@ -1106,12 +1127,12 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 			return nil, failure
 		}
 
-		return nil, &xdm.Error{Code: "SEPM0017", Message: "ill-formed serialization parameter document", Cause: err}
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "ill-formed serialization parameter document", Cause: err}
 	}
 
 	root := doc.DocumentElement()
-	if root == nil || root.LocalName() != "serialization-parameters" || root.URI() != lexicon.NamespaceSerialization {
-		return nil, &xdm.Error{Code: "SEPM0017", Message: "serialization parameter document requires output:serialization-parameters"}
+	if root == nil || root.LocalName() != serializationParametersElement || root.URI() != lexicon.NamespaceSerialization {
+		return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "serialization parameter document requires output:serialization-parameters"}
 	}
 
 	return root, nil
@@ -1181,7 +1202,7 @@ func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
 		df.Infinity = v
 	}
 
-	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
+	if v, present := elem.GetAttribute(lexicon.DecimalFormatNaN); present {
 		df.NaN = v
 	}
 
@@ -1240,8 +1261,8 @@ func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.
 		}
 	}
 
-	if v, present := elem.GetAttribute(lexicon.FloatNaN); present {
-		if _, wasSet := prevSet[lexicon.FloatNaN]; wasSet && v != existing.NaN {
+	if v, present := elem.GetAttribute(lexicon.DecimalFormatNaN); present {
+		if _, wasSet := prevSet[lexicon.DecimalFormatNaN]; wasSet && v != existing.NaN {
 			return staticError(errCodeXTSE1290,
 				"conflicting xsl:decimal-format declarations: NaN was %q, now %q",
 				existing.NaN, v)
@@ -1269,6 +1290,13 @@ func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.
 // criterion (one fixes the namespace, the other fixes the local name), so they
 // are kept as separate kinds.
 func nameTestKey(nt nameTest) string {
+	const (
+		spaceConflictExactPrefix     = "E:"
+		spaceConflictLocalPrefix     = "L:"
+		spaceConflictNamespacePrefix = "N:"
+		spaceConflictUniversalKey    = "U:"
+	)
+
 	uri := ""
 	if nt.HasURI {
 		uri = nt.URI
@@ -1277,16 +1305,16 @@ func nameTestKey(nt nameTest) string {
 	switch {
 	case nt.Prefix == "*":
 		// "*:local" — local-name wildcard (namespace unconstrained).
-		return "L:" + nt.Local
+		return spaceConflictLocalPrefix + nt.Local
 	case nt.Local == "*" && nt.HasURI:
 		// "prefix:*" / "Q{uri}*" — namespace wildcard.
-		return "N:" + uri
+		return spaceConflictNamespacePrefix + uri
 	case nt.Local == "*":
 		// "*" — universal wildcard.
-		return "U:"
+		return spaceConflictUniversalKey
 	default:
 		// Exact expanded name.
-		return "E:" + xdm.ClarkName(uri, nt.Local)
+		return spaceConflictExactPrefix + xdm.ClarkName(uri, nt.Local)
 	}
 }
 
@@ -1406,8 +1434,8 @@ func ruleCoversRegion(h, region nameTest) bool {
 // 1.0) use the earlier serialization spec, restricting them to {yes, no}; when
 // yesNoOnly is true any other lexical form (including true/false/1/0) is invalid.
 func outputBoolAttr(elem *xdm.Element, attr string, yesNoOnly bool) (bool, bool, error) {
-	v := getAttr(elem, attr)
-	if v == "" {
+	v, present := elem.GetAttribute(attr)
+	if !present {
 		return false, false, nil
 	}
 
@@ -1602,7 +1630,7 @@ func checkAttributeSetCycles(ss *Stylesheet) error {
 		case done:
 			return nil
 		case visiting:
-			if ss.processorLanguage() >= 30 {
+			if ss.processorLanguage() >= processorXSLT30 {
 				return nil
 			}
 

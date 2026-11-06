@@ -13,7 +13,12 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+)
+
+const (
+	maximumRedirects = 10
 )
 
 var (
@@ -80,7 +85,9 @@ type FSConfig struct {
 // FSResolver retains immutable URI mapping policy. Its application-owned filesystem
 // must support concurrent reads.
 type FSResolver struct {
-	fs   fs.FS
+	// fs is the caller-supplied filesystem exposed through this resolver.
+	fs fs.FS
+	// base is the trusted absolute URI used to map resources into fs.
 	base *url.URL
 }
 
@@ -121,7 +128,7 @@ func (r *FSResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, er
 
 	f, err := r.fs.Open(name)
 	if err != nil {
-		if !nilcheck.IsNil(f) {
+		if f != nil && !nilcheck.IsNil(f) {
 			err = errors.Join(err, f.Close())
 		}
 
@@ -152,7 +159,9 @@ type HTTPConfig struct {
 // HTTPResolver checks the configured origin allowlist on initial requests and
 // redirects.
 type HTTPResolver struct {
-	client  *http.Client
+	// client is the private HTTP client configured for resource resolution.
+	client *http.Client
+	// origins contains the explicitly authorized HTTP origins.
 	origins map[string]struct{}
 }
 
@@ -165,7 +174,7 @@ func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
 	r := &HTTPResolver{origins: make(map[string]struct{}, len(config.AllowedOrigins))}
 	for _, origin := range config.AllowedOrigins {
 		u, err := parseURI(origin)
-		if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" || u.Path != "" && u.Path != "/" {
+		if err != nil || u.Scheme != lexicon.SchemeHTTP && u.Scheme != lexicon.SchemeHTTPS || u.Host == "" || u.Path != "" && u.Path != "/" {
 			return nil, ErrInput
 		}
 
@@ -192,7 +201,7 @@ func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
 			return nil
 		}
 
-		if len(via) >= 10 {
+		if len(via) >= maximumRedirects {
 			return fmt.Errorf("%w: too many redirects", ErrPolicy)
 		}
 
@@ -237,11 +246,17 @@ func (r *HTTPResolver) Resolve(ctx context.Context, uri string) (io.ReadCloser, 
 		return nil, errors.Join(fmt.Errorf("%w: HTTP status %d", ErrResource, response.StatusCode), response.Body.Close())
 	}
 
-	return &contextReader{ctx: ctx, ReadCloser: response.Body, mediaType: response.Header.Get("Content-Type"), size: response.ContentLength}, nil
+	return &contextReader{ctx: ctx, ReadCloser: response.Body, mediaType: response.Header.Get(lexicon.HeaderContentType), size: response.ContentLength}, nil
 }
 
 func (r *HTTPResolver) allowed(u *url.URL) bool {
-	if u == nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+	if u == nil || u.User != nil || (u.Scheme != lexicon.SchemeHTTP && u.Scheme != lexicon.SchemeHTTPS) {
+		return false
+	}
+
+	// url.Parse leaves query escapes unchecked. Validate without changing the
+	// spelling used by the request or the caller's resource policy.
+	if _, err := url.QueryUnescape(u.RawQuery); err != nil {
 		return false
 	}
 
@@ -268,7 +283,7 @@ func (t *httpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	if err != nil && response != nil {
-		if !nilcheck.IsNil(response.Body) {
+		if response.Body != nil && !nilcheck.IsNil(response.Body) {
 			err = errors.Join(err, response.Body.Close())
 		}
 

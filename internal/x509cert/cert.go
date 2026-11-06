@@ -7,27 +7,68 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"net"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+const (
+	defaultASN1Depth                 = 33
+	defaultASN1Nodes                 = 100000
+	defaultCertificateBytes          = 1 << 20
+	maximumDistributionPoints        = 256
+	maximumExtensionBytes            = 1 << 20
+	maximumExtensions                = 256
+	maximumGeneralNames              = 256
+	relativeDistributionPointViewURI = "urn:xmlsec:private-relative-dp-view"
+)
+
+// X.509 schema bounds and context-specific tags, independent of the parser's
+// byte, nesting and node budgets. Version values are the encoded integers.
+const (
+	certificateFields        = 3
+	tbsMinimumFields         = 6
+	tbsMaximumFields         = 10
+	certificateVersionTag    = 0
+	certificateExtensionsTag = 3
+	certificateVersion1      = 0
+	certificateVersion2      = 1
+	certificateVersion3      = 2
+	extensionMinimumFields   = 2
+	extensionMaximumFields   = 3
+)
+
+// DistributionPoint and DistributionPointName use separate tagged schemas.
+const (
+	distributionPointNameTag    = 0
+	distributionPointReasonsTag = 1
+	distributionPointIssuerTag  = 2
+	distributionPointMaxFields  = 3
+	pointNameFullTag            = 0
+	pointNameRelativeTag        = 1
 )
 
 // Limits bounds the private relative-distribution-point parsing view.
 type Limits struct {
+	// Bytes bounds the complete certificate DER encoding in bytes.
 	Bytes int
+	// Depth bounds ASN.1 nesting during structural validation.
 	Depth int
+	// Nodes bounds the number of ASN.1 values visited before certificate parsing.
 	Nodes int
 }
 
 // ParseDefault uses the package's bounded 1MiB, 33-level and 100000-value profile.
 // It borrows raw and performs no authentication or trust decision.
 func ParseDefault(raw []byte) (*x509.Certificate, error) {
-	return Parse(raw, Limits{Bytes: 1 << 20, Depth: 33, Nodes: 100000})
+	return Parse(raw, Limits{Bytes: defaultCertificateBytes, Depth: defaultASN1Depth, Nodes: defaultASN1Nodes})
 }
 
 // ParseWithMaxBytes preserves the caller byte bound with shared depth/value caps.
 // It borrows raw and performs no authentication or trust decision.
 func ParseWithMaxBytes(raw []byte, maximum int) (*x509.Certificate, error) {
-	return Parse(raw, Limits{Bytes: maximum, Depth: 33, Nodes: 100000})
+	return Parse(raw, Limits{Bytes: maximum, Depth: defaultASN1Depth, Nodes: defaultASN1Nodes})
 }
 
 // Parse returns a certificate borrowing raw. It preserves every signed byte.
@@ -44,16 +85,16 @@ func Parse(raw []byte, limits Limits) (*x509.Certificate, error) {
 		return nil, err
 	}
 
-	var outerFields [3]asn1.RawValue
+	var outerFields [certificateFields]asn1.RawValue
 
-	outer, err := checkedSequence(value, 3, outerFields[:])
+	outer, err := checkedSequence(value, certificateFields, outerFields[:])
 	if err != nil {
 		return nil, err
 	}
 
-	var bodyFields [10]asn1.RawValue
+	var bodyFields [tbsMaximumFields]asn1.RawValue
 
-	body, err := checkedSequence(outer[0], 6, bodyFields[:])
+	body, err := checkedSequence(outer[0], tbsMinimumFields, bodyFields[:])
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +116,7 @@ func Parse(raw []byte, limits Limits) (*x509.Certificate, error) {
 	parts := make([][]byte, len(body))
 	for index, field := range body {
 		parts[index] = field.FullBytes
-		if field.Class != 2 || field.Tag != 3 {
+		if field.Class != asn1.ClassContextSpecific || field.Tag != certificateExtensionsTag {
 			continue
 		}
 
@@ -95,11 +136,11 @@ func Parse(raw []byte, limits Limits) (*x509.Certificate, error) {
 	}
 
 	offset := 0
-	if body[0].Class == 2 {
+	if body[0].Class == asn1.ClassContextSpecific {
 		offset++
 	}
 
-	if len(body) < offset+6 {
+	if len(body) < offset+tbsMinimumFields {
 		return nil, der.ErrInvalidDER
 	}
 
@@ -117,11 +158,11 @@ func Parse(raw []byte, limits Limits) (*x509.Certificate, error) {
 }
 
 func validateCertificateDefaults(body []asn1.RawValue) error {
-	version, offset := 0, 0
+	version, offset := certificateVersion1, 0
 
-	if body[0].Class == 2 && body[0].Tag == 0 {
-		value, err := checkedExplicit(body[0], 0)
-		if err != nil || !der.Is(value, 0, asn1.TagInteger, false) || len(value.Bytes) != 1 || value.Bytes[0] < 1 || value.Bytes[0] > 2 {
+	if body[0].Class == asn1.ClassContextSpecific && body[0].Tag == certificateVersionTag {
+		value, err := checkedExplicit(body[0], certificateVersionTag)
+		if err != nil || !der.Is(value, asn1.ClassUniversal, asn1.TagInteger, false) || len(value.Bytes) != 1 || value.Bytes[0] < certificateVersion2 || value.Bytes[0] > certificateVersion3 {
 			return der.ErrInvalidDER
 		}
 
@@ -129,26 +170,26 @@ func validateCertificateDefaults(body []asn1.RawValue) error {
 		offset++
 	}
 
-	if len(body) < offset+6 {
+	if len(body) < offset+tbsMinimumFields {
 		return der.ErrInvalidDER
 	}
 
 	previous := 0
-	for _, field := range body[offset+6:] {
-		if field.Class != 2 || field.Tag <= previous || field.Tag > 3 || version == 0 || field.Tag == 3 && version != 2 {
+	for _, field := range body[offset+tbsMinimumFields:] {
+		if field.Class != asn1.ClassContextSpecific || field.Tag <= previous || field.Tag > certificateExtensionsTag || version == certificateVersion1 || field.Tag == certificateExtensionsTag && version != certificateVersion3 {
 			return der.ErrInvalidDER
 		}
 
 		previous = field.Tag
-		if field.Tag == 3 {
-			value, err := checkedExplicit(field, 3)
-			if err != nil || !der.Is(value, 0, asn1.TagSequence, true) || len(value.Bytes) == 0 {
+		if field.Tag == certificateExtensionsTag {
+			value, err := checkedExplicit(field, certificateExtensionsTag)
+			if err != nil || !der.Is(value, asn1.ClassUniversal, asn1.TagSequence, true) || len(value.Bytes) == 0 {
 				return der.ErrInvalidDER
 			}
 
 			count := 0
 			for content := value.Bytes; len(content) > 0; count++ {
-				if count == 256 {
+				if count == maximumExtensions {
 					return errors.Join(der.ErrInvalidDER, der.ErrLimit)
 				}
 
@@ -166,12 +207,12 @@ func validateCertificateDefaults(body []asn1.RawValue) error {
 }
 
 func relativeExtensions(wrapper asn1.RawValue) ([]pkix.Extension, []byte, bool, error) {
-	value, err := der.Explicit(wrapper, 3)
+	value, err := der.Explicit(wrapper, certificateExtensionsTag)
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	fields, err := der.Sequence(value, 1, 256)
+	fields, err := der.Sequence(value, 1, maximumExtensions)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -184,7 +225,7 @@ func relativeExtensions(wrapper asn1.RawValue) ([]pkix.Extension, []byte, bool, 
 	for index, field := range fields {
 		var extension pkix.Extension
 
-		components, err := der.Sequence(field, 2, 3)
+		components, err := der.Sequence(field, extensionMinimumFields, extensionMaximumFields)
 		if err != nil || der.Decode(field, &extension) != nil {
 			return nil, nil, false, der.ErrInvalidDER
 		}
@@ -193,7 +234,7 @@ func relativeExtensions(wrapper asn1.RawValue) ([]pkix.Extension, []byte, bool, 
 			return nil, nil, false, der.ErrInvalidDER
 		}
 
-		if len(components) == 3 && !extension.Critical {
+		if len(components) == extensionMaximumFields && !extension.Critical {
 			return nil, nil, false, der.ErrInvalidDER
 		}
 
@@ -224,16 +265,16 @@ func relativeExtensions(wrapper asn1.RawValue) ([]pkix.Extension, []byte, bool, 
 		changed = true
 	}
 
-	return originals, der.Ctx(3, der.Seq(parts...)), changed, nil
+	return originals, der.Ctx(certificateExtensionsTag, der.Seq(parts...)), changed, nil
 }
 
 func relativePoints(raw []byte) ([]byte, bool, error) {
-	value, err := der.Read(raw, 1<<20)
+	value, err := der.Read(raw, maximumExtensionBytes)
 	if err != nil {
 		return nil, false, err
 	}
 
-	points, err := der.Sequence(value, 1, 256)
+	points, err := der.Sequence(value, 1, maximumDistributionPoints)
 	if err != nil {
 		return nil, false, err
 	}
@@ -260,7 +301,7 @@ func generalNames(value asn1.RawValue) error {
 		return der.ErrInvalidDER
 	}
 
-	names, err := der.ChildrenLimit(value, 256)
+	names, err := der.ChildrenLimit(value, maximumGeneralNames)
 	if err != nil || len(names) == 0 {
 		return errors.Join(der.ErrInvalidDER, err)
 	}
@@ -275,15 +316,17 @@ func generalNames(value asn1.RawValue) error {
 }
 
 func validateExtensionDefault(extension asn1.RawValue) error {
-	var scratch [3]asn1.RawValue
+	const derTrue = 0xff
 
-	fields, err := checkedSequence(extension, 2, scratch[:])
+	var scratch [extensionMaximumFields]asn1.RawValue
+
+	fields, err := checkedSequence(extension, extensionMinimumFields, scratch[:])
 	if err != nil {
 		return err
 	}
 
-	if len(fields) == 3 {
-		if !der.Is(fields[1], 0, asn1.TagBoolean, false) || len(fields[1].Bytes) != 1 || fields[1].Bytes[0] != 255 {
+	if len(fields) == extensionMaximumFields {
+		if !der.Is(fields[1], asn1.ClassUniversal, asn1.TagBoolean, false) || len(fields[1].Bytes) != 1 || fields[1].Bytes[0] != derTrue {
 			return der.ErrInvalidDER
 		}
 	}
@@ -292,9 +335,11 @@ func validateExtensionDefault(extension asn1.RawValue) error {
 }
 
 func relativePoint(point asn1.RawValue) ([]byte, bool, error) {
+	const reasonFlagCount = 9
+
 	changed := false
 
-	fields, err := der.Sequence(point, 1, 3)
+	fields, err := der.Sequence(point, 1, distributionPointMaxFields)
 	if err != nil {
 		return nil, false, err
 	}
@@ -304,7 +349,7 @@ func relativePoint(point asn1.RawValue) ([]byte, bool, error) {
 	named := false
 
 	for position, field := range fields {
-		if field.Class != 2 || field.Tag <= previous || field.Tag > 2 {
+		if field.Class != asn1.ClassContextSpecific || field.Tag <= previous || field.Tag > distributionPointIssuerTag {
 			return nil, false, der.ErrInvalidDER
 		}
 
@@ -312,7 +357,7 @@ func relativePoint(point asn1.RawValue) ([]byte, bool, error) {
 
 		encoded[position] = field.FullBytes
 		switch field.Tag {
-		case 0:
+		case distributionPointNameTag:
 			named = true
 
 			encoded[position], changed, err = relativePointName(field)
@@ -320,12 +365,12 @@ func relativePoint(point asn1.RawValue) ([]byte, bool, error) {
 				return nil, false, err
 			}
 
-		case 1:
+		case distributionPointReasonsTag:
 			var bits asn1.BitString
-			if field.IsCompound || der.Unmarshal(der.Wrap(0, asn1.TagBitString, false, field.Bytes), &bits) != nil || bits.BitLength > 9 || bits.At(0) != 0 {
+			if field.IsCompound || der.Unmarshal(der.Wrap(asn1.ClassUniversal, asn1.TagBitString, false, field.Bytes), &bits) != nil || bits.BitLength > reasonFlagCount || bits.At(0) != 0 {
 				return nil, false, der.ErrInvalidDER
 			}
-		case 2:
+		case distributionPointIssuerTag:
 			named = true
 
 			if err := generalNames(field); err != nil {
@@ -342,12 +387,12 @@ func relativePoint(point asn1.RawValue) ([]byte, bool, error) {
 }
 
 func generalName(name asn1.RawValue) error {
-	if name.Class != 2 || name.Tag < 0 || name.Tag > 8 {
+	if name.Class != asn1.ClassContextSpecific || name.Tag < lexicon.GeneralNameOtherName || name.Tag > lexicon.GeneralNameRegisteredID {
 		return der.ErrInvalidDER
 	}
 
 	switch name.Tag {
-	case 0:
+	case lexicon.GeneralNameOtherName:
 		fields, err := der.Children(name)
 		if err != nil || len(fields) != 2 {
 			return der.ErrInvalidDER
@@ -361,25 +406,25 @@ func generalName(name asn1.RawValue) error {
 		if _, err := der.Explicit(fields[1], 0); err != nil {
 			return err
 		}
-	case 4:
+	case lexicon.GeneralNameDirectory:
 		var dn pkix.RDNSequence
 		if !name.IsCompound || der.Unmarshal(name.Bytes, &dn) != nil {
 			return der.ErrInvalidDER
 		}
-	case 3, 5:
+	case lexicon.GeneralNameX400, lexicon.GeneralNameEDI:
 		if !name.IsCompound {
 			return der.ErrInvalidDER
 		}
-	case 1, 2, 6:
+	case lexicon.GeneralNameRFC822, lexicon.GeneralNameDNS, lexicon.GeneralNameURI:
 		return asciiGeneralName(name)
 
-	case 7:
-		if name.IsCompound || len(name.Bytes) != 4 && len(name.Bytes) != 16 {
+	case lexicon.GeneralNameIP:
+		if name.IsCompound || len(name.Bytes) != net.IPv4len && len(name.Bytes) != net.IPv6len {
 			return der.ErrInvalidDER
 		}
-	case 8:
+	case lexicon.GeneralNameRegisteredID:
 		var oid asn1.ObjectIdentifier
-		if name.IsCompound || der.Unmarshal(der.Wrap(0, asn1.TagOID, false, name.Bytes), &oid) != nil {
+		if name.IsCompound || der.Unmarshal(der.Wrap(asn1.ClassUniversal, asn1.TagOID, false, name.Bytes), &oid) != nil {
 			return der.ErrInvalidDER
 		}
 	}
@@ -395,12 +440,12 @@ func originalCRLURIs(extensions []pkix.Extension) ([]string, error) {
 			continue
 		}
 
-		value, err := der.Read(extension.Value, 1<<20)
+		value, err := der.Read(extension.Value, maximumExtensionBytes)
 		if err != nil {
 			return nil, err
 		}
 
-		points, err := der.Sequence(value, 1, 256)
+		points, err := der.Sequence(value, 1, maximumDistributionPoints)
 		if err != nil {
 			return nil, err
 		}
@@ -419,26 +464,26 @@ func originalCRLURIs(extensions []pkix.Extension) ([]string, error) {
 }
 
 func fullCRLPointURIs(point asn1.RawValue) ([]string, error) {
-	fields, err := der.Sequence(point, 1, 3)
+	fields, err := der.Sequence(point, 1, distributionPointMaxFields)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, field := range fields {
-		if field.Class != 2 || field.Tag != 0 {
+		if field.Class != asn1.ClassContextSpecific || field.Tag != distributionPointNameTag {
 			continue
 		}
 
-		choice, err := der.Explicit(field, 0)
+		choice, err := der.Explicit(field, distributionPointNameTag)
 		if err != nil {
 			return nil, err
 		}
 
-		if choice.Tag != 0 {
+		if choice.Tag != pointNameFullTag {
 			return nil, nil
 		}
 
-		names, err := der.ChildrenLimit(choice, 256)
+		names, err := der.ChildrenLimit(choice, maximumGeneralNames)
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +491,7 @@ func fullCRLPointURIs(point asn1.RawValue) ([]string, error) {
 		var uris []string
 
 		for _, name := range names {
-			if name.Class == 2 && name.Tag == 6 {
+			if name.Class == asn1.ClassContextSpecific && name.Tag == lexicon.GeneralNameURI {
 				uris = append(uris, string(name.Bytes))
 			}
 		}
@@ -458,12 +503,12 @@ func fullCRLPointURIs(point asn1.RawValue) ([]string, error) {
 }
 
 func relativePointName(field asn1.RawValue) ([]byte, bool, error) {
-	name, err := der.Explicit(field, 0)
-	if err != nil || name.Class != 2 || !name.IsCompound {
+	name, err := der.Explicit(field, distributionPointNameTag)
+	if err != nil || name.Class != asn1.ClassContextSpecific || !name.IsCompound {
 		return nil, false, der.ErrInvalidDER
 	}
 
-	if name.Tag == 0 {
+	if name.Tag == pointNameFullTag {
 		if err := generalNames(name); err != nil {
 			return nil, false, err
 		}
@@ -471,25 +516,30 @@ func relativePointName(field asn1.RawValue) ([]byte, bool, error) {
 		return field.FullBytes, false, nil
 	}
 
-	if name.Tag != 1 {
+	if name.Tag != pointNameRelativeTag {
 		return nil, false, der.ErrInvalidDER
 	}
 
 	var rdn pkix.RelativeDistinguishedNameSET
-	if der.Unmarshal(der.Wrap(0, asn1.TagSet, true, name.Bytes), &rdn) != nil || len(rdn) == 0 {
+	if der.Unmarshal(der.Wrap(asn1.ClassUniversal, asn1.TagSet, true, name.Bytes), &rdn) != nil || len(rdn) == 0 {
 		return nil, false, der.ErrInvalidDER
 	}
 
-	return der.Ctx(0, der.Wrap(2, 0, true, der.Wrap(2, 6, false, []byte("urn:xmlsec:private-relative-dp-view")))), true, nil
+	return der.Ctx(distributionPointNameTag, der.Wrap(asn1.ClassContextSpecific, pointNameFullTag, true, der.Wrap(asn1.ClassContextSpecific, lexicon.GeneralNameURI, false, []byte(relativeDistributionPointViewURI)))), true, nil
 }
 
 func asciiGeneralName(name asn1.RawValue) error {
+	const (
+		firstPrintableASCII = 0x20
+		asciiDelete         = 0x7f
+	)
+
 	if name.IsCompound || len(name.Bytes) == 0 {
 		return der.ErrInvalidDER
 	}
 
 	for _, b := range name.Bytes {
-		if b < 32 || b >= 127 {
+		if b < firstPrintableASCII || b >= asciiDelete {
 			return der.ErrInvalidDER
 		}
 	}

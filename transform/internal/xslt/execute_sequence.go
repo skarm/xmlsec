@@ -85,7 +85,7 @@ func (ec *execContext) evaluateValueOfSelect(ctx context.Context, inst *valueOfI
 	filtered := filterZeroLengthTextNodes(seq)
 
 	filtered = mergeAdjacentTextNodes(filtered)
-	if ec.stylesheet.processorLanguage() == 10 {
+	if ec.stylesheet.processorLanguage() == processorXSLT10 {
 		value, err = xpath.XPath10String(filtered)
 		if err != nil {
 			return "", false, err
@@ -114,12 +114,12 @@ func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfIns
 	}
 	// XSLT 2.0: value-of body is temporary output state (XTDE1480).
 	// XSLT 3.0 relaxes this restriction.
-	isV2TempOutput := ec.stylesheet.processorLanguage() < 30
+	isV2TempOutput := ec.stylesheet.processorLanguage() < processorXSLT30
 	if isV2TempOutput {
 		ec.temporaryOutputDepth++
 	}
 
-	val, err := ec.evaluateBodySeparateText(ctx, inst.Body)
+	val, err := ec.evaluateBodyAsSequence(ctx, inst.Body)
 	if isV2TempOutput {
 		ec.temporaryOutputDepth--
 	}
@@ -139,7 +139,7 @@ func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfIns
 func (ec *execContext) writeConstructedText(value string, disableEscaping bool) error {
 	if disableEscaping {
 		// Insert DOE marker PI so the serializer writes this text raw.
-		pi := ec.resultDoc.CreatePI(nameDisableOutputEscaping, "")
+		pi := ec.resultDoc.CreatePI(lexicon.DisableOutputEscapingPITarget, "")
 		if err := ec.addNode(pi); err != nil {
 			return err
 		}
@@ -149,7 +149,7 @@ func (ec *execContext) writeConstructedText(value string, disableEscaping bool) 
 			return err
 		}
 
-		piEnd := ec.resultDoc.CreatePI("enable-output-escaping", "")
+		piEnd := ec.resultDoc.CreatePI(lexicon.EnableOutputEscapingPITarget, "")
 
 		return ec.addNode(piEnd)
 	}

@@ -84,6 +84,8 @@ func TestHMACSignVerifyAndTampering(t *testing.T) {
 	}
 	tampered := bytes.Replace(signed.Data, []byte("independent payload"), []byte("changed payload"), 1)
 	verified, err = run(task{Mode: "verify", Method: xmldsig.HMACSHA256, Secret: secret, Input: tampered})
+	// Failure assertions inspect the probe's diagnostic payload.
+	//noinspection GoDfaErrorMayBeNotNil
 	if err == nil || verified.Valid {
 		t.Fatal("tampered signed object accepted")
 	}
@@ -117,11 +119,15 @@ func TestProviderDefaultParametersDoNotPanic(t *testing.T) {
 	}
 	for _, invalid := range []task{{Mode: "provider-sign", Method: xmldsig.RSAPSS, Input: input, SPKI: spki, Hash: 224}, {Mode: "provider-sign", Method: xmldsig.RSAPSS, Input: input, SPKI: spki, Hash: 256, MGF: 1}} {
 		result, err := run(invalid)
+		// Failure assertions inspect the probe's diagnostic payload.
+		//noinspection GoDfaErrorMayBeNotNil
 		if !errors.Is(err, xmldsig.ErrAlgorithm) || result.Valid || result.ProviderCalls != 0 || len(result.Data) != 0 {
 			t.Fatalf("invalid hash downgraded to default: %+v %v", result, err)
 		}
 	}
 	answer, err := run(task{Mode: "provider-sign", Method: xmldsig.RSAPSS, DefaultParams: true, Input: input, SPKI: spki})
+	// Failure assertions inspect the probe's diagnostic payload.
+	//noinspection GoDfaErrorMayBeNotNil
 	if err == nil || answer.Valid || answer.ProviderCalls != 1 || !strings.Contains(err.Error(), "independent precomputed signature input differs") {
 		t.Fatalf("default provider did not reach its input guard: %+v %v", answer, err)
 	}

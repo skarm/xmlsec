@@ -8,12 +8,16 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math/big"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"unicode/utf16"
 
+	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/resource"
 	"github.com/skarm/xmlsec/transform"
 )
@@ -638,12 +642,12 @@ func TestApplicationFunctionTypes(t *testing.T) {
 		calls++
 		return args[0], nil
 	}}}})
-	for _, reference := range []string{`Q{urn:callback}echo#1`, `Q{urn:callback}echo(?)`, `function-lookup(QName('urn:callback','echo'),1)`} {
+	for _, ref := range []string{`Q{urn:callback}echo#1`, `Q{urn:callback}echo(?)`, `function-lookup(QName('urn:callback','echo'),1)`} {
 		for _, test := range []struct {
 			result string
 			want   string
 		}{{`item()*`, nameTrue}, {`xs:string`, nameFalse}} {
-			expression := reference + ` instance of function(xs:string) as ` + test.result
+			expression := ref + ` instance of function(xs:string) as ` + test.result
 			if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != test.want {
 				t.Fatal(expression, got, test.want)
 			}
@@ -1200,38 +1204,6 @@ func TestCollectionStabilityAcrossXSLT(t *testing.T) {
 	}
 }
 
-func resourceStylesheetResult(t *testing.T, e *transform.Engine, source string, nested bool, assertions ...bool) (string, error) {
-	t.Helper()
-
-	if nested {
-		option := ""
-		if len(assertions) > 0 && assertions[0] {
-			option = ",'enable-assertions':true()"
-		}
-
-		q := query(t, e, `transform(map{'stylesheet-text':$stylesheet,'initial-template':QName('', 'start'),'delivery-format':'serialized'`+option+`})?output`, transform.XPath31)
-
-		result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(source))}})
-		if err != nil {
-			return "", err
-		}
-
-		return text(t, result), nil
-	}
-
-	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
-	if err != nil {
-		return "", err
-	}
-
-	return string(result.Primary), nil
-}
-
 func TestMergeSourceContracts(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -1319,7 +1291,7 @@ func TestXPathTransformResources(t *testing.T) {
 
 		result, err := program.Evaluate(t.Context(), nil, transform.XPathContext{})
 		if maxResources == 1 {
-			if !errors.Is(err, transform.ErrLimit) || result.Len() != 0 {
+			if !errors.Is(err, transform.ErrLimit) || result != (transform.Sequence{}) {
 				t.Fatal("nested resource budget", result, err)
 			}
 		} else if err != nil || text(t, result) != "payload" {
@@ -1541,41 +1513,6 @@ func TestEscapedFunctionResourceScopes(t *testing.T) {
 			t.Fatal("nested", body, values, err)
 		}
 	}
-}
-
-func documentFunctionContractCases() []struct {
-	expression string
-	want       string
-} {
-	tests := make([]struct {
-		expression string
-		want       string
-	}, 0, 24)
-	for _, call := range []string{`doc`, `(doc#1)`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','doc'),1)`, `doc(?)`} {
-		for _, test := range []struct {
-			argument string
-			want     string
-		}{
-			{`42`, errCodeXPTY0004},
-			{`('urn:shared','urn:other')`, errCodeXPTY0004},
-			{`'urn:shared#id'`, "FODC0005"},
-			{`':/'`, "FODC0005"},
-			{`[]`, ""},
-			{`xs:untypedAtomic('urn:shared')`, "1"},
-		} {
-			tests = append(tests, struct {
-				expression string
-				want       string
-			}{call + `(` + test.argument + `)/r`, test.want})
-		}
-	}
-	return tests
-}
-
-func valueOfExpression(expression string) string {
-	var escaped strings.Builder
-	_ = xml.EscapeText(&escaped, []byte(expression))
-	return `<xsl:value-of select="` + escaped.String() + `"/>`
 }
 
 func TestXSLTDocumentFunctionContracts(t *testing.T) {
@@ -2124,13 +2061,6 @@ func TestXSLTTextResourceMediaType(t *testing.T) {
 	}
 }
 
-type typedTextReader struct {
-	lifecycleReader
-	mediaType string
-}
-
-func (r *typedTextReader) MediaType() string { return r.mediaType }
-
 func TestXPathTransformProgramBudget(t *testing.T) {
 	e := engine(t, transform.Config{Limits: transform.Limits{MaxProgramBytes: 512}})
 
@@ -2142,7 +2072,7 @@ func TestXPathTransformProgramBudget(t *testing.T) {
 		result, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
 			{Local: variableStylesheet}: transform.Values(transform.String(source)),
 		}})
-		if !errors.Is(err, transform.ErrLimit) || result.Len() != 0 {
+		if !errors.Is(err, transform.ErrLimit) || result != (transform.Sequence{}) {
 			t.Fatal("dynamic stylesheet program budget", result, err)
 		}
 	}
@@ -2185,7 +2115,7 @@ func TestJSONDocResourceErrorCodes(t *testing.T) {
 	})})
 
 	result, err := query(t, e, `json-doc('urn:json')`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
-	if !errors.Is(err, transform.ErrLimit) || result.Len() != 0 {
+	if !errors.Is(err, transform.ErrLimit) || result != (transform.Sequence{}) {
 		t.Fatal("resource budget lost", result, err)
 	}
 }
@@ -2540,37 +2470,6 @@ func TestXSLTProcessorVersionModules(t *testing.T) {
 	}
 }
 
-type lifecycleReader struct {
-	io.Reader
-	closed bool
-}
-
-func (r *lifecycleReader) Close() error {
-	r.closed = true
-	return nil
-}
-
-type cancelReadResource struct {
-	lifecycleReader
-	cancel context.CancelFunc
-	reads  int
-}
-
-func (r *cancelReadResource) Read(p []byte) (int, error) {
-	r.reads++
-	n, err := r.Reader.Read(p)
-	r.cancel()
-
-	return n, err
-}
-
-type trackedReader struct {
-	io.Reader
-	closed *bool
-}
-
-func (r trackedReader) Close() error { *r.closed = true; return nil }
-
 func TestXPathFunctionConversionBudgets(t *testing.T) {
 	e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 1000}})
 	for _, expression := range []string{`function-arity(concat#1000000000)`, `function-arity(function-lookup(xs:QName('fn:concat'),1000000000))`} {
@@ -2587,7 +2486,7 @@ func TestXPathFunctionConversionBudgets(t *testing.T) {
 		`function-lookup(xs:QName('fn:codepoints-to-string'),1)(33 to 10033)`,
 	} {
 		value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
-		if !errors.Is(err, transform.ErrLimit) || value.Len() != 0 {
+		if !errors.Is(err, transform.ErrLimit) || value != (transform.Sequence{}) {
 			t.Fatal("function conversion ignored the operation budget", expression, value, err)
 		}
 	}
@@ -3770,7 +3669,9 @@ func TestXSLTPackageCollectionViews(t *testing.T) {
 			}
 			for range 2 {
 				result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
-				if err != nil || string(result.Primary) != test.want {
+				if err != nil {
+					t.Fatal(err)
+				} else if string(result.Primary) != test.want {
 					t.Fatal(string(result.Primary), err, test.want)
 				}
 			}
@@ -3826,9 +3727,9 @@ func rootXMLBaseCases() []transformExpressionCase {
 	}
 	program := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0" xml:base=""><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="static-base-uri()"/></xsl:template></xsl:stylesheet>`
 	cases = append(cases, transformExpressionCase{"empty with fragment", `transform(map{'stylesheet-text':'` + program + `','stylesheet-base-uri':'` + base + `#fragment','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`, base})
-	for _, reference := range []string{"?query", "#fragment", ""} {
-		program := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0" xml:base="` + reference + `"><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="static-base-uri()"/></xsl:template></xsl:stylesheet>`
-		cases = append(cases, transformExpressionCase{"file " + reference, `transform(map{'stylesheet-text':'` + program + `','stylesheet-base-uri':'file:///modules/main.xsl','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`, "file:///modules/main.xsl" + reference})
+	for _, ref := range []string{"?query", "#fragment", ""} {
+		program := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0" xml:base="` + ref + `"><xsl:output method="text"/><xsl:template name="start"><xsl:value-of select="static-base-uri()"/></xsl:template></xsl:stylesheet>`
+		cases = append(cases, transformExpressionCase{"file " + ref, `transform(map{'stylesheet-text':'` + program + `','stylesheet-base-uri':'file:///modules/main.xsl','initial-template':QName('', 'start'),'delivery-format':'serialized'})?output`, "file:///modules/main.xsl" + ref})
 	}
 	return cases
 }
@@ -3953,8 +3854,8 @@ func TestLanguageDTDStylesheets(t *testing.T) {
 }
 
 func TestLanguageDTDUnparsedEntities(t *testing.T) {
-	const xml = `<!DOCTYPE r [<!NOTATION binary SYSTEM "urn:notation"><!ENTITY image PUBLIC "  identifier   value " "images/a.bin" NDATA binary>]><r/>`
-	selectValue := `parse-xml('` + strings.ReplaceAll(xml, "'", "''") + `')`
+	const x = `<!DOCTYPE r [<!NOTATION binary SYSTEM "urn:notation"><!ENTITY image PUBLIC "  identifier   value " "images/a.bin" NDATA binary>]><r/>`
+	selectValue := `parse-xml('` + strings.ReplaceAll(x, "'", "''") + `')`
 	body := `<xsl:template name="start"><xsl:for-each select="` + strings.NewReplacer("&", "&amp;", "<", "&lt;", `"`, "&quot;").Replace(selectValue) + `"><xsl:value-of select="concat(unparsed-entity-uri('image'),'|',unparsed-entity-public-id('image'),'|',unparsed-entity-uri('missing'))"/></xsl:for-each></xsl:template>`
 	e := engine(t, transform.Config{})
 	compiled, err := e.CompileXSLT(t.Context(), []byte(sheet(version30, body)), transform.XSLTOptions{BaseURI: "https://example.test/style.xsl"})
@@ -3966,23 +3867,6 @@ func TestLanguageDTDUnparsedEntities(t *testing.T) {
 		t.Fatal(got, err)
 	}
 }
-
-type dtdFailureReader struct {
-	io.Reader
-	readError  error
-	closeError error
-	closed     bool
-}
-
-func (r *dtdFailureReader) Read(p []byte) (int, error) {
-	n, err := r.Reader.Read(p)
-	if n > 0 && r.readError != nil {
-		return n, r.readError
-	}
-	return n, err
-}
-
-func (r *dtdFailureReader) Close() error { r.closed = true; return r.closeError }
 
 func TestLanguageDTDFailures(t *testing.T) {
 	const expression = `parse-xml('<!DOCTYPE r [<!ENTITY e SYSTEM "urn:entity">]><r>&e;</r>')`
@@ -4003,7 +3887,7 @@ func TestLanguageDTDFailures(t *testing.T) {
 				return reader, nil
 			})})
 			value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
-			if !errors.Is(err, failure) || !reader.closed || value.Len() != 0 {
+			if !errors.Is(err, failure) || !reader.closed || value != (transform.Sequence{}) {
 				t.Fatal(stage, value, err, reader.closed)
 			}
 		})
@@ -4013,7 +3897,7 @@ func TestLanguageDTDFailures(t *testing.T) {
 	reader := &cancelReadResource{Reader: strings.NewReader(`<n/>`), cancel: cancel}
 	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return reader, nil })})
 	value, err := query(t, e, expression, transform.XPath31).Evaluate(ctx, nil, transform.XPathContext{})
-	if !errors.Is(err, context.Canceled) || !reader.closed || value.Len() != 0 {
+	if !errors.Is(err, context.Canceled) || !reader.closed || value != (transform.Sequence{}) {
 		t.Fatal("entity cancellation", value, err, reader.closed)
 	}
 
@@ -4032,7 +3916,7 @@ func TestLanguageDTDFailures(t *testing.T) {
 	} {
 		e = engine(t, transform.Config{Limits: transform.Limits{MaxInputBytes: 256, MaxDepth: 4}})
 		value, err = query(t, e, `parse-xml($source)`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: sourceName}: transform.Values(transform.String(source))}})
-		if !errors.Is(err, transform.ErrLimit) || value.Len() != 0 {
+		if !errors.Is(err, transform.ErrLimit) || value != (transform.Sequence{}) {
 			t.Fatal("entity expansion budget", value, err)
 		}
 	}
@@ -4118,7 +4002,7 @@ func TestSerializationOutputBudgets(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			expression := `serialize($input,map{'method':'` + method + `','use-character-maps':map{'a':$replacement}})`
 			got, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: variables})
-			if !errors.Is(err, transform.ErrLimit) || got.Len() != 0 {
+			if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
 				t.Fatal(got, err)
 			}
 		})
@@ -4528,7 +4412,7 @@ func TestXSLTGroupingAndCopyBudgets(t *testing.T) {
 		body   string
 		limits transform.Limits
 	}{
-		{"numeric comparisons", `<xsl:for-each-group select="1 to 100" group-by="."><xsl:value-of select="count(current-group())"/></xsl:for-each-group>`, transform.Limits{MaxOperations: 2000}},
+		{"numeric comparisons", `<xsl:for-each-group select="(xs:decimal('0'),1 to 100)" group-by="."><xsl:value-of select="count(current-group())"/></xsl:for-each-group>`, transform.Limits{MaxOperations: 2000}},
 		{"group memberships", `<xsl:for-each-group select="1 to 20" group-by="1 to 20"><xsl:value-of select="count(current-group())"/></xsl:for-each-group>`, transform.Limits{MaxNodes: 200}},
 		{"copied document trees", `<xsl:variable name="d" select="parse-xml(concat('&lt;r>',string-join(for $i in 1 to 20 return '&lt;n/>',''),'&lt;/r>'))"/><xsl:for-each select="1 to 30"><xsl:sequence select="copy-of($d)"/></xsl:for-each>`, transform.Limits{MaxNodes: 200}},
 	} {
@@ -4677,7 +4561,7 @@ func TestDocumentAvailabilityControls(t *testing.T) {
 				if errors.Is(cause, transform.ErrLimit) && version != transform.XPath20 {
 					wantCode = "XPDY0130"
 				}
-				if !errors.Is(err, cause) || result.Len() != 0 || !errors.As(err, &detail) || detail.Code != wantCode {
+				if !errors.Is(err, cause) || result != (transform.Sequence{}) || !errors.As(err, &detail) || detail.Code != wantCode {
 					t.Fatal(result, err, cause, wantCode)
 				}
 			})
@@ -4692,7 +4576,7 @@ func TestDocumentAvailabilityControls(t *testing.T) {
 			if version != transform.XPath20 {
 				wantCode = "XPDY0130"
 			}
-			if !errors.Is(err, transform.ErrLimit) || result.Len() != 0 || !errors.As(err, &detail) || detail.Code != wantCode {
+			if !errors.Is(err, transform.ErrLimit) || result != (transform.Sequence{}) || !errors.As(err, &detail) || detail.Code != wantCode {
 				t.Fatal(result, err, wantCode)
 			}
 		})
@@ -4770,89 +4654,6 @@ func TestDocumentSnapshotLiveReadPolicy(t *testing.T) {
 			}
 		})
 	}
-}
-
-type parameterDocumentHostCase struct {
-	name         string
-	parameters   string
-	attributes   string
-	declarations string
-	body         string
-	want         string
-}
-
-func parameterDocumentHostCases() []parameterDocumentHostCase {
-	const xmlOutput = `method="xml" omit-xml-declaration="yes"`
-	const root = `<r><a/></r>`
-	return []parameterDocumentHostCase{
-		{"XHTML method retained", `<method value="xhtml"/><omit-xml-declaration value="yes"/>`, `method="text"`, "", `<r/>`, `<r></r>`},
-		{"URI escaping false overrides true", `<method value="html"/><escape-uri-attributes value="false"/>`, `escape-uri-attributes="yes"`, "", `<a href="café">x</a>`, `<a href="café">x</a>`},
-		{"absent URI escaping inherits true", `<method value="html"/>`, `escape-uri-attributes="yes"`, "", `<a href="café">x</a>`, `<a href="caf%C3%A9">x</a>`},
-		{"normalization none overrides NFC", `<method value="text"/><normalization-form value="none"/>`, `normalization-form="NFC"`, "", "e\u0301", "e\u0301"},
-		{"fully normalized stays byte host supported", `<method value="text"/><normalization-form value="fully-normalized"/>`, "", "", "e\u0301", "é"},
-		{"fully normalized leading combining", `<method value="text"/><normalization-form value="fully-normalized"/>`, "", "", `<xsl:sequence select="codepoints-to-string(769)"/>`, "SERE0012"},
-		{"extension method rejected by host choice", `<method value="Q{urn:unsupported}method"/>`, `omit-xml-declaration="yes"`, "", `x`, errCodeSEPM0016},
-		{"method beats direct attribute", `<method value="text"/>`, xmlOutput, "", `<r>x</r>`, "x"},
-		{"false beats true", `<indent value="false"/>`, xmlOutput + ` indent="yes"`, "", root, root},
-		{"BOM survives byte host", `<method value="text"/><byte-order-mark value="true"/>`, `byte-order-mark="no"`, "", `x`, "\ufeffx"},
-		{"empty separator beats attribute", `<method value="text"/><item-separator value=""/>`, `item-separator="|"`, "", `<xsl:sequence select="(1,2)"/>`, "12"},
-		{"separator beats absent", `<method value="text"/><item-separator value="-"/>`, `item-separator="#absent"`, "", `<xsl:sequence select="(1,2)"/>`, "1-2"},
-		{"empty doctype removes inherited", `<doctype-system value=""/>`, xmlOutput + ` doctype-system="old.dtd"`, "", `<r/>`, `<r/>`},
-		{"QName list union", `<cdata-section-elements xmlns:p="urn:node" value="p:a"/>`, xmlOutput + ` cdata-section-elements="b"`, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b><![CDATA[x<y]]></b></r>`},
-		{"parameter namespace default", `<cdata-section-elements value="a"/>`, xmlOutput, "", `<a>x&lt;y</a>`, `<a>x&lt;y</a>`},
-		{"QName parameter binding", `<cdata-section-elements xmlns:p="urn:node" value="p:a"/>`, xmlOutput, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b>x&lt;y</b></r>`},
-		{"QName list absent preserves local", `<indent value="no"/>`, xmlOutput + ` cdata-section-elements="b"`, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b><![CDATA[x<y]]></b></r>`},
-		{"foreign character map ignored", `<method value="text"/><use-character-maps><e:character-map xmlns:e="urn:foreign" character="x" map-string="BAD"/></use-character-maps>`, "", "", `x`, "x"},
-		{"QName unknown prefix", `<cdata-section-elements value="missing:a"/>`, xmlOutput, "", root, errCodeSEPM0017},
-		{"character map namespace and precedence", `<use-character-maps><character-map character="x" map-string="P"/></use-character-maps>`, `method="text" use-character-maps="m"`, `<xsl:character-map name="m"><xsl:output-character character="x" string="D"/></xsl:character-map>`, `x`, "P"},
-		{"empty character map clears direct", `<use-character-maps/>`, `method="text" use-character-maps="m"`, `<xsl:character-map name="m"><xsl:output-character character="x" string="D"/></xsl:character-map>`, `x`, "x"},
-		{"invalid boolean", `<indent value="perhaps"/>`, `method="text"`, "", `x`, errCodeSEPM0017},
-		{"duplicate scalar", `<method value="text"/><method value="xml"/>`, "", "", `x`, errCodeSEPM0019},
-		{"duplicate character", `<method value="text"/><use-character-maps><character-map character="x" map-string="a"/><character-map character="x" map-string="b"/></use-character-maps>`, "", "", `x`, errCodeSEPM0018},
-		{"unknown attribute", `<method value="text" extra="invalid"/>`, "", "", `x`, errCodeSEPM0017},
-		{"inherited output method", `<method value="text"/>`, `omit-xml-declaration="yes"`, `<xsl:output method="xml"/>`, `<r>x</r>`, "x"},
-		{"default host XML declaration", `<method value="xml"/>`, "", "", `<r/>`, `<?xml version="1.0" encoding="UTF-8"?><r/>`},
-	}
-}
-
-func parameterDocumentHostSheet(route, href string, test parameterDocumentHostCase) string {
-	output := `<xsl:output ` + test.attributes + ` parameter-document="` + href + `"/>`
-	body := test.body
-	if route != "output" {
-		output = `<xsl:output omit-xml-declaration="yes"/>`
-		if test.name == "default host XML declaration" {
-			output = `<xsl:output/>`
-		}
-		attribute := href
-		if route == "dynamic" {
-			attribute = `{$parameterURI}`
-		}
-		resultURI := ""
-		if route == "secondary" || route == "dynamic" {
-			resultURI = ` href="urn:result"`
-		}
-		body = `<xsl:result-document` + resultURI + ` ` + test.attributes + ` parameter-document="` + attribute + `">` + body + `</xsl:result-document>`
-	}
-	return sheetStart + version30 + `" exclude-result-prefixes="xs"><xsl:param name="parameterURI" select="'` + href + `'"/>` + test.declarations + output + `<xsl:template name="start">` + body + `</xsl:template></xsl:stylesheet>`
-}
-
-func evaluateParameterDocumentHost(t *testing.T, route, source, parameters string) (string, error) {
-	t.Helper()
-	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, _ string) (io.ReadCloser, error) {
-		return io.NopCloser(strings.NewReader(parameters)), ctx.Err()
-	})})
-	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: transform.XSLT30})
-	if err != nil {
-		return "", err
-	}
-	result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
-	if err != nil {
-		return "", err
-	}
-	if route == "secondary" || route == "dynamic" {
-		return string(result.Secondary["urn:result"]), nil
-	}
-	return string(result.Primary), nil
 }
 
 func TestXSLTParameterDocumentContracts(t *testing.T) {
@@ -5052,5 +4853,875 @@ func TestXSLTImplicitTextEncodingErrors(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func resourceStylesheetResult(t *testing.T, e *transform.Engine, source string, nested bool, assertions ...bool) (string, error) {
+	t.Helper()
+
+	if nested {
+		option := ""
+		if len(assertions) > 0 && assertions[0] {
+			option = ",'enable-assertions':true()"
+		}
+
+		q := query(t, e, `transform(map{'stylesheet-text':$stylesheet,'initial-template':QName('', 'start'),'delivery-format':'serialized'`+option+`})?output`, transform.XPath31)
+
+		result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: variableStylesheet}: transform.Values(transform.String(source))}})
+		if err != nil {
+			return "", err
+		}
+
+		return text(t, result), nil
+	}
+
+	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if err != nil {
+		return "", err
+	}
+
+	return string(result.Primary), nil
+}
+
+func documentFunctionContractCases() []struct {
+	expression string
+	want       string
+} {
+	tests := make([]struct {
+		expression string
+		want       string
+	}, 0, 24)
+	for _, call := range []string{`doc`, `(doc#1)`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','doc'),1)`, `doc(?)`} {
+		for _, test := range []struct {
+			argument string
+			want     string
+		}{
+			{`42`, errCodeXPTY0004},
+			{`('urn:shared','urn:other')`, errCodeXPTY0004},
+			{`'urn:shared#id'`, "FODC0005"},
+			{`':/'`, "FODC0005"},
+			{`[]`, ""},
+			{`xs:untypedAtomic('urn:shared')`, "1"},
+		} {
+			tests = append(tests, struct {
+				expression string
+				want       string
+			}{call + `(` + test.argument + `)/r`, test.want})
+		}
+	}
+	return tests
+}
+
+func valueOfExpression(expression string) string {
+	var escaped strings.Builder
+	_ = xml.EscapeText(&escaped, []byte(expression))
+	return `<xsl:value-of select="` + escaped.String() + `"/>`
+}
+
+type typedTextReader struct {
+	lifecycleReader
+	mediaType string
+}
+
+func (r *typedTextReader) MediaType() string { return r.mediaType }
+
+type lifecycleReader struct {
+	io.Reader
+	closed bool
+}
+
+func (r *lifecycleReader) Close() error {
+	r.closed = true
+	return nil
+}
+
+type cancelReadResource struct {
+	lifecycleReader
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelReadResource) Read(p []byte) (int, error) {
+	r.reads++
+	n, err := r.Reader.Read(p)
+	r.cancel()
+
+	return n, err
+}
+
+type trackedReader struct {
+	io.Reader
+	closed *bool
+}
+
+func (r trackedReader) Close() error { *r.closed = true; return nil }
+
+type dtdFailureReader struct {
+	io.Reader
+	readError  error
+	closeError error
+	closed     bool
+}
+
+func (r *dtdFailureReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 && r.readError != nil {
+		return n, r.readError
+	}
+	return n, err
+}
+
+func (r *dtdFailureReader) Close() error { r.closed = true; return r.closeError }
+
+type parameterDocumentHostCase struct {
+	name         string
+	parameters   string
+	attributes   string
+	declarations string
+	body         string
+	want         string
+}
+
+func parameterDocumentHostCases() []parameterDocumentHostCase {
+	const xmlOutput = `method="xml" omit-xml-declaration="yes"`
+	const root = `<r><a/></r>`
+	return []parameterDocumentHostCase{
+		{"XHTML method retained", `<method value="xhtml"/><omit-xml-declaration value="yes"/>`, `method="text"`, "", `<r/>`, `<r></r>`},
+		{"URI escaping false overrides true", `<method value="html"/><escape-uri-attributes value="false"/>`, `escape-uri-attributes="yes"`, "", `<a href="café">x</a>`, `<a href="café">x</a>`},
+		{"absent URI escaping inherits true", `<method value="html"/>`, `escape-uri-attributes="yes"`, "", `<a href="café">x</a>`, `<a href="caf%C3%A9">x</a>`},
+		{"normalization none overrides NFC", `<method value="text"/><normalization-form value="none"/>`, `normalization-form="NFC"`, "", "e\u0301", "e\u0301"},
+		{"fully normalized stays byte host supported", `<method value="text"/><normalization-form value="fully-normalized"/>`, "", "", "e\u0301", "é"},
+		{"fully normalized leading combining", `<method value="text"/><normalization-form value="fully-normalized"/>`, "", "", `<xsl:sequence select="codepoints-to-string(769)"/>`, "SERE0012"},
+		{"extension method rejected by host choice", `<method value="Q{urn:unsupported}method"/>`, `omit-xml-declaration="yes"`, "", `x`, errCodeSEPM0016},
+		{"method beats direct attribute", `<method value="text"/>`, xmlOutput, "", `<r>x</r>`, "x"},
+		{"false beats true", `<indent value="false"/>`, xmlOutput + ` indent="yes"`, "", root, root},
+		{"BOM survives byte host", `<method value="text"/><byte-order-mark value="true"/>`, `byte-order-mark="no"`, "", `x`, "\ufeffx"},
+		{"empty separator beats attribute", `<method value="text"/><item-separator value=""/>`, `item-separator="|"`, "", `<xsl:sequence select="(1,2)"/>`, "12"},
+		{"separator beats absent", `<method value="text"/><item-separator value="-"/>`, `item-separator="#absent"`, "", `<xsl:sequence select="(1,2)"/>`, "1-2"},
+		{"empty doctype removes inherited", `<doctype-system value=""/>`, xmlOutput + ` doctype-system="old.dtd"`, "", `<r/>`, `<r/>`},
+		{"QName list union", `<cdata-section-elements xmlns:p="urn:node" value="p:a"/>`, xmlOutput + ` cdata-section-elements="b"`, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b><![CDATA[x<y]]></b></r>`},
+		{"parameter namespace default", `<cdata-section-elements value="a"/>`, xmlOutput, "", `<a>x&lt;y</a>`, `<a>x&lt;y</a>`},
+		{"QName parameter binding", `<cdata-section-elements xmlns:p="urn:node" value="p:a"/>`, xmlOutput, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node"><![CDATA[x<y]]></p:a><b>x&lt;y</b></r>`},
+		{"QName list absent preserves local", `<indent value="no"/>`, xmlOutput + ` cdata-section-elements="b"`, "", `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b>x&lt;y</b></r>`, `<r><p:a xmlns:p="urn:node">x&lt;y</p:a><b><![CDATA[x<y]]></b></r>`},
+		{"foreign character map ignored", `<method value="text"/><use-character-maps><e:character-map xmlns:e="urn:foreign" character="x" map-string="BAD"/></use-character-maps>`, "", "", `x`, "x"},
+		{"QName unknown prefix", `<cdata-section-elements value="missing:a"/>`, xmlOutput, "", root, errCodeSEPM0017},
+		{"character map namespace and precedence", `<use-character-maps><character-map character="x" map-string="P"/></use-character-maps>`, `method="text" use-character-maps="m"`, `<xsl:character-map name="m"><xsl:output-character character="x" string="D"/></xsl:character-map>`, `x`, "P"},
+		{"empty character map clears direct", `<use-character-maps/>`, `method="text" use-character-maps="m"`, `<xsl:character-map name="m"><xsl:output-character character="x" string="D"/></xsl:character-map>`, `x`, "x"},
+		{"invalid boolean", `<indent value="perhaps"/>`, `method="text"`, "", `x`, errCodeSEPM0017},
+		{"duplicate scalar", `<method value="text"/><method value="xml"/>`, "", "", `x`, errCodeSEPM0019},
+		{"duplicate character", `<method value="text"/><use-character-maps><character-map character="x" map-string="a"/><character-map character="x" map-string="b"/></use-character-maps>`, "", "", `x`, errCodeSEPM0018},
+		{"unknown attribute", `<method value="text" extra="invalid"/>`, "", "", `x`, errCodeSEPM0017},
+		{"inherited output method", `<method value="text"/>`, `omit-xml-declaration="yes"`, `<xsl:output method="xml"/>`, `<r>x</r>`, "x"},
+		{"default host XML declaration", `<method value="xml"/>`, "", "", `<r/>`, `<?xml version="1.0" encoding="UTF-8"?><r/>`},
+	}
+}
+
+func parameterDocumentHostSheet(route, href string, test parameterDocumentHostCase) string {
+	output := `<xsl:output ` + test.attributes + ` parameter-document="` + href + `"/>`
+	body := test.body
+	if route != "output" {
+		output = `<xsl:output omit-xml-declaration="yes"/>`
+		if test.name == "default host XML declaration" {
+			output = `<xsl:output/>`
+		}
+		attribute := href
+		if route == "dynamic" {
+			attribute = `{$parameterURI}`
+		}
+		resultURI := ""
+		if route == "secondary" || route == "dynamic" {
+			resultURI = ` href="urn:result"`
+		}
+		body = `<xsl:result-document` + resultURI + ` ` + test.attributes + ` parameter-document="` + attribute + `">` + body + `</xsl:result-document>`
+	}
+	return sheetStart + version30 + `" exclude-result-prefixes="xs"><xsl:param name="parameterURI" select="'` + href + `'"/>` + test.declarations + output + `<xsl:template name="start">` + body + `</xsl:template></xsl:stylesheet>`
+}
+
+func evaluateParameterDocumentHost(t *testing.T, route, source, parameters string) (string, error) {
+	t.Helper()
+	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(ctx context.Context, _ string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(parameters)), ctx.Err()
+	})})
+	compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: transform.XSLT30})
+	if err != nil {
+		return "", err
+	}
+	result, err := compiled.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+	if err != nil {
+		return "", err
+	}
+	if route == "secondary" || route == "dynamic" {
+		return string(result.Secondary["urn:result"]), nil
+	}
+	return string(result.Primary), nil
+}
+
+const integrationTransformOptions = `map{'stylesheet-text':$s,'initial-template':QName('','start'),'delivery-format':'serialized'}`
+
+func integrationStyle(body string) string {
+	return `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:output method="text"/><xsl:template name="start">` + body + `</xsl:template></xsl:stylesheet>`
+}
+
+func integrationResolver(value string, loads *atomic.Int32) transform.ResolverFunc {
+	return func(_ context.Context, uri string) (io.ReadCloser, error) {
+		loads.Add(1)
+		body := value
+		if uri == "urn:doc" {
+			body = "<r>" + value + "</r>"
+		}
+		return io.NopCloser(strings.NewReader(body)), nil
+	}
+}
+
+func integrationSavedXPath(t *testing.T, e *transform.Engine, expression, base string) transform.Sequence {
+	t.Helper()
+	q, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{BaseURI: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func integrationTransformCall(t *testing.T, e *transform.Engine, f transform.Sequence, style, options, base string) (transform.Sequence, error) {
+	t.Helper()
+	q, err := e.CompileXPath(t.Context(), `$f(`+options+`)?output`, transform.XPathOptions{BaseURI: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{
+		{Local: "f"}: f, {Local: "s"}: transform.Values(transform.String(style)),
+	}})
+}
+
+func TestIntegrationSavedTransformCallerResources(t *testing.T) {
+	style := integrationStyle(`<xsl:value-of select="unparsed-text('urn:data')"/>`)
+	for _, expression := range []string{`transform#1`, `function($o){transform($o)}`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','transform'),1)`, `transform(?)`} {
+		t.Run(expression, func(t *testing.T) {
+			var aLoads, bLoads atomic.Int32
+			a := engine(t, transform.Config{Resolver: integrationResolver("producer", &aLoads)})
+			f := integrationSavedXPath(t, a, expression, "")
+			b := engine(t, transform.Config{Resolver: integrationResolver("consumer", &bLoads)})
+			got, err := integrationTransformCall(t, b, f, style, integrationTransformOptions, "")
+			if err != nil || text(t, got) != "consumer" || aLoads.Load() != 0 || bLoads.Load() != 1 {
+				t.Fatal(got, err, aLoads.Load(), bLoads.Load())
+			}
+			denied := engine(t, transform.Config{})
+			got, err = integrationTransformCall(t, denied, f, style, integrationTransformOptions, "")
+			if err == nil || got != (transform.Sequence{}) || aLoads.Load() != 0 {
+				t.Fatal("denied caller retained producer resolver", got, err, aLoads.Load())
+			}
+		})
+	}
+}
+
+func TestIntegrationTransformCallerLimitsAndStaticBase(t *testing.T) {
+	style := integrationStyle(`<xsl:value-of select="unparsed-text('payload.txt')"/>`)
+	for _, tc := range []struct {
+		name                        string
+		producerMax, callerMax      int
+		producerResolver, wantLimit bool
+	}{
+		{name: "caller grants resolver"},
+		{name: "caller narrows bytes", callerMax: 8, producerResolver: true, wantLimit: true},
+		{name: "caller expands bytes", producerMax: 64, callerMax: 4096, producerResolver: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var aLoads, bLoads atomic.Int32
+			config := transform.Config{Limits: transform.Limits{MaxInputBytes: tc.producerMax}}
+			if tc.producerResolver {
+				config.Resolver = integrationResolver(strings.Repeat("p", 64), &aLoads)
+			}
+			a := engine(t, config)
+			f := integrationSavedXPath(t, a, `transform#1`, "https://producer.invalid/base/query.xq")
+			b := engine(t, transform.Config{Limits: transform.Limits{MaxInputBytes: tc.callerMax}, Resolver: transform.ResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+				bLoads.Add(1)
+				if uri != "https://producer.invalid/base/payload.txt" {
+					t.Errorf("static base changed: %q", uri)
+				}
+				return io.NopCloser(strings.NewReader(strings.Repeat("c", 64))), nil
+			})})
+			options := `map{'stylesheet-text':$s,'stylesheet-base-uri':'./nested.xsl','initial-template':QName('','start'),'delivery-format':'serialized'}`
+			got, err := integrationTransformCall(t, b, f, style, options, "https://consumer.invalid/other/query.xq")
+			if tc.wantLimit {
+				if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
+					t.Fatal(got, err)
+				}
+				return
+			}
+			if err != nil || text(t, got) != strings.Repeat("c", 64) || aLoads.Load() != 0 || bLoads.Load() != 1 {
+				t.Fatal(got, err, aLoads.Load(), bLoads.Load())
+			}
+		})
+	}
+}
+
+type integrationCollection string
+
+func (c integrationCollection) ResolveCollection(context.Context, string) (transform.Sequence, error) {
+	return transform.Values(transform.String(string(c))), nil
+}
+
+func (c integrationCollection) ResolveURICollection(context.Context, string) ([]string, error) {
+	return []string{string(c)}, nil
+}
+
+func integrationSecondaryPolicy(kind, value string, allowed bool, loads *atomic.Int32) transform.Config {
+	cfg := transform.Config{}
+	switch kind {
+	case "collection", "uri-collection":
+		if allowed {
+			cfg.CollectionResolver = integrationCollection(value)
+		}
+	case "package":
+		if allowed {
+			cfg.PackageResolver = transform.PackageResolverFunc(func(context.Context, string, string) (transform.PackageResource, error) {
+				loads.Add(1)
+				source := `<xsl:package xmlns:xsl="http://www.w3.org/1999/XSL/Transform" name="urn:p" package-version="1.0" version="3.0"><xsl:output method="text"/><xsl:template name="start" visibility="public">` + value + `</xsl:template></xsl:package>`
+				return transform.PackageResource{Reader: io.NopCloser(strings.NewReader(source)), BaseURI: "urn:p"}, nil
+			})
+		}
+	case "encoding":
+		cfg.AllowSingleByteEncodings = allowed
+		cfg.Resolver = integrationResolver("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><r>\xe9</r>", loads)
+	default:
+		if allowed {
+			cfg.Resolver = integrationResolver(value, loads)
+		}
+	}
+	return cfg
+}
+
+func integrationSecondaryBody(kind string) string {
+	switch kind {
+	case "uri-collection":
+		return `<xsl:value-of select="uri-collection('urn:c')"/>`
+	case "DTD":
+		return `<xsl:value-of select="parse-xml('&lt;!DOCTYPE r [&lt;!ENTITY e SYSTEM &quot;urn:e&quot;>]>&lt;r>&amp;e;&lt;/r>')/r"/>`
+	case "encoding":
+		return `<xsl:value-of select="doc('urn:d')/r"/>`
+	default:
+		return `<xsl:value-of select="collection('urn:c')"/>`
+	}
+}
+
+func TestIntegrationTransformCallerSecondaryPolicies(t *testing.T) {
+	for _, kind := range []string{"collection", "uri-collection", "package", "DTD", "encoding"} {
+		for _, producerAllowed := range []bool{true, false} {
+			name := kind + "/caller grants"
+			if producerAllowed {
+				name = kind + "/caller denies"
+			}
+			t.Run(name, func(t *testing.T) {
+				var aLoads, bLoads atomic.Int32
+				a := engine(t, integrationSecondaryPolicy(kind, "producer", producerAllowed, &aLoads))
+				f := integrationSavedXPath(t, a, `transform#1`, "")
+				b := engine(t, integrationSecondaryPolicy(kind, "consumer", !producerAllowed, &bLoads))
+				options := integrationTransformOptions
+				if kind == "package" {
+					options = `map{'package-name':'urn:p','initial-template':QName('','start'),'delivery-format':'serialized'}`
+				}
+				got, err := integrationTransformCall(t, b, f, integrationStyle(integrationSecondaryBody(kind)), options, "")
+				if producerAllowed {
+					if err == nil || got != (transform.Sequence{}) || aLoads.Load() != 0 {
+						t.Fatal("caller denial ignored", got, err, aLoads.Load())
+					}
+					return
+				}
+				want := "consumer"
+				if kind == "encoding" {
+					want = "é"
+				}
+				if err != nil || text(t, got) != want || aLoads.Load() != 0 {
+					t.Fatal(got, err, aLoads.Load(), bLoads.Load())
+				}
+			})
+		}
+	}
+}
+
+func integrationSavedXSLT(t *testing.T, e *transform.Engine, body string) transform.Sequence {
+	t.Helper()
+	source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:f="urn:f" version="3.0"><xsl:function name="f:read" as="xs:string" xml:base="func/"><xsl:sequence select="unparsed-text('urn:data')"/></xsl:function><xsl:function name="f:relative" xml:base="func/"><xsl:sequence select="unparsed-text('payload.txt')"/></xsl:function><xsl:function name="f:nested" xml:base="func/"><xsl:sequence select="transform#1"/></xsl:function><xsl:template name="start" xml:base="entry/"><xsl:sequence select="` + body + `"/></xsl:template></xsl:stylesheet>`
+	sheet, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{BaseURI: "https://producer.invalid/base/main.xsl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := sheet.CallTemplate(t.Context(), nil, transform.Name{Local: "start"}, transform.XSLTContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.Primary()
+}
+
+func TestIntegrationSavedXSLTFunctionCallerResources(t *testing.T) {
+	for _, tc := range []struct{ name, body, call string }{
+		{"user text", "f:read#0", "string($f())"},
+		{"inline text", `function(){unparsed-text('urn:data')}`, "string($f())"},
+		{"builtin text", `unparsed-text#1`, "string($f('urn:data'))"},
+		{"builtin doc", `doc#1`, "string($f('urn:doc'))"},
+		{"inline doc", `function(){doc('urn:doc')}`, "string($f())"},
+		{"builtin document", `document#1`, "string($f('urn:doc'))"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var aLoads, bLoads atomic.Int32
+			a := engine(t, transform.Config{Resolver: integrationResolver("producer", &aLoads)})
+			f := integrationSavedXSLT(t, a, tc.body)
+			b := engine(t, transform.Config{Resolver: integrationResolver("consumer", &bLoads)})
+			q := query(t, b, tc.call, transform.XPath31)
+			got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f}})
+			if err != nil || text(t, got) != "consumer" || aLoads.Load() != 0 || bLoads.Load() != 1 {
+				t.Fatal(got, err, aLoads.Load(), bLoads.Load())
+			}
+		})
+	}
+}
+
+func TestIntegrationEscapedDocumentConcurrentCallers(t *testing.T) {
+	var loads [3]atomic.Int32
+	engines := []*transform.Engine{
+		engine(t, transform.Config{Resolver: integrationResolver("A", &loads[0])}),
+		engine(t, transform.Config{Resolver: integrationResolver("B", &loads[1])}),
+		engine(t, transform.Config{Resolver: integrationResolver("C", &loads[2])}),
+	}
+	f := integrationSavedXSLT(t, engines[0], `doc#1`)
+	queries := make([]*transform.XPath, len(engines))
+	for i, e := range engines {
+		queries[i] = query(t, e, `string($f('urn:doc'))`, transform.XPath31)
+	}
+	var wg sync.WaitGroup
+	for i := range 12 {
+		wg.Go(func() {
+			index := i % len(queries)
+			got, err := queries[index].Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f}})
+			value, _ := got.Text()
+			if err != nil || value != string(rune('A'+index)) {
+				t.Errorf("caller%d got %q,%v", index, value, err)
+			}
+		})
+	}
+	wg.Wait()
+	for i := range loads {
+		if loads[i].Load() != 4 {
+			t.Errorf("caller%d loads%d want4", i, loads[i].Load())
+		}
+	}
+}
+
+func TestIntegrationCallbackInputWork(t *testing.T) {
+	for _, shape := range []string{"sequence", "map"} {
+		for _, tc := range []struct {
+			name                     string
+			items, calls, operations int
+			wantLimit                bool
+		}{
+			{"small", 2, 20, 500, false}, {"first callback blocked", 100, 1, 50, true}, {"cumulative", 100, 20, 500, true},
+		} {
+			t.Run(shape+"/"+tc.name, func(t *testing.T) {
+				values := make([]transform.Value, tc.items)
+				entries := make([]transform.MapEntry, tc.items)
+				for i := range values {
+					values[i] = transform.Integer(int64(i))
+					entries[i] = transform.MapEntry{Key: values[i]}
+				}
+				argument := transform.Values(values...)
+				if shape == "map" {
+					m, err := transform.Map(entries...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					argument = transform.Values(m)
+				}
+				calls := 0
+				e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: tc.operations, MaxNodes: 1000}, Functions: []transform.Function{{Name: transform.Name{Space: "urn:cb", Local: "discard"}, Arity: 1, Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+					calls++
+					return transform.Sequence{}, nil
+				}}}})
+				q := query(t, e, `count(for $i in 1 to $n return Q{urn:cb}discard($m))`, transform.XPath31)
+				got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "m"}: argument, {Local: "n"}: transform.Values(transform.Integer(int64(tc.calls)))}})
+				if tc.wantLimit {
+					if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) || calls >= tc.calls || tc.name == "cumulative" && calls == 0 {
+						t.Fatal(got, err, calls)
+					}
+					return
+				}
+				if err != nil || text(t, got) != "0" || calls != tc.calls {
+					t.Fatal(got, err, calls)
+				}
+			})
+		}
+	}
+}
+
+func TestIntegrationCallbackCallerNodeBudget(t *testing.T) {
+	values := make([]transform.Value, 11)
+	for i := range values {
+		values[i] = transform.String("x")
+	}
+	a := engine(t, transform.Config{Functions: []transform.Function{{Name: transform.Name{Space: "urn:cb", Local: "large"}, Arity: 0, Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+		return transform.Values(values...), nil
+	}}}})
+	f := integrationSavedXPath(t, a, `Q{urn:cb}large#0`, "")
+	for _, limit := range []int{10, 11} {
+		b := engine(t, transform.Config{Limits: transform.Limits{MaxNodes: limit}})
+		q := query(t, b, `count($f())`, transform.XPath31)
+		got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f}})
+		if limit == 10 {
+			if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
+				t.Fatal(got, err)
+			}
+			continue
+		}
+		if err != nil || text(t, got) != "11" {
+			t.Fatal(got, err)
+		}
+	}
+}
+
+func TestIntegrationEscapedTransformStaticBase(t *testing.T) {
+	style := integrationStyle(`<xsl:value-of select="unparsed-text('payload.txt')"/>`)
+	for _, expression := range []string{`transform#1`, `function($o){transform($o)}`, `function-lookup(QName('http://www.w3.org/2005/xpath-functions','transform'),1)`, `transform(?)`} {
+		t.Run(expression, func(t *testing.T) {
+			var loads atomic.Int32
+			config := transform.Config{Resolver: transform.ResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+				loads.Add(1)
+				if uri != "https://producer.invalid/base/entry/payload.txt" {
+					t.Errorf("lost definition xml:base: %q", uri)
+				}
+				return io.NopCloser(strings.NewReader("ok")), nil
+			})}
+			a := engine(t, config)
+			f := integrationSavedXSLT(t, a, expression)
+			b := engine(t, config)
+			options := `map{'stylesheet-text':$s,'stylesheet-base-uri':'./nested.xsl','initial-template':QName('','start'),'delivery-format':'serialized'}`
+			for _, caller := range []*transform.Engine{a, b} {
+				got, err := integrationTransformCall(t, caller, f, style, options, "https://consumer.invalid/other/query.xq")
+				if err != nil || text(t, got) != "ok" {
+					t.Fatal(got, err)
+				}
+			}
+			if loads.Load() != 2 {
+				t.Fatal(loads.Load())
+			}
+		})
+	}
+}
+
+func TestIntegrationNestedTransformSharedBudgets(t *testing.T) {
+	var aLoads atomic.Int32
+	a := engine(t, transform.Config{Resolver: integrationResolver("producer", &aLoads)})
+	f := integrationSavedXPath(t, a, `transform#1`, "")
+	for _, tc := range []struct {
+		name      string
+		limits    transform.Limits
+		prefix    string
+		payload   int
+		wantLimit bool
+	}{
+		{name: "per-resource overflow", limits: transform.Limits{MaxInputBytes: 256}, payload: 257, wantLimit: true},
+		{name: "per-resource exact", limits: transform.Limits{MaxInputBytes: 257}, payload: 257},
+		{name: "shared load count", limits: transform.Limits{MaxResources: 1}, prefix: `unparsed-text('urn:before') || `, payload: 32, wantLimit: true},
+		{name: "shared aggregate overflow", limits: transform.Limits{MaxResourceBytes: 63}, prefix: `unparsed-text('urn:before') || `, payload: 32, wantLimit: true},
+		{name: "shared aggregate exact", limits: transform.Limits{MaxResourceBytes: 64}, prefix: `unparsed-text('urn:before') || `, payload: 32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bLoads atomic.Int32
+			b := engine(t, transform.Config{Limits: tc.limits, Resolver: integrationResolver(strings.Repeat("c", tc.payload), &bLoads)})
+			q := query(t, b, tc.prefix+`$f(`+integrationTransformOptions+`)?output`, transform.XPath31)
+			style := integrationStyle(`<xsl:value-of select="unparsed-text('urn:data')"/>`)
+			got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f, {Local: "s"}: transform.Values(transform.String(style))}})
+			if tc.wantLimit {
+				if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
+					t.Fatal(got, err, bLoads.Load())
+				}
+				return
+			}
+			want := tc.payload
+			if tc.prefix != "" {
+				want *= 2
+			}
+			if err != nil || text(t, got) != strings.Repeat("c", want) {
+				t.Fatal(got, err, bLoads.Load())
+			}
+		})
+	}
+	if aLoads.Load() != 0 {
+		t.Fatal("producer resource capabilities retained", aLoads.Load())
+	}
+}
+
+func TestIntegrationNestedTransformExecutionLimits(t *testing.T) {
+	a := engine(t, transform.Config{})
+	f := integrationSavedXPath(t, a, `transform#1`, "")
+	for _, tc := range []struct {
+		name, style string
+		limits      transform.Limits
+	}{
+		{name: "program", limits: transform.Limits{MaxProgramBytes: 256}, style: integrationStyle(strings.Repeat("x", 257))},
+		{name: "operations", limits: transform.Limits{MaxOperations: 500}, style: integrationStyle(`<xsl:value-of select="count(for $i in 1 to 2000 return ())"/>`)},
+		{name: "depth", limits: transform.Limits{MaxDepth: 4}, style: `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:template name="start"><xsl:call-template name="start"/></xsl:template></xsl:stylesheet>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := engine(t, transform.Config{Limits: tc.limits})
+			got, err := integrationTransformCall(t, b, f, tc.style, integrationTransformOptions, "")
+			if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
+				t.Fatal(got, err)
+			}
+		})
+	}
+}
+
+func TestIntegrationEscapedResourceControlCauses(t *testing.T) {
+	a := engine(t, transform.Config{})
+	f := integrationSavedXPath(t, a, `transform#1`, "")
+	style := integrationStyle(`<xsl:value-of select="unparsed-text('urn:data')"/>`)
+	for _, cause := range []error{transform.ErrLimit, context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			b := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return nil, cause })})
+			got, err := integrationTransformCall(t, b, f, style, integrationTransformOptions, "")
+			if !errors.Is(err, cause) || got != (transform.Sequence{}) {
+				t.Fatal(got, err, cause)
+			}
+		})
+	}
+}
+
+func TestIntegrationCallbackCallerValueLimits(t *testing.T) {
+	nested := transform.Values(transform.String("x"))
+	for range 3 {
+		nested = transform.Values(transform.Array(nested))
+	}
+	for _, tc := range []struct {
+		name   string
+		value  transform.Sequence
+		limits transform.Limits
+	}{
+		{name: "bytes", value: transform.Values(transform.String(strings.Repeat("x", 11))), limits: transform.Limits{MaxOutputBytes: 10}},
+		{name: "depth", value: nested, limits: transform.Limits{MaxDepth: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := engine(t, transform.Config{Functions: []transform.Function{{Name: transform.Name{Space: "urn:cb", Local: "value"}, Arity: 0, Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) { return tc.value, nil }}}})
+			f := integrationSavedXPath(t, a, `Q{urn:cb}value#0`, "")
+			b := engine(t, transform.Config{Limits: tc.limits})
+			got, err := query(t, b, `count($f())`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f}})
+			if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) {
+				t.Fatal(got, err)
+			}
+		})
+	}
+}
+
+func TestIntegrationXSLTFunctionDefinitionBase(t *testing.T) {
+	for _, tc := range []struct{ name, body, call string }{
+		{"user function", `f:relative#0`, `string($f())`},
+		{"nested transform reference", `f:nested()`, `$f(map{'stylesheet-text':$s,'stylesheet-base-uri':'./nested.xsl','initial-template':QName('','start'),'delivery-format':'serialized'})?output`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := engine(t, transform.Config{})
+			f := integrationSavedXSLT(t, a, tc.body)
+			var loads atomic.Int32
+			b := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+				loads.Add(1)
+				if uri != "https://producer.invalid/base/func/payload.txt" {
+					t.Errorf("lost function definition base: %q", uri)
+				}
+				return io.NopCloser(strings.NewReader("ok")), nil
+			})})
+			q, err := b.CompileXPath(t.Context(), tc.call, transform.XPathOptions{BaseURI: "https://consumer.invalid/other/query.xq"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			style := integrationStyle(`<xsl:value-of select="unparsed-text('payload.txt')"/>`)
+			got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f, {Local: "s"}: transform.Values(transform.String(style))}})
+			if err != nil || text(t, got) != "ok" || loads.Load() != 1 {
+				t.Fatal(got, err, loads.Load())
+			}
+		})
+	}
+}
+
+func TestIntegrationApprovalCapabilitiesStaySeparate(t *testing.T) {
+	var resources, callbacks atomic.Int32
+	cfg := transform.Config{Resolver: integrationResolver("allowed", &resources), Functions: []transform.Function{{Name: transform.Name{Space: "urn:cb", Local: "value"}, Arity: 0, Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+		callbacks.Add(1)
+		return transform.Values(transform.String("app")), nil
+	}}}}
+	for _, body := range []string{
+		`<xsl:include href="urn:import"/>`,
+		`<xsl:template match="/"><xsl:value-of select="document('urn:data')"/></xsl:template>`,
+		`<xsl:template match="/"><xsl:value-of xmlns:c="urn:cb" select="c:value()"/></xsl:template>`,
+	} {
+		cfg.AllowedPrograms = []reference.Transform{style(body)}
+		if _, err := transform.NewEngine(cfg); err == nil {
+			t.Fatal("language capability approved XMLDSig program", body)
+		}
+	}
+	tr := style(`<xsl:output method="text"/><xsl:template match="/">safe</xsl:template>`)
+	cfg.AllowedPrograms = []reference.Transform{tr}
+	e := engine(t, cfg)
+	for _, route := range []string{"Apply", "WriteTransform"} {
+		t.Run(route, func(t *testing.T) {
+			source := `<!DOCTYPE r [<!ENTITY e SYSTEM "urn:e">]><r>&e;</r>`
+			if route == "Apply" {
+				got, err := e.Apply(t.Context(), tr, reference.Octets([]byte(source)), reference.ExtensionContext{})
+				if err == nil {
+					t.Fatal("XMLDSig input accepted DTD", got, err)
+				}
+				requireInvalidReferenceResult(t, got)
+				return
+			}
+			var output strings.Builder
+			err := e.WriteTransform(t.Context(), &output, strings.NewReader(source), tr, reference.ExtensionContext{})
+			if err == nil || output.Len() != 0 {
+				t.Fatal("XMLDSig reader input accepted DTD", output.String(), err)
+			}
+		})
+	}
+	if resources.Load() != 0 || callbacks.Load() != 0 {
+		t.Fatal("preflight/security parse invoked capabilities", resources.Load(), callbacks.Load())
+	}
+	if got := text(t, evaluate(t, e, `Q{urn:cb}value()`, transform.XPath31)); got != "app" {
+		t.Fatal(got)
+	}
+	if err := e.Validate(t.Context(), xp(trueExpression)); !errors.Is(err, reference.ErrPolicy) {
+		t.Fatal("standalone capability approved another program", err)
+	}
+}
+
+func TestIntegrationResourceBinderPreservesIntrospectionTypes(t *testing.T) {
+	a := engine(t, transform.Config{})
+	b := engine(t, transform.Config{})
+	for _, tc := range []struct{ expression, signature string }{
+		{`system-property#1`, `function(xs:string) as xs:string`},
+		{`element-available#1`, `function(xs:string) as xs:boolean`},
+		{`function-lookup(QName('http://www.w3.org/2005/xpath-functions','system-property'),1)`, `function(xs:string) as xs:string`},
+		{`function-lookup(QName('http://www.w3.org/2005/xpath-functions','element-available'),1)`, `function(xs:string) as xs:boolean`},
+	} {
+		t.Run(tc.expression, func(t *testing.T) {
+			f := integrationSavedXSLT(t, a, tc.expression)
+			q := query(t, b, `$f instance of `+tc.signature+` and not($f instance of function(xs:integer) as item()*) and not($f instance of function(xs:string) as xs:integer)`, transform.XPath31)
+			got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "f"}: f}})
+			if err != nil || text(t, got) != "true" {
+				t.Fatal("resource binder changed non-resource function metadata", got, err)
+			}
+		})
+	}
+}
+
+func TestIntegrationCallbackNumericCopyBudget(t *testing.T) {
+	large := transform.BigInteger(new(big.Int).SetBit(new(big.Int), 511, 1))
+	pair := transform.Values(large, large)
+	m, err := transform.Map(transform.MapEntry{Key: transform.String("a"), Value: pair})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decimal, err := transform.Decimal(new(big.Int).SetBit(new(big.Int), 511, 1).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := engine(t, transform.Config{})
+	floats := integrationSavedXPath(t, a, `let $v:=xs:double('1.5') return ($v,$v)`, "")
+	for _, tc := range []struct {
+		name         string
+		argument     transform.Sequence
+		calls, bytes int
+		limit, zero  bool
+	}{
+		{"singleton occurrence", transform.Values(large), 32, 1024, true, false},
+		{"flat copies cumulative", pair, 32, 1024, true, false},
+		{"flat copies fit", pair, 2, 1024, false, false},
+		{"per-call input blocked", pair, 1, 127, true, true},
+		{"first copy blocked", pair, 1, 129, true, true},
+		{"small ints shared", transform.Values(transform.Integer(1), transform.Integer(2)), 32, 1024, false, false},
+		{"immutable strings shared", transform.Values(transform.String(strings.Repeat("x", 64)), transform.String(strings.Repeat("y", 64))), 32, 1024, false, false},
+		{"immutable map shared", transform.Values(m), 32, 1024, false, false},
+		{"immutable array shared", transform.Values(transform.Array(pair)), 32, 1024, false, false},
+		{"decimal copies cumulative", transform.Values(decimal, decimal), 32, 1024, true, false},
+		{"decimal copies fit", transform.Values(decimal, decimal), 2, 1024, false, false},
+		{"float pointer fit", floats, 2, 1024, false, false},
+		{"float pointer cumulative", floats, 80, 1024, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			e := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: tc.bytes, MaxOperations: 5000}, Functions: []transform.Function{{Name: transform.Name{Space: "urn:cb", Local: "discard"}, Arity: 1, Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+				calls++
+				return transform.Sequence{}, nil
+			}}}})
+			q := query(t, e, `count(for $i in 1 to $n return Q{urn:cb}discard($v))`, transform.XPath31)
+			got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "v"}: tc.argument, {Local: "n"}: transform.Values(transform.Integer(int64(tc.calls)))}})
+			if tc.limit {
+				if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) || calls >= tc.calls || tc.zero && calls != 0 || !tc.zero && calls == 0 {
+					t.Fatal(got, err, calls, tc.calls)
+				}
+				return
+			}
+			if err != nil || text(t, got) != "0" || calls != tc.calls {
+				t.Fatal(got, err, calls, tc.calls)
+			}
+		})
+	}
+}
+
+func TestIntegrationCallbackNonNumericCopyBudget(t *testing.T) {
+	a := engine(t, transform.Config{})
+	for _, tc := range []struct{ name, expression string }{
+		{"binary", `let $v:=xs:base64Binary('` + strings.Repeat("QUFB", 21) + `QQ==') return ($v,$v)`},
+		{"duration", `let $v:=xs:dayTimeDuration('PT0.` + strings.Repeat("1", 72) + `S') return ($v,$v)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pair := integrationSavedXPath(t, a, tc.expression, "")
+			first, ok := pair.At(0)
+			if !ok {
+				t.Fatal("missing atomic value")
+			}
+			canonical, err := first.Text()
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := transform.Map(transform.MapEntry{Key: transform.String("a"), Value: pair})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, vector := range []struct {
+				name         string
+				argument     transform.Sequence
+				calls, bytes int
+				limit, zero  bool
+			}{
+				{"flat copies cumulative", pair, 32, 1024, true, false},
+				{"flat copies fit", pair, 2, 1024, false, false},
+				{"per-call input blocked", pair, 1, 2*len(canonical) - 1, true, true},
+				{"immutable strings shared", transform.Values(transform.String(canonical), transform.String(canonical)), 32, 1024, false, false},
+				{"immutable map shared", transform.Values(m), 32, 1024, false, false},
+				{"immutable array shared", transform.Values(transform.Array(pair)), 32, 1024, false, false},
+			} {
+				t.Run(vector.name, func(t *testing.T) {
+					calls := 0
+					b := engine(t, transform.Config{Limits: transform.Limits{MaxOutputBytes: vector.bytes, MaxOperations: 5000}, Functions: []transform.Function{{Name: transform.Name{Space: "urn:cb", Local: "discard"}, Arity: 1, Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+						calls++
+						return transform.Sequence{}, nil
+					}}}})
+					q := query(t, b, `count(for $i in 1 to $n return Q{urn:cb}discard($v))`, transform.XPath31)
+					got, err := q.Evaluate(t.Context(), nil, transform.XPathContext{Variables: transform.Bindings{{Local: "v"}: vector.argument, {Local: "n"}: transform.Values(transform.Integer(int64(vector.calls)))}})
+					if vector.limit {
+						if !errors.Is(err, transform.ErrLimit) || got != (transform.Sequence{}) || calls >= vector.calls || vector.zero && calls != 0 || !vector.zero && calls == 0 {
+							t.Fatal(got, err, calls, vector.calls)
+						}
+						return
+					}
+					if err != nil || text(t, got) != "0" || calls != vector.calls {
+						t.Fatal(got, err, calls, vector.calls)
+					}
+				})
+			}
+		})
 	}
 }

@@ -134,6 +134,8 @@ func TestOCSPResponseStatusEnumeration(t *testing.T) {
 		}
 
 		result, report, err := pki.VerifyOCSP(t.Context(), der.Seq(encoded), c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{})
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if result != nil || !errors.Is(err, want) || report.Signature != pki.NotChecked {
 			t.Fatalf("status %d: result=%v, report=%v, error=%v; want %v", status, result != nil, report, err, want)
 		}
@@ -229,6 +231,8 @@ func TestCRLNumberConflictsAreOrderIndependent(t *testing.T) {
 		{rollbackNumber, latest},
 	} {
 		result, report, err := v.Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{CRLs: crls})
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if result != nil || !errors.Is(err, pki.ErrEvidence) || report.Revocation != pki.Indeterminate {
 			t.Fatalf("conflicting authenticated evidence: result=%v report=%v error=%v", result != nil, report, err)
 		}
@@ -354,6 +358,8 @@ func TestOCSPRequiresPKIXTimeEncoding(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if result, report, err := pki.VerifyOCSP(t.Context(), raw, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{}); result != nil || !errors.Is(err, pki.ErrRevoked) || report.Signature != pki.Valid {
 				t.Fatal("invalid authenticated revoked control", err)
 			}
@@ -477,6 +483,8 @@ func TestPKIZeroVerifierRejectsBeforePathBuilding(t *testing.T) {
 	c := testcert.New(t)
 
 	result, report, err := new(pki.Verifier).Verify(t.Context(), c.Leaf.Raw, testcert.Now(), pki.Evidence{})
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result != nil || !errors.Is(err, pki.ErrPolicy) || report.Chain != pki.NotChecked {
 		t.Fatalf("result=%v report=%v error=%v", result, report, err)
 	}
@@ -514,12 +522,12 @@ func TestCRLV1Compatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
-	evidence := der.Seq(raw, fields[1].FullBytes, bits)
+	e := der.Seq(raw, fields[1].FullBytes, bits)
 	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.root.Raw}, Revocation: pki.RequireCRL})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result, report, err := verifier.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{evidence}}); err != nil || result == nil || report.Revocation != pki.Valid {
+	if result, report, err := verifier.Verify(t.Context(), c.leaf.Raw, verificationTime(), pki.Evidence{CRLs: [][]byte{e}}); err != nil || result == nil || report.Revocation != pki.Valid {
 		t.Fatal("result", result != nil, report, err)
 	}
 }
@@ -564,18 +572,6 @@ func TestOCSPUnknownNoncriticalRequestExtensions(t *testing.T) {
 			}
 		})
 	}
-}
-
-func p6CRL(t *testing.T, c chainData, number int64, this, next time.Time, base int64, scope []byte, entries []x509.RevocationListEntry) []byte {
-	t.Helper()
-	template := &x509.RevocationList{Number: big.NewInt(number), ThisUpdate: this, NextUpdate: next, RevokedCertificateEntries: entries}
-	if base >= 0 {
-		template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 27}, Critical: true, Value: der.Int(int(base))})
-	}
-	if scope != nil {
-		template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: true, Value: scope})
-	}
-	return makeCRL(t, c, false, template)
 }
 
 func TestCRLDeltaComposition(t *testing.T) {
@@ -642,44 +638,6 @@ func TestCRLDeltaComposition(t *testing.T) {
 			}
 		})
 	}
-}
-
-func p6PointName(uri string) []byte {
-	return der.Ctx(0, der.Wrap(2, 0, true, der.Wrap(2, 6, false, []byte(uri))))
-}
-
-func p6Reasons(mask uint16) []byte {
-	bits := asn1.BitString{}
-	for index := 1; index <= 8; index++ {
-		if mask&(1<<(index-1)) != 0 {
-			bits.BitLength = index + 1
-		}
-	}
-	bits.Bytes = make([]byte, (bits.BitLength+7)/8)
-	for index := 1; index <= 8; index++ {
-		if mask&(1<<(index-1)) != 0 {
-			bits.Bytes[index/8] |= 1 << (7 - index%8)
-		}
-	}
-	encoded, _ := asn1.Marshal(bits)
-	var value asn1.RawValue
-	_, _ = asn1.Unmarshal(encoded, &value)
-	return value.Bytes
-}
-
-func p6LeafExtensions(t *testing.T, c chainData, extra []pkix.Extension) *x509.Certificate {
-	t.Helper()
-	template := *c.leaf
-	template.ExtraExtensions = extra
-	encoded, err := x509.CreateCertificate(rand.Reader, &template, c.root, c.leafKey.Public(), c.rootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf, err := keys.ParseCertificate(encoded, keys.Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return leaf
 }
 
 func TestCRLScopedReasonCoverage(t *testing.T) {
@@ -786,11 +744,11 @@ func TestCRLIndirectIssuerAndEntryBinding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			evidence := pki.Evidence{CRLs: [][]byte{test.raw}}
+			e := pki.Evidence{CRLs: [][]byte{test.raw}}
 			if test.candidates {
-				evidence.Intermediates = [][]byte{signer.Raw}
+				e.Intermediates = [][]byte{signer.Raw}
 			}
-			result, report, err := verifier.Verify(t.Context(), leaf.Raw, at, evidence)
+			result, report, err := verifier.Verify(t.Context(), leaf.Raw, at, e)
 			if test.want != nil {
 				if result != nil || !errors.Is(err, test.want) {
 					t.Fatal("result", result != nil, report, err)
@@ -1003,6 +961,8 @@ func TestOCSPSingleResponseExtensionSchema(t *testing.T) {
 			raw := p7SingleExtension(t, base, c, tc.ext)
 			result, report, err := pki.VerifyOCSP(t.Context(), raw, c.leaf.Raw, c.root.Raw, at, pki.OCSPOptions{})
 			if tc.want != nil {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, tc.want) || report.Signature != pki.NotChecked {
 					t.Fatalf("single-response extension: %v, %+v, %v; want %v", result != nil, report, err, tc.want)
 				}
@@ -1011,61 +971,6 @@ func TestOCSPSingleResponseExtensionSchema(t *testing.T) {
 			}
 		})
 	}
-}
-
-func p6ReplaceCRLExtension(t *testing.T, raw []byte, c chainData, replacement pkix.Extension) []byte {
-	t.Helper()
-	value, err := der.Read(raw, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := der.Sequence(value, 3, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tbs, err := der.Sequence(fields[0], 5, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ext, err := der.Explicit(tbs[len(tbs)-1], 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old, err := der.Sequence(ext, 1, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var extensions [][]byte
-	for _, item := range old {
-		var parsed pkix.Extension
-		if der.Decode(item, &parsed) != nil {
-			t.Fatal("extension shape")
-		}
-		if !parsed.Id.Equal(replacement.Id) {
-			extensions = append(extensions, item.FullBytes)
-		}
-	}
-	encoded, err := asn1.Marshal(replacement)
-	if err != nil {
-		t.Fatal(err)
-	}
-	extensions = append(extensions, encoded)
-	tbs[len(tbs)-1].FullBytes = der.Ctx(0, der.Seq(extensions...))
-	parts := make([][]byte, 0, len(tbs))
-	for _, part := range tbs {
-		parts = append(parts, part.FullBytes)
-	}
-	data := der.Seq(parts...)
-	algorithm, err := signature.Algorithm(fields[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	signed, err := signature.Sign(t.Context(), c.rootKey, algorithm, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
-	return der.Seq(data, fields[1].FullBytes, bits)
 }
 
 func TestVerifiedCRLEvidenceSources(t *testing.T) {
@@ -1133,6 +1038,8 @@ func TestVerifiedCRLEvidenceSources(t *testing.T) {
 	}
 	expired := makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: at.Add(-2 * time.Hour), NextUpdate: at.Add(-time.Hour)})
 	result, report, err := verifier.Verify(t.Context(), c.leaf.Raw, at, pki.Evidence{CRLs: [][]byte{expired}})
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result != nil || !errors.Is(err, pki.ErrUnavailable) || len(report.Evidence()) != 1 || report.Evidence()[0].AuthenticationStatus() != pki.Valid {
 		t.Fatal("stale authenticated assertion became trust", result != nil, err, len(report.Evidence()))
 	}
@@ -1188,33 +1095,6 @@ func TestPKIXSemanticNamesPreserveOriginalDER(t *testing.T) {
 			}
 		})
 	}
-}
-
-func p6TransformCRL(t *testing.T, raw []byte, c chainData, edit func([]asn1.RawValue) [][]byte) []byte {
-	t.Helper()
-	value, err := der.Read(raw, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fields, err := der.Sequence(value, 3, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := der.Sequence(fields[0], 3, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := der.Seq(edit(body)...)
-	algorithm, err := signature.Algorithm(fields[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	signed, err := signature.Sign(t.Context(), c.rootKey, algorithm, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
-	return der.Seq(data, fields[1].FullBytes, bits)
 }
 
 func TestCRLTimeAndPolicyBoundaries(t *testing.T) {
@@ -1731,20 +1611,6 @@ func TestCRLRejectsInvalidURIs(t *testing.T) {
 	}
 }
 
-func p7Proofs(t *testing.T, now time.Time, objects [][]byte, roles []string, at time.Time) *historicalproof.Set {
-	t.Helper()
-	source := sha256.Sum256([]byte("published historical building-block vector"))
-	facts := make([]historicalproof.Fact, 0, len(objects))
-	for index, object := range objects {
-		facts = append(facts, historicalproof.Fact{Digest: sha256.Sum256(object), Source: source, At: at, Kind: historicalproof.Kind(roles[index])})
-	}
-	set, err := historicalproof.New(t.Context(), now, facts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return set
-}
-
 func TestHistoricalExpiredTargetAuthentication(t *testing.T) {
 	c := makeChain(t)
 	now := verificationTime().Add(3 * time.Hour)
@@ -1825,6 +1691,8 @@ func TestHistoricalCertificateTimeSliding(t *testing.T) {
 			proofs := p7Proofs(t, now, test.objects, test.roles, test.proofAt)
 			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
 			if !test.pass {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, pki.ErrUnavailable) || report.SubIndication() != "NO_POE" {
 					t.Fatal(result != nil, report.SubIndication(), err)
 				}
@@ -2186,7 +2054,9 @@ func TestHistoricalNoCheckCertificateStillNeedsPreCutoffProof(t *testing.T) {
 			}
 			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
 			if tc.pass {
-				if result == nil || err != nil || !result.ValidationTime().Equal(cutoff) {
+				if err != nil {
+					t.Fatal(err)
+				} else if result == nil || !result.ValidationTime().Equal(cutoff) {
 					t.Fatal("pre-cutoff proof did not protect responder certificate", result != nil, report.Transitions(), err)
 				}
 				found := false
@@ -2232,7 +2102,9 @@ func TestHistoricalCryptoAndSunsetProofs(t *testing.T) {
 			}
 			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
 			if tc.pass {
-				if err != nil || result == nil || !result.ValidationTime().Equal(tc.want) || len(report.Transitions()) != 1 {
+				if err != nil {
+					t.Fatal(err)
+				} else if result == nil || !result.ValidationTime().Equal(tc.want) || len(report.Transitions()) != 1 {
 					t.Fatal(result != nil, report.Transitions(), err)
 				}
 			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
@@ -2240,19 +2112,6 @@ func TestHistoricalCryptoAndSunsetProofs(t *testing.T) {
 			}
 		})
 	}
-}
-
-func p7Response(t *testing.T, c chainData, template pki.OCSPResponseTemplate) []byte {
-	t.Helper()
-	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, c.root.Raw, c.rootKey, template)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
 }
 
 func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
@@ -2327,31 +2186,12 @@ func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
 				t.Fatal("both conflicting signatures must authenticate", len(facts), err)
 			}
 			proofs := p7Proofs(t, now, [][]byte{c.leaf.Raw, latest, conflict}, []string{"certificate", "ocsp", "ocsp"}, now)
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs); result != nil || !errors.Is(err, pki.ErrEvidence) || report.SubIndication() != "NO_POE" {
 				t.Fatal("input order resolved contradictory authenticated status", reversed, result != nil, report.SubIndication(), err)
 			}
 		}
-	})
-}
-
-func p7SingleExtension(t *testing.T, raw []byte, c chainData, extension pkix.Extension) []byte {
-	t.Helper()
-	encoded, err := asn1.Marshal(extension)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rewriteOCSPData(t, raw, c.rootKey, func(fields []asn1.RawValue) [][]byte {
-		responses, err := der.Sequence(fields[2], 1, 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		single, err := der.Sequence(responses[0], 3, 5)
-		if err != nil {
-			t.Fatal(err)
-		}
-		responses[0].FullBytes = der.Seq(append(ocspFieldBytes(single), der.Ctx(1, der.Seq(encoded)))...)
-		fields[2].FullBytes = der.Seq(ocspFieldBytes(responses)...)
-		return ocspFieldBytes(fields)
 	})
 }
 
@@ -2777,6 +2617,8 @@ func TestTSAAlternativeChainsApplyRevocationToExactCertificates(t *testing.T) {
 						}
 						stamp, stampErr := tsa.VerifyResponse(t.Context(), response, request, now, proof)
 						if tc.tsaRevoked || tc.first && tc.second {
+							// Verification reports retain diagnostics on failure.
+							//noinspection GoDfaErrorMayBeNotNil
 							if result != nil || stamp != nil || !errors.Is(err, pki.ErrRevoked) || !errors.Is(stampErr, pki.ErrRevoked) || report.Revocation != pki.Invalid {
 								t.Fatal("alternative path bypassed revocation", reversed, result != nil, stamp != nil, report, err, stampErr)
 							}
@@ -2845,6 +2687,8 @@ func TestAlternativeChainsRespectDepthPolicy(t *testing.T) {
 			}
 			result, report, err := verifier.Verify(t.Context(), leaf.Raw, now, pki.Evidence{})
 			if tc.length == 0 {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, pki.ErrPolicy) || report.Chain != pki.Invalid || report.Revocation != pki.NotChecked {
 					t.Fatal("all candidate paths exceed the configured depth", result != nil, report, err)
 				}
@@ -2926,7 +2770,9 @@ func TestHistoricalDelegatedSourcePaths(t *testing.T) {
 			}
 			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, verificationTime()))
 			if tc.pass {
-				if err != nil || result == nil || !result.ValidationTime().Equal(verificationTime().Add(-time.Minute)) {
+				if err != nil {
+					t.Fatal(err)
+				} else if result == nil || !result.ValidationTime().Equal(verificationTime().Add(-time.Minute)) {
 					t.Fatal(result != nil, report.Transitions(), err)
 				}
 			} else if result != nil || !errors.Is(err, pki.ErrUnavailable) {
@@ -3185,6 +3031,8 @@ func TestHistoricalOCSPAuthorizationCyclesAndDepth(t *testing.T) {
 					}
 					continue
 				}
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(policyErr, tc.want) || !errors.Is(pastErr, tc.want) || sub != "REVOCATION_OUT_OF_BOUNDS_NO_POE" || report.SubIndication() != "NO_POE" {
 					t.Fatal("cycle/depth failure returned acceptance or wrong cause", result != nil, sub, policyErr, pastErr)
 				}
@@ -3483,6 +3331,8 @@ func TestHistoricalDelegatedResponderRevocationAndProofs(t *testing.T) {
 				if tc.targetRevoked {
 					want = pki.ErrEvidence
 				}
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, want) || report.SubIndication() != "NO_POE" {
 					t.Fatal("borrowed response proof for a source dependency", result != nil, report.SubIndication(), err)
 				}
@@ -3492,7 +3342,9 @@ func TestHistoricalDelegatedResponderRevocationAndProofs(t *testing.T) {
 			if tc.reason >= 0 {
 				want = revokedAt
 			}
-			if result == nil || err != nil || !result.ValidationTime().Equal(want) {
+			if err != nil {
+				t.Fatal(err)
+			} else if result == nil || !result.ValidationTime().Equal(want) {
 				t.Fatal("wrong historical source-signer bound", result != nil, report.Transitions(), err)
 			}
 			if tc.reason >= 0 {
@@ -3637,6 +3489,8 @@ func TestHistoricalSessionBoundsAndSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result, report, err := empty.ValidatePast(t.Context(), foreignLeaf.Raw, p7Proofs(t, now, nil, nil, now)); result != nil || !errors.Is(err, pki.ErrUnavailable) || report.SubIndication() != "NO_CERTIFICATE_CHAIN_FOUND" {
 		t.Fatal(result != nil, report.SubIndication(), err)
 	}
@@ -3987,11 +3841,17 @@ func TestHistoricalConstraintIndications(t *testing.T) {
 			}
 			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now))
 			if tc.pass {
-				if err != nil || result == nil || report.SubIndication() != "" {
+				if err != nil {
+					t.Fatal(err)
+				} else if result == nil || report.SubIndication() != "" {
 					t.Fatal(result != nil, report.SubIndication(), err)
 				}
-			} else if result != nil || !errors.Is(err, pki.ErrCertificate) || report.SubIndication() != "CHAIN_CONSTRAINTS_FAILURE" {
-				t.Fatal(result != nil, report.SubIndication(), err)
+			} else {
+				// Verification reports retain diagnostics on failure.
+				// noinspection GoDfaErrorMayBeNotNil
+				if result != nil || !errors.Is(err, pki.ErrCertificate) || report.SubIndication() != "CHAIN_CONSTRAINTS_FAILURE" {
+					t.Fatal(result != nil, report.SubIndication(), err)
+				}
 			}
 		})
 	}
@@ -4095,12 +3955,16 @@ func TestHistoricalFreshnessDependenciesAreTargetBound(t *testing.T) {
 			}
 			report, err := historical.Validate(t.Context(), config, selected, now, signerEvidence, pki.Evidence{CRLs: [][]byte{testcert.CRL(t, tsaChain)}})
 			if !archive {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if err == nil || report.Indication == historical.Passed || report.SubIndication != "TRY_LATER" {
 					t.Fatal("missing historical proof accepted", report.SubIndication, err)
 				}
 				return
 			}
-			if err != nil || report.Indication != historical.Passed || !report.Validation.Equal(proofTime) {
+			if err != nil {
+				t.Fatal(err)
+			} else if report.Indication != historical.Passed || !report.Validation.Equal(proofTime) {
 				t.Fatal("another target's delta dependency suppressed signer head", report.Indication, report.SubIndication, err)
 			}
 			leafHash := sha256.Sum256(leaf.Raw)
@@ -4119,4 +3983,184 @@ func TestHistoricalFreshnessDependenciesAreTargetBound(t *testing.T) {
 			}
 		})
 	}
+}
+
+func p6CRL(t *testing.T, c chainData, number int64, this, next time.Time, base int64, scope []byte, entries []x509.RevocationListEntry) []byte {
+	t.Helper()
+	template := &x509.RevocationList{Number: big.NewInt(number), ThisUpdate: this, NextUpdate: next, RevokedCertificateEntries: entries}
+	if base >= 0 {
+		template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 27}, Critical: true, Value: der.Int(int(base))})
+	}
+	if scope != nil {
+		template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: true, Value: scope})
+	}
+	return makeCRL(t, c, false, template)
+}
+
+func p6PointName(uri string) []byte {
+	return der.Ctx(0, der.Wrap(2, 0, true, der.Wrap(2, 6, false, []byte(uri))))
+}
+
+func p6Reasons(mask uint16) []byte {
+	bits := asn1.BitString{}
+	for index := 1; index <= 8; index++ {
+		if mask&(1<<(index-1)) != 0 {
+			bits.BitLength = index + 1
+		}
+	}
+	bits.Bytes = make([]byte, (bits.BitLength+7)/8)
+	for index := 1; index <= 8; index++ {
+		if mask&(1<<(index-1)) != 0 {
+			bits.Bytes[index/8] |= 1 << (7 - index%8)
+		}
+	}
+	encoded, _ := asn1.Marshal(bits)
+	var value asn1.RawValue
+	_, _ = asn1.Unmarshal(encoded, &value)
+	return value.Bytes
+}
+
+func p6LeafExtensions(t *testing.T, c chainData, extra []pkix.Extension) *x509.Certificate {
+	t.Helper()
+	template := *c.leaf
+	template.ExtraExtensions = extra
+	encoded, err := x509.CreateCertificate(rand.Reader, &template, c.root, c.leafKey.Public(), c.rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := keys.ParseCertificate(encoded, keys.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return leaf
+}
+
+func p6ReplaceCRLExtension(t *testing.T, raw []byte, c chainData, replacement pkix.Extension) []byte {
+	t.Helper()
+	value, err := der.Read(raw, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(value, 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tbs, err := der.Sequence(fields[0], 5, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext, err := der.Explicit(tbs[len(tbs)-1], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := der.Sequence(ext, 1, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extensions [][]byte
+	for _, item := range old {
+		var parsed pkix.Extension
+		if der.Decode(item, &parsed) != nil {
+			t.Fatal("extension shape")
+		}
+		if !parsed.Id.Equal(replacement.Id) {
+			extensions = append(extensions, item.FullBytes)
+		}
+	}
+	encoded, err := asn1.Marshal(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensions = append(extensions, encoded)
+	tbs[len(tbs)-1].FullBytes = der.Ctx(0, der.Seq(extensions...))
+	parts := make([][]byte, 0, len(tbs))
+	for _, part := range tbs {
+		parts = append(parts, part.FullBytes)
+	}
+	data := der.Seq(parts...)
+	algorithm, err := signature.Algorithm(fields[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signature.Sign(t.Context(), c.rootKey, algorithm, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+	return der.Seq(data, fields[1].FullBytes, bits)
+}
+
+func p6TransformCRL(t *testing.T, raw []byte, c chainData, edit func([]asn1.RawValue) [][]byte) []byte {
+	t.Helper()
+	value, err := der.Read(raw, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(value, 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := der.Sequence(fields[0], 3, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := der.Seq(edit(body)...)
+	algorithm, err := signature.Algorithm(fields[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signature.Sign(t.Context(), c.rootKey, algorithm, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits, _ := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+	return der.Seq(data, fields[1].FullBytes, bits)
+}
+
+func p7Proofs(t *testing.T, now time.Time, objects [][]byte, roles []string, at time.Time) *historicalproof.Set {
+	t.Helper()
+	source := sha256.Sum256([]byte("published historical building-block vector"))
+	facts := make([]historicalproof.Fact, 0, len(objects))
+	for index, object := range objects {
+		facts = append(facts, historicalproof.Fact{Digest: sha256.Sum256(object), Source: source, At: at, Kind: historicalproof.Kind(roles[index])})
+	}
+	set, err := historicalproof.New(t.Context(), now, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
+
+func p7Response(t *testing.T, c chainData, template pki.OCSPResponseTemplate) []byte {
+	t.Helper()
+	request, err := pki.CreateOCSPRequest(c.leaf.Raw, c.root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pki.CreateOCSPResponse(t.Context(), request, c.leaf.Raw, c.root.Raw, c.root.Raw, c.rootKey, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func p7SingleExtension(t *testing.T, raw []byte, c chainData, extension pkix.Extension) []byte {
+	t.Helper()
+	encoded, err := asn1.Marshal(extension)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rewriteOCSPData(t, raw, c.rootKey, func(fields []asn1.RawValue) [][]byte {
+		responses, err := der.Sequence(fields[2], 1, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		single, err := der.Sequence(responses[0], 3, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		responses[0].FullBytes = der.Seq(append(ocspFieldBytes(single), der.Ctx(1, der.Seq(encoded)))...)
+		fields[2].FullBytes = der.Seq(ocspFieldBytes(responses)...)
+		return ocspFieldBytes(fields)
+	})
 }

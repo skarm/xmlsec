@@ -60,7 +60,11 @@
 // key. Equal error strings and dummy-key processing do not prove resistance to
 // decryption oracles. Keep CBC and GCM keys separate. Legacy permission never
 // permits wire-selected algorithms or changes the GCM default.
-// RSA PKCS#1 v1.5, finite-field DH, PBKDF2 and EXI are not implemented.
+// RSA PKCS#1 v1.5 transport requires Options.KeyTransportAlgorithm = RSA15 and
+// AllowLegacy, is disabled in FIPS mode, and rejects OAEP parameters. Decryptors
+// receive rsa.PKCS1v15DecryptOptions with SessionKeyLen for implicit rejection.
+// Applications must authenticate ciphertext before invoking this legacy path.
+// Finite-field DH, PBKDF2 and EXI are not implemented.
 //
 // # Storage requirements
 //

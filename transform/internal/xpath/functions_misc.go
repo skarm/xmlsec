@@ -19,32 +19,49 @@ import (
 //nolint:gochecknoglobals // One immutable process seed hashes canonical atomic values consistently.
 var randomSeedHash = sync.OnceValue(maphash.MakeSeed)
 
+// Dynamic-context accessors use standard local names. The RNG map keys are
+// F&O result members; its number key has no XML Schema type-name role.
+const (
+	fnNameStaticBaseURI    = "static-base-uri"
+	fnNameDefaultCollation = "default-collation"
+	fnNameCurrentDate      = "current-date"
+	fnNameCurrentTime      = "current-time"
+	fnNameImplicitTimezone = "implicit-timezone"
+	rngNumberKey           = "number"
+	rngNextKey             = "next"
+	rngPermuteKey          = "permute"
+	errCodeFOQM0006        = "FOQM0006"
+)
+
+// Zero clock fields select civil midnight while retaining the implicit zone.
+const currentDateMidnightField = 0
+
 func lookupFunctionsMisc(name string) (*builtinFunc, bool) {
 	switch name {
-	case "static-base-uri":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnStaticBaseURI}, true
-	case "default-collation":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnDefaultCollation}, true
-	case "available-environment-variables":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnAvailableEnvVars}, true
-	case "environment-variable":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnEnvironmentVariable}, true
-	case "current-dateTime":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnCurrentDateTime}, true
-	case "current-date":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnCurrentDate}, true
-	case "current-time":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnCurrentTime}, true
-	case "implicit-timezone":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnImplicitTimezone}, true
-	case "default-language":
-		return &builtinFunc{name: name, min: 0, max: 0, fn: fnDefaultLanguage}, true
-	case "random-number-generator":
-		return &builtinFunc{name: name, min: 0, max: 1, fn: fnRandomNumberGenerator}, true
+	case fnNameStaticBaseURI:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnStaticBaseURI}, true
+	case fnNameDefaultCollation:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnDefaultCollation}, true
+	case fnNameAvailableEnvironmentVariables:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnAvailableEnvVars}, true
+	case fnNameEnvironmentVariable:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnEnvironmentVariable}, true
+	case fnNameCurrentDateTime:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnCurrentDateTime}, true
+	case fnNameCurrentDate:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnCurrentDate}, true
+	case fnNameCurrentTime:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnCurrentTime}, true
+	case fnNameImplicitTimezone:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnImplicitTimezone}, true
+	case fnNameDefaultLanguage:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityZero, fn: fnDefaultLanguage}, true
+	case fnNameRandomNumberGenerator:
+		return &builtinFunc{name: name, min: builtinArityZero, max: builtinArityOne, fn: fnRandomNumberGenerator}, true
 	case nameLoadXQueryModule:
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnLoadXQueryModule}, true
-	case "transform":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnTransform}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnLoadXQueryModule}, true
+	case fnNameTransform:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnTransform}, true
 	}
 
 	return nil, false
@@ -105,7 +122,7 @@ func fnCurrentDateTime(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, err
 	now := currentTimeFromCtx(ctx)
 
 	typeName := xdm.TypeDateTime
-	if XMLSchemaVersion(ctx) == 11 {
+	if XMLSchemaVersion(ctx) == schemaEdition11 {
 		typeName = xdm.TypeDateTimeStamp
 	}
 
@@ -114,7 +131,7 @@ func fnCurrentDateTime(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, err
 
 func fnCurrentDate(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 	now := currentTimeFromCtx(ctx)
-	date := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	date := time.Date(now.Year(), now.Month(), now.Day(), currentDateMidnightField, currentDateMidnightField, currentDateMidnightField, currentDateMidnightField, now.Location())
 
 	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDate, Value: date}), nil
 }
@@ -175,18 +192,35 @@ func makeRNGMap(seed int64) xdm.MapItem {
 	}}
 
 	nextFn := xdm.FunctionItem{
-		Arity: 0, ReturnType: &generatorType,
+		Arity: builtinArityZero, ReturnType: &generatorType,
 		Invoke: func(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
 			return xdm.ItemSlice{makeRNGMap(nextSeed)}, nil
 		},
 	}
 
 	permuteFn := xdm.FunctionItem{
-		Arity: 1, ParamTypes: []xdm.SequenceType{itemsType}, ReturnType: &itemsType,
-		Invoke: func(_ context.Context, callArgs []xdm.Sequence) (xdm.Sequence, error) {
+		Arity: builtinArityOne, ParamTypes: []xdm.SequenceType{itemsType}, ReturnType: &itemsType,
+		Invoke: func(ctx context.Context, callArgs []xdm.Sequence) (xdm.Sequence, error) {
 			seq := callArgs[0]
-			perm := make(xdm.ItemSlice, xdm.SequenceLen(seq))
-			copy(perm, xdm.Materialize(seq))
+			ec := getFnContext(ctx)
+
+			length := xdm.SequenceLen(seq)
+			if length > fnMaxNodes(ec) {
+				return nil, ErrNodeSetLimit
+			}
+
+			if err := fnCountOps(ctx, ec, length); err != nil {
+				return nil, err
+			}
+
+			perm := make(xdm.ItemSlice, length)
+			for i := range length {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+
+				perm[i] = seq.Get(i)
+			}
 
 			localRng := rand.New(rand.NewSource(seed)) // #nosec G404 -- XPath permutation repeats the generator seed; cryptographic randomness is not required.
 
@@ -194,14 +228,14 @@ func makeRNGMap(seed int64) xdm.MapItem {
 				perm[i], perm[j] = perm[j], perm[i]
 			})
 
-			return perm, nil
+			return perm, ctx.Err()
 		},
 	}
 
 	return xdm.NewMap([]xdm.MapEntry{
-		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: lexicon.TypeNumber}, Value: xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(number)}}},
-		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: "next"}, Value: xdm.ItemSlice{nextFn}},
-		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: "permute"}, Value: xdm.ItemSlice{permuteFn}},
+		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: rngNumberKey}, Value: xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(number)}}},
+		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: rngNextKey}, Value: xdm.ItemSlice{nextFn}},
+		{Key: xdm.AtomicValue{TypeName: xdm.TypeString, Value: rngPermuteKey}, Value: xdm.ItemSlice{permuteFn}},
 	})
 }
 
@@ -215,7 +249,7 @@ func fnDefaultLanguage(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, err
 
 	return xdm.SingleAtomic(xdm.AtomicValue{
 		TypeName: xdm.TypeLanguage,
-		Value:    "en",
+		Value:    defaultFormattingLanguage,
 	}), nil
 }
 
@@ -241,11 +275,11 @@ func fnImplicitTimezone(ctx context.Context, _ []xdm.Sequence) (xdm.Sequence, er
 		d.Negative = true
 	}
 
-	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeDayTimeDuration, Value: d}), nil
+	return boundedDurationResult(ctx, xdm.AtomicValue{TypeName: xdm.TypeDayTimeDuration, Value: d})
 }
 
 func fnLoadXQueryModule(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
-	return nil, &xdm.Error{Code: "FOQM0006", Message: "the selected profile has no XQuery processor"}
+	return nil, &xdm.Error{Code: errCodeFOQM0006, Message: "the selected profile has no XQuery processor"}
 }
 
 func fnTransform(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {

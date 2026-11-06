@@ -2,6 +2,7 @@ package xslt //nolint:testpackage // Tests cardinality after atomization and XSL
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -131,5 +132,34 @@ func TestSequenceTypeAtomicConversions(t *testing.T) {
 	var detail *XSLTError
 	if got != nil || !errors.As(err, &detail) || detail.Code != "XTTE0790" {
 		t.Fatalf("partial type failure = %v, %v", got, err)
+	}
+}
+
+func TestCanonicalNameTestExplicitNamespace(t *testing.T) {
+	for _, tc := range []struct{ source, want string }{{"Q{}n", "Q{}n"}, {"Q{urn:other}n", "Q{urn:other}n"}, {"n", "Q{urn:default}n"}} {
+		t.Run(tc.source, func(t *testing.T) {
+			ast, err := xpath.Parse(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var path xpath.LocationPath
+			switch v := ast.(type) {
+			case xpath.LocationPath:
+				path = v
+			case *xpath.LocationPath:
+				path = *v
+			default:
+				t.Fatalf("path=%#v", ast)
+			}
+			if len(path.Steps) != 1 {
+				t.Fatalf("steps=%#v", path)
+			}
+			var b strings.Builder
+			w := canonicalTypeWriter{b: &b, defaultElemNS: "urn:default", hasDefaultElemNS: true}
+			w.nodeTest(path.Steps[0].NodeTest)
+			if b.String() != tc.want {
+				t.Errorf("actual %q; expected %q", b.String(), tc.want)
+			}
+		})
 	}
 }

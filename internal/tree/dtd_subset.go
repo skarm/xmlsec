@@ -9,6 +9,29 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
+const (
+	dtdSystem              = "SYSTEM"
+	dtdPublic              = "PUBLIC"
+	dtdNData               = "NDATA"
+	dtdInclude             = "INCLUDE"
+	dtdIgnore              = "IGNORE"
+	dtdRequired            = "#REQUIRED"
+	dtdImplied             = "#IMPLIED"
+	dtdFixed               = "#FIXED"
+	dtdPCDATA              = "#PCDATA"
+	dtdEmpty               = "EMPTY"
+	dtdAny                 = "ANY"
+	dtdEntityOpen          = "<!ENTITY"
+	dtdAttlistOpen         = "<!ATTLIST"
+	dtdElementOpen         = "<!ELEMENT"
+	dtdNotationOpen        = "<!NOTATION"
+	dtdConditionalOpen     = "<!["
+	dtdConditionalClose    = "]]>"
+	dtdCommentOpen         = "<!--"
+	dtdPIOpen              = "<?"
+	dtdPublicIDPunctuation = "-'()+,./:=?;!*#@$_%"
+)
+
 type dtdFrame struct {
 	text     string
 	base     string
@@ -18,10 +41,11 @@ type dtdFrame struct {
 }
 
 type dtdScanner struct {
-	state         *dtdState
-	frames        []dtdFrame
-	err           error
-	inDeclaration bool
+	state           *dtdState
+	frames          []dtdFrame
+	err             error
+	inDeclaration   bool
+	parameterOrigin bool
 }
 
 func (s *dtdScanner) raw() string {
@@ -118,10 +142,34 @@ func (s *dtdScanner) text() string {
 			return ""
 		}
 
+		if !s.inDeclaration {
+			// A PE used as DeclSep is a complete extSubsetDecl, not a
+			// fragment that can open markup and finish it in its parent.
+			err := s.includeParameterSubset(value, base, external)
+
+			release()
+
+			if err != nil {
+				s.err = err
+				return ""
+			}
+
+			continue
+		}
+
 		s.frames = append(s.frames, dtdFrame{text: " " + value + " ", base: base, external: external, release: release})
 	}
 
 	return ""
+}
+
+func (s *dtdScanner) includeParameterSubset(text, base string, external bool) error {
+	child := s.state.scanner(text, base, external)
+	defer child.close()
+
+	child.parameterOrigin = true
+
+	return child.declarations("")
 }
 
 func (s *dtdScanner) take(token string) bool {
@@ -222,17 +270,17 @@ func (s *dtdScanner) close() {
 func (s *dtdScanner) externalID(publicOnly bool) (string, string) {
 	public := ""
 
-	if s.take("SYSTEM") {
+	if s.take(dtdSystem) {
 		s.space(true)
 		return s.quoted(), public
 	}
 
-	s.require("PUBLIC")
+	s.require(dtdPublic)
 	s.space(true)
 	public = s.quoted()
 
 	for _, r := range public {
-		if !(r == '\r' || r == '\n' || r == ' ' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-'()+,./:=?;!*#@$_%", r)) {
+		if !(r == '\r' || r == '\n' || r == ' ' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(dtdPublicIDPunctuation, r)) {
 			s.fail("public identifier character")
 		}
 	}
@@ -266,18 +314,18 @@ func (s *dtdScanner) declarations(stop string) error {
 		}
 
 		switch {
-		case strings.HasPrefix(text, "<!--"):
+		case strings.HasPrefix(text, dtdCommentOpen):
 			end, err := dtdMarkupEnd(text, false)
 			if err != nil {
 				return err
 			}
 
 			s.advance(end)
-		case strings.HasPrefix(text, "<?"):
+		case strings.HasPrefix(text, dtdPIOpen):
 			if err := s.processingInstruction(text); err != nil {
 				return err
 			}
-		case strings.HasPrefix(text, "<!["):
+		case strings.HasPrefix(text, dtdConditionalOpen):
 			if !s.external() {
 				s.fail("conditional section in internal subset")
 				break
@@ -294,13 +342,13 @@ func (s *dtdScanner) declarations(stop string) error {
 			s.inDeclaration = true
 
 			switch {
-			case s.take("<!ENTITY"):
+			case s.take(dtdEntityOpen):
 				s.entity()
-			case s.take("<!ATTLIST"):
+			case s.take(dtdAttlistOpen):
 				s.attlist()
-			case s.take("<!ELEMENT"):
+			case s.take(dtdElementOpen):
 				s.element()
-			case s.take("<!NOTATION"):
+			case s.take(dtdNotationOpen):
 				s.notation()
 			default:
 				s.fail("markup declaration")
@@ -326,29 +374,41 @@ func (s *dtdScanner) processingInstruction(text string) error {
 		s.fail("processing instruction")
 	}
 
+	if s.err == nil {
+		if err := s.state.declare(); err != nil {
+			return err
+		}
+
+		s.state.info.ProcessingInstructions = append(s.state.info.ProcessingInstructions, ProcessingInstruction{
+			Target: body[:nameEnd], Data: strings.TrimLeft(body[nameEnd:], lexicon.XMLWhitespace), BaseURI: s.base(),
+		})
+	}
+
 	s.advance(end)
 
 	return s.err
 }
 
 func (s *dtdScanner) conditional() error {
-	s.require("<![")
+	s.inDeclaration = true
+	s.require(dtdConditionalOpen)
 	s.space(false)
 	kind := s.name()
 	s.space(false)
 	s.require("[")
+	s.inDeclaration = false
 
-	if kind == "INCLUDE" {
-		if err := s.declarations("]]>"); err != nil {
+	if kind == dtdInclude {
+		if err := s.declarations(dtdConditionalClose); err != nil {
 			return err
 		}
 
-		s.require("]]>")
+		s.require(dtdConditionalClose)
 
 		return s.err
 	}
 
-	if kind != "IGNORE" {
+	if kind != dtdIgnore {
 		s.fail("conditional section keyword")
 		return s.err
 	}
@@ -362,14 +422,14 @@ func (s *dtdScanner) conditional() error {
 			break
 		}
 
-		if strings.HasPrefix(text, "<![") {
+		if strings.HasPrefix(text, dtdConditionalOpen) {
 			depth++
 
-			s.advance(3)
-		} else if strings.HasPrefix(text, "]]>") {
+			s.advance(len(dtdConditionalOpen))
+		} else if strings.HasPrefix(text, dtdConditionalClose) {
 			depth--
 
-			s.advance(3)
+			s.advance(len(dtdConditionalClose))
 		} else {
 			s.advance(1)
 		}
@@ -419,9 +479,9 @@ func (s *dtdScanner) entity() {
 	}
 
 	s.space(true)
-	entity := dtdEntity{base: s.base()}
+	entity := dtdEntity{base: s.base(), declaredOutside: s.external() || s.parameterOrigin || len(s.frames) > 1}
 
-	if strings.HasPrefix(s.text(), "SYSTEM") || strings.HasPrefix(s.text(), "PUBLIC") {
+	if strings.HasPrefix(s.text(), dtdSystem) || strings.HasPrefix(s.text(), dtdPublic) {
 		entity.external = true
 		entity.systemID, entity.publicID = s.externalID(false)
 	} else {
@@ -441,7 +501,7 @@ func (s *dtdScanner) entity() {
 	s.space(false)
 	separated := before != s.text()
 
-	if !parameter && s.take("NDATA") {
+	if !parameter && s.take(dtdNData) {
 		if !separated {
 			s.fail("NDATA separator")
 		}
@@ -542,15 +602,15 @@ func (s *dtdScanner) attributeDeclaration() dtdAttribute {
 	s.space(true)
 
 	if strings.HasPrefix(s.text(), "(") {
-		attribute.kind = "NMTOKEN"
+		attribute.kind = lexicon.TypeNMToken
 
 		s.enumeration(false)
 	} else {
 		attribute.kind = s.name()
 
 		switch attribute.kind {
-		case dtdCDATA, "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES", "NMTOKEN", "NMTOKENS":
-		case "NOTATION":
+		case dtdCDATA, lexicon.TypeID, lexicon.TypeIDREF, lexicon.TypeIDREFS, lexicon.TypeENTITY, lexicon.TypeENTITIES, lexicon.TypeNMToken, lexicon.TypeNMTokens:
+		case lexicon.TypeNotation:
 			s.space(true)
 			s.enumeration(true)
 		default:
@@ -560,8 +620,8 @@ func (s *dtdScanner) attributeDeclaration() dtdAttribute {
 
 	s.space(true)
 
-	if !s.take("#REQUIRED") && !s.take("#IMPLIED") {
-		if s.take("#FIXED") {
+	if !s.take(dtdRequired) && !s.take(dtdImplied) {
+		if s.take(dtdFixed) {
 			s.space(true)
 		}
 
@@ -618,16 +678,24 @@ func (s *dtdScanner) enumeration(notation bool) {
 }
 
 func (s *dtdScanner) notation() {
+	base := s.base()
 	s.space(true)
 
-	if !xmlchar.IsValidNCName(s.name()) {
+	name := s.name()
+	if !xmlchar.IsValidNCName(name) {
 		s.fail("notation NCName")
 	}
 
 	s.space(true)
-	s.externalID(true)
+	system, public := s.externalID(true)
 	s.space(false)
 	s.require(">")
+
+	if s.err == nil {
+		if _, exists := s.state.info.Notations[name]; !exists {
+			s.state.info.Notations[name] = Notation{SystemID: system, PublicID: public, BaseURI: base}
+		}
+	}
 }
 
 func (s *dtdScanner) element() {
@@ -639,7 +707,7 @@ func (s *dtdScanner) element() {
 		s.require("(")
 		s.space(false)
 
-		if s.take("#PCDATA") {
+		if s.take(dtdPCDATA) {
 			count := 0
 
 			s.space(false)
@@ -663,7 +731,7 @@ func (s *dtdScanner) element() {
 			s.group(1)
 			s.quantifier()
 		}
-	} else if kind := s.name(); kind != "EMPTY" && kind != "ANY" {
+	} else if kind := s.name(); kind != dtdEmpty && kind != dtdAny {
 		s.fail("element content model")
 	}
 
@@ -728,19 +796,23 @@ func (d *dtdState) scanner(text, base string, external bool) *dtdScanner {
 }
 
 func (d *dtdState) doctype(text, base string) error {
+	d.inDTD = true
+	defer func() { d.inDTD = false }()
+
 	s := d.scanner(text, base, false)
 	defer s.close()
 
 	s.require(dtdDoctypeOpen)
 	s.space(true)
-	s.qualifiedName()
+	d.info.Name = s.qualifiedName()
 	s.space(false)
 
 	entity := dtdEntity{base: base}
 
-	if strings.HasPrefix(s.text(), "SYSTEM") || strings.HasPrefix(s.text(), "PUBLIC") {
+	if strings.HasPrefix(s.text(), dtdSystem) || strings.HasPrefix(s.text(), dtdPublic) {
 		entity.systemID, entity.publicID = s.externalID(false)
 		entity.external = true
+		d.info.SystemID, d.info.PublicID = entity.systemID, entity.publicID
 
 		s.space(false)
 	}
@@ -751,10 +823,16 @@ func (d *dtdState) doctype(text, base string) error {
 		}
 
 		s.require("]")
-		s.space(false)
+		s.rawSpace(false)
 	}
 
-	s.require(">")
+	// PE references belong only to intSubset/extSubsetDecl. In particular,
+	// whitespace after ']' must not expand a declared parameter entity.
+	if !strings.HasPrefix(s.raw(), ">") {
+		s.fail("expected >")
+	} else {
+		s.advance(1)
+	}
 
 	if s.raw() != "" {
 		s.fail("trailing DOCTYPE content")

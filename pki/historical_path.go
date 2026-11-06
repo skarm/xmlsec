@@ -14,6 +14,11 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+const (
+	maxPathSearchWork = 8192
 )
 
 func (s *HistoricalSession) initializeCertificates(ctx context.Context) error {
@@ -21,7 +26,7 @@ func (s *HistoricalSession) initializeCertificates(ctx context.Context) error {
 		return nil
 	}
 
-	certificates := make(map[[32]byte]*x509.Certificate, len(s.verifier.originalCertificates)+len(s.evidence.Intermediates))
+	certificates := make(map[[sha256.Size]byte]*x509.Certificate, len(s.verifier.originalCertificates)+len(s.evidence.Intermediates))
 	maps.Copy(certificates, s.verifier.originalCertificates)
 
 	for _, raw := range s.evidence.Intermediates {
@@ -116,13 +121,13 @@ func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certifica
 
 	sort.Slice(certificates, func(i, j int) bool { return bytes.Compare(certificates[i].Raw, certificates[j].Raw) < 0 })
 
-	roots := make(map[[32]byte]struct{}, len(s.verifier.anchorCertificates))
+	roots := make(map[[sha256.Size]byte]struct{}, len(s.verifier.anchorCertificates))
 	for _, raw := range s.verifier.anchorCertificates {
 		roots[sha256.Sum256(raw)] = struct{}{}
 	}
 
 	search := historicalPathSearch{session: s, certificates: certificates, roots: roots}
-	if err := search.visit(ctx, []*x509.Certificate{target}, map[[32]byte]struct{}{digest: {}}); err != nil {
+	if err := search.visit(ctx, []*x509.Certificate{target}, map[[sha256.Size]byte]struct{}{digest: {}}); err != nil {
 		return nil, err
 	}
 
@@ -149,7 +154,7 @@ func (s *HistoricalSession) checkPathUsages(ctx context.Context, path *Historica
 	}
 
 	s.signatureWork += len(path.chain)
-	if s.signatureWork > 4096 {
+	if s.signatureWork > maxSignatureVerifications {
 		return nil, fmt.Errorf("%w: %w: historical signature work", ErrPolicy, ErrLimit)
 	}
 
@@ -183,7 +188,7 @@ func (s *HistoricalSession) checkPathUsages(ctx context.Context, path *Historica
 		intermediates.AddCert(view)
 	}
 
-	chains, err := views[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: reference, KeyUsages: append([]x509.ExtKeyUsage(nil), usages...), MaxConstraintComparisions: 100000})
+	chains, err := views[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: reference, KeyUsages: append([]x509.ExtKeyUsage(nil), usages...), MaxConstraintComparisions: maxNameConstraintComparisons})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCertificate, err)
 	}
@@ -232,7 +237,7 @@ func historicalPathFailure(err error) string {
 	)
 
 	if errors.As(err, &configured) || errors.As(err, &certificate) && certificate.Reason == x509.IncompatibleUsage {
-		return "CHAIN_CONSTRAINTS_FAILURE"
+		return lexicon.HistoricalCodeChainConstraintsFailure
 	}
 
 	return historicalChainFailure
@@ -241,11 +246,11 @@ func historicalPathFailure(err error) string {
 type historicalPathSearch struct {
 	session      *HistoricalSession
 	certificates []*x509.Certificate
-	roots        map[[32]byte]struct{}
+	roots        map[[sha256.Size]byte]struct{}
 	paths        []*HistoricalPath
 }
 
-func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Certificate, seen map[[32]byte]struct{}) error {
+func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Certificate, seen map[[sha256.Size]byte]struct{}) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -263,7 +268,7 @@ func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Cer
 			_, _ = hash.Write(digest[:])
 		}
 
-		var fingerprint [32]byte
+		var fingerprint [sha256.Size]byte
 		copy(fingerprint[:], hash.Sum(nil))
 		search.paths = append(search.paths, &HistoricalPath{session: search.session, chain: append([]*x509.Certificate(nil), chain...), fingerprint: fingerprint})
 
@@ -295,7 +300,7 @@ func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Cer
 		}
 
 		search.session.pathWork++
-		if search.session.pathWork > 8192 {
+		if search.session.pathWork > maxPathSearchWork {
 			return fmt.Errorf("%w: %w: historical path work", ErrPolicy, ErrLimit)
 		}
 
@@ -370,7 +375,7 @@ func certificateGenerationTime(certificate *x509.Certificate) (time.Time, error)
 			continue
 		}
 
-		value, err := der.Read(extension.Value, 64)
+		value, err := der.Read(extension.Value, maxScalarExtensionBytes)
 		if err != nil {
 			return time.Time{}, ErrCertificate
 		}
@@ -396,7 +401,9 @@ func (p *HistoricalPath) FingerprintSHA256() string {
 }
 
 func historicalIntermediates(chain []*x509.Certificate) []*x509.Certificate {
-	if len(chain) < 3 {
+	const minimumChainWithIntermediate = 3 // leaf, at least one intermediate, root
+
+	if len(chain) < minimumChainWithIntermediate {
 		return nil
 	}
 

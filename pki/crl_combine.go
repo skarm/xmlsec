@@ -7,6 +7,13 @@ import (
 	"math/big"
 	"sort"
 	"time"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+const (
+	// Polls the context once per 256 revocation entries during list processing.
+	revocationCancellationMask = 255
 )
 
 func constructCRLViews(ctx context.Context, group []*authenticatedCRL, at time.Time, o CRLOptions) ([]completeCRLView, error) {
@@ -134,7 +141,7 @@ func (state crlState) apply(entry *crlEntry) {
 		}
 	}
 
-	if entry.reason == 8 {
+	if entry.reason == reasonRemoveFromCRL {
 		return
 	}
 
@@ -147,7 +154,7 @@ func (state crlState) apply(entry *crlEntry) {
 func crlEntryNames(entry *crlEntry) []string {
 	keys := make([]string, 0, len(entry.issuers))
 	for _, name := range entry.issuers {
-		if name.tag == 4 {
+		if name.tag == lexicon.GeneralNameDirectory {
 			keys = append(keys, name.key+"/"+entry.serial.String())
 		}
 	}
@@ -160,7 +167,7 @@ func crlViewState(ctx context.Context, view completeCRLView) (crlState, error) {
 
 	apply := func(entries []crlEntry) error {
 		for index := range entries {
-			if index&255 == 0 {
+			if index&revocationCancellationMask == 0 {
 				if err := ctx.Err(); err != nil {
 					return err
 				}

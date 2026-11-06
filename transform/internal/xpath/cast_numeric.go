@@ -14,6 +14,13 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Numeric casts map booleans to the XML Schema numeric values, while a
+// rational's denominator one remains the mathematical identity.
+const (
+	booleanNumericTrue  = 1
+	booleanNumericFalse = 0
+)
+
 func castToDouble(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 	switch v.TypeName {
 	case xdm.TypeDouble:
@@ -34,10 +41,10 @@ func castToDouble(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(f)}, nil
 	case xdm.TypeBoolean:
 		if v.BooleanVal() {
-			return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(1)}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(booleanNumericTrue)}, nil
 		}
 
-		return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(0)}, nil
+		return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: xdm.NewDouble(booleanNumericFalse)}, nil
 	case xdm.TypeString, xdm.TypeUntypedAtomic:
 		return CastFromString(v.StringVal(), xdm.TypeDouble)
 	default:
@@ -61,7 +68,7 @@ func castToFloat(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 	// When casting from string, use the xs:float lexical rules directly
 	// (XSD 1.1 accepts "INF", lexicon.FloatNegINF, "+INF", "NaN")
 	if v.TypeName == xdm.TypeString || v.TypeName == xdm.TypeUntypedAtomic || xdm.IsStringDerived(v.TypeName) {
-		return castStringToFloat(strings.Trim(v.StringVal(), " \t\r\n"))
+		return castStringToFloat(strings.Trim(v.StringVal(), lexicon.XMLWhitespace))
 	}
 	// Round exact decimal/integer values directly to binary32. Narrowing
 	// through double can erase which side of a float midpoint they lie on.
@@ -98,7 +105,7 @@ func numericToFloat32(value xdm.AtomicValue) float32 {
 
 // castStringToFloat rounds directly to binary32, avoiding double rounding.
 func castStringToFloat(s string) (xdm.AtomicValue, error) {
-	f, err := parseXPathFloating(s, 32)
+	f, err := parseXPathFloating(s, singleFloatBits)
 	if err != nil {
 		return xdm.AtomicValue{}, castError(s, xdm.TypeFloat)
 	}
@@ -112,11 +119,11 @@ func castToInteger(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 		return v, nil
 	case xdm.TypeDouble, xdm.TypeFloat:
 		f := v.DoubleVal()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
+		if math.IsNaN(f) || math.IsInf(f, eitherInfinitySign) {
 			return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFOCA0002, Message: "cannot cast NaN/INF to xs:integer"}
 		}
 
-		bi, _ := new(big.Float).SetFloat64(f).Int(nil)
+		bi, _ := new(big.Float).SetFloat64(f).Int(new(big.Int))
 
 		return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: bi}, nil
 	case xdm.TypeDecimal:
@@ -127,10 +134,10 @@ func castToInteger(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: q}, nil
 	case xdm.TypeBoolean:
 		if v.BooleanVal() {
-			return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(1)}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(booleanNumericTrue)}, nil
 		}
 
-		return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(0)}, nil
+		return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(booleanNumericFalse)}, nil
 	default:
 		return castStringLikeOrFail(v, xdm.TypeInteger)
 	}
@@ -148,7 +155,7 @@ func castToDecimal(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: r}, nil
 	case xdm.TypeDouble, xdm.TypeFloat:
 		f := v.DoubleVal()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
+		if math.IsNaN(f) || math.IsInf(f, eitherInfinitySign) {
 			return xdm.AtomicValue{}, &xdm.Error{Code: errCodeFOCA0002, Message: "cannot cast NaN/INF to xs:decimal"}
 		}
 
@@ -157,10 +164,10 @@ func castToDecimal(v xdm.AtomicValue) (xdm.AtomicValue, error) {
 		return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: r}, nil
 	case xdm.TypeBoolean:
 		if v.BooleanVal() {
-			return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: big.NewRat(1, 1)}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: big.NewRat(booleanNumericTrue, 1)}, nil
 		}
 
-		return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: big.NewRat(0, 1)}, nil
+		return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: big.NewRat(booleanNumericFalse, 1)}, nil
 	default:
 		return castStringLikeOrFail(v, xdm.TypeDecimal)
 	}

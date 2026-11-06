@@ -17,6 +17,56 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/encoding"
 )
 
+// Writer defaults and reserved XML syntax keep quote selection separate from PI
+// target validation. Namespace revisions start nonzero to track binding-index updates.
+const (
+	doubleQuoteChar          = '"'
+	singleQuoteChar          = '\''
+	defaultQuoteChar         = doubleQuoteChar
+	xmlVersionPrefix         = "1."
+	initialNamespaceRevision = 1
+)
+
+// Declaration and namespace prefixes retain the writer's exact spacing and spelling.
+const (
+	xmlDeclarationVersionStart  = "<?xml " + lexicon.DeclVersion + "="
+	xmlEncodingAttributeStart   = " " + lexicon.DeclEncoding + "="
+	xmlStandaloneAttributeStart = " " + lexicon.DeclStandalone + "="
+	defaultNamespaceStart       = " " + lexicon.PrefixXMLNS + "="
+	prefixedNamespaceStart      = " " + lexicon.PrefixXMLNS + ":"
+)
+
+// Decimal references retain this writer's exact output spelling. The scratch
+// capacity is in bytes and numeric character references use decimal formatting.
+const (
+	escapeCarriageReturnDecimal = "&#13;"
+	escapeLineFeedDecimal       = "&#10;"
+	escapeTabDecimal            = "&#9;"
+	escapeApostrophe            = "&apos;"
+	decimalCharRefBufferBytes   = 12
+	decimalCharRefRadix         = 10
+)
+
+// CDATA splitting closes and reopens the section after its two closing brackets.
+const (
+	cdataStart           = "<![CDATA["
+	cdataEnd             = "]]>"
+	cdataReopen          = cdataEnd + cdataStart
+	cdataClosingBrackets = len(cdataEnd) - 1
+)
+
+// XML 1.1 scalar bounds enforce its Char production; byte thresholds select
+// candidates that require checking or escaping before UTF-8 decoding.
+const (
+	xml11FirstChar          = 0x1
+	xml11FirstRangeEnd      = 0xD7FF
+	xml11PrivateStart       = 0xE000
+	xml11PrivateEnd         = 0xFFFD
+	xml11SupplementaryStart = 0x10000
+	xml11C0ByteLimit        = 0x20
+	xml11SpecialByteStart   = 0x7F
+)
+
 var errNilOutputWriter = errors.New("stream: output writer is nil")
 
 // Writer writes XML incrementally to an io.Writer.
@@ -125,7 +175,7 @@ type nsEntry struct {
 func NewWriter(w io.Writer) Writer {
 	return Writer{
 		out:       w,
-		quoteChar: '"',
+		quoteChar: defaultQuoteChar,
 		state:     stateNone,
 	}
 }
@@ -142,7 +192,7 @@ func (w Writer) Indent(indent string) Writer {
 // quote character set to q. Must be '"' or '\”. Any other value
 // is silently ignored. The default is '"'.
 func (w Writer) QuoteChar(q byte) Writer {
-	if q == '\'' || q == '"' {
+	if q == singleQuoteChar || q == doubleQuoteChar {
 		w.quoteChar = q
 	}
 
@@ -159,13 +209,13 @@ func (w Writer) QuoteChar(q byte) Writer {
 // need not call this explicitly; it is required only when the declaration
 // is omitted.
 func (w Writer) XMLVersion(v string) Writer {
-	w.xml11 = v == "1.1"
+	w.xml11 = v == lexicon.XMLVersion11
 	return w
 }
 
-// Error returns the sticky error, if any. Once an error occurs, all
-// subsequent write operations become no-ops. The error is also returned
-// by [Writer.Flush].
+// Error returns the sticky destination error, if any. Once a write or flush
+// fails, subsequent write operations become no-ops. Validation errors leave
+// the writer usable. The sticky error is also returned by [Writer.Flush].
 func (w *Writer) Error() error { return w.err }
 
 // --- Document lifecycle ---
@@ -182,7 +232,7 @@ func (w *Writer) StartDocument(version, enc, standalone string) error {
 	}
 
 	if version == "" {
-		version = "1.0"
+		version = lexicon.XMLVersion10
 	}
 	// Validate version and standalone before writing, so an untrusted value
 	// cannot inject markup into (or otherwise corrupt) the XML declaration.
@@ -190,13 +240,10 @@ func (w *Writer) StartDocument(version, enc, standalone string) error {
 		return fmt.Errorf("stream: invalid XML version %q", version)
 	}
 
-	if standalone != "" && standalone != "yes" && standalone != "no" {
+	if standalone != "" && standalone != lexicon.ValueYes && standalone != lexicon.ValueNo {
 		return fmt.Errorf("stream: invalid standalone value %q (want \"yes\", \"no\", or empty)", standalone)
 	}
 
-	if version == "1.1" {
-		w.xml11 = true
-	}
 	// Validate the encoding name BEFORE writing any output: first against the XML
 	// EncName production (so a syntactically malformed value like "utf 8" cannot
 	// be emitted raw into the declaration), then for actual support. encoding.Load
@@ -212,20 +259,22 @@ func (w *Writer) StartDocument(version, enc, standalone string) error {
 		}
 	}
 
-	w.writeStr("<?xml version=")
+	w.xml11 = version == lexicon.XMLVersion11
+
+	w.writeStr(xmlDeclarationVersionStart)
 	w.writeByte(w.quoteChar)
 	w.writeStr(version)
 	w.writeByte(w.quoteChar)
 
 	if enc != "" {
-		w.writeStr(" encoding=")
+		w.writeStr(xmlEncodingAttributeStart)
 		w.writeByte(w.quoteChar)
 		w.writeStr(enc)
 		w.writeByte(w.quoteChar)
 	}
 
 	if standalone != "" {
-		w.writeStr(" standalone=")
+		w.writeStr(xmlStandaloneAttributeStart)
 		w.writeByte(w.quoteChar)
 		w.writeStr(standalone)
 		w.writeByte(w.quoteChar)
@@ -284,7 +333,7 @@ func (w *Writer) EndDocument() error {
 // prevents an untrusted version string from injecting markup into the XML
 // declaration (e.g. `1.0"?><x/>`).
 func isValidXMLVersion(v string) bool {
-	rest, ok := strings.CutPrefix(v, "1.")
+	rest, ok := strings.CutPrefix(v, xmlVersionPrefix)
 	if !ok {
 		return false
 	}
@@ -306,12 +355,12 @@ func isValidXMLVersion(v string) bool {
 
 // StartElement opens a new element with the given local name.
 func (w *Writer) StartElement(name string) error {
-	if name == "" {
-		return errors.New("stream: element name must not be empty")
-	}
-
 	if w.err != nil {
 		return w.err
+	}
+
+	if name == "" {
+		return errors.New("stream: element name must not be empty")
 	}
 	// Validate the name before touching any writer state or output, so an
 	// untrusted name cannot inject markup (extra attributes, '>') or produce
@@ -531,12 +580,12 @@ func (w *Writer) WriteElementNS(prefix, localName, namespaceURI, content string)
 
 // StartAttribute opens an attribute on the current element.
 func (w *Writer) StartAttribute(name string) error {
-	if name == "" {
-		return errors.New("stream: attribute name must not be empty")
-	}
-
 	if w.err != nil {
 		return w.err
+	}
+
+	if name == "" {
+		return errors.New("stream: attribute name must not be empty")
 	}
 	// Validate the name before writing, so an untrusted name cannot inject
 	// markup (extra attributes, '>') into the start tag. The xmlns/xmlns:
@@ -867,16 +916,16 @@ func (w *Writer) WriteComment(content string) error {
 
 // StartPI opens a processing instruction (<?target).
 func (w *Writer) StartPI(target string) error {
-	if target == "" {
-		return errors.New("stream: PI target must not be empty")
-	}
-
 	if w.err != nil {
 		return w.err
 	}
+
+	if target == "" {
+		return errors.New("stream: PI target must not be empty")
+	}
 	// Validate the target before touching any writer state or output, so a bad
 	// target never closes an open start tag or otherwise mutates the writer.
-	if strings.EqualFold(target, "xml") {
+	if strings.EqualFold(target, lexicon.ReservedXMLPITarget) {
 		return errors.New("stream: PI target cannot be 'xml'")
 	}
 
@@ -987,7 +1036,7 @@ func (w *Writer) StartCDATA() error {
 		w.elemStack[len(w.elemStack)-1].hasText = true
 	}
 
-	w.writeStr("<![CDATA[")
+	w.writeStr(cdataStart)
 	w.cdataBrackets = 0
 	w.stateStack = append(w.stateStack, w.state)
 	w.state = stateCDATA
@@ -1005,7 +1054,7 @@ func (w *Writer) EndCDATA() error {
 		return errors.New("stream: EndCDATA called outside CDATA section")
 	}
 
-	w.writeStr("]]>")
+	w.writeStr(cdataEnd)
 	w.popState(stateText)
 
 	return w.err
@@ -1025,7 +1074,7 @@ func (w *Writer) WriteCDATA(content string) error {
 	}
 
 	for {
-		idx := strings.Index(content, "]]>")
+		idx := strings.Index(content, cdataEnd)
 		if idx < 0 {
 			break
 		}
@@ -1034,7 +1083,7 @@ func (w *Writer) WriteCDATA(content string) error {
 			return err
 		}
 
-		if err := w.WriteString(content[:idx+2]); err != nil {
+		if err := w.WriteString(content[:idx+cdataClosingBrackets]); err != nil {
 			return err
 		}
 
@@ -1042,7 +1091,7 @@ func (w *Writer) WriteCDATA(content string) error {
 			return err
 		}
 		// Continue with ">" onwards in the next CDATA section
-		content = content[idx+2:]
+		content = content[idx+cdataClosingBrackets:]
 	}
 
 	if err := w.StartCDATA(); err != nil {
@@ -1061,12 +1110,12 @@ func (w *Writer) WriteCDATA(content string) error {
 // StartDTD opens a DOCTYPE declaration. pubid and sysid may be empty.
 // If pubid is non-empty, sysid must also be non-empty.
 func (w *Writer) StartDTD(name, pubid, sysid string) error {
-	if name == "" {
-		return errors.New("stream: DTD name must not be empty")
-	}
-
 	if w.err != nil {
 		return w.err
+	}
+
+	if name == "" {
+		return errors.New("stream: DTD name must not be empty")
 	}
 
 	if w.depth != 0 || (w.state != stateDocument && w.state != stateNone && w.state != stateText) {
@@ -1159,9 +1208,7 @@ func (w *Writer) WriteDTD(name, pubid, sysid string) error {
 	return w.EndDTD()
 }
 
-// isPubidChar reports whether r is a valid XML PubidChar (XML 1.0 §2.3):
-//
-//	PubidChar ::= #x20 | #xD | #xA | [a-zA-Z0-9] | [-'()+,./:=?;!*#@$_%]
+// validatePubid checks every character against XML 1.0 §2.3 PubidChar.
 func validatePubid(s string) bool { return xmloutput.ValidPublicID(s) }
 
 func validateSystemID(s string) bool { return xmloutput.ValidSystemID(s) }
@@ -1239,34 +1286,34 @@ func (w *Writer) writeEscaped(s string, escape escapeMode) {
 
 		switch s[i] {
 		case '&':
-			replacement = "&amp;"
+			replacement = lexicon.EscapeAmpersand
 		case '<':
-			replacement = "&lt;"
+			replacement = lexicon.EscapeLessThan
 		case '>':
-			replacement = "&gt;"
+			replacement = lexicon.EscapeGreaterThan
 		case '\r':
-			replacement = "&#13;"
-		case '"':
-			if escape == escapeAttr && w.quoteChar == '"' {
-				replacement = "&quot;"
+			replacement = escapeCarriageReturnDecimal
+		case doubleQuoteChar:
+			if escape == escapeAttr && w.quoteChar == doubleQuoteChar {
+				replacement = lexicon.EscapeQuote
 			} else {
 				writeRawByte = true
 			}
-		case '\'':
-			if escape == escapeAttr && w.quoteChar == '\'' {
-				replacement = "&apos;"
+		case singleQuoteChar:
+			if escape == escapeAttr && w.quoteChar == singleQuoteChar {
+				replacement = escapeApostrophe
 			} else {
 				writeRawByte = true
 			}
 		case '\n':
 			if escape == escapeAttr {
-				replacement = "&#10;"
+				replacement = escapeLineFeedDecimal
 			} else {
 				writeRawByte = true
 			}
 		case '\t':
 			if escape == escapeAttr {
-				replacement = "&#9;"
+				replacement = escapeTabDecimal
 			} else {
 				writeRawByte = true
 			}
@@ -1301,7 +1348,7 @@ func (w *Writer) writeEscaped(s string, escape escapeMode) {
 }
 
 func (w *Writer) writeDecimalCharRef(r rune) {
-	var buf [12]byte
+	var buf [decimalCharRefBufferBytes]byte
 
 	n := len(buf)
 	n--
@@ -1315,8 +1362,8 @@ func (w *Writer) writeDecimalCharRef(r rune) {
 
 	for v > 0 {
 		n--
-		buf[n] = byte('0' + v%10)
-		v /= 10
+		buf[n] = byte('0' + v%decimalCharRefRadix)
+		v /= decimalCharRefRadix
 	}
 
 	n--
@@ -1414,12 +1461,12 @@ func (w *Writer) emitPendingNS() {
 	for i := scope.emitted; i < len(scope.decls); i++ {
 		ns := scope.decls[i]
 		if ns.prefix == "" {
-			w.writeStr(" xmlns=")
+			w.writeStr(defaultNamespaceStart)
 			w.writeByte(w.quoteChar)
 			w.writeAttrEscaped(ns.uri)
 			w.writeByte(w.quoteChar)
 		} else {
-			w.writeStr(" xmlns:")
+			w.writeStr(prefixedNamespaceStart)
 			w.writeStr(ns.prefix)
 			w.writeByte('=')
 			w.writeByte(w.quoteChar)
@@ -1478,8 +1525,8 @@ func (w *Writer) ownNSBind() map[string]string {
 		}
 	}
 
-	w.nsBind = &nsBindings{m: m, seq: 1}
-	w.nsSeq = 1
+	w.nsBind = &nsBindings{m: m, seq: initialNamespaceRevision}
+	w.nsSeq = initialNamespaceRevision
 
 	return m
 }
@@ -1591,7 +1638,7 @@ func (w *Writer) validateContentChars(kind, s string) error {
 
 func writeEscapedXML11(w *Writer, s string, i int, start *int) {
 	if w.xml11 {
-		if b := s[i]; b < 0x20 || b >= 0x7F {
+		if b := s[i]; b < xml11C0ByteLimit || b >= xml11SpecialByteStart {
 			if r, width := utf8.DecodeRuneInString(s[i:]); xmlchar.IsXML11SerializeAsCharRef(r) {
 				if (*start) < i {
 					w.writeStr(s[(*start):i])
@@ -1608,9 +1655,9 @@ func writeEscapedXML11(w *Writer, s string, i int, start *int) {
 // isXML11Char implements the XML 1.1 Char production (excluding U+0000):
 // Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
 func isXML11Char(r rune) bool {
-	return (r >= 0x1 && r <= 0xD7FF) ||
-		(r >= 0xE000 && r <= 0xFFFD) ||
-		(r >= 0x10000 && r <= 0x10FFFF)
+	return (r >= xml11FirstChar && r <= xml11FirstRangeEnd) ||
+		(r >= xml11PrivateStart && r <= xml11PrivateEnd) ||
+		(r >= xml11SupplementaryStart && r <= utf8.MaxRune)
 }
 
 // --- Escaping ---
@@ -1634,7 +1681,7 @@ func (w *Writer) writeCDATAEscaped(s string) {
 
 	for i := range len(s) {
 		c := s[i]
-		if c == '>' && w.cdataBrackets >= 2 {
+		if c == '>' && w.cdataBrackets >= cdataClosingBrackets {
 			// "]]>" detected: the preceding "]]" has already been
 			// written into this section, so flush up to here, close the
 			// section, and reopen a new one before emitting the '>'.
@@ -1645,7 +1692,7 @@ func (w *Writer) writeCDATAEscaped(s string) {
 				w.writeStr(s[start:i])
 			}
 
-			w.writeStr("]]><![CDATA[")
+			w.writeStr(cdataReopen)
 
 			start = i
 			w.cdataBrackets = 0
@@ -1722,15 +1769,15 @@ func validateNSParts(kind, prefix, localName string) error {
 // emitted. An empty namespaceURI on the "xml" prefix means "use the implicit
 // xml binding" and is allowed. kind is "element" or "attribute".
 func validateReservedNS(kind, prefix, namespaceURI string) error {
-	if prefix == "xmlns" {
+	if prefix == lexicon.PrefixXMLNS {
 		return fmt.Errorf("stream: reserved %s prefix %q must not be used", kind, prefix)
 	}
 
-	if prefix == "xml" && namespaceURI != "" && namespaceURI != lexicon.NamespaceXML {
+	if prefix == lexicon.PrefixXML && namespaceURI != "" && namespaceURI != lexicon.NamespaceXML {
 		return fmt.Errorf("stream: reserved prefix \"xml\" must be bound to %q, not %q", lexicon.NamespaceXML, namespaceURI)
 	}
 
-	if namespaceURI == lexicon.NamespaceXML && prefix != "xml" {
+	if namespaceURI == lexicon.NamespaceXML && prefix != lexicon.PrefixXML {
 		return fmt.Errorf("stream: XML namespace %q must be bound only to the \"xml\" prefix", lexicon.NamespaceXML)
 	}
 

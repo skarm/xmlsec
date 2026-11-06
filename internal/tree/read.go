@@ -20,6 +20,12 @@ import (
 	"golang.org/x/text/encoding/ianaindex"
 )
 
+// The source buffer and lexical text chunk have separate roles: storage versus incremental parser delivery.
+const (
+	inputBufferBytes      = 4096
+	lexicalTextChunkBytes = 4096
+)
+
 // ParseReader constructs a snapshot incrementally, without retaining source XML.
 // The snapshot itself occupies memory proportional to its nodes and text.
 func ParseReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
@@ -58,6 +64,10 @@ func parseXMLReader(ctx context.Context, src io.Reader, limits Limits, character
 		return nil, err
 	}
 
+	return finishXMLParse(ctx, &parser)
+}
+
+func finishXMLParse(ctx context.Context, parser *documentParser) (*Document, error) {
 	doc, err := parser.parse(ctx)
 	if err != nil {
 		return nil, err
@@ -127,7 +137,7 @@ func newXMLInput(ctx context.Context, src io.Reader, maximum int64, tokenLimit i
 
 func newXMLInputMode(ctx context.Context, src io.Reader, maximum int64, tokenLimit int, characterInput bool) (*xmlInput, error) {
 	source := &streamio.Reader{Context: ctx, Source: src, Limit: maximum, LimitError: ErrLimit}
-	r := &xmlInput{source: source, reader: bufio.NewReaderSize(source, 4096), encoding: sourceEncoding{name: nameUTF8}, maximum: maximum, tokenLimit: tokenLimit}
+	r := &xmlInput{source: source, reader: bufio.NewReaderSize(source, inputBufferBytes), encoding: sourceEncoding{name: nameUTF8}, maximum: maximum, tokenLimit: tokenLimit}
 
 	prefix, err := r.reader.Peek(4)
 	// A short prefix is usable only at bare EOF; a joined source failure remains fatal.
@@ -138,19 +148,19 @@ func newXMLInputMode(ctx context.Context, src io.Reader, maximum int64, tokenLim
 	skip := 0
 
 	switch {
-	case bytes.HasPrefix(prefix, []byte{0xef, 0xbb, 0xbf}):
+	case bytes.HasPrefix(prefix, []byte(lexicon.BOMUTF8)):
 		r.encoding.bom = true
 		skip = 3
 	case characterInput:
 		// NUL-containing strings must fail XML character validation rather than
 		// being reinterpreted as UTF-16/32 octets.
-	case bytes.HasPrefix(prefix, []byte{0, 0, 0xfe, 0xff}), bytes.HasPrefix(prefix, []byte{0xff, 0xfe, 0, 0}):
+	case bytes.HasPrefix(prefix, []byte(lexicon.BOMUTF32BE)), bytes.HasPrefix(prefix, []byte(lexicon.BOMUTF32LE)):
 		return nil, ErrUnsupported
-	case bytes.HasPrefix(prefix, []byte{0xfe, 0xff}):
+	case bytes.HasPrefix(prefix, []byte(lexicon.BOMUTF16BE)):
 		r.encoding = sourceEncoding{lexicon.EncodingUTF16BE, true}
 		r.order = binary.BigEndian
 		skip = 2
-	case bytes.HasPrefix(prefix, []byte{0xff, 0xfe}):
+	case bytes.HasPrefix(prefix, []byte(lexicon.BOMUTF16LE)):
 		r.encoding = sourceEncoding{lexicon.EncodingUTF16LE, true}
 		r.order = binary.LittleEndian
 		skip = 2
@@ -353,7 +363,7 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 		unit = utf8.AppendRune(unit, value)
 	}
 
-	if r.outside && (!markup && len(bytes.Trim(unit, " \t\r\n")) != 0 || bytes.HasPrefix(unit, []byte("<![CDATA["))) {
+	if r.outside && (!markup && len(bytes.Trim(unit, lexicon.XMLWhitespace)) != 0 || bytes.HasPrefix(unit, []byte("<![CDATA["))) {
 		return nil, fmt.Errorf("%w: content outside root", ErrMalformed)
 	}
 
@@ -421,19 +431,19 @@ func sourceLineBreaks(data []byte) uint64 {
 
 func lexicalUnitComplete(unit []byte, markup bool, quote rune, inReference bool) (bool, error) {
 	if !markup {
-		return len(unit) >= 4096 && unit[len(unit)-1] != '\r' && !inReference, nil
+		return len(unit) >= lexicalTextChunkBytes && unit[len(unit)-1] != '\r' && !inReference, nil
 	}
 
 	switch {
-	case bytes.HasPrefix(unit, []byte("<!--")):
+	case bytes.HasPrefix(unit, []byte(dtdCommentOpen)):
 		return len(unit) >= 7 && bytes.HasSuffix(unit, []byte("-->")), nil
 	case bytes.HasPrefix(unit, []byte("<![CDATA[")):
 		return len(unit) >= 12 && bytes.HasSuffix(unit, []byte("]]>")), nil
-	case bytes.HasPrefix(unit, []byte("<?")):
+	case bytes.HasPrefix(unit, []byte(dtdPIOpen)):
 		return len(unit) >= 4 && bytes.HasSuffix(unit, []byte("?>")), nil
 	case bytes.HasPrefix(unit, []byte("<!")):
 		// Partial declaration openers are accepted only until they can be classified.
-		comment, cdata := []byte("<!--"), []byte("<![CDATA[")
+		comment, cdata := []byte(dtdCommentOpen), []byte("<![CDATA[")
 		if !bytes.HasPrefix(comment, unit) && !bytes.HasPrefix(cdata, unit) {
 			return false, ErrUnsupported
 		}
@@ -445,7 +455,7 @@ func lexicalUnitComplete(unit []byte, markup bool, quote rune, inReference bool)
 }
 
 func lexicalQuote(unit []byte, value, quote rune) rune {
-	if bytes.HasPrefix(unit, []byte("<!")) || bytes.HasPrefix(unit, []byte("<?")) {
+	if bytes.HasPrefix(unit, []byte("<!")) || bytes.HasPrefix(unit, []byte(dtdPIOpen)) {
 		return quote
 	}
 

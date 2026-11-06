@@ -33,8 +33,13 @@ and charset metadata. Context-aware key providers use `AdaptContextSigner`,
 `InclusivePrefixes` applies only to that algorithm. Use `Subtree` / `AllNodes`
 for full selections; sparse node sets may produce fragments.
 
-The security parser rejects DTDs and external entities. Language input has a
-separate [DTD profile](transforms.md#xml-input-profiles). See [streaming](streaming.md)
+The default security parser rejects DTDs and external entities.
+`document.ParseOptions{NonValidating: true}` enables bounded DTD processing,
+including entity expansion and default attributes; external entities require an
+explicit `EntityResolver`. `Document.DTD` returns owned declaration information.
+Serialization writes expanded XML and omits the DTD. This mode also accepts
+relative namespace names, which C14N rejects. Language input uses a separate
+[DTD profile](transforms.md#xml-input-profiles). See [streaming](streaming.md)
 for retained trees, independent records and partial output.
 
 ## Signatures and coverage
@@ -143,6 +148,9 @@ uses with generated 96-bit nonces.
 CBC/TripleDES require exact algorithms and `AllowLegacy`; they are disabled by
 default and in FIPS mode. CBC plaintext is unauthenticated: establish ciphertext
 integrity before decryption and keep legacy keys separate from GCM keys.
+RSA PKCS#1 v1.5 transport likewise requires explicit `KeyTransportAlgorithm:
+xmlenc.RSA15`, `AllowLegacy` and prior ciphertext authentication. It is available
+in the RSA APIs and disabled in FIPS mode.
 
 ConcatKDF and ECDH-ES use explicit parameters and bounded work; ECDH supports
 P-256/P-384/P-521 and fresh ephemeral keys. Explicit key-graph APIs resolve
@@ -161,6 +169,33 @@ Bind SP requests to unpredictable browser/session secrets. Acceptance atomically
 consumes request/assertion IDs after validation. Multiple instances need shared
 atomic state/replay stores. Authentication, cookies, sessions and HTTP endpoints
 belong to the application. See the [SSO example](../examples/sso).
+
+Set `idp.Config.Encryption` to `&protocol.EncryptionOptions{Targets:
+protocol.EncryptAssertion | protocol.EncryptNameID | protocol.EncryptAttributes}`
+to encrypt the selected claims. With no explicit recipient, the IdP selects an
+RSA encryption key from trusted SP metadata. An explicit recipient must also
+occur there. Signing-only metadata keys do not authorize encryption.
+
+The SP supplies `Config.Decryption` with its local `crypto.Decrypter` providers;
+only providers matching its trusted encryption metadata are used. Set
+`Config.RequireEncryption` to reject plaintext at the selected positions. The
+zero cipher options select AES-256-GCM/RSA-OAEP-SHA256. CBC, RSA15 and SHA-1
+need explicit algorithm policy; CBC/RSA15 ciphertext is authenticated before
+private-key operations. `MaxDecryptions` bounds attempts across all encrypted
+fields and keys. Replay and browser-correlation checks still apply.
+
+Use `sp.BeginOptions.NameIDFormat = protocol.NameIDEncrypted` to request
+`EncryptedID` specifically. This policy value describes encryption, not the
+inner NameID format. An IdP with encryption configured adds `EncryptNameID` to
+its targets for this request; without encryption policy it returns `ErrPolicy`.
+The SP requires an authorized decryption key before sending such a request and
+rejects a response that encrypts only the Assertion while leaving its NameID
+plaintext inside it.
+
+Artifact/SOAP, logout, NameID management and bearer/holder-of-key ECP have
+separate [integration contracts](saml.md). The [authority APIs](saml-authority.md)
+compose queries, assertion retrieval and NameID Mapping with application
+authorization and replay storage. Query results do not establish a WebSSO login.
 
 The [XPath/XSLT guide](transforms.md) covers language contexts and
 [approved XMLDSig programs](transforms.md#xmldsig-v1-compatibility).

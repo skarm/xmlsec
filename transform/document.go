@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -88,15 +89,15 @@ func (n Node) Kind() string {
 	case xdm.DocumentNode:
 		return "document"
 	case xdm.ElementNode:
-		return "element"
+		return lexicon.KindElement
 	case xdm.AttributeNode:
-		return "attribute"
+		return lexicon.KindAttribute
 	case xdm.TextNode, xdm.CDATASectionNode:
-		return "text"
+		return lexicon.KindText
 	case xdm.CommentNode:
-		return "comment"
+		return lexicon.KindComment
 	case xdm.ProcessingInstructionNode:
-		return "processing-instruction"
+		return lexicon.KindPI
 	case xdm.NamespaceNode:
 		return "namespace"
 	default:
@@ -107,6 +108,7 @@ func (n Node) Kind() string {
 type inputLimitsKey struct{}
 
 // Parse validates XML, rejects DTDs and applies the engine's input limits.
+// Relative namespace names are preserved without base-URI resolution.
 func (e *Engine) Parse(ctx context.Context, xml []byte) (*Document, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
@@ -161,12 +163,7 @@ func (e *Engine) Import(ctx context.Context, d *document.Document) (*Document, e
 		return nil, wrap("import", ErrInput)
 	}
 
-	limits := document.DefaultLimits()
-	limits.MaxBytes = e.limits.MaxInputBytes
-	limits.MaxDepth = e.limits.MaxDepth
-	limits.MaxNodes = e.limits.MaxNodes
-
-	if err = tree.CheckSnapshotLimits(ctx, d, limits); err != nil {
+	if err = tree.CheckSnapshotLimits(ctx, d, e.limits.xmlLimits()); err != nil {
 		return nil, wrap("import", err)
 	}
 
@@ -262,15 +259,16 @@ func (e *Engine) parse(ctx context.Context, xml []byte, baseURI string) (*Docume
 func checkInputDocument(ctx context.Context, native *xdm.Document, limits Limits) error {
 	native.Freeze()
 
-	policy := document.DefaultLimits()
-	policy.MaxBytes = limits.MaxInputBytes
-	policy.MaxNodes = limits.MaxNodes
-	policy.MaxDepth = limits.MaxDepth
+	policy := limits.xmlLimits()
 	snapshot := native.Snapshot()
 
 	key := inputLimitsKey{}
 	if value, ok := tree.LoadView(snapshot, key); ok {
-		if checked, ok := value.(document.Limits); ok && policy.MaxBytes >= checked.MaxBytes && policy.MaxNodes >= checked.MaxNodes && policy.MaxDepth >= checked.MaxDepth {
+		if checked, ok := value.(document.Limits); ok &&
+			policy.MaxBytes >= checked.MaxBytes && policy.MaxNodes >= checked.MaxNodes &&
+			policy.MaxDepth >= checked.MaxDepth &&
+			policy.MaxAttributesPerElement >= checked.MaxAttributesPerElement &&
+			policy.MaxInScopeNamespaces >= checked.MaxInScopeNamespaces {
 			return ctx.Err()
 		}
 	}

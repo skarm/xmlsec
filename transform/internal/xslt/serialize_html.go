@@ -14,10 +14,14 @@ import (
 )
 
 func streamHTMLValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) error {
+	const (
+		htmlSerializationBufferBytes = 4096
+	)
+
 	writer := htmlResultWriter(definition)
 
 	explicitDoctype := definition.DoctypePublic != "" || definition.DoctypeSystem != ""
-	buffer := bufio.NewWriterSize(w, 4096)
+	buffer := bufio.NewWriterSize(w, htmlSerializationBufferBytes)
 	sequence := serializationSequence{ctx: ctx, definition: definition}
 	items := func(yield func(xdm.XMLItem, error) bool) {
 		emitted := false
@@ -62,7 +66,7 @@ func htmlResultWriter(definition *OutputDef) htmlpkg.Writer {
 
 	normalization := definition.NormalizationForm
 	if normalization == lexicon.NormFullyNormalized {
-		normalization = normalizationFormNFC
+		normalization = lexicon.NormalizationFormNFC
 	}
 
 	writer := htmlpkg.NewWriter().DefaultDTD(false).Format(false).PreserveCase(true).
@@ -79,15 +83,15 @@ func htmlResultWriter(definition *OutputDef) htmlpkg.Writer {
 	if definition.IncludeContentType == nil || *definition.IncludeContentType {
 		media := definition.MediaType
 		if media == "" {
-			media = "text/html"
+			media = defaultHTMLMediaType
 		}
 
 		encoding := definition.Encoding
 		if encoding == "" {
-			encoding = "UTF-8"
+			encoding = lexicon.EncodingUTF8U
 		}
 
-		writer = writer.ContentType(media + "; charset=" + encoding)
+		writer = writer.ContentType(media + contentTypeCharsetParameter + encoding)
 	}
 
 	return writer
@@ -115,7 +119,7 @@ func effectiveStreamMethod(result ValueResult, definition *OutputDef) string {
 			return lexicon.MethodHTML
 		}
 
-		if definition.languageVersion != 10 && !definition.implicitXMLMethod && root.URI() == lexicon.NamespaceXHTML {
+		if definition.languageVersion != processorXSLT10 && !definition.implicitXMLMethod && root.URI() == lexicon.NamespaceXHTML {
 			return lexicon.MethodXHTML
 		}
 	}

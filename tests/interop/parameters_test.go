@@ -32,7 +32,7 @@ func TestParameters(t *testing.T) {
 
 	selected(t, "portable")
 	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
+	key := generateKey(t, dir, nameRSASHA256)
 
 	priv, err := x509.MarshalPKCS8PrivateKey(key.signer)
 	if err != nil {
@@ -241,8 +241,8 @@ func TestXMLSecHMAC(t *testing.T) {
 			ours := write(t, filepath.Join(dir, "ours.xml"), probeData(t, fixture, "parametersprobe", map[string]any{nameMode: nameSign, nameMethod: method, nameSecret: secret, "Bits": output}))
 			theirs := filepath.Join(dir, "theirs.xml")
 
-			native(t, fixture, true, nameVerify, "--hmackey", key, flagEnabledReferenceUris, "same-doc", ours)
-			native(t, fixture, true, nameSign, "--hmackey", key, flagEnabledReferenceUris, "same-doc", "--output", theirs, ours)
+			native(t, fixture, true, nameVerify, "--hmackey", key, flagEnabledReferenceURIs, "same-doc", ours)
+			native(t, fixture, true, nameSign, "--hmackey", key, flagEnabledReferenceURIs, "same-doc", "--output", theirs, ours)
 			r := probe(t, fixture, "parametersprobe", map[string]any{nameMode: nameVerify, nameMethod: method, nameSecret: secret, nameInput: read(t, theirs)}, true)
 			assertJSON(t, r, nameValid, true)
 		}
@@ -260,7 +260,7 @@ func verifySignatureValue(t *testing.T, fixture *interopFixture, d *tree.Documen
 	value := decode64(t, text(one(t, sig, ds, "SignatureValue")))
 	dir := t.TempDir()
 	messagePath := write(t, filepath.Join(dir, "message"), message)
-	hash := nameSha256
+	hash := nameSHA256
 
 	for _, bits := range []string{"384", "512"} {
 		if strings.Contains(method, bits) {

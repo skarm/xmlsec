@@ -39,7 +39,7 @@ func doubleNaNAtom() xdm.AtomicValue {
 // atomToCompatDouble converts a single atom to xs:double with fn:number
 // semantics: a lexically-invalid value yields NaN, and never an error.
 func atomToCompatDouble(a xdm.AtomicValue, ec ...*evalContext) xdm.AtomicValue {
-	if len(ec) > 0 && ec[0] != nil && ec[0].version == 10 {
+	if len(ec) > 0 && ec[0] != nil && ec[0].version == xpathVersion10 {
 		v, err := xpath10Number(xdm.ItemSlice{a})
 		if err != nil {
 			return doubleNaNAtom()
@@ -86,7 +86,7 @@ func xpath10CompatStringItem(seq xdm.Sequence) (xdm.AtomicValue, error) {
 // xpath10CompatNumberItem implements the xs:double(?)/xs:numeric(?)
 // function-conversion rule: fn:number of the first item (empty or invalid → NaN).
 func xpath10CompatNumberItem(seq xdm.Sequence, ec ...*evalContext) (xdm.AtomicValue, error) {
-	if len(ec) > 0 && ec[0] != nil && ec[0].version == 10 {
+	if len(ec) > 0 && ec[0] != nil && ec[0].version == xpathVersion10 {
 		return xpath10Number(seq)
 	}
 
@@ -175,7 +175,7 @@ func generalCompareXPath10Compat(ctx context.Context, op TokenType, left, right 
 		return false, err
 	}
 
-	if ec != nil && ec.version == 10 {
+	if ec != nil && ec.version == xpathVersion10 {
 		if err := generalCompareXPath10CompatEntries(ctx, la, ra); err != nil {
 			return false, err
 		}

@@ -59,6 +59,14 @@ type (
 	NodeSet = tree.NodeSet
 	// RecordOptions selects independent XML subtrees and their resource limits.
 	RecordOptions = tree.RecordOptions
+	// DocumentType contains declarations read by the nonvalidating XML processor.
+	DocumentType = tree.DocumentType
+	// Notation retains an XML notation's external identifiers.
+	Notation = tree.Notation
+	// UnparsedEntity retains an external unparsed entity and its notation name.
+	UnparsedEntity = tree.UnparsedEntity
+	// ProcessingInstruction is a processing instruction retained from the DTD.
+	ProcessingInstruction = tree.ProcessingInstruction
 )
 
 // NewNodeSet selects individual nodes, not their subtrees. Nodes from different

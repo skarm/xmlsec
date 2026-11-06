@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	xmlDsKeyNameHintDsKeyName = "<ds:KeyName>hint</ds:KeyName>"
-	nameKeyName               = "KeyName"
+	keyNameHintXML = "<ds:KeyName>hint</ds:KeyName>"
+	nameKeyName    = "KeyName"
 )
 
 func TestAllowedKeyData(t *testing.T) {
@@ -28,14 +28,14 @@ func TestAllowedKeyData(t *testing.T) {
 		body    string
 		ok      bool
 	}{
-		{"nil-all-supported", nil, xmlDsKeyNameHintDsKeyName + derXML(t, &key.PublicKey), true},
-		{"empty-denies", []document.Name{}, xmlDsKeyNameHintDsKeyName, false},
-		{"name-only", []document.Name{name}, xmlDsKeyNameHintDsKeyName, true},
-		{"disabled-later-choice", []document.Name{name}, xmlDsKeyNameHintDsKeyName + derXML(t, &key.PublicKey), false},
+		{"nil-all-supported", nil, keyNameHintXML + derXML(t, &key.PublicKey), true},
+		{"empty-denies", []document.Name{}, keyNameHintXML, false},
+		{"name-only", []document.Name{name}, keyNameHintXML, true},
+		{"disabled-later-choice", []document.Name{name}, keyNameHintXML + derXML(t, &key.PublicKey), false},
 		{"der-only", []document.Name{der}, derXML(t, &key.PublicKey), true},
-		{"bad-qname", []document.Name{{Space: "urn:wrong", Local: nameKeyName}}, xmlDsKeyNameHintDsKeyName, false},
-		{"wrapper-not-representation", []document.Name{{Space: ns, Local: "KeyValue"}}, xmlDsKeyNameHintDsKeyName, false},
-		{"duplicate", []document.Name{name, name}, xmlDsKeyNameHintDsKeyName, false},
+		{"bad-qname", []document.Name{{Space: "urn:wrong", Local: nameKeyName}}, keyNameHintXML, false},
+		{"wrapper-not-representation", []document.Name{{Space: ns, Local: "KeyValue"}}, keyNameHintXML, false},
+		{"duplicate", []document.Name{name, name}, keyNameHintXML, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			doc := parseXML(t, wrap(test.body))

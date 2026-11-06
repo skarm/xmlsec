@@ -10,21 +10,18 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
-// --- NodeItem ---
+// Single-item atomization admits one array member holding one atomic item;
+// the array API uses a one-based origin. Base-type lookup follows at most
+// thirty-two host-supplied ancestry links before declining a concrete type.
+const (
+	singletonAtomizationMembers = 1
+	atomizationArrayFirstIndex  = 1
+	singletonAtomizationItems   = 1
+	maxAtomizedBaseTypeDepth    = 32
+)
 
 // --- AtomicValue ---
-
 // key: [2]string{actual,target} → bool
-
-// --- Supporting Types ---
-
-// --- FunctionItem ---
-
-// --- MapItem ---
-
-// --- ArrayItem ---
-
-// --- Atomization ---
 
 // AtomizeItem converts a single item to an atomic value per XPath 3.1 Section 2.6.2.
 func AtomizeItem(item xdm.Item) (xdm.AtomicValue, error) {
@@ -42,9 +39,9 @@ func AtomizeItem(item xdm.Item) (xdm.AtomicValue, error) {
 			}
 		}
 
-		if v.Size() == 1 {
-			member, _ := v.Get(1)
-			if xdm.SequenceLen(member) == 1 {
+		if v.Size() == singletonAtomizationMembers {
+			member, _ := v.Get(atomizationArrayFirstIndex)
+			if xdm.SequenceLen(member) == singletonAtomizationItems {
 				return AtomizeItem(member.Get(0))
 			}
 		}
@@ -75,7 +72,7 @@ func resolveQNameFromNode(s string, node xdm.Node, noDefaultNS bool) (xdm.QNameV
 		scope = node.Parent()
 	}
 
-	if prefix == "xml" {
+	if prefix == lexicon.PrefixXML {
 		// The "xml" prefix is predeclared (XML Namespaces) and need not be bound on
 		// any node — matches xsd.resolveLexicalQName, so e.g. xml:lang atomizes as a
 		// valid xs:QName in an assertion instead of failing with an undeclared prefix.
@@ -221,7 +218,7 @@ func atomizedTypeForAnnotation(annotation string, decls SchemaDeclarations) stri
 	}
 
 	current := annotation
-	for range 32 {
+	for range maxAtomizedBaseTypeDepth {
 		local, ns, ok := xdm.SchemaAnnotationParts(current)
 		if !ok {
 			return ""

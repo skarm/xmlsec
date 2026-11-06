@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	xmlRXmlBaseABCCXml    = "<r xml:base=\"a//b/../c\"><c xml:base=\"..\"></c></r>"
-	xmlRXmlnsUrnRCXmlnsXX = "<r xmlns=\"urn:r\"><c xmlns=\"\"><x></x></c></r>"
+	canonicalUnfixedBaseXML    = "<r xml:base=\"a//b/../c\"><c xml:base=\"..\"></c></r>"
+	canonicalNamespaceResetXML = "<r xmlns=\"urn:r\"><c xmlns=\"\"><x></x></c></r>"
 )
 
 func TestNormativeCanonicalVectors(t *testing.T) {
@@ -244,14 +244,14 @@ func TestCanonicalAlgorithms(t *testing.T) {
 		child         bool
 	}{
 		{"namespace context", `<r xmlns:p="urn:p"><c/></r>`, `<r xmlns:p="urn:p"><c></c></r>`, `<r xmlns:p="urn:p"><c></c></r>`, `<r><c></c></r>`, false},
-		{"empty default", `<r xmlns="urn:r"><c xmlns=""><x/></c></r>`, xmlRXmlnsUrnRCXmlnsXX, xmlRXmlnsUrnRCXmlnsXX, xmlRXmlnsUrnRCXmlnsXX, false},
+		{"empty default", `<r xmlns="urn:r"><c xmlns=""><x/></c></r>`, canonicalNamespaceResetXML, canonicalNamespaceResetXML, canonicalNamespaceResetXML, false},
 		{"inherit simple", `<r xml:lang="ru" xml:space="preserve"><c/></r>`, `<c xml:lang="ru" xml:space="preserve"></c>`, `<c xml:lang="ru" xml:space="preserve"></c>`, canonicalEmptyChildXML, true},
 		{"inherit xml id only 10", `<r xml:id="outer"><c/></r>`, `<c xml:id="outer"></c>`, canonicalEmptyChildXML, canonicalEmptyChildXML, true},
 		{"unknown xml attribute", `<r xml:future="value"><c/></r>`, `<c xml:future="value"></c>`, canonicalEmptyChildXML, canonicalEmptyChildXML, true},
 		{"xml base join", `<r xml:base="http://example.test/a/b/"><c xml:base="../x"/></r>`, `<c xml:base="../x"></c>`, `<c xml:base="http://example.test/a/x"></c>`, `<c xml:base="../x"></c>`, true},
 		{"relative bases", `<r xml:base=".."><c xml:base=".."/></r>`, `<c xml:base=".."></c>`, `<c xml:base="../../"></c>`, `<c xml:base=".."></c>`, true},
 		{"empty join omitted", `<r xml:base="abc/"><c xml:base="../"/></r>`, `<c xml:base="../"></c>`, canonicalEmptyChildXML, `<c xml:base="../"></c>`, true},
-		{"no fixup in full document", `<r xml:base="a//b/../c"><c xml:base=".."/></r>`, xmlRXmlBaseABCCXml, xmlRXmlBaseABCCXml, xmlRXmlBaseABCCXml, false},
+		{"no fixup in full document", `<r xml:base="a//b/../c"><c xml:base=".."/></r>`, canonicalUnfixedBaseXML, canonicalUnfixedBaseXML, canonicalUnfixedBaseXML, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { testCanonicalAlgorithmsCase(t, &tt) })

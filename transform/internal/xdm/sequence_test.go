@@ -91,19 +91,6 @@ func TestCloneRangeKeepsLazyStorage(t *testing.T) {
 	}
 }
 
-func assertRangeInteger(t *testing.T, item xdm.Item, want int64) {
-	t.Helper()
-
-	atomic, ok := item.(xdm.AtomicValue)
-	if !ok || atomic.TypeName != xdm.TypeInteger || atomic.BaseType != "" {
-		t.Fatalf("range item is not a built-in integer: %#v", item)
-	}
-
-	if got, ok := atomic.Int64Val(); !ok || got != want {
-		t.Fatalf("range item: %v, want %d", item, want)
-	}
-}
-
 func BenchmarkRangeSequenceConsumption(b *testing.B) {
 	for _, size := range []int{16, 8192} {
 		seq := xdm.NewRangeSequence(1, int64(size))
@@ -135,28 +122,6 @@ func BenchmarkRangeSequenceConsumption(b *testing.B) {
 				}
 			}
 		})
-	}
-}
-
-// iteratorSequence exercises the generic Sequence path without relying on ItemSlice.
-type iteratorSequence struct {
-	items   xdm.ItemSlice
-	yielded *int
-}
-
-func (s iteratorSequence) Len() int                { return len(s.items) }
-func (s iteratorSequence) Get(i int) xdm.Item      { return s.items[i] }
-func (s iteratorSequence) Materialize() []xdm.Item { return s.items.Materialize() }
-func (s iteratorSequence) Items() iter.Seq[xdm.Item] {
-	return func(yield func(xdm.Item) bool) {
-		for _, item := range s.items {
-			if s.yielded != nil {
-				*s.yielded++
-			}
-			if !yield(item) {
-				return
-			}
-		}
 	}
 }
 
@@ -237,4 +202,39 @@ func TestSequenceIteratorsStopAndCloneGenericItems(t *testing.T) {
 	members[0] = xdm.SingleString("changed")
 	assertStringItems(t, cloned[0])
 	assertStringItems(t, cloned[1], "original")
+}
+
+func assertRangeInteger(t *testing.T, item xdm.Item, want int64) {
+	t.Helper()
+
+	atomic, ok := item.(xdm.AtomicValue)
+	if !ok || atomic.TypeName != xdm.TypeInteger || atomic.BaseType != "" {
+		t.Fatalf("range item is not a built-in integer: %#v", item)
+	}
+
+	if got, ok := atomic.Int64Val(); !ok || got != want {
+		t.Fatalf("range item: %v, want %d", item, want)
+	}
+}
+
+// iteratorSequence exercises the generic Sequence path without relying on ItemSlice.
+type iteratorSequence struct {
+	items   xdm.ItemSlice
+	yielded *int
+}
+
+func (s iteratorSequence) Len() int                { return len(s.items) }
+func (s iteratorSequence) Get(i int) xdm.Item      { return s.items[i] }
+func (s iteratorSequence) Materialize() []xdm.Item { return s.items.Materialize() }
+func (s iteratorSequence) Items() iter.Seq[xdm.Item] {
+	return func(yield func(xdm.Item) bool) {
+		for _, item := range s.items {
+			if s.yielded != nil {
+				*s.yielded++
+			}
+			if !yield(item) {
+				return
+			}
+		}
+	}
 }

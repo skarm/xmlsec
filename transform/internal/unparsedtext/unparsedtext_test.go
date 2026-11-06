@@ -84,6 +84,12 @@ func TestDecodeText(t *testing.T) {
 		{[]byte{0xff, 0xfe, 'x', 0}, textUTF8},
 		{[]byte{0xd8, 0}, "utf-16be"},
 		{[]byte("x"), "not-an-encoding"},
+		{[]byte{0xff}, "euc-jp"},
+		{[]byte{0xff}, "shift-jis"},
+		{[]byte{0x1b}, "iso-2022-jp"},
+		{[]byte{0xff}, "big5"},
+		{[]byte{0xff}, "euc-kr"},
+		{[]byte{0xff}, "hz-gb-2312"},
 	} {
 		var detail *unparsedtext.Error
 		if _, err := unparsedtext.DecodeText(tc.input, tc.encoding); !errors.As(err, &detail) || detail.Code != unparsedtext.ErrCodeEncoding {
@@ -250,33 +256,6 @@ func FuzzTextLines(f *testing.F) {
 	})
 }
 
-type resolverFunc func(context.Context, string) (io.ReadCloser, error)
-
-func (f resolverFunc) Resolve(ctx context.Context, uri string) (io.ReadCloser, error) {
-	return f(ctx, uri)
-}
-
-type trackedReader struct {
-	io.Reader
-	closed bool
-}
-
-func (r *trackedReader) Close() error { r.closed = true; return nil }
-
-type closeFailure struct {
-	io.Reader
-	err     error
-	onClose func()
-}
-
-func (r closeFailure) Close() error {
-	if r.onClose != nil {
-		r.onClose()
-	}
-
-	return r.err
-}
-
 func BenchmarkTextResources(b *testing.B) {
 	for _, size := range []int{64, 1 << 20} {
 		for _, tc := range []struct {
@@ -320,4 +299,31 @@ func BenchmarkTextResources(b *testing.B) {
 			})
 		}
 	}
+}
+
+type resolverFunc func(context.Context, string) (io.ReadCloser, error)
+
+func (f resolverFunc) Resolve(ctx context.Context, uri string) (io.ReadCloser, error) {
+	return f(ctx, uri)
+}
+
+type trackedReader struct {
+	io.Reader
+	closed bool
+}
+
+func (r *trackedReader) Close() error { r.closed = true; return nil }
+
+type closeFailure struct {
+	io.Reader
+	err     error
+	onClose func()
+}
+
+func (r closeFailure) Close() error {
+	if r.onClose != nil {
+		r.onClose()
+	}
+
+	return r.err
 }

@@ -1,6 +1,7 @@
 package xmlsig_test
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"errors"
@@ -11,6 +12,33 @@ import (
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+// SAML Core 5.4.3-5.4.4 permits the standard Exclusive C14N PrefixList.
+// OpenSAML uses this for QName-valued attribute content; all listed namespace
+// bindings must stay within the signature's authenticated input.
+func TestInclusiveNamespaceParameters(t *testing.T) {
+	key := testcert.Key(t)
+	d, err := document.Parse(t.Context(), []byte(`<Request xmlns:t="urn:original" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ID="_prefix"><Value xsi:type="t:Custom">signed</Value></Request>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := xmldsig.SignEnveloped(t.Context(), d, key, xmldsig.SignOptions{InclusivePrefixes: []string{"t", "#default"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = xmlsig.Verify(t.Context(), signed, signed.Root(), []crypto.PublicKey{key.Public()}, xmldsig.Policy{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := signed.XML(t.Context())
+	changed := bytes.ReplaceAll(raw, []byte("urn:original"), []byte("urn:changed"))
+	mutant, err := document.Parse(t.Context(), changed, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = xmlsig.Verify(t.Context(), mutant, mutant.Root(), []crypto.PublicKey{key.Public()}, xmldsig.Policy{}); err == nil {
+		t.Fatal("changed QName namespace accepted")
+	}
+}
 
 func TestSignCoversOnlySelectedTarget(t *testing.T) {
 	key := testcert.Key(t)
@@ -54,7 +82,7 @@ func TestCloneKeysAndPolicyOwnTheirInputs(t *testing.T) {
 	}
 
 	cloned, ok := keys[0].(*ecdsa.PublicKey)
-	if !ok {
+	if !ok || cloned == nil {
 		t.Fatalf("unexpected key type %T", keys[0])
 	}
 

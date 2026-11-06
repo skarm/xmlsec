@@ -8,7 +8,15 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/streamio"
+)
+
+// Base64 encoding/lexical chunks bound temporary work; the cancellation mask controls polling frequency rather than accepted input size.
+const (
+	base64EncodeChunkBytes  = 32 << 10
+	base64LexicalChunkBytes = 4096
+	base64CancellationMask  = 4095
 )
 
 // EncodeBase64 encodes a resident blob into one string allocation, checking ctx
@@ -30,7 +38,7 @@ func EncodeBase64(ctx context.Context, data []byte) (string, error) {
 	encoder := base64.NewEncoder(base64.StdEncoding, writer)
 
 	for len(data) > 0 {
-		chunk := data[:min(len(data), 32<<10)]
+		chunk := data[:min(len(data), base64EncodeChunkBytes)]
 		if _, err := encoder.Write(chunk); err != nil {
 			return "", err
 		}
@@ -118,7 +126,7 @@ func base64TextSize(ctx context.Context, nodes []*Node, textLimit int) (int, int
 
 		text += len(node.Data)
 		for i := range len(node.Data) {
-			if i&4095 == 0 {
+			if i&base64CancellationMask == 0 {
 				if err := ctx.Err(); err != nil {
 					return 0, 0, err
 				}
@@ -156,7 +164,7 @@ func (e sourceEncoding) accepts(label string) bool {
 		return true
 	}
 
-	return e.bom && e.name != nameUTF8 && strings.EqualFold(label, "UTF-16")
+	return e.bom && e.name != nameUTF8 && strings.EqualFold(label, lexicon.EncodingUTF16)
 }
 
 func base64Space(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
@@ -191,7 +199,7 @@ func (r *base64NodeReader) Read(dst []byte) (int, error) {
 			}
 		}
 
-		span := r.text[:min(len(r.text), 4096)]
+		span := r.text[:min(len(r.text), base64LexicalChunkBytes)]
 
 		taken := 0
 		for taken < len(span) && used < len(dst) {

@@ -1,0 +1,24 @@
+# SHA-256, official URL, cache-relative destination. Runtime tests are offline.
+5ad3f26cfbb76c94137b79c0ccc35c068b19e209c5f8e32b9787bafb73446e96 https://shibboleth.net/downloads/identity-provider/5.2.3/shibboleth-identity-provider-5.2.3.zip idp.zip
+f269b7b98691a48647e54ca5bce9d1042c0eb5f12a0887879974f418f70baa23 https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-home/12.1.14/jetty-home-12.1.14.tar.gz jetty.tar.gz
+1c7db9f726df835349c64edd631de0310eca31291100230064eba153f607b0be https://github.com/Saxonica/Saxon-HE/releases/download/SaxonHE12-10/SaxonHE12-10J.zip saxon.zip
+c52862d33cd5bb34ed20d48a5ff62bc475e4279c16fd13460a19f726d1dcf62f https://repo.maven.apache.org/maven2/net/sf/saxon/Saxon-HE/9.4.0-9/Saxon-HE-9.4.0-9.jar saxon20.jar
+1b95a61f1f1ee5905898544542e7b283c7780ed63dd6313010c078183d626242 https://www.w3.org/2014/04/xslt-xquery-serialization/schema-for-serialization-parameters.xsd schemas/ser30.xsd
+f191b0dc69513670883c0abae97d1dab76965b8bfe3fb0b08a2df1b85d228cd3 https://www.w3.org/2017/01/xslt-xquery-serialization/schema-for-serialization-parameters.xsd schemas/ser31.xsd
+34407695050d165be14931c0f378f832d24abe3de682a069d2d6121f07661ec3 https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/schema-for-json.xsd schemas/json.xsd
+c5301a890b0265a705f0806269aa37345aa47d7245a78900b941af65290b16fa https://www.w3.org/TR/2013/REC-xmlenc-core1-20130411/xenc-schema.xsd xmlenc/xenc-schema.xsd
+2b48432f036262345638536601d4ea3224897e2d41901163c04eebf350477958 https://www.w3.org/TR/2013/REC-xmlenc-core1-20130411/xenc-schema-11.xsd xmlenc/xenc-schema-11.xsd
+5dd57f074870e1d91f7eb814aa92967cefcce9011a86adf5e12a769fcf2a237e https://www.w3.org/TR/2002/REC-xmlenc-core-20021210/xenc-schema.xsd xmlenc/xenc-schema-2002.xsd
+35cf8197da812c85e40d57891b35c94187569ed474a2dac813ce5090dafcd35c https://www.w3.org/TR/2008/REC-xmldsig-core-20080610/xmldsig-core-schema.xsd xmlenc/xmldsig-core-schema.xsd
+457745286eaa292ae1aaa6e976e0f30eeceb0a37cc2301151576175e0ae1986c https://forge.etsi.org/rep/esi/x19_13201_XAdES/raw/v1.3.1/1913201-XAdES01903v132.xsd xades/1913201-XAdES01903v132.xsd
+286bd63f122aafb907c03724c5959455d114020e523631cc22e90c5f5aa667e2 https://forge.etsi.org/rep/esi/x19_13201_XAdES/raw/v1.3.1/1913201-XAdES01903v141.xsd xades/1913201-XAdES01903v141.xsd
+6b796f3d4ca40b7917f6e765fbddc9923aa80a7dce68deab2cf7ba8a79c6d7c5 https://www.rfc-editor.org/rfc/rfc9879.txt rfc9879.txt
+f0e10bb218795b966824887a8c73b555ab9d88a8e84997882d3e5a807cc9cb37 https://ec.europa.eu/digital-building-blocks/artifact/repository/esignaturedss/eu/europa/ec/joinup/sd-dss/dss-demo-bundle/6.5.1/dss-demo-bundle-6.5.1.zip dss.zip
+# Deployed OpenAM SOAP Authority and Google GSA authorization server.
+1c8bceab5ec214b92cd2f16b76fd442c3f85483a224db9dcc6417e04a905e2dc https://github.com/OpenIdentityPlatform/OpenAM/releases/download/16.1.4/OpenAM-16.1.4.war openam.war
+e04ea07b9cf12c8c06bf520a16d5c546dc3e6a5949fa9ed3ec6a8cbf473ef8cf https://github.com/OpenIdentityPlatform/OpenAM/releases/download/16.1.4/SSOConfiguratorTools-16.1.4.zip openam-configurator.zip
+e0f0293ba0fdbcbc52b8554d3ff0b3cba0a59bec0b2f0f1d35b1ea9efdf029a7 https://github.com/OpenIdentityPlatform/OpenAM/releases/download/16.1.4/SSOAdminTools-16.1.4.zip openam-admin.zip
+3f53672bfd9ce2a6f3e16ed6b74f8ac2673de812c630feec3e022a89ceb57d24 https://github.com/googlegsa/library/releases/download/v4.1.4/adaptor-4.1.4-withlib.jar gsa-adaptor.jar
+408b0e739af1eb8c52734903a4b695db38825d8de8a6543dc918e189d22dc734 https://codeload.github.com/googlegsa/library/zip/refs/tags/v4.1.4 gsa-source.zip
+
+cd62823e5bae65d17ddcf612ec6e57f0aff170ce5abb8bc987f444d759fc6326 https://raw.githubusercontent.com/OpenIdentityPlatform/OpenAM/16.1.4/openam-federation/openam-federation-library/src/main/java/com/sun/identity/saml2/protocol/impl/NameIDMappingResponseImpl.java OpenAM-NameIDMappingResponseImpl.java

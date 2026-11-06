@@ -44,9 +44,9 @@ const (
 )
 
 const (
-	namePkcs12Pbmac1 = "pkcs12-pbmac1"
+	namePKCS12PBMAC1 = "pkcs12-pbmac1"
 	namePassword     = "Password"
-	namePkcs12       = "pkcs12"
+	namePKCS12       = "pkcs12"
 )
 
 func pkcs12InteropFields(t *testing.T, raw []byte) []asn1.RawValue {
@@ -93,7 +93,7 @@ func TestXMLSecPKCS12Forms(t *testing.T) {
 	passwordFile := write(t, filepath.Join(dir, "password"), []byte("forms password\n"))
 	var infos [][]byte
 	certs := make([][]byte, 0, 2)
-	for i, name := range []string{nameEcdsaSha256, nameEd25519} {
+	for i, name := range []string{nameECDSASHA256, nameEd25519} {
 		key := generateKey(t, dir, name)
 		path := filepath.Join(dir, strconv.Itoa(i)+".p12")
 		command(t, fixture, true, nil, "openssl", "pkcs12", "-export", "-inkey", key.private, "-in", key.certificate, "-out", path, "-passout", passwordFilePrefix+passwordFile, "-keypbe", "AES-256-CBC", "-certpbe", "AES-256-CBC", "-iter", "1000", "-macalg", "SHA256", "-pbmac1_pbkdf2", "-pbmac1_pbkdf2_md", "SHA256")
@@ -173,7 +173,7 @@ func TestXMLSecKeyFormats(t *testing.T) {
 	cli := binary(t, fixture, "xmlsec")
 	count := 0
 
-	for _, name := range []string{nameRsaSha256, nameEcdsaSha256, nameEd25519} {
+	for _, name := range []string{nameRSASHA256, nameECDSASHA256, nameEd25519} {
 		key := generateKey(t, dir, name)
 
 		pkcs8, err := x509.MarshalPKCS8PrivateKey(key.signer)
@@ -188,7 +188,7 @@ func TestXMLSecKeyFormats(t *testing.T) {
 			t.Fatal("private key PEM")
 		}
 
-		if name == nameRsaSha256 {
+		if name == nameRSASHA256 {
 			k, err := keys.ParsePrivate(read(t, key.private), keys.Limits{})
 			if err != nil {
 				t.Fatal(err)
@@ -197,7 +197,7 @@ func TestXMLSecKeyFormats(t *testing.T) {
 			formats = append(formats, traditionalRSA(t, k))
 		}
 
-		if name == nameEcdsaSha256 {
+		if name == nameECDSASHA256 {
 			k, err := keys.ParsePrivate(read(t, key.private), keys.Limits{})
 			if err != nil {
 				t.Fatal(err)
@@ -216,7 +216,7 @@ func TestXMLSecKeyFormats(t *testing.T) {
 			source := write(t, filepath.Join(dir, "template.xml"), []byte(coreTemplate("whole", key.method, exc)))
 			ours, theirs := filepath.Join(dir, "go.xml"), filepath.Join(dir, "ref.xml")
 			command(t, fixture, true, nil, cli, "sign-template", flagKey, private, "-modern-algorithms", "-signature-index", "0", flagIn, source, flagOut, ours)
-			args := append([]string{"--privkey-der", private, flagEnabledReferenceUris, nameEmptySameDoc}, idArgs()...)
+			args := append([]string{"--privkey-der", private, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 			native(t, fixture, true, nameSign, append(args, "--output", theirs, source)...)
 
 			for i, publicDER := range [][]byte{spki, key.cert.Raw} {
@@ -227,7 +227,7 @@ func TestXMLSecKeyFormats(t *testing.T) {
 					arg = "--pubkey-cert-der"
 				}
 
-				args := append([]string{arg, public, flagEnabledReferenceUris, nameEmptySameDoc}, idArgs()...)
+				args := append([]string{arg, public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 				native(t, fixture, true, nameVerify, append(args, ours)...)
 				raw, _ := command(t, fixture, true, nil, cli, "verify-core", flagKey, public, "-modern-algorithms", "-signature-index", "0", flagIn, theirs)
 				verifyReport(t, raw, true)
@@ -264,12 +264,12 @@ func TestXMLSecProtectedKeys(t *testing.T) {
 	selected(t, "xmlsec")
 	dir := t.TempDir()
 	cli := binary(t, fixture, "xmlsec")
-	chain := generateKey(t, dir, nameEcdsaSha384)
+	chain := generateKey(t, dir, nameECDSASHA384)
 	count, macControls := 0, 0
 	openssl, _ := command(t, fixture, true, nil, "openssl", "version")
 	t.Log(string(openssl))
 
-	for _, name := range []string{nameRsaSha256, nameEcdsaSha256, nameEd25519} {
+	for _, name := range []string{nameRSASHA256, nameECDSASHA256, nameEd25519} {
 		key := generateKey(t, dir, name)
 
 		expectedDER, err := x509.MarshalPKIXPublicKey(key.signer.Public())
@@ -283,7 +283,7 @@ func TestXMLSecProtectedKeys(t *testing.T) {
 
 		for _, pair := range [][2]int{{128, 256}, {192, 384}, {256, 512}} {
 			bits, digest := pair[0], pair[1]
-			for _, form := range []string{"pkcs8-der", pkcs8PEM, pkcs12Classic, namePkcs12Pbmac1} {
+			for _, form := range []string{"pkcs8-der", pkcs8PEM, pkcs12Classic, namePKCS12PBMAC1} {
 				t.Run(name+"/"+strconv.Itoa(bits)+"/"+form, func(t *testing.T) {
 					testXMLSecProtectedKeysCase(t, &form, &dir, &fixture, &key, &digest, &bits, &chain, &expectedDER, &expected, &certificateHash, &source, &cli, &macControls, &count)
 				})
@@ -294,9 +294,9 @@ func TestXMLSecProtectedKeys(t *testing.T) {
 			container := filepath.Join(dir, "empty.p12")
 			passwordFile := write(t, filepath.Join(dir, "empty-password"), []byte{'\n'})
 
-			args := []string{namePkcs12, flagExportPKCS12, flagInkey, key.private, flagIn, key.certificate, flagCertificateFile, chain.certificate, flagOut, container, flagPasswordOut, passwordFilePrefix + passwordFile, flagKeyPBE, "AES-256-CBC", flagCertificatePBE, "AES-256-CBC", flagMACAlgorithm, nameSha256, flagKDFIterations, protectedKeyIterations}
+			args := []string{namePKCS12, flagExportPKCS12, flagInkey, key.private, flagIn, key.certificate, flagCertificateFile, chain.certificate, flagOut, container, flagPasswordOut, passwordFilePrefix + passwordFile, flagKeyPBE, "AES-256-CBC", flagCertificatePBE, "AES-256-CBC", flagMACAlgorithm, nameSHA256, flagKDFIterations, protectedKeyIterations}
 			if modern {
-				args = append(args, flagPBMAC1, flagPBMAC1Digest, nameSha256)
+				args = append(args, flagPBMAC1, flagPBMAC1Digest, nameSHA256)
 			}
 
 			command(t, fixture, true, nil, "openssl", args...)
@@ -386,8 +386,8 @@ func alterPFX(t *testing.T, data []byte, remove bool) []byte {
 }
 
 func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixture **interopFixture, key *testKey, digest *int, bits *int, chain *testKey, expectedDER *[]byte, expected *[32]byte, certificateHash *[32]byte, source *string, cli *string, macControls *int, count *int) {
-	pfx := (*form) == pkcs12Classic || (*form) == namePkcs12Pbmac1
-	modern := (*form) == namePkcs12Pbmac1
+	pfx := (*form) == pkcs12Classic || (*form) == namePKCS12PBMAC1
+	modern := (*form) == namePKCS12PBMAC1
 
 	password := "public пароль ü"
 	if modern {
@@ -418,9 +418,9 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 	write(t, ours, encoded)
 
 	if pfx {
-		command(t, (*fixture), true, nil, "openssl", namePkcs12, flagIn, ours, "-passin", passwordFilePrefix+passwordFile, "-noenc", flagOut, restored)
+		command(t, (*fixture), true, nil, "openssl", namePKCS12, flagIn, ours, "-passin", passwordFilePrefix+passwordFile, "-noenc", flagOut, restored)
 
-		args := []string{namePkcs12, flagExportPKCS12, flagInkey, key.private, flagIn, key.certificate, flagCertificateFile, chain.certificate, "-name", "test identity", flagOut, theirs, flagPasswordOut, passwordFilePrefix + passwordFile, flagKeyPBE, fmt.Sprintf("AES-%d-CBC", (*bits)), flagCertificatePBE, fmt.Sprintf("AES-%d-CBC", (*bits)), flagKDFIterations, protectedKeyIterations, flagMACAlgorithm, fmt.Sprintf("sha%d", (*digest))}
+		args := []string{namePKCS12, flagExportPKCS12, flagInkey, key.private, flagIn, key.certificate, flagCertificateFile, chain.certificate, "-name", "test identity", flagOut, theirs, flagPasswordOut, passwordFilePrefix + passwordFile, flagKeyPBE, fmt.Sprintf("AES-%d-CBC", (*bits)), flagCertificatePBE, fmt.Sprintf("AES-%d-CBC", (*bits)), flagKDFIterations, protectedKeyIterations, flagMACAlgorithm, fmt.Sprintf("sha%d", (*digest))}
 		if modern {
 			args = append(args, flagPBMAC1, flagPBMAC1Digest, fmt.Sprintf("sha%d", (*digest)))
 		}
@@ -453,19 +453,19 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 		assertJSON(t, r, "extras", 1)
 	}
 
-	args := append([]string{nativeArg, ours, "--pwd", password, flagEnabledReferenceUris, nameEmptySameDoc}, idArgs()...)
+	args := append([]string{nativeArg, ours, "--pwd", password, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 	native(t, (*fixture), true, nameSign, append(args, "--output", signed, (*source))...)
 	raw, _ := command(t, (*fixture), true, nil, (*cli), "verify-core", flagKey, key.public, "-signature-index", "0", "-modern-algorithms", flagIn, signed)
 	verifyReport(t, raw, true)
 
 	keyFormat := "pkcs8"
 	if pfx {
-		keyFormat = namePkcs12
+		keyFormat = namePKCS12
 	}
 
 	command(t, (*fixture), true, nil, (*cli), "sign-template", flagKey, theirs, "-key-format", keyFormat, "-password-file", passwordFile, "-signature-index", "0", "-modern-algorithms", flagIn, (*source), flagOut, signed)
 
-	args = append([]string{flagPubkeyPem, key.public, flagEnabledReferenceUris, nameEmptySameDoc}, idArgs()...)
+	args = append([]string{flagPublicKeyPEM, key.public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 	native(t, (*fixture), true, nameVerify, append(args, signed)...)
 
 	parse[namePassword] = []byte("wrong test password")
@@ -477,7 +477,7 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 
 	wrong := write(t, filepath.Join((*dir), "wrong-password"), []byte("wrong test password\n"))
 	if pfx {
-		command(t, (*fixture), false, nil, "openssl", namePkcs12, flagIn, theirs, "-passin", passwordFilePrefix+wrong, "-noout")
+		command(t, (*fixture), false, nil, "openssl", namePKCS12, flagIn, theirs, "-passin", passwordFilePrefix+wrong, "-noout")
 	} else {
 		command(t, (*fixture), false, nil, "openssl", "pkcs8", flagIn, theirs, "-inform", format, "-passin", passwordFilePrefix+wrong, flagOut, restored)
 	}
@@ -489,10 +489,10 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 		parse[namePassword] = []byte(password)
 		parse[nameInput] = bad
 		probe(t, (*fixture), "keyprobe", parse, false)
-		command(t, (*fixture), false, nil, "openssl", namePkcs12, flagIn, bad, "-passin", passwordFilePrefix+passwordFile, "-noout")
+		command(t, (*fixture), false, nil, "openssl", namePKCS12, flagIn, bad, "-passin", passwordFilePrefix+passwordFile, "-noout")
 		os.Remove(signed)
 
-		args = append([]string{"--pkcs12", bad, "--pwd", password, flagEnabledReferenceUris, nameEmptySameDoc}, idArgs()...)
+		args = append([]string{"--pkcs12", bad, "--pwd", password, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 		native(t, (*fixture), false, nameSign, append(args, "--output", signed, (*source))...)
 		noOutput(t, signed)
 		write(t, bad, alterPFX(t, read(t, theirs), true))
@@ -508,15 +508,15 @@ func TestOpenSSLProtectedKeys(t *testing.T) {
 	fixture := newInteropFixture(t)
 	dir := t.TempDir()
 
-	chain := generateKey(t, dir, nameEcdsaSha384)
-	for _, name := range []string{nameRsaSha256, nameEcdsaSha256, nameEd25519} {
+	chain := generateKey(t, dir, nameECDSASHA384)
+	for _, name := range []string{nameRSASHA256, nameECDSASHA256, nameEd25519} {
 		key := generateKey(t, dir, name)
 
 		for _, pair := range []struct {
 			bits int
 			hash crypto.Hash
 		}{{128, crypto.SHA256}, {192, crypto.SHA384}, {256, crypto.SHA512}} {
-			for _, form := range []string{"pkcs8-der", pkcs8PEM, pkcs12Classic, namePkcs12Pbmac1} {
+			for _, form := range []string{"pkcs8-der", pkcs8PEM, pkcs12Classic, namePKCS12PBMAC1} {
 				t.Run(name+"/"+strconv.Itoa(pair.bits)+"/"+form, func(t *testing.T) {
 					testOpenSSLProtectedKey(t, fixture, key, chain, form, keys.EncryptionOptions{Hash: pair.hash, KeyBits: pair.bits, Iterations: 2048})
 				})
@@ -531,7 +531,7 @@ func testOpenSSLProtectedKey(t *testing.T, fixture *interopFixture, key, chain t
 	password := []byte("public пароль ü")
 	passwordFile := write(t, filepath.Join(dir, "password"), append(bytes.Clone(password), '\n'))
 	ours, theirs, restored := filepath.Join(dir, "ours"), filepath.Join(dir, "theirs"), filepath.Join(dir, "restored.pem")
-	pfx := form == pkcs12Classic || form == namePkcs12Pbmac1
+	pfx := form == pkcs12Classic || form == namePKCS12PBMAC1
 
 	var (
 		output bytes.Buffer
@@ -561,10 +561,10 @@ func testOpenSSLProtectedKey(t *testing.T, fixture *interopFixture, key, chain t
 	digest := options.Hash.Size() * 8
 
 	if pfx {
-		command(t, fixture, true, nil, "openssl", namePkcs12, flagIn, ours, "-passin", passwordFilePrefix+passwordFile, "-noenc", flagOut, restored)
+		command(t, fixture, true, nil, "openssl", namePKCS12, flagIn, ours, "-passin", passwordFilePrefix+passwordFile, "-noenc", flagOut, restored)
 
-		args := []string{namePkcs12, flagExportPKCS12, flagInkey, key.private, flagIn, key.certificate, flagCertificateFile, chain.certificate, flagOut, theirs, flagPasswordOut, passwordFilePrefix + passwordFile, flagKeyPBE, fmt.Sprintf("AES-%d-CBC", options.KeyBits), flagCertificatePBE, fmt.Sprintf("AES-%d-CBC", options.KeyBits), flagKDFIterations, protectedKeyIterations, flagMACAlgorithm, fmt.Sprintf("sha%d", digest)}
-		if form == namePkcs12Pbmac1 {
+		args := []string{namePKCS12, flagExportPKCS12, flagInkey, key.private, flagIn, key.certificate, flagCertificateFile, chain.certificate, flagOut, theirs, flagPasswordOut, passwordFilePrefix + passwordFile, flagKeyPBE, fmt.Sprintf("AES-%d-CBC", options.KeyBits), flagCertificatePBE, fmt.Sprintf("AES-%d-CBC", options.KeyBits), flagKDFIterations, protectedKeyIterations, flagMACAlgorithm, fmt.Sprintf("sha%d", digest)}
+		if form == namePKCS12PBMAC1 {
 			args = append(args, flagPBMAC1, flagPBMAC1Digest, fmt.Sprintf("sha%d", digest))
 		}
 
@@ -627,7 +627,7 @@ func checkCertificates(t *testing.T, data []byte, expected ...[]byte) {
 
 		data = rest
 
-		if p.Type == nameCERTIFICATE {
+		if p.Type == certificatePEMType {
 			found[string(p.Bytes)] = struct{}{}
 		}
 	}
@@ -675,7 +675,7 @@ func TestXMLSecPKCS8Compatibility(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "xmlsec")
 	dir := t.TempDir()
-	key := generateKey(t, dir, nameEcdsaSha256)
+	key := generateKey(t, dir, nameECDSASHA256)
 	password := []byte("compatibility password")
 	passwordFile := write(t, filepath.Join(dir, "password"), append(bytes.Clone(password), '\n'))
 	for _, bits := range []int{128, 192, 256} {

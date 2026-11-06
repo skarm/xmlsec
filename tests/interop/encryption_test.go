@@ -40,7 +40,7 @@ func TestXMLSecEncryption(t *testing.T) {
 	selected(t, "xmlsec")
 
 	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
+	key := generateKey(t, dir, nameRSASHA256)
 	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
 
 	recipes := encryptionRecipes()
@@ -60,7 +60,7 @@ func encryptionRecipes() []encryptionRecipe {
 
 	for _, bits := range []int{128, 192, 256} {
 		for _, wrap := range []int{0, 128, 192, 256} {
-			mode := nameRsa
+			mode := nameRSA
 			if wrap > 0 {
 				mode = nameWrap
 			}
@@ -75,7 +75,7 @@ func encryptionRecipes() []encryptionRecipe {
 
 	for _, h := range []string{"256", "384", "512"} {
 		for _, label := range [][]byte{nil, []byte("application\x00label\xff")} {
-			recipes = append(recipes, encryptionRecipe{mode: nameRsa, bits: 256, hash: h, label: label})
+			recipes = append(recipes, encryptionRecipe{mode: nameRSA, bits: 256, hash: h, label: label})
 		}
 	}
 
@@ -86,12 +86,12 @@ func encryptionRecipes() []encryptionRecipe {
 			}
 
 			for _, label := range [][]byte{nil, []byte("application\x00label\xff")} {
-				recipes = append(recipes, encryptionRecipe{mode: nameRsa, bits: 256, hash: h, mgf: mgf, legacy: h == "1" || mgf == "1", label: label})
+				recipes = append(recipes, encryptionRecipe{mode: nameRSA, bits: 256, hash: h, mgf: mgf, legacy: h == "1" || mgf == "1", label: label})
 			}
 		}
 
 		for _, label := range [][]byte{nil, []byte("application\x00label\xff")} {
-			recipes = append(recipes, encryptionRecipe{mode: nameRsa, bits: 256, hash: h, mgf: "1", algorithm: enc + "rsa-oaep-mgf1p", legacy: true, label: label})
+			recipes = append(recipes, encryptionRecipe{mode: nameRSA, bits: 256, hash: h, mgf: "1", algorithm: enc + "rsa-oaep-mgf1p", legacy: true, label: label})
 		}
 	}
 
@@ -105,7 +105,7 @@ func TestXMLSecSelectedEncryption(t *testing.T) {
 	selected(t, "xmlsec")
 
 	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
+	key := generateKey(t, dir, nameRSASHA256)
 	cli := binary(t, fixture, "xmlsec")
 	buffer := bufferOracle(t, fixture)
 	element, content := selectedEncryptionForms()
@@ -129,6 +129,502 @@ func TestXMLSecSelectedEncryption(t *testing.T) {
 		}
 
 		t.Logf("%s: %d selected exchanges each direction; %d empty-content diagnostics; %d rejected-tag controls", kind, suite.count, suite.emptyCount, len(recipes))
+	}
+}
+
+func TestXMLSecLegacyEncryption(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	dir := t.TempDir()
+	key := generateKey(t, dir, nameRSASHA256)
+	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
+	for _, data := range []struct {
+		uri  string
+		bits int
+	}{{enc + "aes128-cbc", 128}, {enc + "aes192-cbc", 192}, {enc + "aes256-cbc", 256}, {enc + "tripledes-cbc", 192}} {
+		routes := []encryptionRecipe{{mode: nameRSA, bits: data.bits, data: data.uri, dataLegacy: true}, {mode: nameRSA, bits: data.bits, data: data.uri, dataLegacy: true, algorithm: enc + "rsa-oaep-mgf1p", hash: "1", mgf: "1", legacy: true}, {mode: nameDirect, bits: data.bits, data: data.uri, dataLegacy: true}, {mode: nameWrap, bits: data.bits, wrap: 128, data: data.uri, dataLegacy: true}, {mode: nameWrap, bits: data.bits, wrap: 256, data: data.uri, dataLegacy: true}}
+		if strings.HasSuffix(data.uri, "tripledes-cbc") {
+			routes = append(routes, encryptionRecipe{mode: nameWrap, bits: 192, data: data.uri, dataLegacy: true, tripleWrap: true})
+		}
+		for index, r := range routes {
+			t.Run(data.uri+"/"+strconv.Itoa(index), func(t *testing.T) {
+				scenario := suite.prepare(t, r, false)
+				if r.tripleWrap {
+					suite.exchangeTripleDESWrap(t, scenario)
+				} else {
+					suite.exchange(t, scenario)
+				}
+				if r.mode == nameDirect {
+					suite.checkZeroCBCPadding(t, scenario)
+				}
+				denied := copyTask(scenario.task)
+				denied["AllowLegacy"] = false
+				probe(t, fixture, "nextprobe", denied, false)
+				// Incomplete CBC blocks are rejected in both implementations.
+				// Pad-length-zero acceptance differs in xmlsec1; exact padding
+				// validation is covered separately by the normative native cases.
+				raw := read(t, scenario.theirs)
+				doc := xmlDoc(t, raw)
+				cv := legacyDataCipherValue(t, doc)
+				ciphertext := decode64(t, text(cv))
+				ciphertext = ciphertext[:len(ciphertext)-1]
+
+				bad := write(t, filepath.Join(dir, "bad-padding.xml"), bytes.Replace(raw, []byte(text(cv)), []byte(base64String(ciphertext)), 1))
+				negative := copyTask(scenario.task)
+				negative[nameInput] = bad
+				probe(t, fixture, "nextprobe", negative, false)
+				os.Remove(scenario.output)
+				native(t, fixture, false, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, bad)
+				noOutput(t, scenario.output)
+			})
+		}
+	}
+}
+
+func TestXMLSecEncryptionMethodKeySize(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	dir := t.TempDir()
+	key := generateKey(t, dir, nameRSASHA256)
+	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
+	for _, recipe := range []encryptionRecipe{{mode: nameDirect, bits: 256}, {mode: nameWrap, bits: 256, wrap: 128}, {mode: nameRSA, bits: 256}} {
+		t.Run(recipe.mode, func(t *testing.T) {
+			scenario := suite.prepare(t, recipe, false)
+			raw := probeData(t, fixture, "nextprobe", scenario.task)
+			method := `<xenc:EncryptionMethod Algorithm="` + enc11 + `aes256-gcm">`
+			raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>256</xenc:KeySize>`), 1)
+			if recipe.mode != nameDirect {
+				algorithm, size := enc11+"rsa-oaep", "2048"
+				if recipe.mode == nameWrap {
+					algorithm, size = enc+"kw-aes128", "128"
+				}
+				method = `<xenc:EncryptionMethod Algorithm="` + algorithm + `">`
+				raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>`+size+`</xenc:KeySize>`), 1)
+			}
+			write(t, scenario.ours, raw)
+			scenario.task[nameMode] = "decrypt" + scenario.suffix
+			scenario.task[nameInput] = scenario.ours
+			scenario.task[nameKey] = scenario.decryptKey
+			comparePlain(t, fixture, probeData(t, fixture, "nextprobe", scenario.task), scenario.plain, false)
+			if recipe.mode == nameRSA {
+				// XMLENC3.2 permits KeySize; the explicitly supplied RSA key
+				// has a2048-bit modulus. This native key-search outcome is a
+				// diagnostic, rather than agreement for the RSA-size branch.
+				os.Remove(scenario.output)
+				native(t, fixture, false, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, scenario.ours)
+				noOutput(t, scenario.output)
+				withoutRSAKeySize := bytes.Replace(raw, []byte(`<xenc:KeySize>2048</xenc:KeySize>`), nil, 1)
+				write(t, scenario.ours, withoutRSAKeySize)
+				t.Log("DIAGNOSTIC xmlsec1 rejects RSA-OAEP KeySize2048 during key search; removing only this optional parameter succeeds. Excluded from RSA KeySize agreement.")
+			}
+			native(t, fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, scenario.ours)
+			comparePlain(t, fixture, read(t, scenario.output), scenario.plain, false)
+		})
+	}
+}
+
+func legacyDataCipherValue(t *testing.T, doc *tree.Document) *tree.Node {
+	t.Helper()
+	for _, child := range tree.Root(doc).Children {
+		if child.Name.Space == enc && child.Name.Local == nameCipherData {
+			return one(t, child, enc, "CipherValue")
+		}
+	}
+	t.Fatal("missing data CipherValue")
+	return nil
+}
+
+func TestXMLSecECDHAgreement(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	for _, curve := range []struct {
+		name    string
+		openssl string
+		curve   ecdh.Curve
+	}{{"P256", "P-256", ecdh.P256()}, {"P384", "P-384", ecdh.P384()}, {"P521", "P-521", ecdh.P521()}} {
+		recipient, err := curve.curve.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, data := range []struct {
+			name string
+			uri  string
+			bits int
+		}{{"GCM128", xmlenc.AES128GCM, 128}, {"GCM192", xmlenc.AES192GCM, 192}, {"GCM256", xmlenc.AES256GCM, 256}} {
+			for _, wrap := range []struct {
+				name  string
+				uri   string
+				bytes int
+			}{{"KW128", xmlenc.AES128KeyWrap, 16}, {"KW192", xmlenc.AES192KeyWrap, 24}, {"KW256", xmlenc.AES256KeyWrap, 32}} {
+				for _, hash := range []struct {
+					name string
+					hash crypto.Hash
+				}{{"default", 0}, {"SHA256", crypto.SHA256}, {"SHA1", crypto.SHA1}} {
+					t.Run(curve.name+"/"+data.name+"/"+wrap.name+"/"+hash.name, func(t *testing.T) {
+						options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri}, KeyAlgorithm: wrap.uri, RecipientKeyName: "recipient"}
+						if hash.hash != 0 {
+							options.KDF = &xmlenc.ConcatKDFParameters{Hash: hash.hash, AlgorithmID: append([]byte{0}, []byte(wrap.uri)...), PartyUInfo: []byte{0, 'U'}, PartyVInfo: []byte{0, 'V'}, SuppPubInfo: []byte{0, 0, 0, 1, 0}, SuppPrivInfo: []byte{0, 0x42}, AllowLegacy: hash.hash == crypto.SHA1}
+						}
+						ecdhExchange(t, fixture, recipient, curve.openssl, data.bits, wrap.bytes, options)
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestXMLSecECDHLegacyData(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range []struct {
+		name string
+		uri  string
+		bits int
+	}{{"CBC128", xmlenc.AES128CBC, 128}, {"CBC192", xmlenc.AES192CBC, 192}, {"CBC256", xmlenc.AES256CBC, 256}, {"TripleDES", xmlenc.TripleDESCBC, 192}} {
+		t.Run(data.name, func(t *testing.T) {
+			options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES256KeyWrap, RecipientKeyName: "recipient"}
+			if data.uri != xmlenc.TripleDESCBC {
+				ecdhExchange(t, fixture, recipient, "P-256", data.bits, 32, options)
+				return
+			}
+			private, _ := ecdhPEM(t, fixture, recipient)
+			plain := []byte("ECDH and legacy TripleDES\x00\xff")
+			doc, err := xmlenc.EncryptBytesWithECDH(t.Context(), plain, recipient.PublicKey(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := doc.XML(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := write(t, filepath.Join(fixture.work, "ecdh-3des.xml"), raw)
+			output := filepath.Join(fixture.work, "ecdh-3des-plain.bin")
+			native(t, fixture, true, "decrypt", "--enabled-key-data", ecdhKeyData+",des", "--privkey-pem:recipient", private, "--output", output, input)
+			if !bytes.Equal(read(t, output), plain) {
+				t.Fatal("xmlsec TripleDES decrypt differs")
+			}
+			t.Log("P5_ORACLE xmlsec1 ECDH/AES256KW/TripleDES decryption; reverse DES CEK parity independently covered by LegacyEncryption")
+		})
+	}
+}
+
+func TestXMLSecECDHLeadingZero(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	scalar := make([]byte, 32)
+	scalar[31] = 1
+	recipient, err := ecdh.P256().NewPrivateKey(scalar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalar[30], scalar[31] = 1, 123 // 379G begins with the zero x-coordinate octet.
+	originator, err := ecdh.P256().NewPrivateKey(scalar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, _ := ecdhPEM(t, fixture, recipient)
+	senderDER, err := x509.MarshalPKIXPublicKey(originator.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := write(t, filepath.Join(fixture.work, "zero-peer.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: senderDER}))
+	out := filepath.Join(fixture.work, "zero-secret.bin")
+	command(t, fixture, true, nil, "openssl", "pkeyutl", "-derive", "-inkey", private, "-peerkey", sender, "-out", out)
+	secret, err := recipient.ECDH(originator.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(secret)
+	if len(secret) != 32 || secret[0] != 0 || !bytes.Equal(read(t, out), secret) {
+		t.Fatal("leading-zero ECDH octet was lost")
+	}
+	for _, hash := range []crypto.Hash{crypto.SHA256, crypto.SHA1} {
+		t.Run(hash.String(), func(t *testing.T) {
+			parameters := xmlenc.ConcatKDFParameters{Hash: hash, AlgorithmID: []byte{0}, PartyUInfo: []byte{0}, PartyVInfo: []byte{0}, AllowLegacy: hash == crypto.SHA1}
+			ecdhOpenSSLKDF(t, fixture, secret, 32, parameters)
+		})
+	}
+	t.Log("P5_ORACLE OpenSSL full-width leading-zero ECDH and multi-round ConcatKDF")
+}
+
+// TestXMLSecEncryptionGrammar checks exact XMLENC field grammar against the
+// published schemas, independently of cryptographic provider failure handling.
+func TestXMLSecEncryptionGrammar(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	schema := encryptionSchema(t, fixture)
+	dir := t.TempDir()
+	key := generateKey(t, dir, nameRSASHA256)
+	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
+	scenario := suite.prepare(t, encryptionRecipe{mode: nameRSA, bits: 256, label: []byte("schema-label")}, false)
+	raw := probeData(t, fixture, "nextprobe", scenario.task)
+	for name, c := range encryptionGrammarCases(t, raw) {
+		t.Run(name, func(t *testing.T) {
+			path := write(t, filepath.Join(t.TempDir(), "input.xml"), c.wire)
+			schemaValid := c.valid
+			if name == "CipherValue lexical base64" {
+				// XSD1.0 section3.2.16's B64 production excludes '!':
+				// https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#base64Binary
+				// This libxml2 validator accepts it; the corresponding native
+				// rejection is enforced under the published lexical grammar.
+				schemaValid = true
+				t.Log("DIAGNOSTIC libxml2 schema validation accepts CipherValue '!'; excluded from Base64 lexical rejection agreement")
+			}
+			command(t, fixture, schemaValid, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
+			check := copyTask(scenario.task)
+			check[nameMode], check[nameInput], check[nameKey] = "decrypt", path, scenario.decryptKey
+			if c.valid {
+				comparePlain(t, fixture, probeData(t, fixture, "nextprobe", check), scenario.plain, false)
+				native(t, fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, path)
+				comparePlain(t, fixture, read(t, scenario.output), scenario.plain, false)
+			} else {
+				probe(t, fixture, "nextprobe", check, false)
+			}
+		})
+	}
+}
+
+// TestXMLSecKeyGraph exercises actual XML relationships, in addition to the
+// primitive RFC vectors. Every oracle result is checked against plaintext.
+func TestXMLSecKeyGraph(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	plain := []byte("XMLENC key graph\x00\xff")
+	secret, kek := bytes.Repeat([]byte{0x52}, 32), bytes.Repeat([]byte{0x93}, 32)
+	wrap := func(raw, kek []byte, name, id, carried string) *document.Document {
+		t.Helper()
+		doc, err := xmlenc.EncryptKey(t.Context(), raw, xmlenc.KeyGraphKey{Name: name, Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: id, CarriedKeyName: carried})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	wrapped := wrap(secret, kek, "master", "key", "session")
+	options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}}
+	for _, kind := range []string{"inline", "retrieval", "carried", "nested"} {
+		t.Run(kind, func(t *testing.T) {
+			data, err := xmlenc.EncryptBytesWithKey(t.Context(), plain, secret, xmlenc.SymmetricOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := xmlBytes(t, data)
+			info := string(xmlBytes(t, wrapped))
+			sibling := ""
+			switch kind {
+			case "retrieval":
+				info = `<ds:RetrievalMethod URI="#key" Type="` + enc + `EncryptedKey"/>`
+				sibling = string(xmlBytes(t, wrapped))
+			case "carried":
+				info = `<ds:KeyName>session</ds:KeyName>`
+				sibling = string(xmlBytes(t, wrapped))
+			case "nested":
+				intermediate := bytes.Repeat([]byte{0x24}, 32)
+				outer := wrap(intermediate, kek, "master", "outer", "")
+				inner := wrap(secret, intermediate, "intermediate", "inner", "")
+				info = strings.Replace(string(xmlBytes(t, inner)), `<ds:KeyName>intermediate</ds:KeyName>`, string(xmlBytes(t, outer)), 1)
+			}
+			wire := strings.Replace(string(raw), "<xenc:CipherData>", "<ds:KeyInfo>"+info+"</ds:KeyInfo><xenc:CipherData>", 1)
+			if sibling != "" {
+				wire = "<root>" + wire + sibling + "</root>"
+			}
+			doc := xmlDoc(t, []byte(wire))
+			target := doc.Root()
+			if sibling != "" {
+				target = target.Children()[0]
+			}
+			got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, target, options)
+			if err != nil || !bytes.Equal(got, plain) {
+				t.Fatal("native key relationship", err)
+			}
+			path := write(t, filepath.Join(t.TempDir(), "graph.xml"), []byte(wire))
+			keyfile := write(t, filepath.Join(t.TempDir(), "kek.bin"), kek)
+			output := filepath.Join(t.TempDir(), "plaintext.bin")
+			if kind == "carried" {
+				native(t, fixture, false, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--aeskey:master", keyfile, path)
+				t.Log("DIAGNOSTIC xmlsec1 does not discover this sibling through CarriedKeyName alone; explicit RetrievalMethod control is compared separately")
+				controlled := strings.Replace(wire, `<ds:KeyName>session</ds:KeyName>`, `<ds:RetrievalMethod URI="#key" Type="`+enc+`EncryptedKey"/>`, 1)
+				if controlled == wire {
+					t.Fatal("carried-name intervention did not change fixture")
+				}
+				controlledDoc := xmlDoc(t, []byte(controlled))
+				controlledPlain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), controlledDoc, controlledDoc.Root().Children()[0], options)
+				if err != nil || !bytes.Equal(controlledPlain, plain) {
+					t.Fatal("retrieval control", err)
+				}
+				path = write(t, filepath.Join(t.TempDir(), "carried-retrieval-control.xml"), []byte(controlled))
+			}
+			native(t, fixture, true, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--aeskey:master", keyfile, "--output", output, path)
+			if !bytes.Equal(read(t, output), plain) {
+				t.Fatal("xmlsec graph plaintext differs")
+			}
+			if kind == "carried" {
+				t.Log("P5_ORACLE xmlsec1 carried-name explicit RetrievalMethod control")
+			} else {
+				t.Log("P5_ORACLE xmlsec1 AES key graph", kind)
+			}
+		})
+	}
+}
+
+func TestXMLSecECDHKeyGraph(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, _ := ecdhPEM(t, fixture, recipient)
+	plain := []byte("ECDH key graph\x00\xff")
+	secret := bytes.Repeat([]byte{0x16}, 32)
+	wrapped, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "outer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"inline", "retrieval", "nested"} {
+		t.Run(kind, func(t *testing.T) {
+			data, err := xmlenc.EncryptBytesWithKey(t.Context(), plain, secret, xmlenc.SymmetricOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			keywire := string(xmlBytes(t, wrapped))
+			outerwire := ""
+			algorithms := []string(nil)
+			if kind == "nested" {
+				middle := bytes.Repeat([]byte{0x42}, 16)
+				outer, err := xmlenc.EncryptKey(t.Context(), middle, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "outer"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				inner, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "middle", Algorithm: xmlenc.AES128KeyWrap, Secret: middle}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES128KeyWrap, ID: "inner"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				innerwire := strings.Replace(string(xmlBytes(t, inner)), `<ds:KeyName>middle</ds:KeyName>`, `<ds:RetrievalMethod URI="#outer" Type="`+enc+`EncryptedKey"/>`, 1)
+				outerwire = string(xmlBytes(t, outer))
+				keywire = innerwire + outerwire
+				algorithms = []string{xmlenc.AES128KeyWrap}
+			}
+			info := string(xmlBytes(t, wrapped))
+			if kind == "retrieval" || kind == "nested" {
+				id := "outer"
+				if kind == "nested" {
+					id = "inner"
+				}
+				info = `<ds:RetrievalMethod URI="#` + id + `" Type="` + enc + `EncryptedKey"/>`
+			}
+			datawire := strings.Replace(string(xmlBytes(t, data)), "<xenc:CipherData>", `<ds:KeyInfo>`+info+`</ds:KeyInfo><xenc:CipherData>`, 1)
+			wire := []byte(datawire)
+			if kind != "inline" {
+				wire = []byte("<root>" + datawire + keywire + "</root>")
+			}
+			doc := xmlDoc(t, wire)
+			target := doc.Root()
+			if kind != "inline" {
+				target = target.Children()[0]
+			}
+			opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHRecipient: recipient}}, KeyAlgorithms: algorithms}
+			got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, target, opts)
+			if err != nil || !bytes.Equal(got, plain) {
+				t.Fatal("ECDH graph", err)
+			}
+			path := write(t, filepath.Join(t.TempDir(), "ecdh-graph.xml"), wire)
+			output := filepath.Join(t.TempDir(), "plain.bin")
+			if kind == "nested" {
+				native(t, fixture, false, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--enabled-key-data", ecdhKeyData+",retrieval-method", "--privkey-pem:recipient", private, path)
+				t.Log("DIAGNOSTIC xmlsec1 refuses this two-hop RetrievalMethod chain; one-hop control with the same outer ECDH key inline is compared separately")
+				controlled := strings.Replace(string(wire), `<ds:RetrievalMethod URI="#outer" Type="`+enc+`EncryptedKey"/>`, outerwire, 1)
+				// Remove the detached copy after moving that exact key inline, preserving unique IDs.
+				last := strings.LastIndex(controlled, outerwire)
+				if last < 0 {
+					t.Fatal("missing detached outer key")
+				}
+				controlled = controlled[:last] + controlled[last+len(outerwire):]
+				controlledDoc := xmlDoc(t, []byte(controlled))
+				controlledPlain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), controlledDoc, controlledDoc.Root().Children()[0], opts)
+				if err != nil || !bytes.Equal(controlledPlain, plain) {
+					t.Fatal("single-retrieval ECDH control", err)
+				}
+				path = write(t, filepath.Join(t.TempDir(), "single-hop-control.xml"), []byte(controlled))
+			}
+			native(t, fixture, true, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--enabled-key-data", ecdhKeyData+",retrieval-method", "--privkey-pem:recipient", private, "--output", output, path)
+			if !bytes.Equal(read(t, output), plain) {
+				t.Fatal("xmlsec ECDH graph plaintext differs")
+			}
+			if kind == "nested" {
+				t.Log("P5_ORACLE xmlsec1 mixed-size ECDH nested key graph one-hop control")
+			} else {
+				t.Log("P5_ORACLE xmlsec1 explicit ECDH standalone-key graph", kind)
+			}
+		})
+	}
+}
+
+func TestXMLSecKeyGraphSchemas(t *testing.T) {
+	fixture := newInteropFixture(t)
+	schema := encryptionSchema(t, fixture)
+	secret, kek := bytes.Repeat([]byte{0x52}, 32), bytes.Repeat([]byte{0x93}, 32)
+	wrapped, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "key", CarriedKeyName: " session "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := write(t, filepath.Join(t.TempDir(), "encrypted-key.xml"), xmlBytes(t, wrapped))
+	command(t, fixture, true, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
+	derived, err := xmlenc.BuildDerivedKey(t.Context(), xmlenc.DerivedKeyOptions{Parameters: xmlenc.ConcatKDFParameters{AlgorithmID: []byte{0, 1}, PartyUInfo: []byte{3, 0xd8}}, ID: "derived", MasterKeyName: "master", DerivedKeyName: "derived key", References: []xmlenc.KeyGraphReference{{URI: "#data"}, {URI: "#key", Key: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path = write(t, filepath.Join(t.TempDir(), "derived-key.xml"), xmlBytes(t, derived))
+	command(t, fixture, true, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
+	for _, body := range []struct {
+		name    string
+		content string
+		valid   bool
+	}{{"foreign element", `<app:note xmlns:app="urn:app">hint</app:note>`, true}, {"empty", "", false}, {"text only", "hint", false}, {"same namespace", `<xenc:note/>`, false}, {"no namespace", `<note/>`, false}} {
+		t.Run(body.name, func(t *testing.T) {
+			wire := strings.Replace(string(xmlBytes(t, wrapped)), "<xenc:CarriedKeyName>", `<xenc:EncryptionProperties Id="properties"><xenc:EncryptionProperty Target="#data">`+body.content+`</xenc:EncryptionProperty></xenc:EncryptionProperties><xenc:CarriedKeyName>`, 1)
+			if !strings.Contains(wire, "EncryptionProperties") {
+				t.Fatal("property intervention did not change fixture")
+			}
+			path := write(t, filepath.Join(t.TempDir(), "properties.xml"), []byte(wire))
+			command(t, fixture, body.valid, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
+		})
+	}
+	t.Log("P5_ORACLE pinned published XMLENC schemas: standalone EncryptedKey, DerivedKey, and property cardinality/namespace")
+}
+
+func TestXMLSecImplicitCipherCanonicalization(t *testing.T) {
+	fixture := newInteropFixture(t)
+	selected(t, "xmlsec")
+	key := bytes.Repeat([]byte{0x0e}, 16)
+	keyfile := write(t, filepath.Join(t.TempDir(), "aes128.key"), key)
+	want, err := hex.DecodeString("cea85e37d6cbce0572990f541088335ab8d6e8d01f385d6d19ad35c8d0fa0a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, node := range map[string]string{
+		"canonical input":               `<b a="a" z="z" xml:id="c">AAAAAAAAAAAAAAAAAA</b>`,
+		"reordered and commented input": `<b z='z' xml:id='c' a='a'>AAAAAAAAA<!--omitted-->AAAAAAAAA</b>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wire := `<r>` + node + `<xenc:EncryptedData xmlns:xenc="` + enc + `"><xenc:EncryptionMethod Algorithm="` + enc + `aes128-cbc"/><xenc:CipherData><xenc:CipherReference URI="#c"/></xenc:CipherData></xenc:EncryptedData></r>`
+			doc, err := document.Parse(t.Context(), []byte(wire), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := xmlenc.KeyGraphOptions{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}, Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES128CBC, Secret: key}}}
+			out, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, doc.Root().Children()[1], options)
+			if err != nil || !bytes.Equal(out, want) {
+				t.Fatal(out, err)
+			}
+			input := write(t, filepath.Join(t.TempDir(), "cipher.xml"), []byte(wire))
+			output := filepath.Join(t.TempDir(), "plaintext")
+			native(t, fixture, true, "decrypt", "--aeskey", keyfile, "--output", output, input)
+			comparePlain(t, fixture, read(t, output), want, false)
+		})
 	}
 }
 
@@ -240,7 +736,7 @@ func (suite *encryptionSuite) prepare(t *testing.T, r encryptionRecipe, xml bool
 	ours, theirs, output := filepath.Join(suite.dir, "go.xml"), filepath.Join(suite.dir, "ref.xml"), filepath.Join(suite.dir, "output")
 	keyfile, decryptKey := suite.key.public, suite.key.private
 
-	if r.mode != nameRsa {
+	if r.mode != nameRSA {
 		n := r.bits / 8
 		if r.mode == nameWrap {
 			n = r.wrap / 8
@@ -259,7 +755,7 @@ func (suite *encryptionSuite) prepare(t *testing.T, r encryptionRecipe, xml bool
 	}
 
 	suffix := ""
-	if r.mode != nameRsa {
+	if r.mode != nameRSA {
 		suffix = "-" + r.mode
 	}
 
@@ -287,7 +783,7 @@ func (suite *encryptionSuite) checkCase(t *testing.T, r encryptionRecipe, xml, l
 	suite.exchange(t, scenario)
 	suite.rejectTamper(t, scenario)
 
-	external := r.keyName == "" && (r.mode == nameRsa && r.hash == "384" && len(r.label) > 0 || r.mode == nameWrap && last || r.mode == nameDirect && r.bits == 256)
+	external := r.keyName == "" && (r.mode == nameRSA && r.hash == "384" && len(r.label) > 0 || r.mode == nameWrap && last || r.mode == nameDirect && r.bits == 256)
 	if external {
 		suite.checkCipherReferences(t, scenario)
 	}
@@ -596,13 +1092,13 @@ func (suite *selectedEncryptionSuite) prepare(t *testing.T, forms map[string]str
 
 	source := write(t, filepath.Join(suite.dir, "source.xml"), []byte(forms[r.form]))
 	if r.cm != "" {
-		signature := signatureTemplate(0, more+nameRsaSha256, r.cm, referenceTemplate("#secret", ds+"enveloped-signature", r.cm), "")
+		signature := signatureTemplate(0, more+nameRSASHA256, r.cm, referenceTemplate("#secret", ds+"enveloped-signature", r.cm), "")
 		write(t, source, bytes.Replace(read(t, source), []byte("</p:secret>"), []byte(signature+"</p:secret>"), 1))
 		command(t, suite.fixture, true, nil, suite.cli, "sign-template", flagKey, suite.key.private, "-signature-index", "0", "-c14n", r.cm, flagIn, source, flagOut, source)
 	}
 
 	original := read(t, source)
-	mode, keyfile, decryptKey, suffix := nameRsa, suite.key.public, suite.key.private, ""
+	mode, keyfile, decryptKey, suffix := nameRSA, suite.key.public, suite.key.private, ""
 	algorithm := enc11 + "rsa-oaep"
 
 	if r.wrap > 0 {
@@ -627,7 +1123,7 @@ func (suite *selectedEncryptionSuite) decryptOurs(t *testing.T, scenario *select
 	t.Helper()
 
 	if scenario.empty {
-		bufferKind := nameRsa
+		bufferKind := nameRSA
 		if scenario.recipe.wrap > 0 {
 			bufferKind = "aes"
 		}
@@ -684,7 +1180,7 @@ func (suite *selectedEncryptionSuite) encryptTheirs(t *testing.T, scenario *sele
 			write(t, scenario.output, restored)
 			raw, _ := command(t, suite.fixture, true, nil, suite.cli, "verify-core", flagKey, suite.key.public, "-signature-index", "0", "-c14n", scenario.recipe.cm, flagIn, scenario.output)
 			verifyReport(t, raw, true)
-			native(t, suite.fixture, true, nameVerify, flagPubkeyPem, suite.key.public, flagIDAttrID, "urn:shadow:secret", flagEnabledReferenceUris, "same-doc", scenario.output)
+			native(t, suite.fixture, true, nameVerify, flagPublicKeyPEM, suite.key.public, flagIDAttrID, "urn:shadow:secret", flagEnabledReferenceURIs, "same-doc", scenario.output)
 		}
 
 		suite.count++
@@ -712,153 +1208,12 @@ func (suite *selectedEncryptionSuite) rejectTamper(t *testing.T, scenario *selec
 	probe(t, suite.fixture, "nextprobe", scenario.task, false)
 
 	if scenario.empty {
-		bufferKind := nameRsa
+		bufferKind := nameRSA
 		if scenario.recipe.wrap > 0 {
 			bufferKind = "aes"
 		}
 
 		command(t, suite.fixture, false, nil, suite.buffer, bad, bufferKind, scenario.decryptKey)
-	}
-}
-
-func TestXMLSecLegacyEncryption(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
-	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
-	for _, data := range []struct {
-		uri  string
-		bits int
-	}{{enc + "aes128-cbc", 128}, {enc + "aes192-cbc", 192}, {enc + "aes256-cbc", 256}, {enc + "tripledes-cbc", 192}} {
-		routes := []encryptionRecipe{{mode: nameRsa, bits: data.bits, data: data.uri, dataLegacy: true}, {mode: nameRsa, bits: data.bits, data: data.uri, dataLegacy: true, algorithm: enc + "rsa-oaep-mgf1p", hash: "1", mgf: "1", legacy: true}, {mode: nameDirect, bits: data.bits, data: data.uri, dataLegacy: true}, {mode: nameWrap, bits: data.bits, wrap: 128, data: data.uri, dataLegacy: true}, {mode: nameWrap, bits: data.bits, wrap: 256, data: data.uri, dataLegacy: true}}
-		if strings.HasSuffix(data.uri, "tripledes-cbc") {
-			routes = append(routes, encryptionRecipe{mode: nameWrap, bits: 192, data: data.uri, dataLegacy: true, tripleWrap: true})
-		}
-		for index, r := range routes {
-			t.Run(data.uri+"/"+strconv.Itoa(index), func(t *testing.T) {
-				scenario := suite.prepare(t, r, false)
-				if r.tripleWrap {
-					suite.exchangeTripleDESWrap(t, scenario)
-				} else {
-					suite.exchange(t, scenario)
-				}
-				if r.mode == nameDirect {
-					suite.checkZeroCBCPadding(t, scenario)
-				}
-				denied := copyTask(scenario.task)
-				denied["AllowLegacy"] = false
-				probe(t, fixture, "nextprobe", denied, false)
-				// Incomplete CBC blocks are rejected in both implementations.
-				// Pad-length-zero acceptance differs in xmlsec1; exact padding
-				// validation is covered separately by the normative native cases.
-				raw := read(t, scenario.theirs)
-				doc := xmlDoc(t, raw)
-				cv := legacyDataCipherValue(t, doc)
-				ciphertext := decode64(t, text(cv))
-				ciphertext = ciphertext[:len(ciphertext)-1]
-
-				bad := write(t, filepath.Join(dir, "bad-padding.xml"), bytes.Replace(raw, []byte(text(cv)), []byte(base64String(ciphertext)), 1))
-				negative := copyTask(scenario.task)
-				negative[nameInput] = bad
-				probe(t, fixture, "nextprobe", negative, false)
-				os.Remove(scenario.output)
-				native(t, fixture, false, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, bad)
-				noOutput(t, scenario.output)
-			})
-		}
-	}
-}
-
-func TestXMLSecEncryptionMethodKeySize(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
-	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
-	for _, recipe := range []encryptionRecipe{{mode: nameDirect, bits: 256}, {mode: nameWrap, bits: 256, wrap: 128}, {mode: nameRsa, bits: 256}} {
-		t.Run(recipe.mode, func(t *testing.T) {
-			scenario := suite.prepare(t, recipe, false)
-			raw := probeData(t, fixture, "nextprobe", scenario.task)
-			method := `<xenc:EncryptionMethod Algorithm="` + enc11 + `aes256-gcm">`
-			raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>256</xenc:KeySize>`), 1)
-			if recipe.mode != nameDirect {
-				algorithm, size := enc11+"rsa-oaep", "2048"
-				if recipe.mode == nameWrap {
-					algorithm, size = enc+"kw-aes128", "128"
-				}
-				method = `<xenc:EncryptionMethod Algorithm="` + algorithm + `">`
-				raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>`+size+`</xenc:KeySize>`), 1)
-			}
-			write(t, scenario.ours, raw)
-			scenario.task[nameMode] = "decrypt" + scenario.suffix
-			scenario.task[nameInput] = scenario.ours
-			scenario.task[nameKey] = scenario.decryptKey
-			comparePlain(t, fixture, probeData(t, fixture, "nextprobe", scenario.task), scenario.plain, false)
-			if recipe.mode == nameRsa {
-				// XMLENC3.2 permits KeySize; the explicitly supplied RSA key
-				// has a2048-bit modulus. This native key-search outcome is a
-				// diagnostic, rather than agreement for the RSA-size branch.
-				os.Remove(scenario.output)
-				native(t, fixture, false, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, scenario.ours)
-				noOutput(t, scenario.output)
-				withoutRSAKeySize := bytes.Replace(raw, []byte(`<xenc:KeySize>2048</xenc:KeySize>`), nil, 1)
-				write(t, scenario.ours, withoutRSAKeySize)
-				t.Log("DIAGNOSTIC xmlsec1 rejects RSA-OAEP KeySize2048 during key search; removing only this optional parameter succeeds. Excluded from RSA KeySize agreement.")
-			}
-			native(t, fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, scenario.ours)
-			comparePlain(t, fixture, read(t, scenario.output), scenario.plain, false)
-		})
-	}
-}
-
-func legacyDataCipherValue(t *testing.T, doc *tree.Document) *tree.Node {
-	t.Helper()
-	for _, child := range tree.Root(doc).Children {
-		if child.Name.Space == enc && child.Name.Local == nameCipherData {
-			return one(t, child, enc, "CipherValue")
-		}
-	}
-	t.Fatal("missing data CipherValue")
-	return nil
-}
-
-func TestXMLSecECDHAgreement(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	for _, curve := range []struct {
-		name    string
-		openssl string
-		curve   ecdh.Curve
-	}{{"P256", "P-256", ecdh.P256()}, {"P384", "P-384", ecdh.P384()}, {"P521", "P-521", ecdh.P521()}} {
-		recipient, err := curve.curve.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, data := range []struct {
-			name string
-			uri  string
-			bits int
-		}{{"GCM128", xmlenc.AES128GCM, 128}, {"GCM192", xmlenc.AES192GCM, 192}, {"GCM256", xmlenc.AES256GCM, 256}} {
-			for _, wrap := range []struct {
-				name  string
-				uri   string
-				bytes int
-			}{{"KW128", xmlenc.AES128KeyWrap, 16}, {"KW192", xmlenc.AES192KeyWrap, 24}, {"KW256", xmlenc.AES256KeyWrap, 32}} {
-				for _, hash := range []struct {
-					name string
-					hash crypto.Hash
-				}{{"default", 0}, {"SHA256", crypto.SHA256}, {"SHA1", crypto.SHA1}} {
-					t.Run(curve.name+"/"+data.name+"/"+wrap.name+"/"+hash.name, func(t *testing.T) {
-						options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri}, KeyAlgorithm: wrap.uri, RecipientKeyName: "recipient"}
-						if hash.hash != 0 {
-							options.KDF = &xmlenc.ConcatKDFParameters{Hash: hash.hash, AlgorithmID: append([]byte{0}, []byte(wrap.uri)...), PartyUInfo: []byte{0, 'U'}, PartyVInfo: []byte{0, 'V'}, SuppPubInfo: []byte{0, 0, 0, 1, 0}, SuppPrivInfo: []byte{0, 0x42}, AllowLegacy: hash.hash == crypto.SHA1}
-						}
-						ecdhExchange(t, fixture, recipient, curve.openssl, data.bits, wrap.bytes, options)
-					})
-				}
-			}
-		}
 	}
 }
 
@@ -982,121 +1337,6 @@ func ecdhOpenSSLKDF(t *testing.T, fixture *interopFixture, secret []byte, kekByt
 	}
 }
 
-func TestXMLSecECDHLegacyData(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, data := range []struct {
-		name string
-		uri  string
-		bits int
-	}{{"CBC128", xmlenc.AES128CBC, 128}, {"CBC192", xmlenc.AES192CBC, 192}, {"CBC256", xmlenc.AES256CBC, 256}, {"TripleDES", xmlenc.TripleDESCBC, 192}} {
-		t.Run(data.name, func(t *testing.T) {
-			options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES256KeyWrap, RecipientKeyName: "recipient"}
-			if data.uri != xmlenc.TripleDESCBC {
-				ecdhExchange(t, fixture, recipient, "P-256", data.bits, 32, options)
-				return
-			}
-			private, _ := ecdhPEM(t, fixture, recipient)
-			plain := []byte("ECDH and legacy TripleDES\x00\xff")
-			doc, err := xmlenc.EncryptBytesWithECDH(t.Context(), plain, recipient.PublicKey(), options)
-			if err != nil {
-				t.Fatal(err)
-			}
-			raw, err := doc.XML(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			input := write(t, filepath.Join(fixture.work, "ecdh-3des.xml"), raw)
-			output := filepath.Join(fixture.work, "ecdh-3des-plain.bin")
-			native(t, fixture, true, "decrypt", "--enabled-key-data", ecdhKeyData+",des", "--privkey-pem:recipient", private, "--output", output, input)
-			if !bytes.Equal(read(t, output), plain) {
-				t.Fatal("xmlsec TripleDES decrypt differs")
-			}
-			t.Log("P5_ORACLE xmlsec1 ECDH/AES256KW/TripleDES decryption; reverse DES CEK parity independently covered by LegacyEncryption")
-		})
-	}
-}
-
-func TestXMLSecECDHLeadingZero(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	scalar := make([]byte, 32)
-	scalar[31] = 1
-	recipient, err := ecdh.P256().NewPrivateKey(scalar)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scalar[30], scalar[31] = 1, 123 // 379G begins with the zero x-coordinate octet.
-	originator, err := ecdh.P256().NewPrivateKey(scalar)
-	if err != nil {
-		t.Fatal(err)
-	}
-	private, _ := ecdhPEM(t, fixture, recipient)
-	senderDER, err := x509.MarshalPKIXPublicKey(originator.PublicKey())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sender := write(t, filepath.Join(fixture.work, "zero-peer.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: senderDER}))
-	out := filepath.Join(fixture.work, "zero-secret.bin")
-	command(t, fixture, true, nil, "openssl", "pkeyutl", "-derive", "-inkey", private, "-peerkey", sender, "-out", out)
-	secret, err := recipient.ECDH(originator.PublicKey())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clear(secret)
-	if len(secret) != 32 || secret[0] != 0 || !bytes.Equal(read(t, out), secret) {
-		t.Fatal("leading-zero ECDH octet was lost")
-	}
-	for _, hash := range []crypto.Hash{crypto.SHA256, crypto.SHA1} {
-		t.Run(hash.String(), func(t *testing.T) {
-			parameters := xmlenc.ConcatKDFParameters{Hash: hash, AlgorithmID: []byte{0}, PartyUInfo: []byte{0}, PartyVInfo: []byte{0}, AllowLegacy: hash == crypto.SHA1}
-			ecdhOpenSSLKDF(t, fixture, secret, 32, parameters)
-		})
-	}
-	t.Log("P5_ORACLE OpenSSL full-width leading-zero ECDH and multi-round ConcatKDF")
-}
-
-// TestXMLSecEncryptionGrammar checks exact XMLENC field grammar against the
-// published schemas, independently of cryptographic provider failure handling.
-func TestXMLSecEncryptionGrammar(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	schema := encryptionSchema(t, fixture)
-	dir := t.TempDir()
-	key := generateKey(t, dir, nameRsaSha256)
-	suite := encryptionSuite{fixture: fixture, dir: dir, key: key}
-	scenario := suite.prepare(t, encryptionRecipe{mode: nameRsa, bits: 256, label: []byte("schema-label")}, false)
-	raw := probeData(t, fixture, "nextprobe", scenario.task)
-	for name, c := range encryptionGrammarCases(t, raw) {
-		t.Run(name, func(t *testing.T) {
-			path := write(t, filepath.Join(t.TempDir(), "input.xml"), c.wire)
-			schemaValid := c.valid
-			if name == "CipherValue lexical base64" {
-				// XSD1.0 section3.2.16's B64 production excludes '!':
-				// https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/#base64Binary
-				// This libxml2 validator accepts it; the corresponding native
-				// rejection is enforced under the published lexical grammar.
-				schemaValid = true
-				t.Log("DIAGNOSTIC libxml2 schema validation accepts CipherValue '!'; excluded from Base64 lexical rejection agreement")
-			}
-			command(t, fixture, schemaValid, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
-			check := copyTask(scenario.task)
-			check[nameMode], check[nameInput], check[nameKey] = "decrypt", path, scenario.decryptKey
-			if c.valid {
-				comparePlain(t, fixture, probeData(t, fixture, "nextprobe", check), scenario.plain, false)
-				native(t, fixture, true, "decrypt", scenario.decryptArg, scenario.decryptKey, "--output", scenario.output, path)
-				comparePlain(t, fixture, read(t, scenario.output), scenario.plain, false)
-			} else {
-				probe(t, fixture, "nextprobe", check, false)
-			}
-		})
-	}
-}
-
 type encryptionGrammarCase struct {
 	wire  []byte
 	valid bool
@@ -1180,244 +1420,4 @@ func encryptionSchema(t *testing.T, fixture *interopFixture) string {
 	t.Setenv("XML_CATALOG_FILES", write(t, filepath.Join(local, "catalog.xml"), []byte(catalog)))
 	entry := `<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:import namespace="` + enc + `" schemaLocation="` + uri("xenc-schema.xsd") + `"/><xs:import namespace="` + enc11 + `" schemaLocation="` + uri("xenc-schema-11.xsd") + `"/></xs:schema>`
 	return write(t, filepath.Join(fixture.work, "xmlenc-proof-schema.xsd"), []byte(entry))
-}
-
-// TestXMLSecKeyGraph exercises actual XML relationships, in addition to the
-// primitive RFC vectors. Every oracle result is checked against plaintext.
-func TestXMLSecKeyGraph(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	plain := []byte("XMLENC key graph\x00\xff")
-	secret, kek := bytes.Repeat([]byte{0x52}, 32), bytes.Repeat([]byte{0x93}, 32)
-	wrap := func(raw, kek []byte, name, id, carried string) *document.Document {
-		t.Helper()
-		doc, err := xmlenc.EncryptKey(t.Context(), raw, xmlenc.KeyGraphKey{Name: name, Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: id, CarriedKeyName: carried})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return doc
-	}
-	wrapped := wrap(secret, kek, "master", "key", "session")
-	options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}}
-	for _, kind := range []string{"inline", "retrieval", "carried", "nested"} {
-		t.Run(kind, func(t *testing.T) {
-			data, err := xmlenc.EncryptBytesWithKey(t.Context(), plain, secret, xmlenc.SymmetricOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			raw := xmlBytes(t, data)
-			info := string(xmlBytes(t, wrapped))
-			sibling := ""
-			switch kind {
-			case "retrieval":
-				info = `<ds:RetrievalMethod URI="#key" Type="` + enc + `EncryptedKey"/>`
-				sibling = string(xmlBytes(t, wrapped))
-			case "carried":
-				info = `<ds:KeyName>session</ds:KeyName>`
-				sibling = string(xmlBytes(t, wrapped))
-			case "nested":
-				intermediate := bytes.Repeat([]byte{0x24}, 32)
-				outer := wrap(intermediate, kek, "master", "outer", "")
-				inner := wrap(secret, intermediate, "intermediate", "inner", "")
-				info = strings.Replace(string(xmlBytes(t, inner)), `<ds:KeyName>intermediate</ds:KeyName>`, string(xmlBytes(t, outer)), 1)
-			}
-			wire := strings.Replace(string(raw), "<xenc:CipherData>", "<ds:KeyInfo>"+info+"</ds:KeyInfo><xenc:CipherData>", 1)
-			if sibling != "" {
-				wire = "<root>" + wire + sibling + "</root>"
-			}
-			doc := xmlDoc(t, []byte(wire))
-			target := doc.Root()
-			if sibling != "" {
-				target = target.Children()[0]
-			}
-			got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, target, options)
-			if err != nil || !bytes.Equal(got, plain) {
-				t.Fatal("native key relationship", err)
-			}
-			path := write(t, filepath.Join(t.TempDir(), "graph.xml"), []byte(wire))
-			keyfile := write(t, filepath.Join(t.TempDir(), "kek.bin"), kek)
-			output := filepath.Join(t.TempDir(), "plaintext.bin")
-			if kind == "carried" {
-				native(t, fixture, false, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--aeskey:master", keyfile, path)
-				t.Log("DIAGNOSTIC xmlsec1 does not discover this sibling through CarriedKeyName alone; explicit RetrievalMethod control is compared separately")
-				controlled := strings.Replace(wire, `<ds:KeyName>session</ds:KeyName>`, `<ds:RetrievalMethod URI="#key" Type="`+enc+`EncryptedKey"/>`, 1)
-				if controlled == wire {
-					t.Fatal("carried-name intervention did not change fixture")
-				}
-				controlledDoc := xmlDoc(t, []byte(controlled))
-				controlledPlain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), controlledDoc, controlledDoc.Root().Children()[0], options)
-				if err != nil || !bytes.Equal(controlledPlain, plain) {
-					t.Fatal("retrieval control", err)
-				}
-				path = write(t, filepath.Join(t.TempDir(), "carried-retrieval-control.xml"), []byte(controlled))
-			}
-			native(t, fixture, true, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--aeskey:master", keyfile, "--output", output, path)
-			if !bytes.Equal(read(t, output), plain) {
-				t.Fatal("xmlsec graph plaintext differs")
-			}
-			if kind == "carried" {
-				t.Log("P5_ORACLE xmlsec1 carried-name explicit RetrievalMethod control")
-			} else {
-				t.Log("P5_ORACLE xmlsec1 AES key graph", kind)
-			}
-		})
-	}
-}
-
-func TestXMLSecECDHKeyGraph(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	private, _ := ecdhPEM(t, fixture, recipient)
-	plain := []byte("ECDH key graph\x00\xff")
-	secret := bytes.Repeat([]byte{0x16}, 32)
-	wrapped, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "outer"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, kind := range []string{"inline", "retrieval", "nested"} {
-		t.Run(kind, func(t *testing.T) {
-			data, err := xmlenc.EncryptBytesWithKey(t.Context(), plain, secret, xmlenc.SymmetricOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			keywire := string(xmlBytes(t, wrapped))
-			outerwire := ""
-			algorithms := []string(nil)
-			if kind == "nested" {
-				middle := bytes.Repeat([]byte{0x42}, 16)
-				outer, err := xmlenc.EncryptKey(t.Context(), middle, xmlenc.KeyGraphKey{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHPublicKey: recipient.PublicKey()}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "outer"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				inner, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "middle", Algorithm: xmlenc.AES128KeyWrap, Secret: middle}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES128KeyWrap, ID: "inner"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				innerwire := strings.Replace(string(xmlBytes(t, inner)), `<ds:KeyName>middle</ds:KeyName>`, `<ds:RetrievalMethod URI="#outer" Type="`+enc+`EncryptedKey"/>`, 1)
-				outerwire = string(xmlBytes(t, outer))
-				keywire = innerwire + outerwire
-				algorithms = []string{xmlenc.AES128KeyWrap}
-			}
-			info := string(xmlBytes(t, wrapped))
-			if kind == "retrieval" || kind == "nested" {
-				id := "outer"
-				if kind == "nested" {
-					id = "inner"
-				}
-				info = `<ds:RetrievalMethod URI="#` + id + `" Type="` + enc + `EncryptedKey"/>`
-			}
-			datawire := strings.Replace(string(xmlBytes(t, data)), "<xenc:CipherData>", `<ds:KeyInfo>`+info+`</ds:KeyInfo><xenc:CipherData>`, 1)
-			wire := []byte(datawire)
-			if kind != "inline" {
-				wire = []byte("<root>" + datawire + keywire + "</root>")
-			}
-			doc := xmlDoc(t, wire)
-			target := doc.Root()
-			if kind != "inline" {
-				target = target.Children()[0]
-			}
-			opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "recipient", Algorithm: xmlenc.AES256KeyWrap, ECDHRecipient: recipient}}, KeyAlgorithms: algorithms}
-			got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, target, opts)
-			if err != nil || !bytes.Equal(got, plain) {
-				t.Fatal("ECDH graph", err)
-			}
-			path := write(t, filepath.Join(t.TempDir(), "ecdh-graph.xml"), wire)
-			output := filepath.Join(t.TempDir(), "plain.bin")
-			if kind == "nested" {
-				native(t, fixture, false, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--enabled-key-data", ecdhKeyData+",retrieval-method", "--privkey-pem:recipient", private, path)
-				t.Log("DIAGNOSTIC xmlsec1 refuses this two-hop RetrievalMethod chain; one-hop control with the same outer ECDH key inline is compared separately")
-				controlled := strings.Replace(string(wire), `<ds:RetrievalMethod URI="#outer" Type="`+enc+`EncryptedKey"/>`, outerwire, 1)
-				// Remove the detached copy after moving that exact key inline, preserving unique IDs.
-				last := strings.LastIndex(controlled, outerwire)
-				if last < 0 {
-					t.Fatal("missing detached outer key")
-				}
-				controlled = controlled[:last] + controlled[last+len(outerwire):]
-				controlledDoc := xmlDoc(t, []byte(controlled))
-				controlledPlain, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), controlledDoc, controlledDoc.Root().Children()[0], opts)
-				if err != nil || !bytes.Equal(controlledPlain, plain) {
-					t.Fatal("single-retrieval ECDH control", err)
-				}
-				path = write(t, filepath.Join(t.TempDir(), "single-hop-control.xml"), []byte(controlled))
-			}
-			native(t, fixture, true, "decrypt", "--id-attr:Id", enc+":EncryptedKey", "--enabled-key-data", ecdhKeyData+",retrieval-method", "--privkey-pem:recipient", private, "--output", output, path)
-			if !bytes.Equal(read(t, output), plain) {
-				t.Fatal("xmlsec ECDH graph plaintext differs")
-			}
-			if kind == "nested" {
-				t.Log("P5_ORACLE xmlsec1 mixed-size ECDH nested key graph one-hop control")
-			} else {
-				t.Log("P5_ORACLE xmlsec1 explicit ECDH standalone-key graph", kind)
-			}
-		})
-	}
-}
-
-func TestXMLSecKeyGraphSchemas(t *testing.T) {
-	fixture := newInteropFixture(t)
-	schema := encryptionSchema(t, fixture)
-	secret, kek := bytes.Repeat([]byte{0x52}, 32), bytes.Repeat([]byte{0x93}, 32)
-	wrapped, err := xmlenc.EncryptKey(t.Context(), secret, xmlenc.KeyGraphKey{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}, xmlenc.EncryptedKeyOptions{Algorithm: xmlenc.AES256KeyWrap, ID: "key", CarriedKeyName: " session "})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := write(t, filepath.Join(t.TempDir(), "encrypted-key.xml"), xmlBytes(t, wrapped))
-	command(t, fixture, true, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
-	derived, err := xmlenc.BuildDerivedKey(t.Context(), xmlenc.DerivedKeyOptions{Parameters: xmlenc.ConcatKDFParameters{AlgorithmID: []byte{0, 1}, PartyUInfo: []byte{3, 0xd8}}, ID: "derived", MasterKeyName: "master", DerivedKeyName: "derived key", References: []xmlenc.KeyGraphReference{{URI: "#data"}, {URI: "#key", Key: true}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path = write(t, filepath.Join(t.TempDir(), "derived-key.xml"), xmlBytes(t, derived))
-	command(t, fixture, true, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
-	for _, body := range []struct {
-		name    string
-		content string
-		valid   bool
-	}{{"foreign element", `<app:note xmlns:app="urn:app">hint</app:note>`, true}, {"empty", "", false}, {"text only", "hint", false}, {"same namespace", `<xenc:note/>`, false}, {"no namespace", `<note/>`, false}} {
-		t.Run(body.name, func(t *testing.T) {
-			wire := strings.Replace(string(xmlBytes(t, wrapped)), "<xenc:CarriedKeyName>", `<xenc:EncryptionProperties Id="properties"><xenc:EncryptionProperty Target="#data">`+body.content+`</xenc:EncryptionProperty></xenc:EncryptionProperties><xenc:CarriedKeyName>`, 1)
-			if !strings.Contains(wire, "EncryptionProperties") {
-				t.Fatal("property intervention did not change fixture")
-			}
-			path := write(t, filepath.Join(t.TempDir(), "properties.xml"), []byte(wire))
-			command(t, fixture, body.valid, nil, "xmllint", "--nonet", "--noout", "--schema", schema, path)
-		})
-	}
-	t.Log("P5_ORACLE pinned published XMLENC schemas: standalone EncryptedKey, DerivedKey, and property cardinality/namespace")
-}
-
-func TestXMLSecImplicitCipherCanonicalization(t *testing.T) {
-	fixture := newInteropFixture(t)
-	selected(t, "xmlsec")
-	key := bytes.Repeat([]byte{0x0e}, 16)
-	keyfile := write(t, filepath.Join(t.TempDir(), "aes128.key"), key)
-	want, err := hex.DecodeString("cea85e37d6cbce0572990f541088335ab8d6e8d01f385d6d19ad35c8d0fa0a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, node := range map[string]string{
-		"canonical input":               `<b a="a" z="z" xml:id="c">AAAAAAAAAAAAAAAAAA</b>`,
-		"reordered and commented input": `<b z='z' xml:id='c' a='a'>AAAAAAAAA<!--omitted-->AAAAAAAAA</b>`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			wire := `<r>` + node + `<xenc:EncryptedData xmlns:xenc="` + enc + `"><xenc:EncryptionMethod Algorithm="` + enc + `aes128-cbc"/><xenc:CipherData><xenc:CipherReference URI="#c"/></xenc:CipherData></xenc:EncryptedData></r>`
-			doc, err := document.Parse(t.Context(), []byte(wire), document.DefaultLimits())
-			if err != nil {
-				t.Fatal(err)
-			}
-			options := xmlenc.KeyGraphOptions{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}, Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES128CBC, Secret: key}}}
-			out, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, doc.Root().Children()[1], options)
-			if err != nil || !bytes.Equal(out, want) {
-				t.Fatal(out, err)
-			}
-			input := write(t, filepath.Join(t.TempDir(), "cipher.xml"), []byte(wire))
-			output := filepath.Join(t.TempDir(), "plaintext")
-			native(t, fixture, true, "decrypt", "--aeskey", keyfile, "--output", output, input)
-			comparePlain(t, fixture, read(t, output), want, false)
-		})
-	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // ProgramFingerprint identifies exact approved extension parameters. Runtime Here
@@ -33,7 +34,7 @@ func ProgramFingerprint(t Transform) (string, error) {
 
 	for i := range t.XPath {
 		t.XPath[i].Here = document.Element{}
-		t.XPath[i].Namespaces["xml"] = document.XMLNamespace
+		t.XPath[i].Namespaces[lexicon.PrefixXML] = document.XMLNamespace
 	}
 
 	b, err := json.Marshal(t)

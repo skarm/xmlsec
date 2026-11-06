@@ -17,6 +17,36 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Value comparisons accept one atom per operand. The atomization probe stops
+// at two atoms to distinguish a singleton without draining a lazy multi-value input.
+// Range-side flags preserve the direction of noncommutative comparison operators.
+const (
+	singleComparisonOperand     = 1
+	maxSingletonComparisonAtoms = 2
+	comparisonRangeOnRight      = false
+	comparisonRangeOnLeft       = true
+)
+
+// F&O temporal comparisons anchor times to 1972-12-31. Gregorian partial dates
+// use the same reference year and substitute January/day one when absent.
+const (
+	comparisonReferenceYear  = 1972
+	comparisonReferenceMonth = 12
+	comparisonReferenceDay   = 31
+	comparisonPartialMonth   = 1
+	comparisonPartialDay     = 1
+)
+
+// Duration families keep month and second value spaces distinct. Boolean ranks
+// express false-before-true ordering, independently of numeric cast values.
+const (
+	comparisonYearMonthFamily = "duration:YM"
+	comparisonDayTimeFamily   = "duration:DT"
+	durationMonthsMode        = true
+	booleanComparisonFalse    = 0
+	booleanComparisonTrue     = 1
+)
+
 // GeneralCompare performs a general comparison between two sequences.
 // Atomizes both sides and returns true if any pair of atomic values
 // satisfies the operator.
@@ -54,6 +84,30 @@ func AtomicEquals(a, b xdm.AtomicValue) bool {
 // This is the canonical conversion for comparing xs:time values per F&O §10.4.4.
 func TimeToReferenceDateTime(t time.Time) time.Time {
 	return timeToReferenceDateTime(t)
+}
+
+// GregorianToReferenceDateTime converts a Gregorian partial-date value to the
+// same reference date used by XPath value comparison, preserving its timezone.
+// It rejects values outside the Gregorian partial-date types or lexical space.
+func GregorianToReferenceDateTime(value xdm.AtomicValue) (time.Time, bool) {
+	value = xdm.PromoteSchemaType(value)
+	switch value.TypeName {
+	case xdm.TypeGDay, xdm.TypeGMonth, xdm.TypeGMonthDay, xdm.TypeGYear, xdm.TypeGYearMonth:
+	default:
+		return time.Time{}, false
+	}
+
+	text, ok := value.Value.(string)
+	if !ok {
+		return time.Time{}, false
+	}
+
+	validated, err := CastFromString(text, value.TypeName)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	return parseGTypeToTime(value.TypeName, validated.StringVal())
 }
 
 // ApplyImplicitTZ applies the implicit timezone to a time that has
@@ -171,7 +225,7 @@ func castUntypedToType(ctx context.Context, untyped xdm.AtomicValue, targetType 
 // define binary equality alone. Keep this check at the language evaluation
 // boundary because exported atomic helpers use the current operator library.
 func validateComparisonEdition(op TokenType, a, b xdm.AtomicValue, ec *evalContext) error {
-	if ec == nil || ec.version == 0 || ec.version >= 31 {
+	if ec == nil || ec.version == xpathVersionDefault || ec.version >= xpathVersion31 {
 		return nil
 	}
 
@@ -291,11 +345,11 @@ func evalGeneralComparison(evalFn exprEvaluator, ctx context.Context, ec *evalCo
 
 func evalGeneralComparisonAgainstRange(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e BinaryExpr) (bool, bool, error) {
 	if re, ok := e.Right.(RangeExpr); ok {
-		return compareSingletonAgainstRange(evalFn, ctx, ec, e.Op, e.Left, re, false)
+		return compareSingletonAgainstRange(evalFn, ctx, ec, e.Op, e.Left, re, comparisonRangeOnRight)
 	}
 
 	if re, ok := e.Left.(RangeExpr); ok {
-		return compareSingletonAgainstRange(evalFn, ctx, ec, e.Op, e.Right, re, true)
+		return compareSingletonAgainstRange(evalFn, ctx, ec, e.Op, e.Right, re, comparisonRangeOnLeft)
 	}
 
 	return false, false, nil
@@ -320,7 +374,7 @@ func compareSingletonAgainstRange(evalFn exprEvaluator, ctx context.Context, ec 
 		return false, true, err
 	}
 
-	if len(singletonAtoms) != 1 {
+	if len(singletonAtoms) != singleComparisonOperand {
 		return false, false, nil
 	}
 
@@ -378,7 +432,7 @@ func evalRangeBounds(evalFn exprEvaluator, ctx context.Context, ec *evalContext,
 		return nil, nil, false, err
 	}
 
-	if len(startAtoms) != 1 || len(endAtoms) != 1 {
+	if len(startAtoms) != singleComparisonOperand || len(endAtoms) != singleComparisonOperand {
 		return nil, nil, false, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "range bounds must be singletons"}
 	}
 
@@ -502,7 +556,7 @@ func evalValueComparison(evalFn exprEvaluator, ctx context.Context, ec *evalCont
 		return nil, nil
 	}
 
-	if len(leftAtoms) > 1 || len(rightAtoms) > 1 {
+	if len(leftAtoms) > singleComparisonOperand || len(rightAtoms) > singleComparisonOperand {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "value comparison requires singletons"}
 	}
 
@@ -530,17 +584,17 @@ func atomizeSingletonOperand(seq xdm.Sequence) ([]xdm.AtomicValue, error) {
 	// machinery — preserving perf on hot numeric paths (arithmetic, range). Arrays
 	// (flattened) and schema list/union-typed nodes (expanded) fall through to
 	// atomizeStream so their multi-atom typed value is seen.
-	if xdm.SequenceLen(seq) == 1 {
+	if xdm.SequenceLen(seq) == singleComparisonOperand {
 		if av, ok := seq.Get(0).(xdm.AtomicValue); ok {
 			return []xdm.AtomicValue{av}, nil
 		}
 	}
 
-	atoms := make([]xdm.AtomicValue, 0, 2)
+	atoms := make([]xdm.AtomicValue, 0, maxSingletonComparisonAtoms)
 
 	err := atomizeStream(seq, func(av xdm.AtomicValue) (bool, error) {
 		atoms = append(atoms, av)
-		return len(atoms) < 2, nil
+		return len(atoms) < maxSingletonComparisonAtoms, nil
 	})
 	if err != nil {
 		return nil, err
@@ -564,7 +618,7 @@ func evalNodeComparison(evalFn exprEvaluator, ctx context.Context, ec *evalConte
 		return nil, nil
 	}
 
-	if left.Len() > 1 || right.Len() > 1 {
+	if left.Len() > singleComparisonOperand || right.Len() > singleComparisonOperand {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "node comparison requires singletons"}
 	}
 
@@ -796,9 +850,9 @@ func comparisonFamily(typeName string) string {
 	case xdm.TypeDuration:
 		return lexicon.TypeDuration
 	case xdm.TypeYearMonthDuration:
-		return "duration:YM"
+		return comparisonYearMonthFamily
 	case xdm.TypeDayTimeDuration:
-		return "duration:DT"
+		return comparisonDayTimeFamily
 	case xdm.TypeBase64Binary:
 		return lexicon.TypeBase64Binary
 	case xdm.TypeHexBinary:
@@ -1043,7 +1097,7 @@ func timeToReferenceDateTime(t time.Time) time.Time {
 	_, offset := t.Zone()
 	loc := time.FixedZone("", offset)
 
-	return time.Date(1972, 12, 31, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+	return time.Date(comparisonReferenceYear, comparisonReferenceMonth, comparisonReferenceDay, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
 }
 
 // applyImplicitTZ applies the system's implicit timezone to a time that has
@@ -1065,8 +1119,8 @@ func applyImplicitTZ(t time.Time, implicitTZ *time.Location) time.Time {
 // normalizeGTZ normalizes timezone suffixes in g* type string values
 // so that -00:00, +00:00, and Z are all treated as equivalent.
 func normalizeGTZ(s string) string {
-	if strings.HasSuffix(s, "+00:00") || strings.HasSuffix(s, "-00:00") {
-		return s[:len(s)-6] + "Z"
+	if strings.HasSuffix(s, positiveZeroTimezone) || strings.HasSuffix(s, negativeZeroTimezone) {
+		return s[:len(s)-timezoneOffsetBytes] + utcTimezoneLexical
 	}
 
 	return s
@@ -1088,7 +1142,7 @@ func parseGTypeToTime(typeName, s string) (time.Time, bool) {
 
 		day := parseInt(rest[3:5])
 
-		return time.Date(1972, 12, day, 0, 0, 0, 0, loc), true
+		return time.Date(comparisonReferenceYear, comparisonReferenceMonth, day, 0, 0, 0, 0, loc), true
 	case xdm.TypeGMonth:
 		// Format: --MM
 		if len(rest) < 4 {
@@ -1097,7 +1151,7 @@ func parseGTypeToTime(typeName, s string) (time.Time, bool) {
 
 		month := parseInt(rest[2:4])
 
-		return time.Date(1972, time.Month(month), 1, 0, 0, 0, 0, loc), true
+		return time.Date(comparisonReferenceYear, time.Month(month), comparisonPartialDay, 0, 0, 0, 0, loc), true
 	case xdm.TypeGMonthDay:
 		// Format: --MM-DD
 		if len(rest) < 7 {
@@ -1107,13 +1161,13 @@ func parseGTypeToTime(typeName, s string) (time.Time, bool) {
 		month := parseInt(rest[2:4])
 		day := parseInt(rest[5:7])
 
-		return time.Date(1972, time.Month(month), day, 0, 0, 0, 0, loc), true
+		return time.Date(comparisonReferenceYear, time.Month(month), day, 0, 0, 0, 0, loc), true
 	case xdm.TypeGYear:
 		// Format: [-]YYYY
 		year, endIdx := parseGYear(rest)
 		_ = endIdx
 
-		return time.Date(year, 1, 1, 0, 0, 0, 0, loc), true
+		return time.Date(year, comparisonPartialMonth, comparisonPartialDay, 0, 0, 0, 0, loc), true
 	case xdm.TypeGYearMonth:
 		// Format: [-]YYYY-MM
 		year, endIdx := parseGYear(rest)
@@ -1123,7 +1177,7 @@ func parseGTypeToTime(typeName, s string) (time.Time, bool) {
 
 		month := parseInt(rest[endIdx+1 : endIdx+3])
 
-		return time.Date(year, time.Month(month), 1, 0, 0, 0, 0, loc), true
+		return time.Date(year, time.Month(month), comparisonPartialDay, 0, 0, 0, 0, loc), true
 	}
 
 	return time.Time{}, false
@@ -1132,22 +1186,22 @@ func parseGTypeToTime(typeName, s string) (time.Time, bool) {
 // parseGTimezone extracts the timezone from a g* string value, returning the
 // location and the string with timezone removed.
 func parseGTimezone(s string) (*time.Location, string) {
-	if strings.HasSuffix(s, "Z") {
+	if strings.HasSuffix(s, utcTimezoneLexical) {
 		return time.UTC, s[:len(s)-1]
 	}
 
-	if len(s) >= 6 {
-		tz := s[len(s)-6:]
+	if len(s) >= timezoneOffsetBytes {
+		tz := s[len(s)-timezoneOffsetBytes:]
 		if (tz[0] == '+' || tz[0] == '-') && tz[3] == ':' {
 			hours := parseInt(tz[1:3])
 			mins := parseInt(tz[4:6])
 
-			offset := hours*3600 + mins*60
+			offset := hours*calendarSecondsPerHour + mins*calendarSecondsPerMinute
 			if tz[0] == '-' {
 				offset = -offset
 			}
 
-			return time.FixedZone("", offset), s[:len(s)-6]
+			return time.FixedZone("", offset), s[:len(s)-timezoneOffsetBytes]
 		}
 	}
 	// No timezone — use noTZLocation sentinel
@@ -1158,7 +1212,7 @@ func parseGTimezone(s string) (*time.Location, string) {
 func parseInt(s string) int {
 	n := 0
 	for _, c := range s {
-		n = n*10 + int(c-'0')
+		n = n*numericDecimalRadix + int(c-'0')
 	}
 
 	return n
@@ -1212,10 +1266,10 @@ func compareDuration(op TokenType, a, b xdm.Duration) (bool, error) {
 	// exact value space — so consecutive huge whole seconds and near-1 fractional
 	// seconds stay distinct (no float64 epsilon collapse). durationToRat folds the
 	// Negative sign into each rational.
-	aMonthsRat := xdm.DurationToRat(a, true)
-	aSecsRat := xdm.DurationToRat(a, false)
-	bMonthsRat := xdm.DurationToRat(b, true)
-	bSecsRat := xdm.DurationToRat(b, false)
+	aMonthsRat := xdm.DurationToRat(a, durationMonthsMode)
+	aSecsRat := xdm.DurationToRat(a, durationSecondsMode)
+	bMonthsRat := xdm.DurationToRat(b, durationMonthsMode)
+	bSecsRat := xdm.DurationToRat(b, durationSecondsMode)
 
 	eq := aMonthsRat.Cmp(bMonthsRat) == 0 && aSecsRat.Cmp(bSecsRat) == 0
 
@@ -1384,13 +1438,13 @@ func compareFloats(op TokenType, a, b float64) bool {
 }
 
 func compareBooleans(op TokenType, a, b bool) bool {
-	ai, bi := 0, 0
+	ai, bi := booleanComparisonFalse, booleanComparisonFalse
 	if a {
-		ai = 1
+		ai = booleanComparisonTrue
 	}
 
 	if b {
-		bi = 1
+		bi = booleanComparisonTrue
 	}
 
 	switch op {

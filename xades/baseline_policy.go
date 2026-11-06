@@ -19,11 +19,39 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	nameExplicitText           = "ExplicitText"
+	nameNoticeNumber           = "int"
+	nameNoticeNumbers          = "NoticeNumbers"
+	nameNoticeRef              = "NoticeRef"
+	nameOrganization           = "Organization"
+	nameSPDocSpecification     = "SPDocSpecification"
+	nameSPURI                  = "SPURI"
+	nameSPUserNotice           = "SPUserNotice"
+	nameSigPolicyHash          = "SigPolicyHash"
+	nameSigPolicyID            = "SigPolicyId"
+	nameSigPolicyQualifier     = "SigPolicyQualifier"
+	nameSigPolicyQualifiers    = "SigPolicyQualifiers"
+	nameSignaturePolicyID      = "SignaturePolicyId"
+	nameSignaturePolicyImplied = "SignaturePolicyImplied"
+	// Base used for exact decimal integer parsing of signed property values.
+	decimalRadix             = 10
+	maximumNoticeNumberBytes = 8192
+	maximumPolicyTransforms  = 16
+	maximumSignaturePolicies = 16
+)
+
 // PolicyDocumentDigestAsSpecified is confined to SignaturePolicyId; it is never
 // registered as a general XMLDSig transform.
 const PolicyDocumentDigestAsSpecified = "http://uri.etsi.org/01903/v1.3.2/SignaturePolicy/SPDocDigestAsInSpecification"
 
 func parseBaselinePolicy(ctx context.Context, element document.Element, options BaselineVerifyOptions) (*SignaturePolicy, error) {
+	// SigPolicyId and SigPolicyHash are required; Transforms and qualifiers are optional.
+	const (
+		minimumSignaturePolicyChildren = 2
+		maximumSignaturePolicyChildren = 4
+	)
+
 	if attrs(element) != nil {
 		return nil, ErrProfile
 	}
@@ -33,7 +61,7 @@ func parseBaselinePolicy(ctx context.Context, element document.Element, options 
 		return nil, ErrProfile
 	}
 
-	if values[0].Name() == name("SignaturePolicyImplied") {
+	if values[0].Name() == name(nameSignaturePolicyImplied) {
 		if _, err := children(values[0]); err != nil || attrs(values[0]) != nil {
 			return nil, ErrProfile
 		}
@@ -41,12 +69,12 @@ func parseBaselinePolicy(ctx context.Context, element document.Element, options 
 		return &SignaturePolicy{Implied: true}, nil
 	}
 
-	if values[0].Name() != name("SignaturePolicyId") || attrs(values[0]) != nil {
+	if values[0].Name() != name(nameSignaturePolicyID) || attrs(values[0]) != nil {
 		return nil, ErrProfile
 	}
 
 	values, err = baselineContent(values[0])
-	if err != nil || len(values) < 2 || len(values) > 4 || values[0].Name() != name("SigPolicyId") {
+	if err != nil || len(values) < minimumSignaturePolicyChildren || len(values) > maximumSignaturePolicyChildren || values[0].Name() != name(nameSigPolicyID) {
 		return nil, ErrProfile
 	}
 
@@ -67,7 +95,7 @@ func parseBaselinePolicy(ctx context.Context, element document.Element, options 
 		at++
 	}
 
-	if at >= len(values) || values[at].Name() != name("SigPolicyHash") {
+	if at >= len(values) || values[at].Name() != name(nameSigPolicyHash) {
 		return nil, ErrProfile
 	}
 
@@ -77,7 +105,7 @@ func parseBaselinePolicy(ctx context.Context, element document.Element, options 
 	}
 
 	at++
-	if at < len(values) && values[at].Name() == name("SigPolicyQualifiers") {
+	if at < len(values) && values[at].Name() == name(nameSigPolicyQualifiers) {
 		policy.Qualifiers, err = parsePolicyQualifiers(values[at])
 		if err != nil {
 			return nil, err
@@ -103,14 +131,14 @@ func parseBaselinePolicy(ctx context.Context, element document.Element, options 
 }
 
 func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options BaselineVerifyOptions) (*tree.Node, error) {
-	out := xnode("SignaturePolicyIdentifier")
+	out := xnode(nameSignaturePolicyIdentifier)
 
 	if policy.Implied {
 		if (policy.Identifier.Identifier != "" || policy.Identifier.Qualifier != "" || policy.Identifier.Description != "" || len(policy.Identifier.Documentation) != 0) || policy.DigestMethod != "" || len(policy.Digest) != 0 || len(policy.Transforms) != 0 || len(policy.Qualifiers) != 0 {
 			return nil, ErrProfile
 		}
 
-		add(out, xnode("SignaturePolicyImplied"))
+		add(out, xnode(nameSignaturePolicyImplied))
 
 		return out, nil
 	}
@@ -128,10 +156,10 @@ func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options Ba
 		return nil, ErrProfile
 	}
 
-	explicit := xnode("SignaturePolicyId")
+	explicit := xnode(nameSignaturePolicyID)
 	add(out, explicit)
 
-	identifier, err := buildObjectIdentifier("SigPolicyId", policy.Identifier)
+	identifier, err := buildObjectIdentifier(nameSigPolicyID, policy.Identifier)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +170,7 @@ func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options Ba
 		transforms := dsnode(lexicon.DSigElementTransforms)
 		for _, tr := range policy.Transforms {
 			n := dsnode(lexicon.DSigElementTransform)
-			attr(n, "Algorithm", tr.Algorithm)
+			attr(n, lexicon.SecurityAttrAlgorithm, tr.Algorithm)
 
 			if tr.Algorithm == PolicyDocumentDigestAsSpecified {
 				if len(tr.XPath) != 0 || len(tr.InclusivePrefixes) != 0 || len(tr.Stylesheet) != 0 {
@@ -158,9 +186,9 @@ func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options Ba
 		add(explicit, transforms)
 	}
 
-	hash := xnode("SigPolicyHash")
+	hash := xnode(nameSigPolicyHash)
 	method := dsnode(lexicon.DSigElementDigestMethod)
-	attr(method, "Algorithm", policy.DigestMethod)
+	attr(method, lexicon.SecurityAttrAlgorithm, policy.DigestMethod)
 	add(hash, method)
 
 	dv := dsnode(lexicon.DSigElementDigestValue)
@@ -169,7 +197,7 @@ func buildBaselinePolicy(ctx context.Context, policy SignaturePolicy, options Ba
 	add(explicit, hash)
 
 	if len(policy.Qualifiers) > 0 {
-		qualifiers := xnode("SigPolicyQualifiers")
+		qualifiers := xnode(nameSigPolicyQualifiers)
 
 		for _, qualifier := range policy.Qualifiers {
 			value, err := buildPolicyQualifier(qualifier)
@@ -191,7 +219,7 @@ func baselinePolicyDigest(ctx context.Context, policy SignaturePolicy, options B
 		return nil, err
 	}
 
-	if options.PolicyDocument == nil || len(options.PolicyDocument) > 8<<20 || len(policy.Transforms) > 16 {
+	if options.PolicyDocument == nil || len(options.PolicyDocument) > maximumPolicyDocumentBytes || len(policy.Transforms) > maximumPolicyTransforms {
 		return nil, ErrProfile
 	}
 
@@ -230,7 +258,7 @@ func baselinePolicyDigest(ctx context.Context, policy SignaturePolicy, options B
 
 func parsePolicyQualifier(element document.Element) (PolicyQualifier, error) {
 	var out PolicyQualifier
-	if element.Name() != name("SigPolicyQualifier") {
+	if element.Name() != name(nameSigPolicyQualifier) {
 		return out, ErrProfile
 	}
 
@@ -249,7 +277,7 @@ func parsePolicyQualifier(element document.Element) (PolicyQualifier, error) {
 
 	child := values[0]
 	switch child.Name() {
-	case name("SPURI"):
+	case name(nameSPURI):
 		value, err := simple(child)
 		if err != nil || !baselineURI(value) {
 			return out, ErrProfile
@@ -260,13 +288,13 @@ func parsePolicyQualifier(element document.Element) (PolicyQualifier, error) {
 		} else {
 			out.URI = value
 		}
-	case name("SPUserNotice"):
+	case name(nameSPUserNotice):
 		var err error
 
 		out.Notice, err = parsePolicyNotice(child)
 
 		return out, err
-	case name141("SPDocSpecification"):
+	case name141(nameSPDocSpecification):
 		value, err := parseObjectIdentifier(child)
 		if err != nil || value.Qualifier == qualifierOIDAsURI {
 			return out, ErrProfile
@@ -282,7 +310,7 @@ func parsePolicyQualifier(element document.Element) (PolicyQualifier, error) {
 
 func buildPolicyQualifier(value PolicyQualifier) (*tree.Node, error) {
 	if value.XML.Valid() {
-		if value.URI != "" || value.Notice != nil || value.Specification != nil || value.XML.Name() != name("SigPolicyQualifier") {
+		if value.URI != "" || value.Notice != nil || value.Specification != nil || value.XML.Name() != name(nameSigPolicyQualifier) {
 			return nil, ErrProfile
 		}
 
@@ -308,14 +336,14 @@ func buildPolicyQualifier(value PolicyQualifier) (*tree.Node, error) {
 		return nil, ErrProfile
 	}
 
-	out := xnode("SigPolicyQualifier")
+	out := xnode(nameSigPolicyQualifier)
 
 	if value.URI != "" {
 		if !baselineURI(value.URI) {
 			return nil, ErrProfile
 		}
 
-		leaf(out, "SPURI", value.URI)
+		leaf(out, nameSPURI, value.URI)
 	}
 
 	if value.Specification != nil {
@@ -323,13 +351,13 @@ func buildPolicyQualifier(value PolicyQualifier) (*tree.Node, error) {
 			return nil, ErrProfile
 		}
 
-		n, err := buildObjectIdentifier("SPDocSpecification", *value.Specification)
+		n, err := buildObjectIdentifier(nameSPDocSpecification, *value.Specification)
 		if err != nil {
 			return nil, err
 		}
 
-		n.Name = name141("SPDocSpecification")
-		n.Prefix = prefixXades141
+		n.Name = name141(nameSPDocSpecification)
+		n.Prefix = prefixXAdES141
 		add(out, n)
 	}
 
@@ -358,12 +386,12 @@ func parsePolicyNotice(element document.Element) (*PolicyNotice, error) {
 	out := &PolicyNotice{}
 
 	at := 0
-	if at < len(values) && values[at].Name() == name("NoticeRef") {
+	if at < len(values) && values[at].Name() == name(nameNoticeRef) {
 		if attrs(values[at]) != nil {
 			return nil, ErrProfile
 		}
 
-		fields, err := children(values[at], name("Organization"), name("NoticeNumbers"))
+		fields, err := children(values[at], name(nameOrganization), name(nameNoticeNumbers))
 		if err != nil {
 			return nil, err
 		}
@@ -381,7 +409,7 @@ func parsePolicyNotice(element document.Element) (*PolicyNotice, error) {
 		}
 
 		for _, number := range numbers {
-			if number.Name() != name("int") {
+			if number.Name() != name(nameNoticeNumber) {
 				return nil, ErrProfile
 			}
 
@@ -396,7 +424,7 @@ func parsePolicyNotice(element document.Element) (*PolicyNotice, error) {
 		at++
 	}
 
-	if at < len(values) && values[at].Name() == name("ExplicitText") {
+	if at < len(values) && values[at].Name() == name(nameExplicitText) {
 		out.ExplicitText, err = simple(values[at])
 		if err != nil {
 			return nil, err
@@ -413,19 +441,19 @@ func parsePolicyNotice(element document.Element) (*PolicyNotice, error) {
 }
 
 func buildPolicyNotice(value PolicyNotice) (*tree.Node, error) {
-	out := xnode("SPUserNotice")
+	out := xnode(nameSPUserNotice)
 	if value.Organization != "" || value.NoticeNumbers != nil {
-		ref := xnode("NoticeRef")
-		leaf(ref, "Organization", value.Organization)
+		ref := xnode(nameNoticeRef)
+		leaf(ref, nameOrganization, value.Organization)
 
-		numbers := xnode("NoticeNumbers")
+		numbers := xnode(nameNoticeNumbers)
 
 		for _, number := range value.NoticeNumbers {
 			if !baselineInteger(number) {
 				return nil, ErrProfile
 			}
 
-			leaf(numbers, "int", number)
+			leaf(numbers, nameNoticeNumber, number)
 		}
 
 		add(ref, numbers)
@@ -433,19 +461,19 @@ func buildPolicyNotice(value PolicyNotice) (*tree.Node, error) {
 	}
 
 	if value.ExplicitText != "" {
-		leaf(out, "ExplicitText", value.ExplicitText)
+		leaf(out, nameExplicitText, value.ExplicitText)
 	}
 
 	return out, nil
 }
 
 func baselineInteger(value string) bool {
-	value = strings.Trim(value, " \t\r\n")
-	if value == "" || len(value) > 8192 {
+	value = strings.Trim(value, lexicon.XMLWhitespace)
+	if value == "" || len(value) > maximumNoticeNumberBytes {
 		return false
 	}
 
-	_, ok := new(big.Int).SetString(value, 10)
+	_, ok := new(big.Int).SetString(value, decimalRadix)
 
 	return ok
 }
@@ -456,7 +484,7 @@ func parsePolicyTransforms(ctx context.Context, element document.Element) ([]ref
 	}
 
 	entries, err := baselineContent(element)
-	if err != nil || len(entries) == 0 || len(entries) > 16 {
+	if err != nil || len(entries) == 0 || len(entries) > maximumSignaturePolicies {
 		return nil, ErrProfile
 	}
 
@@ -562,7 +590,7 @@ func baselinePolicySpecifications(qualifiers []PolicyQualifier) ([]ObjectIdentif
 		}
 
 		for _, child := range qualifier.XML.Children() {
-			if child.Name() != name141("SPDocSpecification") {
+			if child.Name() != name141(nameSPDocSpecification) {
 				continue
 			}
 

@@ -14,9 +14,17 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"encoding/asn1"
+	"math"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/der"
+)
+
+const (
+	defaultPKCS12MACSaltBytes    = 16
+	minimumNonDefaultMACKeyBytes = 16
+	// BMP code units are big-endian two-octet values, including the password terminator.
+	bmpCodeUnitBytes = 2
 )
 
 func oidSHA1() asn1.ObjectIdentifier   { return asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26} }
@@ -43,17 +51,17 @@ func bmpPassword(password []byte) ([]byte, error) {
 		return nil, ErrPolicy
 	}
 
-	out := make([]byte, 0, len(password)*2+2)
+	out := make([]byte, 0, len(password)*bmpCodeUnitBytes+bmpCodeUnitBytes)
 	for len(password) > 0 {
 		r, size := utf8.DecodeRune(password)
 		password = password[size:]
 
-		if r > 0xffff {
+		if r > math.MaxUint16 {
 			clear(out)
 			return nil, ErrPolicy
 		}
 
-		out = append(out, byte((r>>8)&0xff), byte(r&0xff))
+		out = append(out, byte((r>>bitsPerOctet)&math.MaxUint8), byte(r&math.MaxUint8))
 	}
 
 	return append(out, 0, 0), nil
@@ -66,7 +74,10 @@ func validPKCS12Password(password []byte) bool { return utf8.Valid(password) }
 // classicMACKey derives a PKCS#12 diversifier-3 MAC key after hash, salt and
 // iteration-budget checks. The caller must clear the returned key after use.
 func classicMACKey(state *passwordState, hash crypto.Hash, salt []byte, iterations int) ([]byte, error) {
-	if !state.acceptHash(hash) || len(salt) < 8 || len(salt) > 64 {
+	// PKCS#12 Appendix B.3 selects MAC material with diversifier ID 3.
+	const macDiversifier = 3
+
+	if !state.acceptHash(hash) || len(salt) < minimumSaltBytes || len(salt) > maximumSaltBytes {
 		return nil, ErrPolicy
 	}
 
@@ -81,7 +92,7 @@ func classicMACKey(state *passwordState, hash crypto.Hash, salt []byte, iteratio
 	defer clear(password)
 
 	h := hash.New()
-	d := bytes.Repeat([]byte{3}, h.BlockSize())
+	d := bytes.Repeat([]byte{macDiversifier}, h.BlockSize())
 
 	s, p := repeatBlock(salt, h.BlockSize()), repeatBlock(password, h.BlockSize())
 	defer clear(p)
@@ -92,7 +103,7 @@ func classicMACKey(state *passwordState, hash crypto.Hash, salt []byte, iteratio
 	out := h.Sum(nil)
 
 	for i := 1; i < iterations; i++ {
-		if i%1024 == 0 {
+		if i%kdfCancellationInterval == 0 {
 			if err := state.ctx.Err(); err != nil {
 				clear(out)
 				return nil, err
@@ -118,7 +129,7 @@ func digestHash(v asn1.RawValue) (crypto.Hash, error) {
 		return 0, err
 	}
 
-	if len(param.FullBytes) > 0 && !der.Is(param, 0, asn1.TagNull, false) {
+	if len(param.FullBytes) > 0 && !der.Is(param, asn1.ClassUniversal, asn1.TagNull, false) {
 		return 0, ErrFormat
 	}
 
@@ -140,13 +151,22 @@ func digestHash(v asn1.RawValue) (crypto.Hash, error) {
 // It returns the digest algorithm, owned key bytes and borrowed expected MAC; callers
 // must clear the key.
 func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte, []byte, error) {
-	f, err := der.Sequence(mac, 2, 3)
-	if err != nil || !der.Is(f[1], 0, asn1.TagOctetString, false) {
+	// MacData carries DigestInfo, salt and optional iterations. DigestInfo
+	// binds its algorithm to bytes; PBMAC1 binds KDF and MAC algorithm choices.
+	const (
+		macDataMinimumFields  = 2
+		macDataMaximumFields  = 3
+		digestInfoFields      = 2
+		pbmac1ParameterFields = 2
+	)
+
+	f, err := der.Sequence(mac, macDataMinimumFields, macDataMaximumFields)
+	if err != nil || !der.Is(f[1], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		return 0, nil, nil, ErrFormat
 	}
 
-	info, err := der.Sequence(f[0], 2, 2)
-	if err != nil || !der.Is(info[1], 0, asn1.TagOctetString, false) {
+	info, err := der.Sequence(f[0], digestInfoFields, digestInfoFields)
+	if err != nil || !der.Is(info[1], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		return 0, nil, nil, ErrFormat
 	}
 
@@ -157,13 +177,13 @@ func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte,
 
 	if oid.Equal(oidPBMAC1()) {
 		// RFC 9879: outer macSalt/iterations are syntactic placeholders only.
-		if len(f) == 3 {
-			if !der.Is(f[2], 0, asn1.TagInteger, false) {
+		if len(f) == macDataMaximumFields {
+			if !der.Is(f[2], asn1.ClassUniversal, asn1.TagInteger, false) {
 				return 0, nil, nil, ErrFormat
 			}
 		}
 
-		p, err := der.Sequence(params, 2, 2)
+		p, err := der.Sequence(params, pbmac1ParameterFields, pbmac1ParameterFields)
 		if err != nil {
 			return 0, nil, nil, ErrFormat
 		}
@@ -178,7 +198,7 @@ func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte,
 		}
 
 		kdf, err := parseKDF(p[0], hash.Size(), true)
-		if err == nil && (!sha2(kdf.hash) || kdf.keyBytes != hash.Size() && (!state.allowNonDefaultMACKeyLength || kdf.keyBytes < 16)) {
+		if err == nil && (!sha2(kdf.hash) || kdf.keyBytes != hash.Size() && (!state.allowNonDefaultMACKeyLength || kdf.keyBytes < minimumNonDefaultMACKeyBytes)) {
 			err = ErrPolicy
 		}
 
@@ -201,7 +221,7 @@ func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte,
 	}
 
 	iterations := 1
-	if len(f) == 3 {
+	if len(f) == macDataMaximumFields {
 		iterations, err = integer(f[2])
 		if err != nil {
 			return 0, nil, nil, err
@@ -239,7 +259,7 @@ func encodePKCS12MAC(state *passwordState, message []byte, options PKCS12Options
 }
 
 func encodePKCS12MACParts(state *passwordState, message derParts, options PKCS12Options) ([]byte, error) {
-	salt := make([]byte, 16)
+	salt := make([]byte, defaultPKCS12MACSaltBytes)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
@@ -261,10 +281,10 @@ func encodePKCS12MACParts(state *passwordState, message derParts, options PKCS12
 			oid = oidSHA512()
 		}
 
-		alg = der.Seq(der.OID(oid), []byte{5, 0})
+		alg = der.Seq(der.OID(oid), []byte{asn1.TagNull, 0})
 	} else {
 		key, err = state.derive(hash, salt, options.Encryption.Iterations, hash.Size())
-		params := der.Seq(kdfEncoding(salt, options.Encryption.Iterations, hash.Size(), hash), der.Seq(der.OID(hmacOID(hash)), []byte{5, 0}))
+		params := der.Seq(kdfEncoding(salt, options.Encryption.Iterations, hash.Size(), hash), der.Seq(der.OID(hmacOID(hash)), []byte{asn1.TagNull, 0}))
 		alg = der.Seq(der.OID(oidPBMAC1()), params)
 	}
 

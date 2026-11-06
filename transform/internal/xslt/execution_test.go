@@ -3,6 +3,8 @@ package xslt //nolint:testpackage // Tests the compiler and invocation contracts
 import (
 	"context"
 	"errors"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -196,12 +198,64 @@ func TestInvocationOutputSnapshot(t *testing.T) {
 		t.Fatalf("caller changed retained output: %+v", got)
 	}
 	clone := inv.BaseOutputURI("https://output.example/result")
-	if clone.ResolvedOutputDef() != nil || inv.ResolvedOutputDef().Method != "text" {
+	retained := inv.ResolvedOutputDef()
+	if clone.ResolvedOutputDef() != nil || retained == nil || retained.Method != "text" {
 		t.Fatal("fluent branch shares resolved output state")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if got, err := clone.Serialize(ctx); got != "" || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled invocation = %q, %v", got, err)
+	}
+}
+
+type streamTestResolver struct {
+	source string
+}
+
+func (r streamTestResolver) Resolve(ctx context.Context, _ string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(r.source)), nil
+}
+
+func TestStreamAvailableUsesDefaultParseOptions(t *testing.T) {
+	t.Parallel()
+	ss := compileTestStylesheet(t, "", `<xsl:text>unused</xsl:text>`)
+	for _, test := range []struct {
+		name, source string
+		limit        int64
+		want         bool
+	}{
+		{"XML", `<r/>`, 0, true},
+		{"DTD rejected", `<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>`, 0, false},
+		{"byte limit", strings.Repeat(" ", 64) + `<r/>`, 8, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ec := &execContext{stylesheet: ss, transformConfig: &transformConfig{uriResolver: streamTestResolver{source: test.source}, maxResourceBytes: test.limit}}
+			if ec.inputParseOptions() != nil {
+				t.Fatal("test requires the default parse policy")
+			}
+			result, err := ec.fnStreamAvailable(t.Context(), []xdm.Sequence{xdm.SingleString("https://source.example/input.xml")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if xdm.SequenceLen(result) != 1 || !reflect.DeepEqual(result.Get(0), xdm.AtomicValue{TypeName: xdm.TypeBoolean, Value: test.want}) {
+				t.Fatalf("stream-available = %v; want %v", result, test.want)
+			}
+		})
+	}
+}
+
+func TestDocumentNodeFromAbsentNode(t *testing.T) {
+	t.Parallel()
+	var doc *xdm.Document
+	var element *xdm.Element
+	for _, node := range []xdm.Node{nil, doc, element} {
+		if got := documentNodeFromNode(node); got != nil {
+			t.Fatalf("absent node acquired document %v", got)
+		}
 	}
 }

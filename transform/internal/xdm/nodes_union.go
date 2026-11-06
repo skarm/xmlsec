@@ -93,9 +93,8 @@ func inElementOrder(nodes []Node) bool {
 // mergeIncreasingRuns merges a and b by their sort keys (keys holds the keys
 // of a followed by those of b) when the keys of each operand are strictly
 // increasing. Strictly increasing keys mean an operand is sorted and holds no
-// duplicates: every indexed node owns its own position, and the nodes that
-// share one (the namespace nodes of one element, and nodes no index
-// describes) never form a strictly increasing run. The merge emits a node
+// duplicates: namespace prefixes break ties within one owner's namespace slot,
+// while nodes no index describes cannot form a strictly increasing run. The merge emits a node
 // common to both operands once; two different nodes with equal keys stop the
 // merge. The result is then strictly increasing, which is the one order
 // MergeNodeSets can produce for the same node-set.
@@ -108,7 +107,7 @@ func mergeIncreasingRuns(a, b []Node, keys []sortKey, maxNodes int) ([]Node, boo
 	ka := keys[:len(a)]
 
 	kb := keys[len(a):]
-	if !strictlyIncreasing(ka) || !strictlyIncreasing(kb) {
+	if !strictlyIncreasing(a, ka) || !strictlyIncreasing(b, kb) {
 		return nil, false, nil
 	}
 
@@ -116,11 +115,13 @@ func mergeIncreasingRuns(a, b []Node, keys []sortKey, maxNodes int) ([]Node, boo
 
 	i, j := 0, 0
 	for i < len(a) && j < len(b) {
+		order := compareNodeSortKeys(a[i], b[j], ka[i], kb[j])
+
 		switch {
-		case ka[i].before(kb[j]):
+		case order < 0:
 			result = append(result, a[i])
 			i++
-		case kb[j].before(ka[i]):
+		case order > 0:
 			result = append(result, b[j])
 			j++
 		case a[i] == b[j]:
@@ -146,9 +147,9 @@ func mergeIncreasingRuns(a, b []Node, keys []sortKey, maxNodes int) ([]Node, boo
 	return result, true, nil
 }
 
-func strictlyIncreasing(keys []sortKey) bool {
+func strictlyIncreasing(nodes []Node, keys []sortKey) bool {
 	for i := 1; i < len(keys); i++ {
-		if !keys[i-1].before(keys[i]) {
+		if compareNodeSortKeys(nodes[i-1], nodes[i], keys[i-1], keys[i]) >= 0 {
 			return false
 		}
 	}

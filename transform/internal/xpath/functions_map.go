@@ -12,34 +12,46 @@ import (
 )
 
 func lookupFunctionsMap(name string) (*builtinFunc, bool) {
+	// Local dispatch names belong to the map namespace, independently of fn: and array:.
+	const (
+		fnNameMapMerge    = "merge"
+		fnNameMapSize     = "size"
+		fnNameMapKeys     = "keys"
+		fnNameMapGet      = "get"
+		fnNameMapPut      = "put"
+		fnNameMapEntry    = "entry"
+		fnNameMapFind     = "find"
+		fnNameMapContains = "contains"
+	)
+
 	switch name {
-	case "merge":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnMapMerge}, true
-	case "size":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMapSize}, true
-	case "keys":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnMapKeys}, true
-	case fnNameContains:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMapContains}, true
-	case "get":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMapGet}, true
-	case "put":
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnMapPut}, true
-	case "entry":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMapEntry}, true
+	case fnNameMapMerge:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnMapMerge}, true
+	case fnNameMapSize:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMapSize}, true
+	case fnNameMapKeys:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnMapKeys}, true
+	case fnNameMapContains:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMapContains}, true
+	case fnNameMapGet:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMapGet}, true
+	case fnNameMapPut:
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnMapPut}, true
+	case fnNameMapEntry:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMapEntry}, true
 	case nameRemove:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMapRemove}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMapRemove}, true
 	case nameForEach:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMapForEach}, true
-	case "find":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnMapFind}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMapForEach}, true
+	case fnNameMapFind:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnMapFind}, true
 	}
 
 	return nil, false
 }
 
 func extractMap(seq xdm.Sequence) (xdm.MapItem, error) {
-	if xdm.SequenceLen(seq) != 1 {
+	if xdm.SequenceLen(seq) != singletonFunctionArgument {
 		return xdm.MapItem{}, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected single map"}
 	}
 
@@ -52,14 +64,20 @@ func extractMap(seq xdm.Sequence) (xdm.MapItem, error) {
 }
 
 func fnMapMerge(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	// Additional duplicates policies supplement the existing shared options.
+	const (
+		mapDuplicatesUseAny  = "use-any"
+		mapDuplicatesCombine = "combine"
+	)
+
 	duplicates := xdm.MergeUseFirst
 
-	if len(args) > 1 {
+	if len(args) > builtinArityOne {
 		if xdm.SequenceLen(args[1]) == 0 {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map:merge: options argument must be a map, got empty sequence"}
 		}
 
-		if xdm.SequenceLen(args[1]) > 1 {
+		if xdm.SequenceLen(args[1]) > singletonFunctionArgument {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map:merge: options argument must be a single map"}
 		}
 		// The options map should contain "duplicates" key
@@ -85,13 +103,13 @@ func fnMapMerge(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 				duplicates = xdm.MergeUseFirst
 			case nameUseLast:
 				duplicates = xdm.MergeUseLast
-			case "use-any":
+			case mapDuplicatesUseAny:
 				// use-any allows the implementation to pick any value;
 				// reusing use-first behavior is conformant.
 				duplicates = xdm.MergeUseFirst
 			case duplicatesReject:
 				duplicates = xdm.MergeReject
-			case "combine":
+			case mapDuplicatesCombine:
 				duplicates = xdm.MergeCombine
 			default:
 				return nil, &xdm.Error{Code: errCodeFOJS0005, Message: fmt.Sprintf("map:merge: invalid value for 'duplicates' option: %q", s)}
@@ -164,7 +182,7 @@ func prepareMergedValue(ctx context.Context, ec *evalContext, lengths map[xdm.Ma
 	}
 
 	total := previous + incoming
-	if err := fnCountOps(ctx, ec, max(1, incoming)); err != nil {
+	if err := fnCountOps(ctx, ec, max(minimumMapValueWork, incoming)); err != nil {
 		return err
 	}
 
@@ -238,7 +256,7 @@ func fnMapGet(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map:get requires a key argument"}
 	}
 
-	if xdm.SequenceLen(args[1]) > 1 {
+	if xdm.SequenceLen(args[1]) > singletonFunctionArgument {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "map:get key must be a single atomic value"}
 	}
 
@@ -262,7 +280,7 @@ func fnMapGet(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return appendBoundedClonedSeq(ctx, ec, nil, val, fnMaxNodes(ec))
 }
 
-func fnMapPut(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnMapPut(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	m, err := extractMap(args[0])
 	if err != nil {
 		return nil, err
@@ -270,6 +288,15 @@ func fnMapPut(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	ka, err := extractSingleAtomicArg(args[1], "map:put key")
 	if err != nil {
+		return nil, err
+	}
+
+	ec := getFnContext(ctx)
+	if m.Size() >= fnMaxNodes(ec) && !m.Contains(ka) {
+		return nil, ErrNodeSetLimit
+	}
+
+	if err := fnCountOps(ctx, ec, max(minimumMapValueWork, xdm.SequenceLen(args[2]))); err != nil {
 		return nil, err
 	}
 
@@ -329,7 +356,7 @@ func fnMapForEach(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 			return ErrNodeSetLimit
 		}
 
-		if err := fnCountOps(ctx, ec, max(vLen, 1)); err != nil {
+		if err := fnCountOps(ctx, ec, max(vLen, minimumMapValueWork)); err != nil {
 			return err
 		}
 

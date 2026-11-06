@@ -34,6 +34,8 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+const benchmarkPendingRefreshInterval = 4096
+
 // BenchmarkLogin includes SP initiation, IdP verification and issuance, and SP consumption.
 func BenchmarkLogin(b *testing.B) {
 	s := setup(b)
@@ -64,7 +66,7 @@ func BenchmarkSPBegin(b *testing.B) {
 	for b.Loop() {
 		// Keep the real bounded store, but renew fixtures outside the timer
 		// before it fills so long benchmarks do not measure ErrCapacity.
-		if pending == 4096 {
+		if pending == benchmarkPendingRefreshInterval {
 			b.StopTimer()
 			s = setup(b)
 			pending = 0
@@ -279,6 +281,148 @@ func TestSustainedLoad(t *testing.T) {
 	runtime.KeepAlive(sizes)
 }
 
+// BenchmarkSPBeginPOST measures signed POST request creation, including pending state.
+func BenchmarkSPBeginPOST(b *testing.B) {
+	s := setup(b)
+	browser := make([]byte, 32)
+	options := sp.BeginOptions{IDP: idpID, Binding: metadata.HTTPPost, BrowserBinding: browser, At: testcert.Now()}
+	b.ReportAllocs()
+	pending := 0
+	for b.Loop() {
+		if pending == benchmarkPendingRefreshInterval {
+			b.StopTimer()
+			s = setup(b)
+			pending = 0
+			b.StartTimer()
+		}
+		if _, err := s.sp.Begin(b.Context(), options); err != nil {
+			b.Fatal(err)
+		}
+		pending++
+	}
+}
+
+// BenchmarkLoginParallel covers shared metadata, request/replay stores and compression.
+func BenchmarkLoginParallel(b *testing.B) {
+	operation, _ := soakSAML(b)
+	var serial atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := operation(b.Context(), serial.Add(1)); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}
+
+// BenchmarkIssuedPOST compares collection with direct output using the same
+// immutable signed message and limits. Fixture signing is outside the timer.
+func BenchmarkIssuedPOST(b *testing.B) {
+	for _, size := range []int{0, 512 << 10} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			s := setup(b)
+			out, request, _ := begin(b, s, metadata.HTTPRedirect)
+			authentication := auth()
+			if size > 0 {
+				authentication.Attributes = make([]protocol.Attribute, 64)
+				for i := range authentication.Attributes {
+					authentication.Attributes[i] = protocol.Attribute{Name: fmt.Sprintf("a%d", i), Values: []string{strings.Repeat("x", 4096), strings.Repeat("é", 2048)}}
+				}
+			}
+			issued, err := s.idp.Issue(b.Context(), request, authentication, testcert.Now().Add(2*time.Second))
+			if err != nil {
+				b.Fatal(err)
+			}
+			relay := out.RelayState()
+			for name, write := range map[string]func() error{
+				"URLBuffer": func() error {
+					_, err := binding.EncodePOST(b.Context(), issued.Document(), binding.Response, &relay, binding.POSTLimits{})
+					return err
+				},
+				"URLWriter": func() error { _, err := issued.WritePOST(b.Context(), io.Discard); return err },
+				"HTMLBuffer": func() error {
+					_, err := binding.RenderPOSTForm(b.Context(), issued.Destination(), issued.Document(), binding.Response, &relay, binding.POSTLimits{})
+					return err
+				},
+				"HTMLWriter": func() error { _, err := issued.WritePOSTForm(b.Context(), io.Discard); return err },
+			} {
+				b.Run(name, func(b *testing.B) {
+					b.ReportAllocs()
+					for b.Loop() {
+						if err := write(); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func soakPauseSnapshot() metrics.Float64Histogram {
+	sample := []metrics.Sample{{Name: "/gc/pauses:seconds"}}
+	metrics.Read(sample)
+	value := sample[0].Value.Float64Histogram()
+	return metrics.Float64Histogram{Counts: append([]uint64(nil), value.Counts...), Buckets: append([]float64(nil), value.Buckets...)}
+}
+
+func soakPausePercentiles(before, after metrics.Float64Histogram) map[string]float64 {
+	counts := make([]uint64, len(after.Counts))
+	var total uint64
+	for i := range counts {
+		counts[i] = after.Counts[i] - before.Counts[i]
+		total += counts[i]
+	}
+	quantile := func(percent uint64) float64 {
+		if total == 0 {
+			return 0
+		}
+		var sum uint64
+		for i, count := range counts {
+			sum += count
+			if sum >= (total*percent+99)/100 {
+				return after.Buckets[i+1] * 1000
+			}
+		}
+		return 0
+	}
+	return map[string]float64{"p50": quantile(50), "p95": quantile(95), "p99": quantile(99)}
+}
+
+// BenchmarkSoakInstrumentation isolates the latency/count bookkeeping around
+// the same complete login. Runtime memory sampling and OS RSS collection are
+// outside this benchmark and their overhead is reported separately.
+func BenchmarkSoakInstrumentation(b *testing.B) {
+	for _, instrumented := range []bool{false, true} {
+		b.Run(strconv.FormatBool(instrumented), func(b *testing.B) {
+			operation, _ := soakSAML(b)
+			var serial uint64
+			var completed atomic.Uint64
+			var histogram [2048]atomic.Uint64
+			b.ReportAllocs()
+			for b.Loop() {
+				serial++
+				if !instrumented {
+					if err := operation(b.Context(), serial); err != nil {
+						b.Fatal(err)
+					}
+					continue
+				}
+				began := time.Now()
+				if err := operation(b.Context(), serial); err != nil {
+					b.Fatal(err)
+				}
+				completed.Add(1)
+				bucket := min(len(histogram)-1, max(0, int(math.Log2(float64(max(1, time.Since(began).Nanoseconds())))*32)))
+				histogram[bucket].Add(1)
+			}
+		})
+	}
+}
+
 func soakCPU() float64 {
 	samples := []metrics.Sample{{Name: "/cpu/classes/total:cpu-seconds"}, {Name: "/cpu/classes/idle:cpu-seconds"}}
 	metrics.Read(samples)
@@ -453,146 +597,4 @@ func soakSAML(t testing.TB) (func(context.Context, uint64) error, func() any) {
 		}, func() any {
 			return map[string]int{"pending": requests.Len(), "sp_replay": sr.Len(), "idp_replay": ir.Len()}
 		}
-}
-
-// BenchmarkSPBeginPOST measures signed POST request creation, including pending state.
-func BenchmarkSPBeginPOST(b *testing.B) {
-	s := setup(b)
-	browser := make([]byte, 32)
-	options := sp.BeginOptions{IDP: idpID, Binding: metadata.HTTPPost, BrowserBinding: browser, At: testcert.Now()}
-	b.ReportAllocs()
-	pending := 0
-	for b.Loop() {
-		if pending == 4096 {
-			b.StopTimer()
-			s = setup(b)
-			pending = 0
-			b.StartTimer()
-		}
-		if _, err := s.sp.Begin(b.Context(), options); err != nil {
-			b.Fatal(err)
-		}
-		pending++
-	}
-}
-
-// BenchmarkLoginParallel covers shared metadata, request/replay stores and compression.
-func BenchmarkLoginParallel(b *testing.B) {
-	operation, _ := soakSAML(b)
-	var serial atomic.Uint64
-	b.ReportAllocs()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			if err := operation(b.Context(), serial.Add(1)); err != nil {
-				b.Error(err)
-				return
-			}
-		}
-	})
-}
-
-// BenchmarkIssuedPOST compares collection with direct output using the same
-// immutable signed message and limits. Fixture signing is outside the timer.
-func BenchmarkIssuedPOST(b *testing.B) {
-	for _, size := range []int{0, 512 << 10} {
-		b.Run(strconv.Itoa(size), func(b *testing.B) {
-			s := setup(b)
-			out, request, _ := begin(b, s, metadata.HTTPRedirect)
-			authentication := auth()
-			if size > 0 {
-				authentication.Attributes = make([]protocol.Attribute, 64)
-				for i := range authentication.Attributes {
-					authentication.Attributes[i] = protocol.Attribute{Name: fmt.Sprintf("a%d", i), Values: []string{strings.Repeat("x", 4096), strings.Repeat("é", 2048)}}
-				}
-			}
-			issued, err := s.idp.Issue(b.Context(), request, authentication, testcert.Now().Add(2*time.Second))
-			if err != nil {
-				b.Fatal(err)
-			}
-			relay := out.RelayState()
-			for name, write := range map[string]func() error{
-				"URLBuffer": func() error {
-					_, err := binding.EncodePOST(b.Context(), issued.Document(), binding.Response, &relay, binding.POSTLimits{})
-					return err
-				},
-				"URLWriter": func() error { _, err := issued.WritePOST(b.Context(), io.Discard); return err },
-				"HTMLBuffer": func() error {
-					_, err := binding.RenderPOSTForm(b.Context(), issued.Destination(), issued.Document(), binding.Response, &relay, binding.POSTLimits{})
-					return err
-				},
-				"HTMLWriter": func() error { _, err := issued.WritePOSTForm(b.Context(), io.Discard); return err },
-			} {
-				b.Run(name, func(b *testing.B) {
-					b.ReportAllocs()
-					for b.Loop() {
-						if err := write(); err != nil {
-							b.Fatal(err)
-						}
-					}
-				})
-			}
-		})
-	}
-}
-
-func soakPauseSnapshot() metrics.Float64Histogram {
-	sample := []metrics.Sample{{Name: "/gc/pauses:seconds"}}
-	metrics.Read(sample)
-	value := sample[0].Value.Float64Histogram()
-	return metrics.Float64Histogram{Counts: append([]uint64(nil), value.Counts...), Buckets: append([]float64(nil), value.Buckets...)}
-}
-
-func soakPausePercentiles(before, after metrics.Float64Histogram) map[string]float64 {
-	counts := make([]uint64, len(after.Counts))
-	var total uint64
-	for i := range counts {
-		counts[i] = after.Counts[i] - before.Counts[i]
-		total += counts[i]
-	}
-	quantile := func(percent uint64) float64 {
-		if total == 0 {
-			return 0
-		}
-		var sum uint64
-		for i, count := range counts {
-			sum += count
-			if sum >= (total*percent+99)/100 {
-				return after.Buckets[i+1] * 1000
-			}
-		}
-		return 0
-	}
-	return map[string]float64{"p50": quantile(50), "p95": quantile(95), "p99": quantile(99)}
-}
-
-// BenchmarkSoakInstrumentation isolates the latency/count bookkeeping around
-// the same complete login. Runtime memory sampling and OS RSS collection are
-// outside this benchmark and their overhead is reported separately.
-func BenchmarkSoakInstrumentation(b *testing.B) {
-	for _, instrumented := range []bool{false, true} {
-		b.Run(strconv.FormatBool(instrumented), func(b *testing.B) {
-			operation, _ := soakSAML(b)
-			var serial uint64
-			var completed atomic.Uint64
-			var histogram [2048]atomic.Uint64
-			b.ReportAllocs()
-			for b.Loop() {
-				serial++
-				if !instrumented {
-					if err := operation(b.Context(), serial); err != nil {
-						b.Fatal(err)
-					}
-					continue
-				}
-				began := time.Now()
-				if err := operation(b.Context(), serial); err != nil {
-					b.Fatal(err)
-				}
-				completed.Add(1)
-				bucket := min(len(histogram)-1, max(0, int(math.Log2(float64(max(1, time.Since(began).Nanoseconds())))*32)))
-				histogram[bucket].Add(1)
-			}
-		})
-	}
 }

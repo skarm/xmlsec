@@ -16,6 +16,12 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// XSLT 3.0 section 6.5 default pattern priority classes; explicit xsl:template priority remains independently parsed.
+const (
+	patternPriorityComplex  = 0.5
+	patternPriorityNodeKind = -0.5
+)
+
 type predicateOutcome int
 
 const (
@@ -295,17 +301,43 @@ func (p *pattern) matchNodeContextItemPositional(ctx context.Context, ec *execCo
 // attribute nodes. This is a conservative heuristic used by key table building
 // to decide whether to visit attribute nodes during the document walk.
 func (p *pattern) matchesAttributes() bool {
-	return strings.Contains(p.source, "@") || strings.Contains(p.source, "attribute")
+	for _, alt := range p.Alternatives {
+		if !alt.neverMatches && exprMatchesAttributeNodes(alt.expr) {
+			return true
+		}
+	}
+
+	return false
 }
 
-// matchesNamespaceNodes reports whether the pattern could match a namespace
-// node. A namespace node is only ever selected structurally by a step on the
-// namespace axis (nodeMatchesStep rejects it on every other axis), so a pattern
-// whose alternatives are all paths ending on another axis can never match one.
-// Every other alternative form — "." and ".[p]", a variable or function-call
-// pattern matched by evaluating the expression — is treated as though it could.
-// Key table building uses this to decide whether to enumerate in-scope
-// namespace nodes during the document walk.
+// Non-path patterns can select attributes dynamically. Only a terminal axis
+// known to exclude attributes makes skipping them safe.
+func exprMatchesAttributeNodes(expr xpath.Expr) bool {
+	switch e := expr.(type) {
+	case *xpath.LocationPath:
+		return exprMatchesAttributeNodes(*e)
+	case xpath.LocationPath:
+		if len(e.Steps) == 0 {
+			return false
+		}
+
+		axis := e.Steps[len(e.Steps)-1].Axis
+
+		return axis == xpath.AxisAttribute || axis == xpath.AxisSelf || axis == xpath.AxisDescendantOrSelf
+	case xpath.RootExpr, *xpath.RootExpr:
+		return false
+	case xpath.UnionExpr:
+		return exprMatchesAttributeNodes(e.Left) || exprMatchesAttributeNodes(e.Right)
+	case xpath.PathStepExpr:
+		return exprMatchesAttributeNodes(e.Right)
+	default:
+		return true
+	}
+}
+
+// matchesNamespaceNodes conservatively reports whether a pattern can select
+// namespaces, including self steps that preserve an earlier namespace step.
+// Key table building uses this to decide whether to enumerate namespaces.
 func (p *pattern) matchesNamespaceNodes() bool {
 	for _, alt := range p.Alternatives {
 		// Skipping a neverMatches alternative cannot lose a namespace node:
@@ -518,6 +550,10 @@ func matchLocationPath(ctx context.Context, ec *execContext, path xpath.Location
 	// evaluation here — predicates will be evaluated with proper
 	// descendant-set position relative to the ancestor later.
 	lastStep := path.Steps[len(path.Steps)-1]
+	if lastStep.Axis == xpath.AxisSelf || lastStep.Axis == xpath.AxisDescendantOrSelf && isPatternSideNode(node) {
+		return matchStepsUpward(ctx, ec, path.Steps, path.Absolute, node)
+	}
+
 	descendantAxis := lastStep.Axis == xpath.AxisDescendant || lastStep.Axis == xpath.AxisDescendantOrSelf
 
 	hasDescPreds := descendantAxis && len(lastStep.Predicates) > 0
@@ -653,6 +689,8 @@ func matchStepsUpward(ctx context.Context, ec *execContext, steps []xpath.Step, 
 	lastStep := steps[len(steps)-1]
 
 	switch lastStep.Axis {
+	case xpath.AxisSelf:
+		return matchSelfStepUpward(ctx, ec, steps, absolute, node)
 	case xpath.AxisChild:
 		// child axis in pattern means "the parent must match"
 		if !nodeMatchesStep(ctx, ec, lastStep, node) {
@@ -660,7 +698,16 @@ func matchStepsUpward(ctx context.Context, ec *execContext, steps []xpath.Step, 
 		}
 
 		return matchStepsUpward(ctx, ec, steps[:len(steps)-1], absolute, node.Parent())
+	case xpath.AxisDescendant:
+		return matchLocationPath(ctx, ec, xpath.LocationPath{Steps: steps, Absolute: absolute}, node)
 	case xpath.AxisDescendantOrSelf:
+		if isPatternSideNode(node) {
+			return matchSelfStepUpward(ctx, ec, steps, absolute, node)
+		}
+
+		if lastStep.ExplicitAxis {
+			return matchLocationPath(ctx, ec, xpath.LocationPath{Steps: steps, Absolute: absolute}, node)
+		}
 		// // in pattern means any ancestor may match
 		// This step is the desc-or-self::node() inserted by //
 		// Try matching from this node and any ancestor
@@ -679,6 +726,26 @@ func matchStepsUpward(ctx context.Context, ec *execContext, steps []xpath.Step, 
 
 		return matchStepsUpward(ctx, ec, steps[:len(steps)-1], absolute, node.Parent())
 	}
+}
+
+func isPatternSideNode(node xdm.Node) bool {
+	return node.Type() == xdm.AttributeNode || node.Type() == xdm.NamespaceNode
+}
+
+func matchSelfStepUpward(ctx context.Context, ec *execContext, steps []xpath.Step, absolute bool, node xdm.Node) bool {
+	if !nodeMatchesStep(ctx, ec, steps[len(steps)-1], node) {
+		return false
+	}
+
+	remaining := steps[:len(steps)-1]
+	// root(.)//EE includes a side-node as an initial context only when it
+	// is itself the root. An earlier attribute/namespace step can select a
+	// parented side-node, after which self steps preserve that node.
+	if len(remaining) == 0 && !absolute && isPatternSideNode(node) && node.Parent() != nil {
+		return false
+	}
+
+	return matchStepsUpward(ctx, ec, remaining, absolute, node)
 }
 
 // nodeMatchesStep checks if a node matches a single step's node test and predicates.
@@ -700,21 +767,17 @@ func nodeMatchesStep(ctx context.Context, ec *execContext, step xpath.Step, node
 			}
 		}
 	}
-	// Attribute nodes are only matched by the attribute axis (e.g., @*, attribute::node()).
-	// The default child axis does not include attributes.
-	// Conversely, the attribute axis only matches attribute nodes.
-	isAttr := nodeType == xdm.AttributeNode
-	if isAttr != (step.Axis == xpath.AxisAttribute) {
-		return false
-	}
-	// Namespace nodes are only matched by the namespace axis or namespace-node() test.
-	// matchesNamespaceNodes relies on this being the only way a namespace node
-	// can match: widening it (e.g. letting self:: select one) requires updating
-	// matchesNamespaceNodes too, or key table building will silently drop
-	// namespace-node entries.
-	isNS := nodeType == xdm.NamespaceNode
-	if isNS != (step.Axis == xpath.AxisNamespace) {
-		return false
+	// Attribute and namespace steps select their own node kinds. Self axes
+	// may preserve either kind after an earlier step selected the node.
+	selfAxis := step.Axis == xpath.AxisSelf || step.Axis == xpath.AxisDescendantOrSelf
+	if !selfAxis {
+		if (nodeType == xdm.AttributeNode) != (step.Axis == xpath.AxisAttribute) {
+			return false
+		}
+
+		if (nodeType == xdm.NamespaceNode) != (step.Axis == xpath.AxisNamespace) {
+			return false
+		}
 	}
 
 	if !nodeMatchesTest(ctx, ec, step.NodeTest, node) {
@@ -722,6 +785,10 @@ func nodeMatchesStep(ctx context.Context, ec *execContext, step xpath.Step, node
 	}
 
 	if len(step.Predicates) > 0 {
+		if step.Axis == xpath.AxisSelf || selfAxis && isPatternSideNode(node) {
+			return passesChainedPredicates(ctx, ec, step.Predicates, []xdm.Node{node}, node)
+		}
+
 		return evaluateChainedPredicates(ctx, ec, step, node)
 	}
 
@@ -884,7 +951,7 @@ func matchNameTest(_ context.Context, ec *execContext, nt xdm.NameTest, node xdm
 		return false
 	}
 
-	if nt.Local == "*" && nt.Prefix == "" && nt.URI == "" {
+	if nt.Local == "*" && nt.Prefix == "" && !nt.URIQualified && nt.URI == "" {
 		// * matches all elements/attributes/namespace-nodes
 		return true
 	}
@@ -900,7 +967,7 @@ func matchNameTest(_ context.Context, ec *execContext, nt xdm.NameTest, node xdm
 	}
 
 	// Exact name match
-	if nt.URI != "" {
+	if nt.URIQualified || nt.URI != "" {
 		return nodeLocal == nt.Local && nodeURI == nt.URI
 	}
 
@@ -945,7 +1012,7 @@ func matchNameTest(_ context.Context, ec *execContext, nt xdm.NameTest, node xdm
 // isTypedStrictMode returns true if the current mode has typed="strict" or typed="yes".
 func isTypedStrictMode(ec *execContext) bool {
 	if md := currentModeDef(ec); md != nil {
-		return md.Typed == validationStrict || md.Typed == lexicon.ValueYes || md.Typed == lexicon.ValueTrue || md.Typed == "1"
+		return md.Typed == validationStrict || md.Typed == lexicon.ValueYes || md.Typed == lexicon.ValueTrue || md.Typed == booleanDigitTrue
 	}
 
 	return false
@@ -966,28 +1033,28 @@ func currentModeDef(ec *execContext) *modeDef {
 	return ec.lookupModeDef(ec.currentMode)
 }
 
-// matchElementTest checks if a node matches an element() test.
 // isBuiltinXSDType returns true for type names that are built-in XSD types
 // (e.g., lexicon.TypeString, "integer", "decimal", "untyped", "untypedAtomic").
 func isBuiltinXSDType(name string) bool {
 	switch name {
 	case lexicon.TypeString, lexicon.TypeBoolean, lexicon.TypeDecimal, lexicon.TypeFloat, lexicon.TypeDouble,
 		lexicon.TypeDuration, lexicon.TypeDateTime, lexicon.TypeTime, lexicon.TypeDate,
-		"gYearMonth", "gYear", "gMonthDay", "gDay", "gMonth",
-		"hexBinary", "base64Binary", lexicon.TypeAnyURI, "QName", "NOTATION",
-		"normalizedString", "token", "language", "NMTOKEN", "NMTOKENS",
-		"Name", "NCName", "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES",
-		lexicon.TypeInteger, "nonPositiveInteger", "negativeInteger", "long", "int",
-		"short", "byte", "nonNegativeInteger", "unsignedLong", "unsignedInt",
-		"unsignedShort", "unsignedByte", "positiveInteger",
-		lexicon.TypeYearMonthDuration, lexicon.TypeDayTimeDuration, "dateTimeStamp",
-		"untyped", lexicon.TypeUntypedAtomic, "anyType", "anySimpleType", "anyAtomicType":
+		lexicon.TypeGYearMonth, lexicon.TypeGYear, lexicon.TypeGMonthDay, lexicon.TypeGDay, lexicon.TypeGMonth,
+		lexicon.TypeHexBinary, lexicon.TypeBase64Binary, lexicon.TypeAnyURI, lexicon.TypeQName, lexicon.TypeNotation,
+		lexicon.TypeNormalizedString, lexicon.TypeToken, lexicon.TypeLanguage, lexicon.TypeNMToken, lexicon.TypeNMTokens,
+		lexicon.TypeName, lexicon.TypeNCName, lexicon.TypeID, lexicon.TypeIDREF, lexicon.TypeIDREFS, lexicon.TypeENTITY, lexicon.TypeENTITIES,
+		lexicon.TypeInteger, lexicon.TypeNonPositiveInteger, lexicon.TypeNegativeInteger, lexicon.TypeLong, lexicon.TypeInt,
+		lexicon.TypeShort, lexicon.TypeByte, lexicon.TypeNonNegativeInteger, lexicon.TypeUnsignedLong, lexicon.TypeUnsignedInt,
+		lexicon.TypeUnsignedShort, lexicon.TypeUnsignedByte, lexicon.TypePositiveInteger,
+		lexicon.TypeYearMonthDuration, lexicon.TypeDayTimeDuration, lexicon.TypeDateTimeStamp,
+		lexicon.TypeUntyped, lexicon.TypeUntypedAtomic, lexicon.TypeAnyType, lexicon.TypeAnySimpleType, lexicon.TypeAnyAtomicType:
 		return true
 	}
 
 	return false
 }
 
+// matchElementTest checks whether a node matches an element() test.
 func matchElementTest(ctx context.Context, ec *execContext, et xdm.ElementTest, node xdm.Node) bool {
 	if node.Type() != xdm.ElementNode {
 		return false
@@ -1084,7 +1151,7 @@ func matchTypeAnnotation(_ context.Context, ec *execContext, node xdm.Node, type
 	if ann == "" {
 		switch node.Type() {
 		case xdm.ElementNode:
-			ann = "untyped"
+			ann = lexicon.TypeUntyped
 		case xdm.AttributeNode:
 			ann = lexicon.TypeUntypedAtomic
 		default:
@@ -1108,13 +1175,13 @@ func matchTypeAnnotation(_ context.Context, ec *execContext, node xdm.Node, type
 	}
 
 	fullAnn := ann
-	if !strings.HasPrefix(fullAnn, "xs:") && !strings.HasPrefix(fullAnn, "Q{") {
-		fullAnn = "xs:" + fullAnn
+	if !strings.HasPrefix(fullAnn, lexicon.PrefixXS+":") && !strings.HasPrefix(fullAnn, "Q{") {
+		fullAnn = lexicon.PrefixXS + ":" + fullAnn
 	}
 
 	fullType := typeName
-	if !strings.HasPrefix(fullType, "xs:") && !strings.HasPrefix(fullType, "Q{") {
-		fullType = "xs:" + fullType
+	if !strings.HasPrefix(fullType, lexicon.PrefixXS+":") && !strings.HasPrefix(fullType, "Q{") {
+		fullType = lexicon.PrefixXS + ":" + fullType
 	}
 
 	if xdm.BuiltinIsSubtypeOf(fullAnn, fullType) {
@@ -1125,7 +1192,7 @@ func matchTypeAnnotation(_ context.Context, ec *execContext, node xdm.Node, type
 }
 
 func normalizePatternTypeName(name string) string {
-	for _, prefix := range []string{"xs:", "xsd:", "http://www.w3.org/2001/XMLSchema:"} {
+	for _, prefix := range []string{lexicon.PrefixXS + ":", lexicon.PrefixXSD + ":", lexicon.NamespaceXSD + ":"} {
 		if strings.HasPrefix(name, prefix) {
 			return name[len(prefix):]
 		}
@@ -1550,7 +1617,9 @@ func locationPathMatchesNamespaceNodes(path xpath.LocationPath) bool {
 		return false
 	}
 
-	return path.Steps[len(path.Steps)-1].Axis == xpath.AxisNamespace
+	axis := path.Steps[len(path.Steps)-1].Axis
+
+	return axis == xpath.AxisNamespace || axis == xpath.AxisSelf || axis == xpath.AxisDescendantOrSelf
 }
 
 // patternPredicate is one step predicate of a match pattern, compiled once
@@ -1619,7 +1688,7 @@ func (c *patternPredicateCollector) add(pred *xpath.Expr) {
 func isFocusFreePredicate(compiled *xpath.Expression, nsBindings map[string]string) bool {
 	for _, fn := range compiled.StaticReferences(nsBindings).FunctionNames {
 		switch fn.Name {
-		case "position", "last", "function-lookup":
+		case lexicon.FnPosition, lexicon.FnLast, fnNameFunctionLookup:
 			return false
 		}
 	}
@@ -1720,7 +1789,7 @@ func (c *compiler) compilePattern(s string, elem *xdm.Element, xpathDefaultNS st
 			expr:         ast,
 			compiled:     compiledExpr,
 			priority:     computeDefaultPriority(ast),
-			neverMatches: isNeverMatchingPattern(alt),
+			neverMatches: isNeverMatchingPattern(ast),
 		}
 		p.Alternatives = append(p.Alternatives, pa)
 	}
@@ -1862,24 +1931,31 @@ func patternCompilationError(ctx context.Context, source string, cause error) er
 // semantically can never match any node. For example, child::document-node()
 // never matches because document nodes cannot be children; similarly,
 // child::attribute() never matches because attributes are not children.
-func isNeverMatchingPattern(alt string) bool {
-	// NOTE: this is a heuristic based on source text, not AST analysis.
-	// It may miss patterns with unusual whitespace around "::" but is
-	// safe in the false-negative direction (worst case: we compile a
-	// pattern that never matches at runtime).
-	s := strings.TrimSpace(alt)
-	// child::document-node() — document nodes are never children
-	if strings.HasPrefix(s, "child::document-node") || strings.Contains(s, "/child::document-node") {
-		return true
-	}
-	// child::attribute() / child::schema-attribute() — attributes are never children
-	if strings.HasPrefix(s, "child::attribute") || strings.Contains(s, "/child::attribute") ||
-		strings.HasPrefix(s, "child::schema-attribute") || strings.Contains(s, "/child::schema-attribute") {
-		return true
-	}
-	// child::namespace-node() — namespace nodes are never children
-	if strings.HasPrefix(s, "child::namespace-node") || strings.Contains(s, "/child::namespace-node") {
-		return true
+func isNeverMatchingPattern(expr xpath.Expr) bool {
+	switch e := expr.(type) {
+	case *xpath.LocationPath:
+		return isNeverMatchingPattern(*e)
+	case xpath.LocationPath:
+		for i, step := range e.Steps {
+			if step.Axis != xpath.AxisChild {
+				continue
+			}
+
+			switch step.NodeTest.(type) {
+			case xdm.AttributeTest, xdm.SchemaAttributeTest, xdm.NamespaceNodeTest:
+				return true
+			case xdm.DocumentTest:
+				// XSLT permits an initial document-node() kind test, while
+				// an explicitly written child axis can never select a document.
+				if step.ExplicitAxis || e.Absolute || i > 0 {
+					return true
+				}
+			}
+		}
+	case xpath.PathStepExpr:
+		return isNeverMatchingPattern(e.Left) || isNeverMatchingPattern(e.Right)
+	case xpath.UnionExpr:
+		return isNeverMatchingPattern(e.Left) && isNeverMatchingPattern(e.Right)
 	}
 
 	return false
@@ -1887,15 +1963,15 @@ func isNeverMatchingPattern(alt string) bool {
 
 func validatePatternAlternative(compiled *xpath.Expression, alt string, nsBindings map[string]string, version int) error {
 	ast := compiled.AST()
-	if version == 20 {
+	if version == processorXSLT20 {
 		if err := checkPattern20(ast); err != nil {
 			return err
 		}
 	}
 
-	if version == 10 {
+	if version == processorXSLT10 {
 		if len(compiled.StaticReferences(nsBindings).FreeVariables) > 0 {
-			return staticError("XTSE0340", "variables are unavailable in XSLT 1.0 patterns")
+			return staticError(errCodeXTSE0340, "variables are unavailable in XSLT 1.0 patterns")
 		}
 
 		if err := checkPattern10(ast); err != nil {
@@ -1941,13 +2017,13 @@ func checkPattern20(expr xpath.Expr) error {
 }
 
 func checkPatternFunction20(call xpath.FunctionCall) error {
-	if call.Prefix != "" || call.Name != "id" && call.Name != nameKey2 {
+	if call.Prefix != "" || call.Name != fnNameID && call.Name != keyLocalName {
 		return staticError(errCodeXTSE0340, "only unprefixed id/key calls can start an XSLT 2.0 pattern")
 	}
 
 	argument := 0
 
-	if call.Name == nameKey2 {
+	if call.Name == keyLocalName {
 		if len(call.Args) != 2 {
 			return staticError(errCodeXTSE0340, "key pattern requires two arguments")
 		}
@@ -1970,7 +2046,7 @@ func checkPatternFunction20(call xpath.FunctionCall) error {
 	case xpath.VariableExpr:
 		return nil
 	case xpath.LiteralExpr:
-		if call.Name == nameKey2 {
+		if call.Name == keyLocalName {
 			return nil
 		}
 
@@ -2249,6 +2325,12 @@ func isValidPatternStep(expr xpath.Expr) bool {
 // so the namespace URI must be the functions namespace before the local-name
 // switch is consulted.
 func isAllowedPatternFunction(fc xpath.FunctionCall, nsBindings map[string]string) bool {
+	const (
+		fnNameElementWithID = "element-with-id"
+		fnNameIDRef         = "idref"
+		fnNameRoot          = "root"
+	)
+
 	// Resolve the call's (namespace URI, local name) honoring the EQName braced
 	// form, explicit xmlns bindings, and the predeclared fn: default. A function
 	// outside the functions namespace can never be a built-in pattern function,
@@ -2259,7 +2341,7 @@ func isAllowedPatternFunction(fc xpath.FunctionCall, nsBindings map[string]strin
 	}
 
 	switch local {
-	case nameKey2, "id", "idref", nameDoc, "element-with-id", "root":
+	case keyLocalName, fnNameID, fnNameIDRef, nameDoc, fnNameElementWithID, fnNameRoot:
 		for _, arg := range fc.Args {
 			if !isPatternFunctionArg(arg) {
 				return false
@@ -2347,6 +2429,11 @@ func checkPatternForbiddenFunctions(ast xpath.Expr, nsBindings map[string]string
 // computeDefaultPriority computes the default priority for a pattern
 // alternative per XSLT 3.0 Section 6.5.
 func computeDefaultPriority(expr xpath.Expr) float64 {
+	const (
+		patternPriorityContextItem = -1
+		patternPriorityPredicate   = 1
+	)
+
 	var steps []xpath.Step
 
 	switch e := expr.(type) {
@@ -2356,9 +2443,9 @@ func computeDefaultPriority(expr xpath.Expr) float64 {
 		steps = e.Steps
 	case xpath.RootExpr, *xpath.RootExpr:
 		// "/" matches document nodes; default priority is -0.5
-		return -0.5
+		return patternPriorityNodeKind
 	case xpath.ContextItemExpr:
-		return -1
+		return patternPriorityContextItem
 	case xpath.IntersectExceptExpr:
 		return computeDefaultPriority(e.Left)
 	case xpath.UnionExpr:
@@ -2374,32 +2461,32 @@ func computeDefaultPriority(expr xpath.Expr) float64 {
 	case xpath.FilterExpr:
 		// PredicatePattern priority is one, independently of predicate count.
 		if _, ok := e.Expr.(xpath.ContextItemExpr); ok {
-			return 1
+			return patternPriorityPredicate
 		}
 
-		return 0.5
+		return patternPriorityComplex
 	default:
-		return 0.5
+		return patternPriorityComplex
 	}
 
 	if len(steps) == 0 {
 		// Absolute path with no steps is "/" — document root, priority -0.5
 		if isAbsolute(expr) {
-			return -0.5
+			return patternPriorityNodeKind
 		}
 
-		return 0.5
+		return patternPriorityComplex
 	}
 	// Per XSLT 3.0 §6.5: path patterns with multiple steps get priority 0.5.
 	// An absolute path like "/doc" counts as multi-step (root + step).
 	if len(steps) > 1 || (len(steps) == 1 && isAbsolute(expr)) {
-		return 0.5
+		return patternPriorityComplex
 	}
 
 	lastStep := steps[0]
 	// A step with predicates gets priority 0.5 (more specific)
 	if len(lastStep.Predicates) > 0 {
-		return 0.5
+		return patternPriorityComplex
 	}
 
 	return stepPriority(lastStep)
@@ -2417,68 +2504,77 @@ func isAbsolute(expr xpath.Expr) bool {
 }
 
 func stepPriority(step xpath.Step) float64 {
+	const (
+		patternPriorityName              = 0
+		patternPriorityTypedName         = 0.25
+		patternPriorityWildcardComponent = -0.25
+	)
+
 	switch nt := step.NodeTest.(type) {
 	case xdm.TypeTest, xdm.NamespaceNodeTest:
 		// node(), text(), comment(), processing-instruction()
-		return -0.5
+		return patternPriorityNodeKind
 	case xdm.PITest:
 		if nt.HasTarget {
-			return 0
+			return patternPriorityName
 		}
 
-		return -0.5
+		return patternPriorityNodeKind
 	case xdm.NameTest:
-		if nt.Local == "*" && nt.Prefix == "" && nt.URI == "" {
-			return -0.5
+		if nt.Local == "*" && nt.Prefix == "" && !nt.URIQualified && nt.URI == "" {
+			return patternPriorityNodeKind
 		}
 
 		if nt.Local == "*" || nt.Prefix == "*" {
 			// prefix:* or *:local — one component is wildcard
-			return -0.25
+			return patternPriorityWildcardComponent
 		}
 
-		return 0
+		return patternPriorityName
 	case xdm.ElementTest:
 		if nt.TypeName != "" {
 			if nt.Name == "" || nt.Name == "*" {
-				return 0 // element(*, type) — type constraint, priority 0
+				return patternPriorityName // element(*, type) — type constraint, priority 0
 			}
 
-			return 0.25 // element(name, type)
+			return patternPriorityTypedName // element(name, type)
 		}
 
 		if nt.Name == "" || nt.Name == "*" {
-			return -0.5 // element() or element(*)
+			return patternPriorityNodeKind // element() or element(*)
 		}
 
-		return 0 // element(specific-name)
+		return patternPriorityName // element(specific-name)
 	case xdm.AttributeTest:
 		if nt.TypeName != "" {
 			if nt.Name == "" || nt.Name == "*" {
-				return 0 // attribute(*, type) — type constraint, priority 0
+				return patternPriorityName // attribute(*, type) — type constraint, priority 0
 			}
 
-			return 0.25 // attribute(name, type)
+			return patternPriorityTypedName // attribute(name, type)
 		}
 
 		if nt.Name == "" || nt.Name == "*" {
-			return -0.5 // attribute() or attribute(*)
+			return patternPriorityNodeKind // attribute() or attribute(*)
 		}
 
-		return 0 // attribute(specific-name)
+		return patternPriorityName // attribute(specific-name)
 	case xdm.DocumentTest:
 		if nt.Inner == nil {
-			return -0.5
+			return patternPriorityNodeKind
 		}
 		// Priority of document-node(test) derives from the inner test
 		return stepPriority(xpath.Step{NodeTest: nt.Inner})
 	case xdm.SchemaElementTest, xdm.SchemaAttributeTest:
-		return 0.25
+		return patternPriorityTypedName
 	default:
-		return 0.5
+		return patternPriorityComplex
 	}
 }
 
+// resolvePatternFunctionNamespace uses the XPath functions namespace for an
+// unprefixed call. Explicit prefix bindings take precedence over predeclared
+// XPath bindings; an unresolved prefix returns an empty string.
 func resolvePatternFunctionNamespace(prefix string, nsBindings map[string]string) string {
 	if prefix == "" {
 		return lexicon.NamespaceFn
@@ -2511,12 +2607,6 @@ func patternFunctionIdentity(fc xpath.FunctionCall, nsBindings map[string]string
 	return resolvePatternFunctionNamespace(fc.Prefix, nsBindings), fc.Name
 }
 
-// resolvePatternFunctionNamespace resolves a function-call prefix to its
-// namespace URI using the same precedence everywhere in pattern validation:
-// an unprefixed call names the XPath functions namespace; a prefixed call
-// resolves through the EXPLICIT in-scope xmlns bindings first, falling back to
-// the XPath 3.0 predeclared bindings (fn:, math:, map:, array:, err:, xs:) only
-// when the prefix is otherwise undeclared. An unresolved prefix returns "".
 // resolvePatternPrefix resolves a non-empty namespace prefix used inside a
 // match pattern against the pattern's lexical namespace snapshot, then the
 // predeclared XPath prefixes (fn:, math:, map:, ...), then the universally

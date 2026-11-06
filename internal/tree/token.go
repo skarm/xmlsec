@@ -7,27 +7,43 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // xmlTokenizer consumes already bounded, validated and lexically normalized
 // units. Names are checked by the project's Fifth Edition predicates, rather
-// than encoding/xml's older name tables. Token byte slices borrow storage until
-// the next RawToken call; documentParser copies them into owned tree values.
+// than encoding/xml's older name tables. Token pointers and their byte and
+// attribute slices borrow storage until the next RawToken call; documentParser
+// copies them into owned tree values.
 type xmlTokenizer struct {
-	input  *xmlInput
-	end    *xml.EndElement
-	offset int64
+	input      *xmlInput
+	start      xml.StartElement
+	end        xml.EndElement
+	text       xml.CharData
+	comment    xml.Comment
+	pi         xml.ProcInst
+	offset     int64
+	pendingEnd bool
 }
 
 func (d *xmlTokenizer) InputOffset() int64 { return d.offset }
 
 func (d *xmlTokenizer) RawToken() (xml.Token, error) {
-	if d.end != nil {
-		end := *d.end
-		d.end = nil
+	// Release borrowed payloads before the next unit can grow its buffer. Only
+	// the cleared attribute backing array is kept for reuse across start tags.
+	clear(d.start.Attr)
+	d.start = xml.StartElement{Attr: d.start.Attr[:0]}
+	d.text, d.comment = nil, nil
+	d.pi = xml.ProcInst{}
 
-		return end, nil
+	if d.pendingEnd {
+		d.pendingEnd = false
+
+		return &d.end, nil
 	}
+
+	d.end = xml.EndElement{}
 
 	unit, err := d.input.nextUnit()
 	if err != nil {
@@ -38,11 +54,13 @@ func (d *xmlTokenizer) RawToken() (xml.Token, error) {
 	d.offset += int64(len(unit))
 
 	switch {
-	case bytes.HasPrefix(unit, []byte("<!--")):
-		return xml.Comment(unit[4 : len(unit)-3]), nil
+	case bytes.HasPrefix(unit, []byte(dtdCommentOpen)):
+		d.comment = unit[4 : len(unit)-3]
+		return &d.comment, nil
 	case bytes.HasPrefix(unit, []byte("<![CDATA[")):
-		return xml.CharData(unit[9 : len(unit)-3]), nil
-	case bytes.HasPrefix(unit, []byte("<?")):
+		d.text = unit[9 : len(unit)-3]
+		return &d.text, nil
+	case bytes.HasPrefix(unit, []byte(dtdPIOpen)):
 		content := unit[2 : len(unit)-2]
 
 		end := 0
@@ -50,24 +68,33 @@ func (d *xmlTokenizer) RawToken() (xml.Token, error) {
 			end++
 		}
 
-		return xml.ProcInst{Target: string(content[:end]), Inst: content[lexicalSpaceEnd(content, end):]}, nil
+		d.pi = xml.ProcInst{Target: string(content[:end]), Inst: content[lexicalSpaceEnd(content, end):]}
+
+		return &d.pi, nil
 	case bytes.HasPrefix(unit, []byte("</")):
-		name := bytes.TrimRight(unit[2:len(unit)-1], " \t\r\n")
-		return xml.EndElement{Name: tokenName(string(name))}, nil
+		name := bytes.TrimRight(unit[2:len(unit)-1], lexicon.XMLWhitespace)
+		d.end = xml.EndElement{Name: tokenName(string(name))}
+
+		return &d.end, nil
 	case unit[0] == '<':
-		start, empty, err := startToken(unit)
+		start, empty, err := startToken(unit, d.start.Attr[:0])
+		d.start = start
+
 		if err != nil {
 			return nil, err
 		}
 
 		if empty {
-			d.end = &xml.EndElement{Name: start.Name}
+			d.end = xml.EndElement{Name: start.Name}
+			d.pendingEnd = true
 		}
 
-		return start, nil
+		return &d.start, nil
 	default:
 		value, err := tokenValue(unit, false)
-		return xml.CharData(value), err
+		d.text = value
+
+		return &d.text, err
 	}
 }
 
@@ -81,13 +108,13 @@ func tokenName(value string) xml.Name {
 }
 
 // startToken requires a single start tag accepted by normalizeOwnedLexical.
-func startToken(unit []byte) (xml.StartElement, bool, error) {
+func startToken(unit []byte, attrs []xml.Attr) (xml.StartElement, bool, error) {
 	end := 1
 	for end < len(unit) && !spaceByte(unit[end]) && unit[end] != '/' && unit[end] != '>' {
 		end++
 	}
 
-	start := xml.StartElement{Name: tokenName(string(unit[1:end]))}
+	start := xml.StartElement{Name: tokenName(string(unit[1:end])), Attr: attrs}
 
 	empty := unit[len(unit)-2] == '/'
 	for at := lexicalSpaceEnd(unit, end); at < len(unit)-1 && unit[at] != '/' && unit[at] != '>'; {
@@ -151,13 +178,13 @@ func tokenValue(value []byte, attribute bool) ([]byte, error) {
 		switch entity {
 		case entityAmp:
 			r = '&'
-		case "lt":
+		case entityLt:
 			r = '<'
-		case "gt":
+		case entityGt:
 			r = '>'
-		case "apos":
+		case entityApos:
 			r = '\''
-		case "quot":
+		case entityQuot:
 			r = '"'
 		default:
 			if !strings.HasPrefix(entity, "#") {

@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
@@ -22,6 +24,9 @@ type AssertionData struct {
 	NameID string
 	// NameIDFormat is the identifier format URI. Empty selects NameIDUnspecified.
 	NameIDFormat string
+	// NameQualifier, SPNameQualifier and SPProvidedID retain the identifier
+	// established by name identifier management, including the SP's current alias.
+	NameQualifier, SPNameQualifier, SPProvidedID string
 	// NotBefore is the required inclusive start of assertion validity.
 	NotBefore time.Time
 	// NotOnOrAfter is the required exclusive end of assertion validity.
@@ -36,6 +41,12 @@ type AssertionData struct {
 	SessionNotOnOrAfter time.Time
 	// Attributes contains application-authorized string attributes for the subject.
 	Attributes []Attribute
+	// ChannelBindings signals IdP verification of the matching signed request's
+	// transport bindings. Only set this after the ECP comparison succeeded.
+	ChannelBindings []ChannelBinding
+	// HolderOfKeyCertificate selects HoK instead of bearer confirmation. The
+	// application must establish possession and its association with the subject.
+	HolderOfKeyCertificate []byte
 }
 
 // Response supplies the envelope and assertion for a successful solicited SAML
@@ -57,6 +68,13 @@ type Response struct {
 	Assertion AssertionData
 	// Limits bounds assertion times and attributes during creation and self-verification.
 	Limits Limits
+	// Encryption selects encrypted assertion, identifier and/or attributes.
+	// Nil produces the existing signed plaintext response.
+	Encryption *EncryptionOptions
+	// SOAPContext signs the assertion in the SOAP envelope namespace context.
+	// Set this before signing when the response will be carried by SOAP/PAOS,
+	// especially for Inclusive C14N. It does not itself wrap the response.
+	SOAPContext bool
 }
 
 // SignResponse signs the Assertion, then the enclosing Response, and verifies
@@ -71,20 +89,24 @@ func SignResponse(ctx context.Context, s Response, key SigningKey) (*document.Do
 		return nil, ErrProfile
 	}
 
-	root := xmlutil.Node("samlp", ProtocolNamespace, "Response")
+	root := xmlutil.Node(prefixProtocol, ProtocolNamespace, lexicon.SAMLElementResponse)
 
-	root.NS = []tree.Namespace{{Prefix: "samlp", URI: ProtocolNamespace}, {Prefix: "saml", URI: AssertionNamespace}, {Prefix: "ds", URI: xmlutil.DS}}
-	for _, v := range [][2]string{{"ID", s.ID}, {nameVersion, version20}, {nameIssueInstant, profile.Time(s.IssueInstant)}, {nameDestination, s.Destination}, {nameInResponseTo, s.InResponseTo}} {
+	root.NS = []tree.Namespace{{Prefix: prefixProtocol, URI: ProtocolNamespace}, {Prefix: prefixAssertion, URI: AssertionNamespace}, {Prefix: lexicon.PrefixDSig, URI: xmlutil.DS}}
+	if s.SOAPContext {
+		root.NS = append(root.NS, tree.Namespace{Prefix: prefixSOAP, URI: binding.SOAPNamespace})
+	}
+
+	for _, v := range [][2]string{{lexicon.SAMLAttrID, s.ID}, {nameVersion, version20}, {nameIssueInstant, profile.Time(s.IssueInstant)}, {nameDestination, s.Destination}, {nameInResponseTo, s.InResponseTo}} {
 		xmlutil.Set(root, v[0], v[1])
 	}
 
-	issue := xmlutil.Node("saml", AssertionNamespace, "Issuer")
+	issue := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameIssuer)
 	xmlutil.Text(issue, s.Issuer)
 	xmlutil.Add(root, issue)
 
-	status := xmlutil.Node("samlp", ProtocolNamespace, "Status")
-	code := xmlutil.Node("samlp", ProtocolNamespace, "StatusCode")
-	xmlutil.Set(code, "Value", Success)
+	status := xmlutil.Node(prefixProtocol, ProtocolNamespace, xmlNameStatus)
+	code := xmlutil.Node(prefixProtocol, ProtocolNamespace, xmlNameStatusCode)
+	xmlutil.Set(code, xmlNameValue, Success)
 	xmlutil.Add(status, code)
 	xmlutil.Add(root, status)
 
@@ -100,7 +122,24 @@ func SignResponse(ctx context.Context, s Response, key SigningKey) (*document.Do
 		return nil, e
 	}
 
-	target, e := xmlutil.Direct(d.Root(), xmlutil.Name(AssertionNamespace, "Assertion"))
+	encryption, e := CloneEncryption(s.Encryption)
+	if e != nil || encryption != nil && encryption.Recipient == nil {
+		return nil, ErrEncryption
+	}
+	// Check the same semantic rules before encryption makes fields opaque to
+	// the producer. Signature generation independently self-verifies its bytes.
+	if e := validateProducedAssertion(d, s); e != nil {
+		return nil, e
+	}
+
+	if encryption != nil {
+		d, e = encryptAssertionContents(ctx, d, encryption)
+		if e != nil {
+			return nil, e
+		}
+	}
+
+	target, e := xmlutil.Direct(d.Root(), xmlutil.Name(AssertionNamespace, nameAssertion))
 	if e != nil {
 		return nil, e
 	}
@@ -110,14 +149,28 @@ func SignResponse(ctx context.Context, s Response, key SigningKey) (*document.Do
 		return nil, e
 	}
 
+	if encryption != nil && encryption.Targets&EncryptAssertion != 0 {
+		target, e = xmlutil.Direct(d.Root(), xmlutil.Name(AssertionNamespace, nameAssertion))
+		if e != nil {
+			return nil, e
+		}
+
+		d, e = encryptSAML(ctx, d, target, xmlNameEncryptedAssertion, encryption)
+		if e != nil {
+			return nil, e
+		}
+	}
+
 	d, e = xmlsig.Sign(ctx, d, d.Root(), k, true)
 	if e != nil {
 		return nil, e
 	}
 
-	_, e = VerifyResponse(ctx, d, []crypto.PublicKey{key.Key.Public()}, ResponseOptions{Issuer: s.Issuer, Audience: s.Audience, Destination: s.Destination, ExpectedRequestID: s.InResponseTo, At: s.IssueInstant, Limits: s.Limits, Policy: key.Policy})
-	if e != nil {
-		return nil, e
+	if encryption == nil {
+		_, e = VerifyResponse(ctx, d, []crypto.PublicKey{verificationKey(key)}, ResponseOptions{Issuer: s.Issuer, Audience: s.Audience, Destination: s.Destination, ExpectedRequestID: s.InResponseTo, At: s.IssueInstant, Limits: s.Limits, Policy: key.Policy, producedCertificate: s.Assertion.HolderOfKeyCertificate})
+		if e != nil {
+			return nil, e
+		}
 	}
 
 	return d, nil
@@ -143,63 +196,70 @@ func assertionNode(s Response) (*tree.Node, error) {
 		return nil, ErrProfile
 	}
 
-	node := xmlutil.Node("saml", AssertionNamespace, "Assertion")
-	xmlutil.Set(node, "ID", a.ID)
+	if err := (NameIdentifier{Value: a.NameID, Format: a.NameIDFormat, NameQualifier: a.NameQualifier, SPNameQualifier: a.SPNameQualifier, SPProvidedID: a.SPProvidedID}).Validate(); err != nil {
+		return nil, err
+	}
+
+	node := xmlutil.Node(prefixAssertion, AssertionNamespace, nameAssertion)
+	xmlutil.Set(node, lexicon.SAMLAttrID, a.ID)
 	xmlutil.Set(node, nameVersion, version20)
 	xmlutil.Set(node, nameIssueInstant, profile.Time(s.IssueInstant))
 
-	issuer := xmlutil.Node("saml", AssertionNamespace, "Issuer")
+	issuer := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameIssuer)
 	xmlutil.Text(issuer, s.Issuer)
 	xmlutil.Add(node, issuer)
 
-	subject := xmlutil.Node("saml", AssertionNamespace, "Subject")
-	name := xmlutil.Node("saml", AssertionNamespace, "NameID")
-	xmlutil.Set(name, "Format", a.NameIDFormat)
+	subject := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameSubject)
+	name := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameNameID)
+	xmlutil.Set(name, nameFormat, a.NameIDFormat)
+
+	appendNameQualifiers(name, a)
 	xmlutil.Text(name, a.NameID)
 	xmlutil.Add(subject, name)
 
-	conf := xmlutil.Node("saml", AssertionNamespace, "SubjectConfirmation")
-	xmlutil.Set(conf, "Method", Bearer)
+	conf, err := confirmationNode(s)
+	if err != nil {
+		return nil, err
+	}
 
-	data := xmlutil.Node("saml", AssertionNamespace, "SubjectConfirmationData")
-	xmlutil.Set(data, "Recipient", s.Destination)
-	xmlutil.Set(data, nameInResponseTo, s.InResponseTo)
-	xmlutil.Set(data, "NotOnOrAfter", profile.Time(a.NotOnOrAfter))
-	xmlutil.Add(conf, data)
 	xmlutil.Add(subject, conf)
 	xmlutil.Add(node, subject)
 
-	conditions := xmlutil.Node("saml", AssertionNamespace, "Conditions")
-	xmlutil.Set(conditions, "NotBefore", profile.Time(a.NotBefore))
-	xmlutil.Set(conditions, "NotOnOrAfter", profile.Time(a.NotOnOrAfter))
+	conditions := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameConditions)
+	xmlutil.Set(conditions, nameNotBefore, profile.Time(a.NotBefore))
+	xmlutil.Set(conditions, nameNotOnOrAfter, profile.Time(a.NotOnOrAfter))
 
-	restriction := xmlutil.Node("saml", AssertionNamespace, "AudienceRestriction")
-	audience := xmlutil.Node("saml", AssertionNamespace, "Audience")
+	restriction := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAudienceRestriction)
+	audience := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAudience)
 	xmlutil.Text(audience, s.Audience)
 	xmlutil.Add(restriction, audience)
 	xmlutil.Add(conditions, restriction)
 	xmlutil.Add(node, conditions)
 
-	auth := xmlutil.Node("saml", AssertionNamespace, "AuthnStatement")
-	xmlutil.Set(auth, "AuthnInstant", profile.Time(a.AuthnInstant))
+	if err := appendChannelContainer(node, xmlNameAdvice, a.ChannelBindings, true); err != nil {
+		return nil, err
+	}
+
+	auth := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAuthnStatement)
+	xmlutil.Set(auth, xmlNameAuthnInstant, profile.Time(a.AuthnInstant))
 
 	if a.SessionIndex != "" {
-		xmlutil.Set(auth, "SessionIndex", a.SessionIndex)
+		xmlutil.Set(auth, xmlNameSessionIndex, a.SessionIndex)
 	}
 
 	if !a.SessionNotOnOrAfter.IsZero() {
-		xmlutil.Set(auth, "SessionNotOnOrAfter", profile.Time(a.SessionNotOnOrAfter))
+		xmlutil.Set(auth, nameSessionNotOnOrAfter, profile.Time(a.SessionNotOnOrAfter))
 	}
 
-	ac := xmlutil.Node("saml", AssertionNamespace, "AuthnContext")
-	ref := xmlutil.Node("saml", AssertionNamespace, "AuthnContextClassRef")
+	ac := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAuthnContext)
+	ref := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAuthnContextClassRef)
 	xmlutil.Text(ref, a.AuthnContext)
 	xmlutil.Add(ac, ref)
 	xmlutil.Add(auth, ac)
 	xmlutil.Add(node, auth)
 
 	if len(a.Attributes) > 0 {
-		statement := xmlutil.Node("saml", AssertionNamespace, "AttributeStatement")
+		statement := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAttributeStatement)
 		seen := map[[2]string]struct{}{}
 
 		for _, v := range a.Attributes {
@@ -208,17 +268,17 @@ func assertionNode(s Response) (*tree.Node, error) {
 				format = AttributeUnspecified
 			}
 
-			if _, exists := seen[[2]string{v.Name, format}]; v.Name == "" || len(v.Name) > 1024 || !profile.URI(format) || len(v.FriendlyName) > 1024 || len(v.Values) < 1 || len(v.Values) > l.MaxValuesPerAttribute || exists {
+			if _, exists := seen[[2]string{v.Name, format}]; v.Name == "" || len(v.Name) > maximumAttributeNameBytes || !profile.URI(format) || len(v.FriendlyName) > maximumFriendlyNameBytes || len(v.Values) < 1 || len(v.Values) > l.MaxValuesPerAttribute || exists {
 				return nil, ErrProfile
 			}
 
 			seen[[2]string{v.Name, format}] = struct{}{}
-			attr := xmlutil.Node("saml", AssertionNamespace, "Attribute")
-			xmlutil.Set(attr, "Name", v.Name)
-			xmlutil.Set(attr, "NameFormat", format)
+			attr := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAttribute)
+			xmlutil.Set(attr, nameAttributeName, v.Name)
+			xmlutil.Set(attr, xmlNameNameFormat, format)
 
 			if v.FriendlyName != "" {
-				xmlutil.Set(attr, "FriendlyName", v.FriendlyName)
+				xmlutil.Set(attr, xmlNameFriendlyName, v.FriendlyName)
 			}
 
 			for _, s := range v.Values {
@@ -226,7 +286,7 @@ func assertionNode(s Response) (*tree.Node, error) {
 					return nil, ErrProfile
 				}
 
-				value := xmlutil.Node("saml", AssertionNamespace, "AttributeValue")
+				value := xmlutil.Node(prefixAssertion, AssertionNamespace, xmlNameAttributeValue)
 				xmlutil.Text(value, s)
 				xmlutil.Add(attr, value)
 			}
@@ -238,4 +298,30 @@ func assertionNode(s Response) (*tree.Node, error) {
 	}
 
 	return node, nil
+}
+
+func validateProducedAssertion(d *document.Document, s Response) error {
+	plain, e := xmlutil.Direct(d.Root(), xmlutil.Name(AssertionNamespace, nameAssertion))
+	if e != nil {
+		return e
+	}
+
+	l, e := normalize(s.Limits)
+	if e != nil {
+		return e
+	}
+
+	if _, e = parseAssertion(plain, ResponseOptions{Issuer: s.Issuer, Audience: s.Audience, Destination: s.Destination, ExpectedRequestID: s.InResponseTo, At: s.IssueInstant, AllowUnsignedAssertion: true, producedCertificate: s.Assertion.HolderOfKeyCertificate}, l); e != nil {
+		return e
+	}
+
+	return nil
+}
+
+func appendNameQualifiers(name *tree.Node, a AssertionData) {
+	for _, attr := range [][2]string{{nameNameQualifier, a.NameQualifier}, {nameSPNameQualifier, a.SPNameQualifier}, {nameSPProvidedID, a.SPProvidedID}} {
+		if attr[1] != "" {
+			xmlutil.Set(name, attr[0], attr[1])
+		}
+	}
 }

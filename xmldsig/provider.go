@@ -93,7 +93,7 @@ func SignMessageReader(ctx context.Context, src io.Reader, signer crypto.Signer,
 		return nil, err
 	}
 
-	return credential.signPrepared(ctx, spec, digest)
+	return credential.signPrepared(ctx, spec, p, digest)
 }
 
 // VerifyMessage validates only a signature over exact message bytes, not XML,

@@ -6,8 +6,13 @@ const (
 	// is not a valid XML character (e.g. fn:codepoints-to-string with an
 	// out-of-range value). Used by xpath and asserted by test fixtures.
 	ErrFOCH0001 = "FOCH0001"
+	// ErrFOAY0001 reports an array index outside the permitted range.
 	ErrFOAY0001 = "FOAY0001"
+	// ErrFOAY0002 reports a negative array subarray length.
+	ErrFOAY0002 = "FOAY0002"
 	ErrFODC0002 = "FODC0002" // document() / xsl:source-document load or parse error
+	// ErrFOJS0003 reports duplicate keys when the selected JSON or map policy rejects them.
+	ErrFOJS0003 = "FOJS0003"
 	// ErrFORX0002 is the XPath FORX0002 ("invalid regular expression") error code.
 	ErrFORX0002 = "FORX0002"
 	ErrFOTY0013 = "FOTY0013" // atomization of map/function items
@@ -15,6 +20,9 @@ const (
 	ErrSEPM0010 = "SEPM0010" // undeclare-prefixes="yes" requires XML 1.1
 	ErrSEPM0016 = "SEPM0016" // invalid serialization parameter value
 	ErrSERE0006 = "SERE0006" // character invalid for the output XML version
+	// ErrSERE0008 reports unrepresentable output characters in contexts that cannot use
+	// character references.
+	ErrSERE0008 = "SERE0008"
 	ErrSERE0022 = "SERE0022" // duplicate keys in JSON map
 	ErrSESU0011 = "SESU0011" // unsupported normalization form
 	ErrSESU0013 = "SESU0013" // unsupported encoding

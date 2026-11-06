@@ -11,20 +11,34 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// IETF field widths count ASCII decimal digits; the end-of-day hour and minute maximum are shared by actual clock/timezone helpers.
+const (
+	ietfMinimumComponentDigits = 1
+	ietfFixedClockDigits       = 2
+	ietfEndOfDayHour           = 24
+	ietfMaximumMinute          = 59
+)
+
+// Fixed-offset locations deliberately carry numeric offsets without retaining input abbreviations.
+const ietfFixedTimezoneName = ""
+
 func lookupParseIETFDate(name string) (*builtinFunc, bool) {
 	switch name {
-	case "parse-ietf-date":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnParseIETFDate}, true
+	case fnNameParseIETFDate:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnParseIETFDate}, true
 	}
 
 	return nil, false
 }
 
 func fnParseIETFDate(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const errCodeFORG0010 = "FORG0010"
+
 	// xs:string? value: an atomized-empty argument (empty array / nilled node)
 	// returns the empty sequence, like a syntactically empty one.
 	s, empty, err := coerceAtomizedString(ctx, args[0])
@@ -39,7 +53,7 @@ func fnParseIETFDate(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 	t, err := parseIETFDate(s)
 	if err != nil {
 		return nil, &xdm.Error{
-			Code:    "FORG0010",
+			Code:    errCodeFORG0010,
 			Message: fmt.Sprintf("fn:parse-ietf-date: invalid date string: %s", err),
 		}
 	}
@@ -57,7 +71,7 @@ func fnParseIETFDate(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 //   - asctime:  "Wed Jun 06 11:54:45 EST 2013"
 //   - Various with optional day-of-week, flexible separators
 func parseIETFDate(s string) (time.Time, error) {
-	s = strings.Trim(s, " \t\r\n")
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 	if s == "" {
 		return time.Time{}, fmt.Errorf("empty date string")
 	}
@@ -102,7 +116,7 @@ func (p *ietfDateParser) parse() (time.Time, error) {
 
 // parseRFC parses: day [-] month [-] year time [timezone]
 func (p *ietfDateParser) parseRFC() (time.Time, error) {
-	day, err := p.readIntN(1)
+	day, err := p.readIntN(ietfMinimumComponentDigits)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("expected day (1-2 digits): %w", err)
 	}
@@ -169,7 +183,7 @@ func (p *ietfDateParser) parseAsctime() (time.Time, error) {
 
 	p.skipSep()
 
-	day, err := p.readIntN(1)
+	day, err := p.readIntN(ietfMinimumComponentDigits)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("expected day (1-2 digits): %w", err)
 	}
@@ -216,6 +230,8 @@ func (p *ietfDateParser) parseAsctime() (time.Time, error) {
 }
 
 func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, frac float64, loc *time.Location) (time.Time, error) {
+	const ietfMidnightHour = 0 // 24:00 normalizes to midnight on the next civil day
+
 	p.skipWS()
 
 	if p.pos < len(p.input) {
@@ -226,10 +242,10 @@ func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, fra
 		return time.Time{}, err
 	}
 
-	ns := int(frac * 1e9)
+	ns := int(frac * float64(nanosecondsPerSecond))
 
-	if hour == 24 {
-		hour = 0
+	if hour == ietfEndOfDayHour {
+		hour = ietfMidnightHour
 		// advance to next day
 		t := time.Date(year, time.Month(month), day+1, hour, minute, sec, ns, loc)
 
@@ -242,7 +258,7 @@ func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, fra
 }
 
 func (p *ietfDateParser) parseTime() (hour, minute, sec int, frac float64, err error) {
-	hour, err = p.readIntN(1)
+	hour, err = p.readIntN(ietfMinimumComponentDigits)
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("expected hour (1-2 digits): %w", err)
 	}
@@ -253,7 +269,7 @@ func (p *ietfDateParser) parseTime() (hour, minute, sec int, frac float64, err e
 
 	p.pos++ // skip ':'
 
-	minute, err = p.readIntN(2)
+	minute, err = p.readIntN(ietfFixedClockDigits)
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("expected minute (exactly 2 digits): %w", err)
 	}
@@ -262,7 +278,7 @@ func (p *ietfDateParser) parseTime() (hour, minute, sec int, frac float64, err e
 	if p.pos < len(p.input) && p.input[p.pos] == ':' {
 		p.pos++ // skip ':'
 
-		sec, err = p.readIntN(2)
+		sec, err = p.readIntN(ietfFixedClockDigits)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("expected second (exactly 2 digits): %w", err)
 		}
@@ -279,7 +295,7 @@ func (p *ietfDateParser) parseTime() (hour, minute, sec int, frac float64, err e
 				return 0, 0, 0, 0, fmt.Errorf("expected digits after decimal point")
 			}
 
-			frac, _ = strconv.ParseFloat("0."+p.input[fracStart:p.pos], 64)
+			frac, _ = strconv.ParseFloat("0."+p.input[fracStart:p.pos], doubleFloatBits)
 		}
 	}
 
@@ -327,7 +343,7 @@ func (p *ietfDateParser) skipComment() error {
 			return fmt.Errorf("unclosed comment at position %d", start)
 		}
 		// The suffix is a timezone name, not arbitrary comment text.
-		content := strings.Trim(p.input[contentStart:p.pos-1], " \t\r\n")
+		content := strings.Trim(p.input[contentStart:p.pos-1], lexicon.XMLWhitespace)
 		if _, ok := lookupIETFTimezone(strings.ToUpper(content)); !ok {
 			return fmt.Errorf("invalid timezone-name suffix")
 		}
@@ -451,6 +467,13 @@ func (p *ietfDateParser) skipSep() {
 
 // readYear applies the century adjustment only to a two-digit year.
 func (p *ietfDateParser) readYear() (int, error) {
+	// Only a two-digit lexical year receives the fixed century adjustment.
+	const (
+		ietfShortYearDigits  = 2
+		ietfFullYearDigits   = 4
+		ietfShortYearCentury = 1900
+	)
+
 	start := p.pos
 	for p.pos < len(p.input) && p.input[p.pos] >= '0' && p.input[p.pos] <= '9' {
 		p.pos++
@@ -461,7 +484,7 @@ func (p *ietfDateParser) readYear() (int, error) {
 		return 0, fmt.Errorf("expected year at position %d", start)
 	}
 
-	if n != 2 && n != 4 {
+	if n != ietfShortYearDigits && n != ietfFullYearDigits {
 		return 0, fmt.Errorf("year must have 2 or 4 digits")
 	}
 
@@ -470,8 +493,8 @@ func (p *ietfDateParser) readYear() (int, error) {
 		return 0, err
 	}
 
-	if n == 2 {
-		year += 1900
+	if n == ietfShortYearDigits {
+		year += ietfShortYearCentury
 	}
 
 	return year, nil
@@ -493,7 +516,7 @@ func (p *ietfDateParser) parseNamedTimezone() (*time.Location, error) {
 			return nil, fmt.Errorf("timezone name followed by digits without separator")
 		}
 
-		return time.FixedZone("", offset), nil
+		return time.FixedZone(ietfFixedTimezoneName, offset), nil
 	}
 	// Unknown timezone name — reject
 	p.pos = saved
@@ -502,6 +525,17 @@ func (p *ietfDateParser) parseNamedTimezone() (*time.Location, error) {
 }
 
 func (p *ietfDateParser) parseNumericTimezone() (*time.Location, error) {
+	// ASCII timezone field widths are byte counts. The hour ceiling is separate
+	// from the minute-component range; 14 hours requires a zero minute field.
+	const (
+		ietfTimezoneHourMinDigits = 1
+		ietfTimezoneHourMaxDigits = 2
+		ietfTimezoneMinuteDigits  = 2
+		ietfCompactHMMWidth       = 3
+		ietfCompactHHMMWidth      = 4
+		ietfMaximumTimezoneHours  = 14
+	)
+
 	sign := 1
 	if p.input[p.pos] == '-' {
 		sign = -1
@@ -520,13 +554,13 @@ func (p *ietfDateParser) parseNumericTimezone() (*time.Location, error) {
 	var h, m int
 
 	if hPart, mPart, ok := strings.Cut(offsetStr, ":"); ok {
-		if len(hPart) < 1 || len(hPart) > 2 {
+		if len(hPart) < ietfTimezoneHourMinDigits || len(hPart) > ietfTimezoneHourMaxDigits {
 			return nil, fmt.Errorf("invalid timezone offset hours")
 		}
 
 		h, _ = strconv.Atoi(hPart)
 
-		if len(mPart) != 0 && len(mPart) != 2 {
+		if len(mPart) != 0 && len(mPart) != ietfTimezoneMinuteDigits {
 			return nil, fmt.Errorf("timezone offset minutes must be 2 digits, got %d", len(mPart))
 		}
 
@@ -536,34 +570,34 @@ func (p *ietfDateParser) parseNumericTimezone() (*time.Location, error) {
 	} else {
 		// Compact format without colon: H, HH, HMM, HHMM
 		switch len(offsetStr) {
-		case 1, 2:
+		case ietfTimezoneHourMinDigits, ietfTimezoneHourMaxDigits:
 			h, _ = strconv.Atoi(offsetStr)
-		case 3:
-			h, _ = strconv.Atoi(offsetStr[:1])
-			m, _ = strconv.Atoi(offsetStr[1:3])
-		case 4:
-			h, _ = strconv.Atoi(offsetStr[:2])
-			m, _ = strconv.Atoi(offsetStr[2:4])
+		case ietfCompactHMMWidth:
+			h, _ = strconv.Atoi(offsetStr[:ietfTimezoneHourMinDigits])
+			m, _ = strconv.Atoi(offsetStr[ietfTimezoneHourMinDigits:ietfCompactHMMWidth])
+		case ietfCompactHHMMWidth:
+			h, _ = strconv.Atoi(offsetStr[:ietfTimezoneHourMaxDigits])
+			m, _ = strconv.Atoi(offsetStr[ietfTimezoneHourMaxDigits:ietfCompactHHMMWidth])
 		default:
 			return nil, fmt.Errorf("invalid timezone offset: %q", offsetStr)
 		}
 	}
 
-	if h > 14 || (h == 14 && m > 0) {
+	if h > ietfMaximumTimezoneHours || (h == ietfMaximumTimezoneHours && m > 0) {
 		return nil, fmt.Errorf("timezone offset hours out of range: %d", h)
 	}
 
-	if m > 59 {
+	if m > ietfMaximumMinute {
 		return nil, fmt.Errorf("timezone offset minutes out of range: %d", m)
 	}
 
-	offset := sign * (h*3600 + m*60)
+	offset := sign * (h*calendarSecondsPerHour + m*calendarSecondsPerMinute)
 	// A numeric offset may have an optional timezone-name suffix.
 	if err := p.skipComment(); err != nil {
 		return nil, err
 	}
 
-	return time.FixedZone("", offset), nil
+	return time.FixedZone(ietfFixedTimezoneName, offset), nil
 }
 
 func dayOfWeekNames(key string) bool {
@@ -576,7 +610,9 @@ func dayOfWeekNames(key string) bool {
 }
 
 func parseMonth(s string) (int, error) {
-	if len(s) != 3 {
+	const ietfMonthAbbreviationBytes = 3 // grammar uses ASCII three-letter month names
+
+	if len(s) != ietfMonthAbbreviationBytes {
 		return 0, fmt.Errorf("month abbreviation must be exactly 3 letters: %q", s)
 	}
 
@@ -589,11 +625,16 @@ func parseMonth(s string) (int, error) {
 }
 
 func validateIETFDate(year, month, day, hour, minute, sec int) error {
-	if month < 1 || month > 12 {
+	const (
+		ietfMinimumCalendarDay = 1
+		ietfMaximumLeapSecond  = 60 // seconds permit a leap second, unlike minutes
+	)
+
+	if month < int(time.January) || month > int(time.December) {
 		return fmt.Errorf("month %d out of range", month)
 	}
 
-	if day < 1 {
+	if day < ietfMinimumCalendarDay {
 		return fmt.Errorf("day %d out of range", day)
 	}
 
@@ -602,15 +643,15 @@ func validateIETFDate(year, month, day, hour, minute, sec int) error {
 		return fmt.Errorf("day %d out of range for month %d", day, month)
 	}
 
-	if hour > 24 || (hour == 24 && (minute != 0 || sec != 0)) {
+	if hour > ietfEndOfDayHour || (hour == ietfEndOfDayHour && (minute != 0 || sec != 0)) {
 		return fmt.Errorf("hour %d out of range", hour)
 	}
 
-	if minute < 0 || minute > 59 {
+	if minute < 0 || minute > ietfMaximumMinute {
 		return fmt.Errorf("minute %d out of range", minute)
 	}
 
-	if sec < 0 || sec > 60 { // 60 for leap seconds
+	if sec < 0 || sec > ietfMaximumLeapSecond { // 60 for leap seconds
 		return fmt.Errorf("second %d out of range", sec)
 	}
 
@@ -618,48 +659,56 @@ func validateIETFDate(year, month, day, hour, minute, sec int) error {
 }
 
 func daysInMonth(year, month int) int {
+	// Gregorian month lengths are calendar-day counts, not elapsed durations.
+	const (
+		ietfLongMonthDays      = 31
+		ietfShortMonthDays     = 30
+		ietfLeapFebruaryDays   = 29
+		ietfCommonFebruaryDays = 28
+	)
+
 	switch month {
-	case 1, 3, 5, 7, 8, 10, 12:
-		return 31
-	case 4, 6, 9, 11:
-		return 30
-	case 2:
-		if year%4 == 0 && (year%100 != 0 || year%400 == 0) {
-			return 29
+	case int(time.January), int(time.March), int(time.May), int(time.July), int(time.August), int(time.October), int(time.December):
+		return ietfLongMonthDays
+	case int(time.April), int(time.June), int(time.September), int(time.November):
+		return ietfShortMonthDays
+	case int(time.February):
+		if year%gregorianLeapInterval == 0 && (year%gregorianCenturyYears != 0 || year%gregorianCycleYears == 0) {
+			return ietfLeapFebruaryDays
 		}
 
-		return 28
+		return ietfCommonFebruaryDays
 	}
 
-	return 31
+	return ietfLongMonthDays
 }
 
 func lookupMonthNumber(key string) (int, bool) {
 	switch key {
 	case "jan":
-		return 1, true
+		return int(time.January), true
 	case "feb":
-		return 2, true
+		return int(time.February), true
 	case "mar":
-		return 3, true
+		return int(time.March), true
 	case "apr":
-		return 4, true
+		return int(time.April), true
 	case "may":
-		return 5, true
+		return int(time.May), true
 	case "jun":
-		return 6, true
+		return int(time.June), true
 	case "jul":
-		return 7, true
+		return int(time.July), true
 	case "aug":
-		return 8, true
+		return int(time.August), true
 	case "sep":
-		return 9, true
+		return int(time.September), true
 	case "oct":
-		return 10, true
+		return int(time.October), true
 	case "nov":
-		return 11, true
+		return int(time.November), true
 	case "dec":
-		return 12, true
+		return int(time.December), true
 	}
 
 	var zero int
@@ -674,15 +723,15 @@ func lookupIETFTimezone(key string) (int, bool) {
 	case "UT", "UTC", "GMT", "Z":
 		return 0, true
 	case "EST", "CDT":
-		return -5 * 3600, true
+		return -5 * calendarSecondsPerHour, true
 	case "EDT":
-		return -4 * 3600, true
+		return -4 * calendarSecondsPerHour, true
 	case "CST", "MDT":
-		return -6 * 3600, true
+		return -6 * calendarSecondsPerHour, true
 	case "MST", "PDT":
-		return -7 * 3600, true
+		return -7 * calendarSecondsPerHour, true
 	case "PST":
-		return -8 * 3600, true
+		return -8 * calendarSecondsPerHour, true
 	}
 
 	var zero int

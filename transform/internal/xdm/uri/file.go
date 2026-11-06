@@ -10,7 +10,17 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+)
+
+// Local file conversion accepts the localhost authority and uses these byte
+// widths for UNC and slash-prefixed Windows drive forms on the Windows platform.
+const (
+	localFileHost        = "localhost"
+	windowsPlatform      = "windows"
+	uncPrefixBytes       = 2
+	fileDrivePrefixBytes = 3
 )
 
 // FileURIToPath converts a local file URI to a filesystem path.
@@ -22,11 +32,11 @@ func FileURIToPath(ref string) (string, error) {
 		return "", fmt.Errorf("failed to parse file URI %q: %w", ref, err)
 	}
 
-	if u.Scheme != "file" {
+	if u.Scheme != lexicon.SchemeFile {
 		return "", fmt.Errorf("not a file URI: %q", ref)
 	}
 
-	if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
+	if u.Host != "" && !strings.EqualFold(u.Host, localFileHost) {
 		return "", fmt.Errorf("non-local file URI host %q in %q", u.Host, ref)
 	}
 
@@ -60,7 +70,7 @@ func FileURIToPath(ref string) (string, error) {
 // This is the single source of truth for the UNC rejection shared by
 // the explicit XPath and XSLT resource loaders.
 func IsUNCFileURIPath(p string) bool {
-	return len(p) >= 2 && isPathSep(p[0]) && isPathSep(p[1])
+	return len(p) >= uncPrefixBytes && isPathSep(p[0]) && isPathSep(p[1])
 }
 
 // fileURIPathFor is the OS-parameterized conversion of a "file:" URI path
@@ -69,7 +79,7 @@ func IsUNCFileURIPath(p string) bool {
 // untouched. goos is threaded explicitly so the conversion is deterministically
 // testable on a non-Windows CI host.
 func fileURIPathFor(goos, p string) string {
-	if goos == "windows" && len(p) >= 3 && p[0] == '/' && xmlchar.IsASCIILetter(p[1]) && p[2] == ':' {
+	if goos == windowsPlatform && len(p) >= fileDrivePrefixBytes && p[0] == '/' && xmlchar.IsASCIILetter(p[1]) && p[2] == ':' {
 		p = p[1:]
 	}
 

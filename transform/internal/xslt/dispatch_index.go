@@ -261,7 +261,8 @@ func locationPathSignature(p *pattern, path xpath.LocationPath) signature {
 // nodeMatchesStep's gates (compile_patterns.go) exactly: predicates are
 // ignored (they can only reject, never widen a match), the axis restricts the
 // node-test's own kind set (attribute:: to {attribute}, namespace:: to
-// {namespace}, every other axis excludes attribute/namespace/document except
+// {namespace}, self axes may preserve attribute/namespace selected by an
+// earlier step, and other axes exclude attribute/namespace/document except
 // where a DocumentTest or self::node() explicitly re-admits document), and a
 // concrete NameTest on a kind set narrowed to exactly {element} or
 // {attribute} additionally narrows to a name key.
@@ -276,7 +277,11 @@ func stepSignature(p *pattern, step xpath.Step) signature {
 	case xpath.AxisNamespace:
 		ks = tk & kindBit(kindNamespace)
 	default:
-		ks = tk &^ (kindBit(kindAttribute) | kindBit(kindNamespace) | kindBit(kindDocument))
+		ks = tk &^ kindBit(kindDocument)
+		if step.Axis != xpath.AxisSelf && step.Axis != xpath.AxisDescendantOrSelf {
+			ks &^= kindBit(kindAttribute) | kindBit(kindNamespace)
+		}
+
 		if isDocumentTest(step.NodeTest) || (step.Axis == xpath.AxisSelf && isNodeKindNodeTest(step.NodeTest)) {
 			ks |= kindBit(kindDocument)
 		}
@@ -365,7 +370,7 @@ func isConcreteName(nt xdm.NameTest) bool {
 // exactly p.nsBindings/p.xpathDefaultNS) so the two resolution paths cannot
 // drift apart.
 func resolveStaticPatternName(nt xdm.NameTest, nsBindings map[string]string, xpathDefaultNS string, isElem bool) string {
-	if nt.URI != "" {
+	if nt.URIQualified || nt.URI != "" {
 		return nt.URI
 	}
 

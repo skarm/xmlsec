@@ -16,6 +16,15 @@ import (
 	"time"
 )
 
+// Fuzz duration, worker selection and timeout overhead are developer-run controls; example subprocesses have an independent deadline.
+const (
+	exampleTimeout          = time.Minute
+	defaultFuzzDuration     = 5 * time.Second
+	minimumFuzzTimeout      = 2 * time.Minute
+	fuzzTimeoutOverhead     = time.Minute
+	languageFuzzParallelism = "-parallel=2"
+)
+
 func listPackages(ctx context.Context, root, pattern string, stderr io.Writer) ([]goPackage, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-json", pattern) // #nosec G204 -- Package patterns come from fixed repository tasks.
 	cmd.Dir, cmd.Stderr = root, stderr
@@ -74,7 +83,7 @@ func runExamples(ctx context.Context, root string, args []string, out, stderr io
 		}
 
 		command := []string{"run", p.ImportPath}
-		limit, cancel := context.WithTimeout(ctx, time.Minute)
+		limit, cancel := context.WithTimeout(ctx, exampleTimeout)
 		err := runGo(limit, root, out, stderr, nil, command...)
 
 		cancel()
@@ -160,7 +169,7 @@ func discoverFuzz(ctx context.Context, root, pattern string, stderr io.Writer) (
 func runFuzz(ctx context.Context, root string, args []string, out, stderr io.Writer) error {
 	fs := flag.NewFlagSet("fuzz", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	duration := fs.Duration("time", 5*time.Second, "fuzz budget per target")
+	duration := fs.Duration("time", defaultFuzzDuration, "fuzz budget per target")
 	pattern := fs.String("match", ".*", "regular expression for target names")
 
 	list := fs.Bool("list", false, "list selected targets without running tests")
@@ -199,8 +208,8 @@ func runFuzz(ctx context.Context, root string, args []string, out, stderr io.Wri
 			continue
 		}
 
-		timeout := max(2*time.Minute, *duration+time.Minute)
-		if err := runGo(ctx, root, out, stderr, env, "test", target.Package, "-run=^$", "-fuzz=^"+target.Name+"$", "-fuzztime="+duration.String(), "-parallel=2", "-timeout="+timeout.String()); err != nil {
+		timeout := max(minimumFuzzTimeout, *duration+fuzzTimeoutOverhead)
+		if err := runGo(ctx, root, out, stderr, env, "test", target.Package, "-run=^$", "-fuzz=^"+target.Name+"$", "-fuzztime="+duration.String(), languageFuzzParallelism, "-timeout="+timeout.String()); err != nil {
 			return err
 		}
 	}

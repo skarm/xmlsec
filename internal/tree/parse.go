@@ -37,6 +37,7 @@ type documentParser struct {
 	seenDecl            bool
 	characterInput      bool
 	singleByteEncodings bool
+	compatibleVersions  bool
 	stopAtRoot          bool
 	relativeNamespaces  bool
 }
@@ -64,7 +65,7 @@ func (p *documentParser) parse(ctx context.Context) (*Document, error) {
 			return nil, fmt.Errorf("%w at byte %d: %w", ErrMalformed, offset, err)
 		}
 
-		if _, text := token.(xml.CharData); !text {
+		if _, text := token.(*xml.CharData); !text {
 			if err := p.flushText(); err != nil {
 				return nil, err
 			}
@@ -92,20 +93,20 @@ func (p *documentParser) parse(ctx context.Context) (*Document, error) {
 
 func (p *documentParser) consumeToken(token xml.Token, offset int64) error {
 	switch token := token.(type) {
-	case xml.StartElement:
-		return p.startElement(token)
-	case xml.EndElement:
-		return p.endElement(token)
-	case xml.CharData:
-		return p.characterData(token)
-	case xml.Comment:
-		if bytes.Contains(token, []byte("--")) || bytes.HasSuffix(token, []byte("-")) {
+	case *xml.StartElement:
+		return p.startElement(*token)
+	case *xml.EndElement:
+		return p.endElement(*token)
+	case *xml.CharData:
+		return p.characterData(*token)
+	case *xml.Comment:
+		if bytes.Contains(*token, []byte("--")) || bytes.HasSuffix(*token, []byte("-")) {
 			return fmt.Errorf("%w: invalid comment", ErrMalformed)
 		}
 
-		return p.appendNode(&Node{Kind: CommentNode, Data: string(token)})
-	case xml.ProcInst:
-		return p.processingInstruction(token, offset)
+		return p.appendNode(&Node{Kind: CommentNode, Data: string(*token)})
+	case *xml.ProcInst:
+		return p.processingInstruction(*token, offset)
 	case xml.Directive:
 		return fmt.Errorf("%w: DTD/directives are disabled", ErrUnsupported)
 	}
@@ -264,6 +265,15 @@ func (p *documentParser) processingInstruction(instruction xml.ProcInst, offset 
 }
 
 func (p *documentParser) declaration(s []byte) error {
+	if p.compatibleVersions {
+		normalized, err := normalizeDTDVersion(s)
+		if err != nil {
+			return err
+		}
+
+		s = normalized
+	}
+
 	label, err := validateDeclaration(s)
 	if err != nil {
 		return err
@@ -381,7 +391,7 @@ func validateNamespace(p, v string, relativeNamespaces bool) error {
 
 	if v != "" {
 		u, e := url.Parse(v)
-		if e != nil || !relativeNamespaces && !u.IsAbs() || strings.ContainsAny(v, " \t\r\n") {
+		if e != nil || !relativeNamespaces && !u.IsAbs() || strings.ContainsAny(v, lexicon.XMLWhitespace) {
 			return fmt.Errorf("%w: namespace URI must be absolute", ErrUnsupported)
 		}
 	}
@@ -487,13 +497,13 @@ func normalizeMarkup(out []byte, offset int) (int, error) {
 	prefix := 0
 
 	switch {
-	case bytes.HasPrefix(tail, []byte("<!--")):
+	case bytes.HasPrefix(tail, []byte(dtdCommentOpen)):
 		end = []byte("-->")
 		prefix = 4
 	case bytes.HasPrefix(tail, []byte("<![CDATA[")):
 		end = []byte("]]>")
 		prefix = 9
-	case bytes.HasPrefix(tail, []byte("<?")):
+	case bytes.HasPrefix(tail, []byte(dtdPIOpen)):
 		end = []byte("?>")
 		prefix = 2
 	case bytes.HasPrefix(tail, []byte("<!")):
@@ -629,14 +639,14 @@ func validateDeclaration(s []byte) (string, error) {
 		return "", err
 	}
 
-	if attrs[0].Name != (xml.Name{Local: lexicon.DeclVersion}) || attrs[0].Value != "1.0" {
+	if attrs[0].Name != (xml.Name{Local: lexicon.DeclVersion}) || attrs[0].Value != lexicon.XMLVersion10 {
 		return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
 	}
 
 	label := ""
 
 	at := 1
-	if at < len(attrs) && attrs[at].Name == (xml.Name{Local: "encoding"}) {
+	if at < len(attrs) && attrs[at].Name == (xml.Name{Local: lexicon.DeclEncoding}) {
 		label = attrs[at].Value
 		if !validEncodingName(label) {
 			return "", fmt.Errorf("%w: encoding name", ErrMalformed)
@@ -645,8 +655,8 @@ func validateDeclaration(s []byte) (string, error) {
 		at++
 	}
 
-	if at < len(attrs) && attrs[at].Name == (xml.Name{Local: "standalone"}) {
-		if v := attrs[at].Value; v != "yes" && v != "no" {
+	if at < len(attrs) && attrs[at].Name == (xml.Name{Local: lexicon.DeclStandalone}) {
+		if v := attrs[at].Value; v != lexicon.ValueYes && v != lexicon.ValueNo {
 			return "", fmt.Errorf("%w: standalone value", ErrMalformed)
 		}
 
@@ -675,7 +685,7 @@ func declarationAttributes(s []byte) ([]xml.Attr, error) {
 		return nil, err
 	}
 
-	el, _, err := startToken(b)
+	el, _, err := startToken(b, nil)
 	if err != nil || len(el.Attr) == 0 || len(el.Attr) > 3 {
 		return nil, fmt.Errorf("%w: declaration", ErrMalformed)
 	}

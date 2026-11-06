@@ -97,7 +97,9 @@ func TestDirectChildRequiresOneExpandedName(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || got.Name() != (document.Name{Space: "urn:expected", Local: "item"}) {
+			if err != nil {
+				t.Fatal(err)
+			} else if got.Name() != (document.Name{Space: "urn:expected", Local: "item"}) {
 				t.Fatalf("Direct selected %v: %v", got.Name(), err)
 			}
 			if text, err := xmlutil.Simple(got, 6); err != nil || text != "chosen" {

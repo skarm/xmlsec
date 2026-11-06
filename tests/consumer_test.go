@@ -93,7 +93,7 @@ func TestExternalConsumer(t *testing.T) {
 	}
 
 	testArgs = append(testArgs, "./...")
-	for _, args := range [][]string{{"mod", "edit", "-replace=github.com/skarm/xmlsec=" + root}, testArgs} {
+	for _, args := range [][]string{{"mod", "edit", "-replace=github.com/skarm/xmlsec=" + root}, {"mod", "tidy", "-diff"}, testArgs} {
 		cmd := exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = dir
 

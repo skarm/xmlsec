@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
@@ -71,7 +72,7 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 
 	for _, n := range slices.Backward(ancestors) {
 		for _, attr := range n.Attrs {
-			if attr.Name != (tree.Name{Space: tree.XMLNamespace, Local: "base"}) {
+			if attr.Name != (tree.Name{Space: tree.XMLNamespace, Local: lexicon.AttrBase}) {
 				continue
 			}
 
@@ -99,6 +100,8 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 // parse retains the validated components for callers that also need to resolve
 // them, avoiding a second net/url parse and its allocations.
 func parse(value string) (*url.URL, error) {
+	const escapedOctetDigits = 2
+
 	if strings.Contains(value, "\\") || !utf8.ValidString(value) {
 		return nil, fmt.Errorf("%w: URI encoding", Err)
 	}
@@ -109,11 +112,11 @@ func parse(value string) (*url.URL, error) {
 
 	for i := 0; i < len(value); i++ {
 		if value[i] == '%' {
-			if i+2 >= len(value) || !xmlchar.IsHexDigit(value[i+1]) || !xmlchar.IsHexDigit(value[i+2]) {
+			if i+escapedOctetDigits >= len(value) || !xmlchar.IsHexDigit(value[i+1]) || !xmlchar.IsHexDigit(value[i+escapedOctetDigits]) {
 				return nil, fmt.Errorf("%w: malformed URI escape", Err)
 			}
 
-			i += 2
+			i += escapedOctetDigits
 		}
 	}
 

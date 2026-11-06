@@ -1,7 +1,7 @@
-// Package binding encodes SAML HTTP-POST forms and signs or verifies the
-// HTTP-Redirect DEFLATE binding. It handles transport representation and
-// binding integrity, with separate protocol and session checks in higher-level
-// packages.
+// Package binding handles SAML HTTP-POST forms, signed HTTP-Redirect queries,
+// SOAP 1.1 transport, type 0x0004 artifacts and assertion URI retrieval.
+// It checks transport representation and configured binding integrity;
+// higher-level packages apply protocol and session checks.
 //
 // # HTTP-POST
 //
@@ -35,4 +35,9 @@
 // before returning. HTTP-Redirect queries remain complete strings for their
 // signed wire representation. Inflation and XML parsing run only after
 // signature verification. Protocol XML snapshots remain materialized.
+//
+// SOAP 1.1 parsing enforces a single body element, actors, mandatory header
+// processing and byte/XML budgets. SOAPClient never follows HTTP redirects.
+// Parsing SOAP authenticates nothing. Type 0x0004 artifact helpers encode the
+// fixed wire format and GET/POST fields; saml/artifact provides atomic resolution.
 package binding

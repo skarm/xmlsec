@@ -17,7 +17,7 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
-const flagC14n = "-c14n"
+const flagC14N = "-c14n"
 
 func TestDetachedCLI(t *testing.T) {
 	dir := t.TempDir()
@@ -70,7 +70,7 @@ func TestDetachedCLI(t *testing.T) {
 	}
 
 	var sig, report, stderr bytes.Buffer
-	if err := run(t.Context(), []string{nameSignDetached, flagKey, private, flagResources, manifest, flagC14n, c14n.Canonical11}, nil, &sig, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameSignDetached, flagKey, private, flagResources, manifest, flagC14N, c14n.Canonical11}, nil, &sig, &stderr); err != nil {
 		t.Fatal(err, stderr.String())
 	}
 
@@ -78,7 +78,7 @@ func TestDetachedCLI(t *testing.T) {
 		t.Fatal(sig.String())
 	}
 
-	if err := run(t.Context(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14n, c14n.Canonical11}, bytes.NewReader(sig.Bytes()), &report, &stderr); err != nil {
+	if err := run(t.Context(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14N, c14n.Canonical11}, bytes.NewReader(sig.Bytes()), &report, &stderr); err != nil {
 		t.Fatal(err, stderr.String())
 	}
 
@@ -104,7 +104,7 @@ func TestDetachedCLI(t *testing.T) {
 
 	tampered := strings.Replace(sig.String(), "<ds:SignatureValue>", "<ds:SignatureValue>A", 1)
 
-	err = run(t.Context(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14n, c14n.Canonical11}, strings.NewReader(tampered), &report, &stderr)
+	err = run(t.Context(), []string{nameVerifyDetached, flagKey, public, flagResources, verifyManifest, flagC14N, c14n.Canonical11}, strings.NewReader(tampered), &report, &stderr)
 	if err == nil || strings.Contains(err.Error(), "no such file") {
 		t.Fatal("resource read before authentication", err)
 	}

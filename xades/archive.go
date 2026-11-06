@@ -237,7 +237,7 @@ func (v *Validator) validatePreserved(ctx context.Context, doc *document.Documen
 func (v *Validator) appendArchive(ctx context.Context, doc *document.Document, selected document.Element, certificate []byte, at time.Time, method string, token *timestamp.Token) (*document.Document, *ValidationResult, error) {
 	limit := v.maxTokenBytes
 	if limit == 0 {
-		limit = 4 << 20
+		limit = defaultTimestampTokenBytes
 	}
 
 	if token.Size() > limit {
@@ -249,14 +249,14 @@ func (v *Validator) appendArchive(ctx context.Context, doc *document.Document, s
 		return nil, nil, e
 	}
 
-	archive := node141("ArchiveTimeStamp")
-	archive.NS = append(archive.NS, tree.Namespace{Prefix: "ds", URI: xmldsig.Namespace}, tree.Namespace{Prefix: nameXades, URI: Namespace})
+	archive := node141(nameArchiveTimeStamp)
+	archive.NS = append(archive.NS, tree.Namespace{Prefix: lexicon.PrefixDSig, URI: xmldsig.Namespace}, tree.Namespace{Prefix: prefixXAdES, URI: Namespace})
 	cm := dsnode(lexicon.DSigElementCanonicalizationMethod)
-	attr(cm, "Algorithm", method)
+	attr(cm, lexicon.SecurityAttrAlgorithm, method)
 	add(archive, cm)
 
-	enc := xnode("EncapsulatedTimeStamp")
-	attr(enc, "Encoding", encodingDER)
+	enc := xnode(nameEncapsulatedTimeStamp)
+	attr(enc, lexicon.SecurityAttrEncoding, encodingDER)
 
 	encoded, e := encodeBase64(ctx, token.Size(), token.WriterTo(ctx))
 	if e != nil {

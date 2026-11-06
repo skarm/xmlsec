@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
 )
@@ -252,6 +253,67 @@ func BenchmarkVerifyCRL(b *testing.B) {
 	}
 }
 
+// BenchmarkVerifyLargeCRL includes strict DER parsing, duplicate detection and
+// all authenticated lookup passes; setup and CRL signing are outside the timer.
+func BenchmarkVerifyLargeCRL(b *testing.B) {
+	for _, count := range []int{1, 1024, 65536} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			c := testcert.New(b)
+			revoked := make([]*x509.Certificate, count)
+			for i := range revoked {
+				revoked[i] = &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1000))}
+			}
+			raw := testcert.CRL(b, c, revoked...)
+			v, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL})
+			if err != nil {
+				b.Fatal(err)
+			}
+			e := pki.Evidence{CRLs: [][]byte{raw}}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(raw)))
+			for b.Loop() {
+				if _, _, err := v.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), e); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkVerifyMalformedLargeCRL(b *testing.B) {
+	for _, count := range []int{1024, 65536} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			c := testcert.New(b)
+			for _, early := range []bool{true, false} {
+				b.Run(strconv.FormatBool(early), func(b *testing.B) {
+					revoked := make([]*x509.Certificate, count)
+					for i := range revoked {
+						revoked[i] = &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1000))}
+					}
+					if early {
+						revoked[1] = revoked[0]
+					} else {
+						revoked[count-1] = revoked[0]
+					}
+					raw := testcert.CRL(b, c, revoked...)
+					verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL})
+					if err != nil {
+						b.Fatal(err)
+					}
+					input := pki.Evidence{CRLs: [][]byte{raw}}
+					b.ReportAllocs()
+					b.SetBytes(int64(len(raw)))
+					for b.Loop() {
+						if result, _, err := verifier.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), input); result != nil || !errors.Is(err, pki.ErrEvidence) {
+							b.Fatal(result, err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func verificationTime() time.Time { return time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC) }
 
 type chainData struct {
@@ -320,63 +382,57 @@ func makeCRL(t *testing.T, c chainData, revoked bool, template *x509.RevocationL
 	return der
 }
 
-// BenchmarkVerifyLargeCRL includes strict DER parsing, duplicate detection and
-// all authenticated lookup passes; setup and CRL signing are outside the timer.
-func BenchmarkVerifyLargeCRL(b *testing.B) {
-	for _, count := range []int{1, 1024, 65536} {
-		b.Run(strconv.Itoa(count), func(b *testing.B) {
-			c := testcert.New(b)
-			revoked := make([]*x509.Certificate, count)
-			for i := range revoked {
-				revoked[i] = &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1000))}
-			}
-			raw := testcert.CRL(b, c, revoked...)
-			v, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL})
-			if err != nil {
-				b.Fatal(err)
-			}
-			e := pki.Evidence{CRLs: [][]byte{raw}}
-			b.ReportAllocs()
-			b.SetBytes(int64(len(raw)))
-			for b.Loop() {
-				if _, _, err := v.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), e); err != nil {
-					b.Fatal(err)
+func TestCheckEvidenceLimits(t *testing.T) {
+	chain := testcert.New(t)
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL, MaxEvidenceBytes: 4096, MaxCRLs: 2, MaxOCSPResponses: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		input pki.Evidence
+		over  bool
+	}{
+		{name: "empty"},
+		{name: "intermediates64", input: pki.Evidence{Intermediates: make([][]byte, 64)}},
+		{name: "intermediates65", input: pki.Evidence{Intermediates: make([][]byte, 65)}, over: true},
+		{name: "CRLs2", input: pki.Evidence{CRLs: make([][]byte, 2)}},
+		{name: "CRLs3", input: pki.Evidence{CRLs: make([][]byte, 3)}, over: true},
+		{name: "OCSP3", input: pki.Evidence{OCSPResponses: make([][]byte, 3)}},
+		{name: "OCSP4", input: pki.Evidence{OCSPResponses: make([][]byte, 4)}, over: true},
+		{name: "aggregate exact", input: pki.Evidence{Intermediates: [][]byte{make([]byte, 1024)}, CRLs: [][]byte{make([]byte, 1024)}, OCSPResponses: [][]byte{make([]byte, 2048)}}},
+		{name: "aggregate over", input: pki.Evidence{Intermediates: [][]byte{make([]byte, 1024)}, CRLs: [][]byte{make([]byte, 1024)}, OCSPResponses: [][]byte{make([]byte, 2049)}}, over: true},
+		{name: "no DER or Sources authentication", input: pki.Evidence{Intermediates: [][]byte{[]byte("not a certificate")}, Sources: make([]*evidence.Observation, 1025)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifier.CheckEvidenceLimits(t.Context(), tc.input)
+			if tc.over {
+				if !errors.Is(err, pki.ErrLimit) || !errors.Is(err, pki.ErrPolicy) {
+					t.Fatal("limit identity", err)
 				}
+			} else if err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
-}
-
-func BenchmarkVerifyMalformedLargeCRL(b *testing.B) {
-	for _, count := range []int{1024, 65536} {
-		b.Run(strconv.Itoa(count), func(b *testing.B) {
-			c := testcert.New(b)
-			for _, early := range []bool{true, false} {
-				b.Run(strconv.FormatBool(early), func(b *testing.B) {
-					revoked := make([]*x509.Certificate, count)
-					for i := range revoked {
-						revoked[i] = &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1000))}
-					}
-					if early {
-						revoked[1] = revoked[0]
-					} else {
-						revoked[count-1] = revoked[0]
-					}
-					raw := testcert.CRL(b, c, revoked...)
-					verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL})
-					if err != nil {
-						b.Fatal(err)
-					}
-					input := pki.Evidence{CRLs: [][]byte{raw}}
-					b.ReportAllocs()
-					b.SetBytes(int64(len(raw)))
-					for b.Loop() {
-						if result, _, err := verifier.Verify(b.Context(), c.Leaf.Raw, testcert.Now(), input); result != nil || !errors.Is(err, pki.ErrEvidence) {
-							b.Fatal(result, err)
-						}
-					}
-				})
-			}
-		})
+	for _, v := range []*pki.Verifier{nil, {}} {
+		if err := v.CheckEvidenceLimits(t.Context(), pki.Evidence{}); !errors.Is(err, pki.ErrPolicy) || errors.Is(err, pki.ErrLimit) {
+			t.Fatal("invalid verifier", err)
+		}
+	}
+	if err := verifier.CheckEvidenceLimits(nil, pki.Evidence{}); !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("nil context", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := verifier.CheckEvidenceLimits(ctx, pki.Evidence{Intermediates: make([][]byte, 65)}); !errors.Is(err, context.Canceled) || errors.Is(err, pki.ErrLimit) {
+		t.Fatal("cancellation cause", err)
+	}
+	over := pki.Evidence{Intermediates: make([][]byte, 65)}
+	if result, _, err := verifier.Verify(t.Context(), chain.Leaf.Raw, testcert.Now(), over); result != nil || !errors.Is(err, pki.ErrPolicy) || errors.Is(err, pki.ErrLimit) {
+		t.Fatal("ordinary Verify identity changed", result, err)
+	}
+	if session, err := verifier.NewHistoricalSession(t.Context(), pki.HistoricalOptions{}, testcert.Now(), over); session != nil || !errors.Is(err, pki.ErrLimit) || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("historical session identity changed", session, err)
 	}
 }

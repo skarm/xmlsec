@@ -16,10 +16,25 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/xmldsig"
+)
+
+// Exact metadata key-use markers; an absent use permits both classes. Certificates describe keys under metadata trust rather than establishing PKIX trust.
+const (
+	keyUseEncryption = "encryption"
+	keyUseSigning    = "signing"
+)
+
+// Metadata vocabulary local name shared by builder and parser; callers must still check the metadata or extension namespace.
+const (
+	xmlNameContactPerson      = "ContactPerson"
+	xmlNameEntitiesDescriptor = "EntitiesDescriptor"
+	xmlNameExtensions         = "Extensions"
+	xmlNameOrganization       = "Organization"
 )
 
 // Namespace is the SAML 2.0 metadata namespace URI.
@@ -34,25 +49,39 @@ const HTTPPost = lexicon.SAMLBindingHTTPPost
 // HTTPRedirect is the SAML HTTP-Redirect binding URI.
 const HTTPRedirect = lexicon.SAMLBindingHTTPRedirect
 
-// HTTPArtifact is the SAML HTTP-Artifact binding URI; artifact processing is unsupported.
+// HTTPArtifact is the SAML HTTP-Artifact binding URI.
 const HTTPArtifact = lexicon.SAMLBindingHTTPArtifact
 
-// SOAP is the SAML SOAP binding URI; SOAP processing is unsupported.
+// SOAP is the SAML SOAP binding URI.
 const SOAP = lexicon.SAMLBindingSOAP
+
+// PAOS is the SAML reverse SOAP binding used by the ECP profile.
+const PAOS = lexicon.SAMLBindingPAOS
+
+// URI is the SAML assertion URI binding.
+const URI = "urn:oasis:names:tc:SAML:2.0:bindings:URI"
 
 const (
 	// AssertionConsumerService selects assertion consumer endpoints in Role.Endpoints.
 	AssertionConsumerService = lexicon.SAMLAssertionConsumerService
 	// SingleSignOnService selects IdP sign-on endpoints in Role.Endpoints.
 	SingleSignOnService = lexicon.SAMLSingleSignOnService
-	// SingleLogoutService selects logout declarations; logout processing is unsupported.
+	// SingleLogoutService selects logout endpoints.
 	SingleLogoutService = lexicon.SAMLSingleLogoutService
-	// ArtifactResolutionService selects artifact declarations; artifact processing is unsupported.
+	// ArtifactResolutionService selects artifact resolution endpoints.
 	ArtifactResolutionService = lexicon.SAMLArtifactResolutionService
-	// ManageNameIDService selects name identifier management declarations, without enabling processing.
+	// ManageNameIDService selects name identifier management endpoints.
 	ManageNameIDService = lexicon.SAMLManageNameIDService
-	// NameIDMappingService selects name identifier mapping declarations, without enabling processing.
+	// NameIDMappingService selects name identifier mapping endpoints.
 	NameIDMappingService = lexicon.SAMLNameIDMappingService
+	// AuthnQueryService selects authentication-authority query endpoints.
+	AuthnQueryService = "AuthnQueryService"
+	// AttributeService selects attribute-authority query endpoints.
+	AttributeService = "AttributeService"
+	// AuthzService selects authorization-decision query endpoints.
+	AuthzService = "AuthzService"
+	// AssertionIDRequestService selects assertion retrieval endpoints.
+	AssertionIDRequestService = "AssertionIDRequestService"
 )
 
 // ErrMetadata reports SAML metadata rejected.
@@ -61,7 +90,7 @@ var ErrMetadata = errors.New("SAML metadata rejected")
 // ErrExpired reports SAML metadata expired or requires refresh.
 var ErrExpired = errors.New("SAML metadata expired or requires refresh")
 
-// RoleType identifies an SP or IdP metadata role.
+// RoleType identifies an SSO provider or SAML authority metadata role.
 type RoleType string
 
 const (
@@ -69,12 +98,18 @@ const (
 	ServiceProvider RoleType = "SPSSODescriptor"
 	// IdentityProvider identifies an IDPSSODescriptor metadata role.
 	IdentityProvider RoleType = "IDPSSODescriptor"
+	// AuthenticationAuthority describes an AuthnQuery authority.
+	AuthenticationAuthority RoleType = "AuthnAuthorityDescriptor"
+	// AttributeAuthority describes an AttributeQuery authority.
+	AttributeAuthority RoleType = "AttributeAuthorityDescriptor"
+	// PolicyDecisionPoint describes an AuthzDecisionQuery authority.
+	PolicyDecisionPoint RoleType = "PDPDescriptor"
 )
 
 // Endpoint identifies a binding and its service URL, with optional response URL and
 // indexed service selection.
 type Endpoint struct {
-	// Binding is the SAML binding URI supported by this endpoint.
+	// Binding is the wire binding URI or the HoK profile discriminator.
 	Binding string
 	// Location is the endpoint URL.
 	Location string
@@ -88,6 +123,13 @@ type Endpoint struct {
 	Default bool
 	// DefaultSet distinguishes an explicit false isDefault value from an absent attribute.
 	DefaultSet bool
+	// ProtocolBinding is hoksso:ProtocolBinding, the actual transport when
+	// Binding identifies the HoK SSO profile. It never replaces the wire Binding.
+	ProtocolBinding string
+	// SupportedChannelBindings preserves cb:supportsChannelBindings as an XML
+	// whitespace-separated list. Nil means absent; an empty non-nil list is present.
+	// The bounded profile permits at most 16 tokens of at most 256 UTF-8 bytes each.
+	SupportedChannelBindings []string
 }
 
 // SelectACS selects from caller-authorized endpoints, preserving metadata order.
@@ -104,7 +146,7 @@ func SelectACS(endpoints []Endpoint, binding string, index *uint16) (Endpoint, e
 		}
 
 		if index != nil || endpoint.Default {
-			return endpoint, nil
+			return cloneEndpoint(endpoint), nil
 		}
 
 		if !haveFirst {
@@ -117,11 +159,11 @@ func SelectACS(endpoints []Endpoint, binding string, index *uint16) (Endpoint, e
 	}
 
 	if haveUnspecified {
-		return unspecified, nil
+		return cloneEndpoint(unspecified), nil
 	}
 
 	if haveFirst {
-		return first, nil
+		return cloneEndpoint(first), nil
 	}
 
 	return Endpoint{}, ErrMetadata
@@ -183,7 +225,7 @@ func (r *Role) Endpoints(kind string) []Endpoint {
 		return nil
 	}
 
-	return append([]Endpoint(nil), r.endpoints[kind]...)
+	return cloneEndpoints(r.endpoints[kind])
 }
 
 // Certificates returns owned certificate DER values for the requested use, including
@@ -207,6 +249,17 @@ func (r *Role) Certificates(use string) [][]byte {
 // SigningKeys returns owned, deduplicated signing keys from trusted metadata. It does not
 // independently validate certificate lifetimes.
 func (r *Role) SigningKeys() []crypto.PublicKey {
+	return r.keysForUse(keyUseSigning)
+}
+
+// EncryptionKeys returns owned, deduplicated keys from encryption or unspecified
+// KeyDescriptors. Signing-only descriptors cannot authorize encryption.
+// Certificates are key descriptions under metadata trust, not a PKIX chain.
+func (r *Role) EncryptionKeys() []crypto.PublicKey {
+	return r.keysForUse(keyUseEncryption)
+}
+
+func (r *Role) keysForUse(use string) []crypto.PublicKey {
 	if r == nil {
 		return nil
 	}
@@ -215,7 +268,7 @@ func (r *Role) SigningKeys() []crypto.PublicKey {
 
 	seen := map[string]struct{}{}
 	for _, k := range r.keys {
-		if _, exists := seen[string(k.spki)]; (k.use == "" || k.use == "signing") && !exists {
+		if _, exists := seen[string(k.spki)]; (k.use == "" || k.use == use) && !exists {
 			pub, e := x509.ParsePKIXPublicKey(k.spki)
 			if e == nil {
 				out = append(out, pub)
@@ -280,6 +333,16 @@ func (e *Entity) Role(kind RoleType, at time.Time) (*Role, error) {
 	}
 
 	return r, nil
+}
+
+// Config supplies metadata signer keys and parsing policy. Construction copies
+// TrustedKeys. Embedded metadata keys cannot expand the trusted signer set.
+type Config struct {
+	// TrustedKeys supplies the explicit metadata signer keys. Embedded keys never extend
+	// this set.
+	TrustedKeys []crypto.PublicKey
+	// Options sets metadata parsing, endpoint and signature policy.
+	Options Options
 }
 
 // Snapshot retains immutable metadata accepted under explicit trust and expiration
@@ -449,16 +512,6 @@ func (v *Verifier) verifyDocument(ctx context.Context, d *document.Document, at 
 	return s, nil
 }
 
-// Config supplies metadata signer keys and parsing policy. Construction copies
-// TrustedKeys. Embedded metadata keys cannot expand the trusted signer set.
-type Config struct {
-	// TrustedKeys supplies the explicit metadata signer keys. Embedded keys never extend
-	// this set.
-	TrustedKeys []crypto.PublicKey
-	// Options sets metadata parsing, endpoint and signature policy.
-	Options Options
-}
-
 type key struct {
 	use  string
 	der  []byte
@@ -466,27 +519,40 @@ type key struct {
 }
 
 func normalize(o Options) (Options, error) {
+	const (
+		defaultMaximumEndpointsPerRole = 32
+		defaultMaximumEntities         = 128
+		defaultMaximumKeysPerRole      = 8
+		defaultMetadataBytes           = 2 << 20
+		defaultMetadataLifetime        = 24 * time.Hour
+		maximumEndpointsPerRole        = 128
+		maximumEntities                = 4096
+		maximumKeysPerRole             = 16
+		maximumMetadataBytes           = 16 << 20
+		maximumMetadataLifetime        = 30 * 24 * time.Hour
+	)
+
 	if o.MaxBytes == 0 {
-		o.MaxBytes = 2 << 20
+		o.MaxBytes = defaultMetadataBytes
 	}
 
 	if o.MaxEntities == 0 {
-		o.MaxEntities = 128
+		o.MaxEntities = defaultMaximumEntities
 	}
 
 	if o.MaxKeysPerRole == 0 {
-		o.MaxKeysPerRole = 8
+		o.MaxKeysPerRole = defaultMaximumKeysPerRole
 	}
 
 	if o.MaxEndpointsPerRole == 0 {
-		o.MaxEndpointsPerRole = 32
+		o.MaxEndpointsPerRole = defaultMaximumEndpointsPerRole
 	}
 
 	if o.MaxLifetime == 0 {
-		o.MaxLifetime = 24 * time.Hour
+		o.MaxLifetime = defaultMetadataLifetime
 	}
 
-	if o.MaxBytes < 1 || o.MaxBytes > 16<<20 || o.MaxEntities < 1 || o.MaxEntities > 4096 || o.MaxKeysPerRole < 1 || o.MaxKeysPerRole > 16 || o.MaxEndpointsPerRole < 1 || o.MaxEndpointsPerRole > 128 || o.MaxLifetime <= 0 || o.MaxLifetime > 30*24*time.Hour {
+	if o.MaxBytes < 1 || o.MaxBytes > maximumMetadataBytes || o.MaxEntities < 1 || o.MaxEntities > maximumEntities || o.MaxKeysPerRole < 1 || o.MaxKeysPerRole > maximumKeysPerRole || o.MaxEndpointsPerRole < 1 || o.MaxEndpointsPerRole > maximumEndpointsPerRole || o.MaxLifetime <= 0 || o.MaxLifetime > maximumMetadataLifetime {
 		return o, ErrMetadata
 	}
 
@@ -498,7 +564,7 @@ func normalize(o Options) (Options, error) {
 func expiry(e document.Element, at, parent time.Time) (time.Time, error) {
 	out := parent
 
-	if s := xmlutil.Attr(e, nameValidUntil); s != "" {
+	if s, present := e.Attribute(document.Name{Local: nameValidUntil}); present {
 		t, er := profile.ParseTime(s)
 		if er != nil {
 			return time.Time{}, er
@@ -509,7 +575,7 @@ func expiry(e document.Element, at, parent time.Time) (time.Time, error) {
 		}
 	}
 
-	if s := xmlutil.Attr(e, nameCacheDuration); s != "" {
+	if s, present := e.Attribute(document.Name{Local: nameCacheDuration}); present {
 		d, er := profile.Duration(s)
 		if er != nil {
 			return time.Time{}, er
@@ -554,11 +620,15 @@ type metadataParser struct {
 }
 
 func (p *metadataParser) visit(element document.Element, parent time.Time, depth int) error {
+	const (
+		maximumAggregateDepth = 8
+	)
+
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
 
-	if depth > 8 {
+	if depth > maximumAggregateDepth {
 		return ErrMetadata
 	}
 
@@ -567,7 +637,7 @@ func (p *metadataParser) visit(element document.Element, parent time.Time, depth
 		return err
 	}
 
-	if element.Name() == xmlutil.Name(Namespace, "EntitiesDescriptor") {
+	if element.Name() == xmlutil.Name(Namespace, xmlNameEntitiesDescriptor) {
 		return p.visitGroup(element, expires, depth)
 	}
 
@@ -575,11 +645,15 @@ func (p *metadataParser) visit(element document.Element, parent time.Time, depth
 }
 
 func (p *metadataParser) visitGroup(element document.Element, expires time.Time, depth int) error {
-	if xmlutil.Attrs(element, nil, []string{"ID", "Name", nameValidUntil, nameCacheDuration}) != nil {
+	const (
+		xmlNameName = "Name"
+	)
+
+	if xmlutil.Attrs(element, nil, []string{lexicon.SAMLAttrID, xmlNameName, nameValidUntil, nameCacheDuration}) != nil {
 		return ErrMetadata
 	}
 
-	if id := xmlutil.Attr(element, "ID"); id != "" && !profile.ID(id) {
+	if id := xmlutil.Attr(element, lexicon.SAMLAttrID); id != "" && !profile.ID(id) {
 		return ErrMetadata
 	}
 
@@ -592,13 +666,13 @@ func (p *metadataParser) visitGroup(element document.Element, expires time.Time,
 
 	for _, child := range children {
 		switch child.Name() {
-		case xmlutil.Name(Namespace, "EntityDescriptor"), xmlutil.Name(Namespace, "EntitiesDescriptor"):
+		case xmlutil.Name(Namespace, xmlNameEntityDescriptor), xmlutil.Name(Namespace, xmlNameEntitiesDescriptor):
 			if err := p.visit(child, expires, depth+1); err != nil {
 				return err
 			}
 
 			count++
-		case xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature), xmlutil.Name(Namespace, "Extensions"):
+		case xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature), xmlutil.Name(Namespace, xmlNameExtensions):
 			// Protected metadata content is not interpreted or fetched.
 		default:
 			return ErrMetadata
@@ -613,16 +687,16 @@ func (p *metadataParser) visitGroup(element document.Element, expires time.Time,
 }
 
 func (p *metadataParser) visitEntity(element document.Element, expires time.Time) error {
-	if element.Name() != xmlutil.Name(Namespace, "EntityDescriptor") || xmlutil.Attrs(element, []string{"entityID"}, []string{"ID", nameValidUntil, nameCacheDuration}) != nil {
+	if element.Name() != xmlutil.Name(Namespace, xmlNameEntityDescriptor) || xmlutil.Attrs(element, []string{xmlNameEntityID}, []string{lexicon.SAMLAttrID, nameValidUntil, nameCacheDuration}) != nil {
 		return ErrMetadata
 	}
 
-	id := xmlutil.Attr(element, "entityID")
+	id := xmlutil.Attr(element, xmlNameEntityID)
 	if !profile.URI(id) || p.snapshot.entities[id] != nil || len(p.snapshot.entities) >= p.options.MaxEntities {
 		return ErrMetadata
 	}
 
-	if xmlID := xmlutil.Attr(element, "ID"); xmlID != "" && !profile.ID(xmlID) {
+	if xmlID := xmlutil.Attr(element, lexicon.SAMLAttrID); xmlID != "" && !profile.ID(xmlID) {
 		return ErrMetadata
 	}
 
@@ -648,9 +722,13 @@ func (p *metadataParser) visitEntity(element document.Element, expires time.Time
 }
 
 func (p *metadataParser) readEntityRoles(entity *Entity, children []document.Element) error {
+	const (
+		xmlNameAdditionalMetadataLocation = "AdditionalMetadataLocation"
+	)
+
 	for _, child := range children {
 		switch child.Name() {
-		case xmlutil.Name(Namespace, string(ServiceProvider)), xmlutil.Name(Namespace, string(IdentityProvider)):
+		case xmlutil.Name(Namespace, string(ServiceProvider)), xmlutil.Name(Namespace, string(IdentityProvider)), xmlutil.Name(Namespace, string(AuthenticationAuthority)), xmlutil.Name(Namespace, string(AttributeAuthority)), xmlutil.Name(Namespace, string(PolicyDecisionPoint)):
 			kind := RoleType(child.Name().Local)
 			if entity.roles[kind] != nil {
 				return ErrMetadata
@@ -664,7 +742,7 @@ func (p *metadataParser) readEntityRoles(entity *Entity, children []document.Ele
 			if role != nil {
 				entity.roles[kind] = role
 			}
-		case xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature), xmlutil.Name(Namespace, "Extensions"), xmlutil.Name(Namespace, "Organization"), xmlutil.Name(Namespace, "ContactPerson"), xmlutil.Name(Namespace, "AdditionalMetadataLocation"):
+		case xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature), xmlutil.Name(Namespace, xmlNameExtensions), xmlutil.Name(Namespace, xmlNameOrganization), xmlutil.Name(Namespace, xmlNameContactPerson), xmlutil.Name(Namespace, xmlNameAdditionalMetadataLocation):
 			// Protected metadata content is not interpreted or fetched.
 		default:
 			return fmt.Errorf("%w: unsupported role/content %s", ErrMetadata, child.Name().Local)
@@ -675,8 +753,20 @@ func (p *metadataParser) readEntityRoles(entity *Entity, children []document.Ele
 }
 
 func parseRole(ctx context.Context, element document.Element, at, parent time.Time, o Options) (*Role, error) {
-	if xmlutil.Attrs(element, []string{"protocolSupportEnumeration"}, []string{"ID", nameValidUntil, nameCacheDuration, "errorURL", "AuthnRequestsSigned", "WantAuthnRequestsSigned", "WantAssertionsSigned"}) != nil {
+	const (
+		xmlNameErrorURL = "errorURL"
+	)
+
+	if xmlutil.Attrs(element, []string{xmlNameProtocolSupportEnumeration}, []string{lexicon.SAMLAttrID, nameValidUntil, nameCacheDuration, xmlNameErrorURL, xmlNameAuthnRequestsSigned, xmlNameWantAuthnRequestsSigned, xmlNameWantAssertionsSigned}) != nil {
 		return nil, ErrMetadata
+	}
+
+	if isAuthorityRole(RoleType(element.Name().Local)) {
+		for _, name := range []string{xmlNameAuthnRequestsSigned, xmlNameWantAuthnRequestsSigned, xmlNameWantAssertionsSigned} {
+			if _, ok := element.Attribute(document.Name{Local: name}); ok {
+				return nil, ErrMetadata
+			}
+		}
 	}
 
 	if !roleSupportsProtocol(element) {
@@ -706,7 +796,7 @@ func parseRole(ctx context.Context, element document.Element, at, parent time.Ti
 		return nil, err
 	}
 
-	if role.kind == IdentityProvider && len(role.endpoints[SingleSignOnService]) == 0 || role.kind == ServiceProvider && len(role.endpoints[AssertionConsumerService]) == 0 {
+	if len(role.endpoints[requiredRoleEndpoint(role.kind)]) == 0 {
 		return nil, ErrMetadata
 	}
 
@@ -714,7 +804,7 @@ func parseRole(ctx context.Context, element document.Element, at, parent time.Ti
 }
 
 func roleSupportsProtocol(element document.Element) bool {
-	for protocol := range strings.FieldsSeq(xmlutil.Attr(element, "protocolSupportEnumeration")) {
+	for protocol := range strings.FieldsFuncSeq(xmlutil.Attr(element, xmlNameProtocolSupportEnumeration), xmlchar.IsSpace) {
 		if protocol == Protocol {
 			return true
 		}
@@ -726,22 +816,28 @@ func roleSupportsProtocol(element document.Element) bool {
 func readRoleSigningFlags(element document.Element, role *Role) error {
 	var err error
 
-	role.authnSigned, err = xmlutil.BoolAttr(element, "AuthnRequestsSigned")
+	role.authnSigned, err = xmlutil.BoolAttr(element, xmlNameAuthnRequestsSigned)
 	if err != nil {
 		return err
 	}
 
-	role.wantAuthnSigned, err = xmlutil.BoolAttr(element, "WantAuthnRequestsSigned")
+	role.wantAuthnSigned, err = xmlutil.BoolAttr(element, xmlNameWantAuthnRequestsSigned)
 	if err != nil {
 		return err
 	}
 
-	role.wantAssertionsSigned, err = xmlutil.BoolAttr(element, "WantAssertionsSigned")
+	role.wantAssertionsSigned, err = xmlutil.BoolAttr(element, xmlNameWantAssertionsSigned)
 
 	return err
 }
 
 func readRoleContent(ctx context.Context, role *Role, children []document.Element, o Options) error {
+	const (
+		xmlNameAttribute                 = "Attribute"
+		xmlNameAttributeConsumingService = "AttributeConsumingService"
+		xmlNameAttributeProfile          = "AttributeProfile"
+	)
+
 	endpointCount := 0
 
 	for _, child := range children {
@@ -754,7 +850,7 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 		}
 
 		switch child.Name().Local {
-		case "KeyDescriptor":
+		case xmlNameKeyDescriptor:
 			if err := appendRoleKeys(ctx, role, child, o.MaxKeysPerRole); err != nil {
 				return err
 			}
@@ -762,24 +858,42 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 			if err := appendRoleNameIDFormat(role, child); err != nil {
 				return err
 			}
-		case SingleSignOnService, SingleLogoutService, AssertionConsumerService, ArtifactResolutionService, ManageNameIDService, NameIDMappingService:
+		case SingleSignOnService, SingleLogoutService, AssertionConsumerService, ArtifactResolutionService, ManageNameIDService, NameIDMappingService, AuthnQueryService, AttributeService, AuthzService, AssertionIDRequestService:
 			endpointCount++
 			if endpointCount > o.MaxEndpointsPerRole {
 				return ErrMetadata
 			}
 
-			endpoint, err := parseEndpoint(child, o)
-			if err != nil {
+			if err := appendRoleEndpoint(role, child, o); err != nil {
 				return err
 			}
-
-			role.endpoints[child.Name().Local] = append(role.endpoints[child.Name().Local], endpoint)
-		case lexicon.DSigElementSignature, "Extensions", "Organization", "ContactPerson", "AttributeConsumingService", "AttributeProfile", "Attribute":
+		case lexicon.DSigElementSignature, xmlNameExtensions, xmlNameOrganization, xmlNameContactPerson, xmlNameAttributeConsumingService, xmlNameAttributeProfile, xmlNameAttribute:
 			// Protected role content is not interpreted.
 		default:
 			return ErrMetadata
 		}
 	}
+
+	return nil
+}
+
+func appendRoleEndpoint(role *Role, child document.Element, o Options) error {
+	if !validRoleEndpoint(role.kind, child.Name().Local) {
+		return ErrMetadata
+	}
+
+	if child.Name().Local == NameIDMappingService || child.Name().Local == SingleSignOnService {
+		if _, present := child.Attribute(document.Name{Local: xmlNameResponseLocation}); present {
+			return ErrMetadata
+		}
+	}
+
+	endpoint, err := parseEndpoint(child, o)
+	if err != nil {
+		return err
+	}
+
+	role.endpoints[child.Name().Local] = append(role.endpoints[child.Name().Local], endpoint)
 
 	return nil
 }
@@ -803,13 +917,18 @@ func appendRoleKeys(ctx context.Context, role *Role, descriptor document.Element
 }
 
 func appendRoleNameIDFormat(role *Role, element document.Element) error {
-	format, err := xmlutil.Simple(element, 2048)
+	const (
+		maximumNameIDFormatBytes = 2048
+		maximumNameIDFormats     = 32
+	)
+
+	format, err := xmlutil.Simple(element, maximumNameIDFormatBytes)
 	if err != nil || !profile.URI(format) {
 		return ErrMetadata
 	}
 
 	role.formats = append(role.formats, format)
-	if len(role.formats) > 32 {
+	if len(role.formats) > maximumNameIDFormats {
 		return ErrMetadata
 	}
 
@@ -818,33 +937,37 @@ func appendRoleNameIDFormat(role *Role, element document.Element) error {
 
 func parseEndpoint(c document.Element, o Options) (Endpoint, error) {
 	indexed := c.Name().Local == AssertionConsumerService || c.Name().Local == ArtifactResolutionService
-	required := []string{"Binding", "Location"}
-	optional := []string{"ResponseLocation"}
+	required := []string{xmlNameBinding, xmlNameLocation}
+	optional := []string{xmlNameResponseLocation}
 
 	if indexed {
-		required = append(required, "index")
-		optional = append(optional, "isDefault")
+		required = append(required, xmlNameIndex)
+		optional = append(optional, xmlNameIsDefault)
 	}
 
-	if xmlutil.Attrs(c, required, optional) != nil || !xmlutil.EmptyContent(c) {
+	if endpointAttributes(c, required, optional) != nil || !xmlutil.EmptyContent(c) {
 		return Endpoint{}, ErrMetadata
 	}
 
-	e := Endpoint{Binding: xmlutil.Attr(c, "Binding"), Location: xmlutil.Attr(c, "Location"), ResponseLocation: xmlutil.Attr(c, "ResponseLocation"), Indexed: indexed}
+	e := Endpoint{Binding: xmlutil.Attr(c, xmlNameBinding), Location: xmlutil.Attr(c, xmlNameLocation), ResponseLocation: xmlutil.Attr(c, xmlNameResponseLocation), Indexed: indexed}
+	if err := readEndpointExtensions(c, &e); err != nil {
+		return Endpoint{}, err
+	}
+
 	if !profile.URI(e.Binding) || !profile.Endpoint(e.Location, o.AllowHTTP) || e.ResponseLocation != "" && !profile.Endpoint(e.ResponseLocation, o.AllowHTTP) {
 		return Endpoint{}, ErrMetadata
 	}
 
 	if indexed {
-		n, err := profile.Index(xmlutil.Attr(c, "index"))
+		n, err := profile.Index(xmlutil.Attr(c, xmlNameIndex))
 		if err != nil {
 			return Endpoint{}, ErrMetadata
 		}
 
 		e.Index = n
-		_, e.DefaultSet = c.Attribute(document.Name{Local: "isDefault"})
+		_, e.DefaultSet = c.Attribute(document.Name{Local: xmlNameIsDefault})
 
-		e.Default, err = xmlutil.BoolAttr(c, "isDefault")
+		e.Default, err = xmlutil.BoolAttr(c, xmlNameIsDefault)
 		if err != nil {
 			return Endpoint{}, err
 		}
@@ -854,12 +977,17 @@ func parseEndpoint(c document.Element, o Options) (Endpoint, error) {
 }
 
 func parseKey(ctx context.Context, c document.Element) ([]key, error) {
-	if xmlutil.Attrs(c, nil, []string{"use"}) != nil {
+	const (
+		maximumEncodedCertificateBytes = 48 << 10
+		xmlNameEncryptionMethod        = "EncryptionMethod"
+	)
+
+	if xmlutil.Attrs(c, nil, []string{lexicon.AttrUse}) != nil {
 		return nil, ErrMetadata
 	}
 
-	use := xmlutil.Attr(c, "use")
-	if use != "" && use != "signing" && use != "encryption" {
+	use := xmlutil.Attr(c, lexicon.AttrUse)
+	if use != "" && use != keyUseSigning && use != keyUseEncryption {
 		return nil, ErrMetadata
 	}
 
@@ -869,7 +997,7 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 	}
 
 	for _, extra := range cs[1:] {
-		if extra.Name() != xmlutil.Name(Namespace, "EncryptionMethod") {
+		if extra.Name() != xmlutil.Name(Namespace, xmlNameEncryptionMethod) {
 			return nil, ErrMetadata
 		}
 	}
@@ -901,7 +1029,7 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 
 		_, node := tree.Unwrap(x)
 
-		b, e := tree.DecodeBase64(ctx, node, 48<<10, 32<<10)
+		b, e := tree.DecodeBase64(ctx, node, maximumEncodedCertificateBytes, maximumCertificateBytes)
 		if e != nil {
 			return nil, errors.Join(ErrMetadata, e)
 		}

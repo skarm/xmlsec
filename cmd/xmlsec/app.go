@@ -12,6 +12,15 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// Exit statuses are the OS-facing CLI contract for usage, cancellation and deadlines; report status strings have a separate vocabulary.
+const (
+	cliExitSuccess  = 0
+	cliExitFailure  = 1
+	cliExitUsage    = 2
+	cliExitDeadline = 124
+	cliExitCanceled = 130
+)
+
 type (
 	commandHandler func(context.Context, []string, io.Reader, io.Writer, io.Writer) error
 
@@ -33,7 +42,7 @@ func commands() []commandSpec {
 		{"signature sign-detached", "Sign exact external resources from a local manifest", runDetached},
 		{"signature verify-detached", "Verify the exact resource set in a local manifest", runDetached},
 		{"signature inspect", "List untrusted signatures, algorithms, references and IDs", runInspect},
-		{nameC14n, "Canonicalize XML, an element or an XPath node set", runXML},
+		{nameC14N, "Canonicalize XML, an element or an XPath node set", runXML},
 		{"encryption encrypt", "Encrypt bytes, a document, an element or element content", runEncryption},
 		{"encryption decrypt", "Authenticate and decrypt explicitly selected XML ciphertext", runEncryption},
 		{"encryption externalize", "Extract selected ciphertext into a CipherReference", runEncryption},
@@ -209,22 +218,22 @@ func usageError(format string, args ...any) error { return usageFailure{fmt.Erro
 
 func exitCode(err error) int {
 	if err == nil {
-		return 0
+		return cliExitSuccess
 	}
 
 	if errors.Is(err, context.Canceled) {
-		return 130
+		return cliExitCanceled
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		return 124
+		return cliExitDeadline
 	}
 
 	if _, ok := errors.AsType[usageFailure](err); ok {
-		return 2
+		return cliExitUsage
 	}
 
-	return 1
+	return cliExitFailure
 }
 
 func writeJSON(w io.Writer, v any) error {

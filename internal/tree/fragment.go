@@ -84,14 +84,14 @@ func stripTextDeclaration(text string) (string, error) {
 	}
 
 	if attrs[0].Name == (xml.Name{Local: lexicon.DeclVersion}) {
-		if attrs[0].Value != "1.0" {
+		if attrs[0].Value != lexicon.XMLVersion10 {
 			return "", fmt.Errorf("%w: XML 1.0 is required", ErrUnsupported)
 		}
 
 		attrs = attrs[1:]
 	}
 
-	if len(attrs) != 1 || attrs[0].Name != (xml.Name{Local: "encoding"}) || !validEncodingName(attrs[0].Value) {
+	if len(attrs) != 1 || attrs[0].Name != (xml.Name{Local: lexicon.DeclEncoding}) || !validEncodingName(attrs[0].Value) {
 		return "", fmt.Errorf("%w: text declaration attributes", ErrMalformed)
 	}
 

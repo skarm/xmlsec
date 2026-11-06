@@ -17,6 +17,8 @@ import (
 	"github.com/skarm/xmlsec/keys"
 )
 
+const probeTimeout = 30 * time.Second
+
 type task struct {
 	Mode        string
 	Input       string
@@ -35,7 +37,11 @@ type output struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Certificate string `json:"certificate,omitempty"`
 	Extras      int    `json:"extras,omitempty"`
-	Error       string `json:"error,omitempty"`
+}
+
+type reply struct {
+	output
+	Error string `json:"error,omitempty"`
 }
 
 func main() {
@@ -44,15 +50,15 @@ func main() {
 	d := json.NewDecoder(os.Stdin)
 	d.DisallowUnknownFields()
 
-	o := output{}
+	o := reply{}
 	if err := d.Decode(&t); err != nil {
 		o.Error = err.Error()
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 
 		var err error
 
-		o, err = process(ctx, t)
+		o.output, err = process(ctx, t)
 
 		cancel()
 

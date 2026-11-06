@@ -6,14 +6,19 @@ package xslt
 import (
 	"context"
 	"fmt"
-	"math"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
+)
+
+// Invocation-local canonical key encoding: family tags retain broad typed-comparison candidates, NUL separates components, and table identity includes the document and owning package. These bytes are not an external wire format.
+const (
+	canonicalKeySeparator  = "\u0000"
+	canonicalNumericBucket = "N"
+	canonicalStringPrefix  = "S:"
 )
 
 type keyEntry struct {
@@ -28,20 +33,33 @@ type compositeKeyEntry struct {
 	node xdm.Node
 }
 
+// Build the pure-int64 scalar index only after repeated lookups in a sufficiently
+// large bucket. These measured setup thresholds are a memory/work compromise,
+// not a maximum key count or an asserted optimum. Mixed/composite keys retain
+// generic typed refinement and invocation-local ownership.
+const (
+	keyIntegerIndexMinEntries = 64
+	keyIntegerIndexLookups    = 3
+)
+
 type keyTable struct {
-	defs           []*keyDef
-	entries        map[string][]keyEntry          // canonicalKey -> entries (non-composite)
-	compositeEntry map[string][]compositeKeyEntry // compositeCanonical -> entries (composite)
-	collationKey   func(string) string            // collation key function (nil = codepoint)
-	collationCmp   func(string, string) int       // collation compare function (nil = codepoint)
-	compat         bool                           // any definition enables backwards-compatible processing
-	building       bool
-	built          bool
+	entries          map[string][]keyEntry          // canonicalKey -> entries (non-composite)
+	compositeEntry   map[string][]compositeKeyEntry // compositeCanonical -> entries (composite)
+	collationKey     func(string) string            // collation key function (nil = codepoint)
+	collationCmp     func(string, string) int       // collation compare function (nil = codepoint)
+	implicitTimezone *time.Location
+	integerIndex     map[int64][]int
+	defs             []*keyDef
+	compat           bool // any definition enables backwards-compatible processing
+	building         bool
+	built            bool
+	integerLookups   uint8
+	integerDisabled  bool
 }
 
-func newKeyTable(defs []*keyDef) (*keyTable, error) {
+func newKeyTable(defs []*keyDef, implicitTimezone *time.Location) (*keyTable, error) {
 	table := &keyTable{
-		defs: defs, entries: make(map[string][]keyEntry),
+		defs: defs, implicitTimezone: implicitTimezone, entries: make(map[string][]keyEntry),
 		compat: !defs[0].Composite && keyDefinitionsCompatible(defs), building: true,
 	}
 	if err := buildKeyTableCollation(defs, table); err != nil {
@@ -108,9 +126,9 @@ func keyCompatCast(av xdm.AtomicValue, xpath10 bool) xdm.AtomicValue {
 // collationCanonicalKey produces a canonical key using the collation key
 // function for string/untypedAtomic types. Falls back to canonicalKey
 // for non-string types.
-func collationCanonicalKey(av xdm.AtomicValue, keyFn func(string) string) string {
+func collationCanonicalKey(av xdm.AtomicValue, keyFn func(string) string, implicitTimezone *time.Location) string {
 	if keyFn == nil {
-		return canonicalKey(av)
+		return canonicalKey(av, implicitTimezone)
 	}
 
 	switch av.TypeName {
@@ -121,9 +139,9 @@ func collationCanonicalKey(av xdm.AtomicValue, keyFn func(string) string) string
 		xdm.TypeENTITY, xdm.TypeID, xdm.TypeIDREF, xdm.TypeIDREFS,
 		xdm.TypeAnyURI:
 		s, _ := xpath.AtomicToString(av)
-		return "S:" + keyFn(s)
+		return canonicalStringPrefix + keyFn(s)
 	default:
-		return canonicalKey(av)
+		return canonicalKey(av, implicitTimezone)
 	}
 }
 
@@ -131,46 +149,50 @@ func collationCanonicalKey(av xdm.AtomicValue, keyFn func(string) string) string
 // into the same bucket. Typed comparison refines matches within a bucket.
 // Values that could be equal under XPath eq semantics (including
 // untypedAtomic promotion) must share the same canonical key.
-func canonicalKey(av xdm.AtomicValue) string {
-	if qv, ok := canonicalQNameValue(av); ok {
-		// QName equality is based on URI and local name, not lexical prefix.
-		return xdm.TypeQName + ":" + qv.URI + "\x00" + qv.Local
+func canonicalKey(av xdm.AtomicValue, implicitTimezone *time.Location) string {
+	const (
+		canonicalDatePrefix     = "D:"
+		canonicalDateTimePrefix = "DT:"
+		canonicalDurationPrefix = "DU:"
+		canonicalTimePrefix     = "T:"
+	)
+
+	if duration, ok := av.Value.(xdm.Duration); ok {
+		return canonicalDurationPrefix + xdm.DurationToRat(duration, true).RatString() + ":" + xdm.DurationToRat(duration, false).RatString()
 	}
 
-	// For date/time types, normalize to UTC so that equivalent instants
-	// in different timezones share the same canonical key.
-	switch av.TypeName {
+	if qv, ok := canonicalQNameValue(av); ok {
+		// QName equality is based on URI and local name, not lexical prefix.
+		return xdm.TypeQName + ":" + qv.URI + canonicalKeySeparator + qv.Local
+	}
+
+	// Use the same reference dates and invocation timezone as typed equality.
+	temporal := xdm.PromoteSchemaType(av)
+	switch temporal.TypeName {
 	case xdm.TypeDateTime, xdm.TypeDateTimeStamp:
-		if t, ok := av.Value.(time.Time); ok {
-			return "DT:" + t.UTC().Format(time.RFC3339Nano)
+		if t, ok := temporal.Value.(time.Time); ok {
+			return canonicalDateTimePrefix + xpath.ApplyImplicitTZ(t, implicitTimezone).UTC().Format(time.RFC3339Nano)
 		}
 	case xdm.TypeDate:
-		if t, ok := av.Value.(time.Time); ok {
-			return "D:" + t.UTC().Format("2006-01-02Z07:00")
+		if t, ok := temporal.Value.(time.Time); ok {
+			return canonicalDatePrefix + xpath.ApplyImplicitTZ(t, implicitTimezone).UTC().Format(time.RFC3339Nano)
 		}
 	case xdm.TypeTime:
-		if t, ok := av.Value.(time.Time); ok {
-			return "T:" + t.UTC().Format("15:04:05.999999999Z07:00")
+		if t, ok := temporal.Value.(time.Time); ok {
+			return canonicalTimePrefix + xpath.TimeToReferenceDateTime(xpath.ApplyImplicitTZ(t, implicitTimezone)).UTC().Format(time.RFC3339Nano)
+		}
+	case xdm.TypeGDay, xdm.TypeGMonth, xdm.TypeGMonthDay, xdm.TypeGYear, xdm.TypeGYearMonth:
+		if t, ok := xpath.GregorianToReferenceDateTime(temporal); ok {
+			return temporal.TypeName + ":" + xpath.ApplyImplicitTZ(t, implicitTimezone).UTC().Format(time.RFC3339Nano)
 		}
 	}
 
 	s, _ := xpath.AtomicToString(av)
-	// Group numerics together so integer 4 and double 4.0 can be
-	// compared in the same bucket. The bucket deliberately loses precision;
-	// typed comparison must refine collisions before a node is selected.
+	// Numeric equality can promote exact values to either float or double.
+	// Double rounding can separate equal values even in a float32 hash, so
+	// retain all numeric candidates and refine them by typed comparison.
 	if av.IsNumeric() {
-		// Value comparison can promote either operand to xs:float. Keep all
-		// potentially equal values together, then refine using their original types.
-		f := float64(float32(av.ToFloat64()))
-		if math.IsNaN(f) {
-			return "N:NaN"
-		}
-
-		if f == 0 {
-			return "N:0"
-		}
-
-		return "N:" + strconv.FormatFloat(f, 'g', -1, 64)
+		return canonicalNumericBucket
 	}
 	// Group untypedAtomic, string, and all string-derived types together
 	// since untypedAtomic is promoted to string for eq comparison.
@@ -181,10 +203,20 @@ func canonicalKey(av xdm.AtomicValue) string {
 		xdm.TypeNMTOKEN, xdm.TypeNMTOKENS,
 		xdm.TypeENTITY, xdm.TypeID, xdm.TypeIDREF, xdm.TypeIDREFS,
 		xdm.TypeAnyURI:
-		return "S:" + s
+		return canonicalStringPrefix + s
 	}
 
 	return av.TypeName + ":" + s
+}
+
+// indexInt64 accepts only exact integer values, without numeric promotion.
+func indexInt64(value xdm.AtomicValue) (int64, bool) {
+	value = xdm.PromoteSchemaType(value)
+	if !xdm.IsIntegerDerived(value.TypeName) {
+		return 0, false
+	}
+
+	return value.Int64Val()
 }
 
 func canonicalQNameValue(av xdm.AtomicValue) (xdm.QNameValue, bool) {
@@ -205,24 +237,28 @@ func canonicalQNameValue(av xdm.AtomicValue) (xdm.QNameValue, bool) {
 // compositeCanonicalKey produces a canonical key for a sequence of atomic values
 // used as a composite key. Individual canonical keys are joined with NUL bytes.
 // When keyFn is non-nil, string-like values use the collation key function.
-func compositeCanonicalKey(avs []xdm.AtomicValue, keyFn func(string) string) string {
+func compositeCanonicalKey(avs []xdm.AtomicValue, keyFn func(string) string, implicitTimezone *time.Location) string {
 	parts := make([]string, len(avs))
 	for i, av := range avs {
-		parts[i] = collationCanonicalKey(av, keyFn)
+		parts[i] = collationCanonicalKey(av, keyFn, implicitTimezone)
 	}
 
-	return strings.Join(parts, "\x00")
+	return strings.Join(parts, canonicalKeySeparator)
 }
 
 // buildKeyTable builds or retrieves a key table for the given key name
 // scoped to the given document root.
 func (ec *execContext) buildKeyTable(ctx context.Context, name string, root xdm.Node) (*keyTable, error) {
+	const (
+		keyTableIdentityFormat = "%s@%p@%p"
+	)
+
 	if ec.keyTables == nil {
 		ec.keyTables = make(map[string]*keyTable)
 	}
 
 	// Isolate each key by document identity and owning package.
-	cacheKey := fmt.Sprintf("%s@%p@%p", name, root, ec.currentPackage)
+	cacheKey := fmt.Sprintf(keyTableIdentityFormat, name, root, ec.currentPackage)
 
 	table, err := ec.cachedKeyTable(cacheKey, name)
 	if err != nil {
@@ -238,7 +274,7 @@ func (ec *execContext) buildKeyTable(ctx context.Context, name string, root xdm.
 		return nil, dynamicError(errCodeXTDE1260, "unknown key %q", name)
 	}
 
-	table, err = newKeyTable(defs)
+	table, err = newKeyTable(defs, ec.dynamicProperties.Timezone)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +390,7 @@ func (ec *execContext) lookupKey(ctx context.Context, name string, value xdm.Ato
 
 	// Backwards-compatible key: the lookup value is compared as a string.
 	if kt.compat {
-		value = keyCompatCast(value, ec.stylesheet.processorLanguage() == 10)
+		value = keyCompatCast(value, ec.stylesheet.processorLanguage() == processorXSLT10)
 	}
 
 	// NaN lookup never matches.
@@ -362,7 +398,7 @@ func (ec *execContext) lookupKey(ctx context.Context, name string, value xdm.Ato
 		return nil, nil
 	}
 
-	ck := collationCanonicalKey(value, kt.collationKey)
+	ck := collationCanonicalKey(value, kt.collationKey, kt.implicitTimezone)
 	if err := xpath.ChargeString(ctx, len(ck)); err != nil {
 		return nil, err
 	}
@@ -372,15 +408,101 @@ func (ec *execContext) lookupKey(ctx context.Context, name string, value xdm.Ato
 		return nil, nil
 	}
 
+	var (
+		positions []int
+		indexed   bool
+	)
+	if ck == canonicalNumericBucket {
+		positions, indexed, err = kt.integerCandidates(ctx, value, candidates)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return kt.filterCandidates(ctx, value, candidates, positions, indexed)
+}
+
+// integerCandidates builds an invocation-local index only after repeated exact
+// integer lookups. Other numeric queries still examine the complete N bucket.
+func (kt *keyTable) integerCandidates(ctx context.Context, value xdm.AtomicValue, candidates []keyEntry) ([]int, bool, error) {
+	if kt.integerDisabled || kt.compat || kt.compositeEntry != nil || len(candidates) < keyIntegerIndexMinEntries {
+		return nil, false, nil
+	}
+
+	if len(candidates) > xpath.NodeLimit(ctx, xdm.DefaultMaxNodeSetLength) {
+		kt.integerDisabled = true
+
+		return nil, false, nil
+	}
+
+	key, eligible := indexInt64(value)
+	if !eligible {
+		return nil, false, nil
+	}
+
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return nil, false, err
+	}
+
+	if kt.integerIndex != nil {
+		return kt.integerIndex[key], true, nil
+	}
+
+	if kt.integerLookups < keyIntegerIndexLookups {
+		kt.integerLookups++
+	}
+
+	if kt.integerLookups < keyIntegerIndexLookups {
+		return nil, false, nil
+	}
+
+	index := make(map[int64][]int)
+
+	for position, entry := range candidates {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, false, err
+		}
+
+		entryKey, ok := indexInt64(entry.key)
+		if !ok {
+			kt.integerDisabled = true
+
+			return nil, false, nil
+		}
+
+		index[entryKey] = append(index[entryKey], position)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+
+	kt.integerIndex = index
+
+	return index[key], true, nil
+}
+
+func (kt *keyTable) filterCandidates(ctx context.Context, value xdm.AtomicValue, candidates []keyEntry, positions []int, indexed bool) ([]xdm.Node, error) {
 	// Filter candidates using typed eq comparison (collation-aware).
 	var result []xdm.Node
 
-	for _, entry := range candidates {
+	count := len(candidates)
+	if indexed {
+		count = len(positions)
+	}
+
+	for i := range count {
 		if err := xpath.Charge(ctx, 1); err != nil {
 			return nil, err
 		}
 
-		if collationAtomicEquals(value, entry.key, kt.collationCmp) {
+		position := i
+		if indexed {
+			position = positions[i]
+		}
+
+		entry := candidates[position]
+		if collationAtomicEquals(value, entry.key, kt.collationCmp, kt.implicitTimezone) {
 			result = append(result, entry.node)
 		}
 	}
@@ -425,7 +547,7 @@ func (ec *execContext) lookupCompositeKey(ctx context.Context, name string, valu
 		return nil, nil
 	}
 
-	ck := compositeCanonicalKey(values, kt.collationKey)
+	ck := compositeCanonicalKey(values, kt.collationKey, kt.implicitTimezone)
 	if err := xpath.ChargeString(ctx, len(ck)); err != nil {
 		return nil, err
 	}
@@ -444,7 +566,7 @@ func (ec *execContext) lookupCompositeKey(ctx context.Context, name string, valu
 			return nil, err
 		}
 
-		if compositeAtomicEquals(values, entry.keys, kt.collationCmp) {
+		if compositeAtomicEquals(values, entry.keys, kt.collationCmp, kt.implicitTimezone) {
 			if _, duplicate := seen[entry.node]; !duplicate {
 				seen[entry.node] = struct{}{}
 				result = append(result, entry.node)
@@ -575,13 +697,13 @@ func collectInScopeNSNodes(elem *xdm.Element) []xdm.Node {
 
 // compositeAtomicEquals tests whether two composite keys are equal element-by-element.
 // When cmpFn is non-nil, string-like values use the collation compare function.
-func compositeAtomicEquals(a, b []xdm.AtomicValue, cmpFn func(string, string) int) bool {
+func compositeAtomicEquals(a, b []xdm.AtomicValue, cmpFn func(string, string) int, implicitTimezone *time.Location) bool {
 	if len(a) != len(b) {
 		return false
 	}
 
 	for i := range a {
-		if !(a[i].IsNaN() && b[i].IsNaN()) && !collationAtomicEquals(a[i], b[i], cmpFn) {
+		if !(a[i].IsNaN() && b[i].IsNaN()) && !collationAtomicEquals(a[i], b[i], cmpFn, implicitTimezone) {
 			return false
 		}
 	}
@@ -591,22 +713,21 @@ func compositeAtomicEquals(a, b []xdm.AtomicValue, cmpFn func(string, string) in
 
 // collationAtomicEquals tests whether two atomic values are equal using
 // the collation compare function for string/untypedAtomic types.
-func collationAtomicEquals(a, b xdm.AtomicValue, cmpFn func(string, string) int) bool {
-	if cmpFn == nil {
-		return xpath.AtomicEquals(a, b)
-	}
+func collationAtomicEquals(a, b xdm.AtomicValue, cmpFn func(string, string) int, implicitTimezone *time.Location) bool {
 	// Only use collation for string-like types
 	aIsStr := isStringLikeType(a.TypeName)
 
 	bIsStr := isStringLikeType(b.TypeName)
-	if aIsStr && bIsStr {
+	if cmpFn != nil && aIsStr && bIsStr {
 		sa, _ := xpath.AtomicToString(a)
 		sb, _ := xpath.AtomicToString(b)
 
 		return cmpFn(sa, sb) == 0
 	}
 
-	return xpath.AtomicEquals(a, b)
+	equal, err := xpath.ValueCompareWithImplicitTimezone(xpath.TokenEq, a, b, implicitTimezone)
+
+	return err == nil && equal
 }
 
 func isStringLikeType(tn string) bool {
@@ -670,12 +791,12 @@ func (b *keyIndexBuilder) indexDefinition(ctx context.Context, def *keyDef, node
 
 	if b.table.compat {
 		for i, atom := range atoms {
-			atoms[i] = keyCompatCast(atom, b.ec.stylesheet.processorLanguage() == 10)
+			atoms[i] = keyCompatCast(atom, b.ec.stylesheet.processorLanguage() == processorXSLT10)
 		}
 	}
 
 	if b.composite {
-		key := compositeCanonicalKey(atoms, b.table.collationKey)
+		key := compositeCanonicalKey(atoms, b.table.collationKey, b.table.implicitTimezone)
 		if record, err := b.record(ctx, key, node, atoms); err != nil {
 			return err
 		} else if record {
@@ -690,7 +811,7 @@ func (b *keyIndexBuilder) indexDefinition(ctx context.Context, def *keyDef, node
 			continue
 		}
 
-		key := collationCanonicalKey(atom, b.table.collationKey)
+		key := collationCanonicalKey(atom, b.table.collationKey, b.table.implicitTimezone)
 		if record, err := b.record(ctx, key, node, []xdm.AtomicValue{atom}); err != nil {
 			return err
 		} else if record {
@@ -702,7 +823,11 @@ func (b *keyIndexBuilder) indexDefinition(ctx context.Context, def *keyDef, node
 }
 
 func (b *keyIndexBuilder) record(ctx context.Context, canonical string, node xdm.Node, atoms []xdm.AtomicValue) (bool, error) {
-	if err := xpath.ChargeString(ctx, len(canonical), 32); err != nil {
+	const (
+		keyRecordAccountingBytes = 32
+	)
+
+	if err := xpath.ChargeString(ctx, len(canonical), keyRecordAccountingBytes); err != nil {
 		return false, err
 	}
 
@@ -713,7 +838,7 @@ func (b *keyIndexBuilder) record(ctx context.Context, canonical string, node xdm
 		}
 		// Cross-type numeric equality is not transitive: removing an equal
 		// xs:float can lose a later integer match. Deduplicate equal types only.
-		if sameKeyValueTypes(atoms, previous) && compositeAtomicEquals(atoms, previous, b.table.collationCmp) {
+		if sameKeyValueTypes(atoms, previous) && compositeAtomicEquals(atoms, previous, b.table.collationCmp, b.table.implicitTimezone) {
 			return false, nil
 		}
 	}

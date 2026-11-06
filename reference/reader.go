@@ -13,6 +13,10 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	base64LexicalBufferBytes = 4096
+)
+
 // WriteReader processes octets from src and writes the transformed bytes to dst.
 // Raw and compound Base64 chains use bounded working buffers. Canonicalization
 // passes its bytes directly to subsequent stages. XML transforms retain a tree;
@@ -85,7 +89,7 @@ func (p *processor) completed(ctx context.Context) (*Report, error) {
 
 type base64Reader struct {
 	source io.Reader
-	buffer [4096]byte
+	buffer [base64LexicalBufferBytes]byte
 }
 
 func (r *base64Reader) Read(p []byte) (int, error) {

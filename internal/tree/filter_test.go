@@ -37,13 +37,21 @@ func TestFilterNodeSetKeepsSnapshotsIndependent(t *testing.T) {
 		// Immutable public set operations must work even when a no-op filter shares
 		// membership with its input.
 		changed, err := selected.With(d.Root().Node())
-		if err != nil || !changed.Contains(d.Root().Node()) {
-			t.Fatal(changed, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !changed.Contains(d.Root().Node()) {
+			t.Fatal("added root is missing")
 		}
 
 		removed, err := selected.Without(d.Root().Node())
-		if err != nil || removed.Contains(d.Root().Node()) {
-			t.Fatal(removed, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if removed.Contains(d.Root().Node()) {
+			t.Fatal("removed root remains selected")
 		}
 
 		if original.Len() != count || !original.Contains(d.Root().Node()) {
@@ -127,15 +135,24 @@ func TestExpandedCapacityHintPreservesLimitsAndMembership(t *testing.T) {
 			doc := treepkg.FromNodes([]*treepkg.Node{root}, limits)
 			set, err := doc.AllNodes(t.Context())
 			if maximum == 9 {
-				if set.Valid() || !errors.Is(err, treepkg.ErrLimit) {
-					t.Fatal("expanded limit changed", set.Len(), err)
+				requireNodeSetLimit(t, set, err)
+			} else {
+				if err != nil {
+					t.Fatal(err)
 				}
-			} else if err != nil || set.Len() != 10 {
-				t.Fatal("expanded selection changed", set.Len(), err)
+
+				if set.Len() != 10 {
+					t.Fatal("expanded selection changed", set.Len())
+				}
 			}
+
 			subtree, err := doc.Root().Subtree(t.Context())
-			if err != nil || subtree.Len() != 9 {
-				t.Fatal("subtree counted a document or empty namespace", subtree.Len(), err)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if subtree.Len() != 9 {
+				t.Fatal("subtree counted a document or empty namespace", subtree.Len())
 			}
 		}
 	}
@@ -145,10 +162,21 @@ func TestExpandedCapacityHintPreservesLimitsAndMembership(t *testing.T) {
 	invalid := treepkg.DefaultLimits()
 	invalid.MaxNodeSetNodes = -1
 	leaf := treepkg.FromNodes([]*treepkg.Node{{Kind: treepkg.ElementNode, Name: treepkg.Name{Local: "leaf"}}}, invalid)
-	if set, err := leaf.AllNodes(t.Context()); set.Valid() || !errors.Is(err, treepkg.ErrLimit) {
-		t.Fatal("negative draft policy did not fail safely", err)
+	set, err := leaf.AllNodes(t.Context())
+	requireNodeSetLimit(t, set, err)
+
+	subtree, err := leaf.Root().Subtree(t.Context())
+	requireNodeSetLimit(t, subtree, err)
+}
+
+func requireNodeSetLimit(t *testing.T, set treepkg.NodeSet, err error) {
+	t.Helper()
+
+	if !errors.Is(err, treepkg.ErrLimit) {
+		t.Fatalf("expected node-set limit error, got %v", err)
 	}
-	if set, err := leaf.Root().Subtree(t.Context()); set.Valid() || !errors.Is(err, treepkg.ErrLimit) {
-		t.Fatal("negative subtree policy did not fail safely", err)
+
+	if set.Valid() {
+		t.Fatal("limit failure returned a valid node set")
 	}
 }

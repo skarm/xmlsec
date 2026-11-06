@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -38,6 +39,14 @@ const (
 // Value retains one immutable XDM item. Its zero value denotes an absent item.
 type Value struct{ item xdm.Item }
 
+// MapEntry associates one atomic XDM key with an immutable sequence value.
+type MapEntry struct {
+	// Key is the atomic XDM key. Non-atomic values are rejected by Map.
+	Key Value
+	// Value is the sequence associated with Key, including an empty sequence.
+	Value Sequence
+}
+
 // String creates an xs:string item sharing the immutable value storage.
 // Pass strings.Clone(value) to detach a caller-created substring from its source.
 func String(value string) Value {
@@ -65,7 +74,7 @@ func BigInteger(value *big.Int) Value {
 func Decimal(value string) (Value, error) {
 	a, err := xpath.CastAtomic(xdm.AtomicValue{TypeName: xdm.TypeString, Value: value}, xdm.TypeDecimal)
 	if err != nil {
-		return Value{}, wrap("decimal", err)
+		return Value{}, wrap(lexicon.TypeDecimal, err)
 	}
 
 	return Value{item: a}, nil
@@ -155,7 +164,7 @@ func (v Value) Text() (string, error) {
 func (v Value) Boolean() (bool, error) {
 	a, ok := v.item.(xdm.AtomicValue)
 	if !ok || a.TypeName != xdm.TypeBoolean {
-		return false, wrap("boolean", ErrInput)
+		return false, wrap(lexicon.TypeBoolean, ErrInput)
 	}
 
 	return a.BooleanVal(), nil
@@ -165,7 +174,7 @@ func (v Value) Boolean() (bool, error) {
 func (v Value) Integer() (*big.Int, error) {
 	a, ok := v.item.(xdm.AtomicValue)
 	if !ok || !xdm.BuiltinIsSubtypeOf(a.TypeName, xdm.TypeInteger) {
-		return nil, wrap("integer", ErrInput)
+		return nil, wrap(lexicon.TypeInteger, ErrInput)
 	}
 
 	return new(big.Int).Set(a.BigInt()), nil
@@ -175,7 +184,7 @@ func (v Value) Integer() (*big.Int, error) {
 func (v Value) Decimal() (*big.Rat, error) {
 	a, ok := v.item.(xdm.AtomicValue)
 	if !ok || !xdm.BuiltinIsSubtypeOf(a.TypeName, xdm.TypeDecimal) {
-		return nil, wrap("decimal", ErrInput)
+		return nil, wrap(lexicon.TypeDecimal, ErrInput)
 	}
 
 	return new(big.Rat).Set(a.BigRat()), nil
@@ -240,7 +249,7 @@ func (v Value) Size() (int, error) {
 func (v Value) Double() (float64, error) {
 	a, ok := v.item.(xdm.AtomicValue)
 	if !ok || a.TypeName != xdm.TypeDouble && a.TypeName != xdm.TypeFloat {
-		return 0, wrap("double", ErrInput)
+		return 0, wrap(lexicon.TypeDouble, ErrInput)
 	}
 
 	return a.DoubleVal(), nil
@@ -250,7 +259,7 @@ func (v Value) Double() (float64, error) {
 func (v Value) DateTime() (time.Time, error) {
 	a, ok := v.item.(xdm.AtomicValue)
 	if !ok || !xdm.BuiltinIsSubtypeOf(a.TypeName, xdm.TypeDateTime) {
-		return time.Time{}, wrap("dateTime", ErrInput)
+		return time.Time{}, wrap(lexicon.TypeDateTime, ErrInput)
 	}
 
 	return a.TimeVal(), nil
@@ -271,23 +280,6 @@ func (v Value) Keys() ([]Value, error) {
 	}
 
 	return values, nil
-}
-
-func stringsCutXS(s string) (string, bool) {
-	if len(s) > 3 && s[:3] == "xs:" {
-		return s[3:], true
-	}
-
-	return s, false
-}
-
-func lexical(value xdm.AtomicValue) (string, error) {
-	converted, err := xpath.CastAtomic(value, xdm.TypeString)
-	if err != nil {
-		return "", wrap("lexical value", err)
-	}
-
-	return converted.StringVal(), nil
 }
 
 // Sequence retains an immutable XDM sequence. Its zero value is empty.
@@ -350,12 +342,21 @@ func (s Sequence) EffectiveBoolean() (bool, error) {
 	return value, wrap("effective boolean", err)
 }
 
-// MapEntry associates one atomic XDM key with an immutable sequence value.
-type MapEntry struct {
-	// Key is the atomic XDM key. Non-atomic values are rejected by Map.
-	Key Value
-	// Value is the sequence associated with Key, including an empty sequence.
-	Value Sequence
+func stringsCutXS(s string) (string, bool) {
+	if len(s) > 3 && s[:3] == "xs:" {
+		return s[3:], true
+	}
+
+	return s, false
+}
+
+func lexical(value xdm.AtomicValue) (string, error) {
+	converted, err := xpath.CastAtomic(value, xdm.TypeString)
+	if err != nil {
+		return "", wrap("lexical value", err)
+	}
+
+	return converted.StringVal(), nil
 }
 
 func expandedName(q document.Name) string {

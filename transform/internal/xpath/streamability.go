@@ -403,6 +403,13 @@ func streamFnLocalName(fc FunctionCall) (string, bool) {
 }
 
 func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
+	// These legacy motion-exclusion labels compare lexical function local names;
+	// retaining self/current here neither registers nor validates such functions.
+	const (
+		predicateMotionSelfName    = "self"
+		predicateMotionCurrentName = "current"
+	)
+
 	switch v := e.(type) {
 	case LocationPath:
 		for _, step := range v.Steps {
@@ -431,8 +438,8 @@ func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
 		if isFn {
 			switch local {
 			case lexicon.FnName, nameLocalName, nameNamespaceURI, nameNodeName,
-				"self", lexicon.FnGenerateID, "base-uri", fnNameDocumentURI,
-				fnNameNilled, nameHasChildren, nameStringLength, "current":
+				predicateMotionSelfName, lexicon.FnGenerateID, fnNameBaseURI, fnNameDocumentURI,
+				fnNameNilled, nameHasChildren, nameStringLength, predicateMotionCurrentName:
 				return false, false
 			}
 		}
@@ -475,7 +482,7 @@ func inspectPredicateMotion(e, pred Expr, step *Step) (bool, bool) {
 // prefix is pathological and unsupported here; consistency with the evaluator is
 // preferred.
 func isFnNamespacePrefix(prefix string) bool {
-	return prefix == "" || prefix == "fn"
+	return prefix == "" || prefix == prefixFn
 }
 
 // lexicalFnLocalName resolves a function call's lexical (name, prefix) to its

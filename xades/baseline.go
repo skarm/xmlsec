@@ -20,6 +20,26 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	// Fallback SignedProperties ID used when the caller omits an explicit identifier.
+	defaultSignedPropertiesID         = "signed-properties"
+	nameQualifyingPropertiesReference = "QualifyingPropertiesReference"
+	dataReferenceIDSuffix             = "-data-reference-"
+	maximumAdditionalCertificates     = 63
+	// Caps each certificate encoding before XAdES binding or evidence checks, in bytes.
+	maximumCertificateBytes     = 1 << 20
+	maximumCertificateValues    = 64
+	maximumCommitments          = 64
+	maximumCoverageRequirements = 64
+	maximumDataObjectFormats    = 256
+	// Bounds a supplied signature-policy document before transforms or digest verification, in bytes.
+	maximumPolicyDocumentBytes = 8 << 20
+)
+
+const (
+	octetStreamMediaType = "application/octet-stream"
+)
+
 const countersignedSignatureType = "http://uri.etsi.org/01903#CountersignedSignature"
 
 type baselineLayout struct {
@@ -64,7 +84,7 @@ func VerifyBaseline(ctx context.Context, doc *document.Document, selected docume
 	}
 
 	opt := baselineCanonicalizationOptions(options.Signature)
-	opt.AdditionalIDRules = append(opt.AdditionalIDRules, reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{name("SignedProperties")}})
+	opt.AdditionalIDRules = append(opt.AdditionalIDRules, reference.IDAttributeRule{Attribute: document.Name{Local: lexicon.SecurityAttrID}, Elements: []document.Name{name(nameSignedProperties)}})
 	opt.RequiredElements = append(opt.RequiredElements, layout.signed)
 
 	verified, err := xmldsig.VerifySignature(ctx, doc, selected, certificate.PublicKey, opt)
@@ -142,7 +162,7 @@ func SignBaseline(ctx context.Context, doc *document.Document, parent document.E
 		return nil, nil, err
 	}
 
-	validation.AdditionalIDRules = append(validation.AdditionalIDRules, reference.IDAttributeRule{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{name("SignedProperties")}})
+	validation.AdditionalIDRules = append(validation.AdditionalIDRules, reference.IDAttributeRule{Attribute: document.Name{Local: lexicon.SecurityAttrID}, Elements: []document.Name{name(nameSignedProperties)}})
 	validation.RequiredElements = append(validation.RequiredElements, layout.signed)
 
 	preserve, err := remapBaselinePreservation(doc, draft, options.Preserve)
@@ -205,12 +225,12 @@ func baselineSignerCertificate(ctx context.Context, signer crypto.Signer, certif
 
 func prepareBaselineTemplate(ctx context.Context, certificate *x509.Certificate, options BaselineSignOptions) (xmldsig.SignatureTemplate, BaselineVerifyOptions, error) {
 	template := options.Template
-	if len(options.Properties.AdditionalCertificates) > 63 || len(options.Properties.DataObjects) > 256 || len(options.Properties.Commitments) > 64 {
+	if len(options.Properties.AdditionalCertificates) > maximumAdditionalCertificates || len(options.Properties.DataObjects) > maximumDataObjectFormats || len(options.Properties.Commitments) > maximumCommitments {
 		return template, options.Validation, ErrProfile
 	}
 
 	for _, value := range options.Properties.AdditionalCertificates {
-		if len(value.DER) == 0 || len(value.DER) > 1<<20 {
+		if len(value.DER) == 0 || len(value.DER) > maximumCertificateBytes {
 			return template, options.Validation, ErrCertificate
 		}
 
@@ -222,7 +242,7 @@ func prepareBaselineTemplate(ctx context.Context, certificate *x509.Certificate,
 	}
 
 	if options.SignedPropertiesID == "" {
-		options.SignedPropertiesID = "signed-properties"
+		options.SignedPropertiesID = defaultSignedPropertiesID
 	}
 
 	if !tree.NCName(template.ID) || !tree.NCName(options.SignedPropertiesID) {
@@ -246,7 +266,7 @@ func prepareBaselineTemplate(ctx context.Context, certificate *x509.Certificate,
 				continue
 			}
 
-			options.Properties.DataObjects = append(options.Properties.DataObjects, DataObjectFormat{ObjectReference: "#" + ref.ID, MIMEType: "application/octet-stream"})
+			options.Properties.DataObjects = append(options.Properties.DataObjects, DataObjectFormat{ObjectReference: "#" + ref.ID, MIMEType: octetStreamMediaType})
 		}
 	}
 
@@ -269,7 +289,7 @@ func prepareBaselineTemplate(ctx context.Context, certificate *x509.Certificate,
 }
 
 func remapBaselinePreservation(from, to *document.Document, requirements []xmldsig.SignatureRequirement) ([]xmldsig.SignatureRequirement, error) {
-	if len(requirements) > 64 {
+	if len(requirements) > maximumCoverageRequirements {
 		return nil, ErrProfile
 	}
 
@@ -296,7 +316,7 @@ func remapBaselinePreservation(from, to *document.Document, requirements []xmlds
 func baselineLayoutFor(selected document.Element) (baselineLayout, error) {
 	var out baselineLayout
 
-	id := localAttribute(selected, "Id")
+	id := localAttribute(selected, lexicon.SecurityAttrID)
 	if !tree.NCName(id) {
 		return out, ErrProfile
 	}
@@ -308,7 +328,7 @@ func baselineLayoutFor(selected document.Element) (baselineLayout, error) {
 		return out, err
 	}
 
-	if !out.qualifying.Valid() || baselineAttrs(out.qualifying, []string{"Target"}, "Id") != nil || localAttribute(out.qualifying, "Target") != "#"+id {
+	if !out.qualifying.Valid() || baselineAttrs(out.qualifying, []string{lexicon.SecurityAttrTarget}, lexicon.SecurityAttrID) != nil || localAttribute(out.qualifying, lexicon.SecurityAttrTarget) != "#"+id {
 		return out, ErrProfile
 	}
 
@@ -317,17 +337,17 @@ func baselineLayoutFor(selected document.Element) (baselineLayout, error) {
 		return out, err
 	}
 
-	if len(children) < 1 || len(children) > 2 || children[0].Name() != name("SignedProperties") {
+	if len(children) < 1 || len(children) > 2 || children[0].Name() != name(nameSignedProperties) {
 		return out, ErrProfile
 	}
 
 	out.signed = children[0]
-	if baselineAttrs(out.signed, []string{"Id"}) != nil || !tree.NCName(localAttribute(out.signed, "Id")) {
+	if baselineAttrs(out.signed, []string{lexicon.SecurityAttrID}) != nil || !tree.NCName(localAttribute(out.signed, lexicon.SecurityAttrID)) {
 		return out, ErrProfile
 	}
 
 	if len(children) == 2 {
-		if children[1].Name() != name("UnsignedProperties") || baselineAttrs(children[1], nil, "Id") != nil || len(children[1].Children()) == 0 {
+		if children[1].Name() != name(nameUnsignedProperties) || baselineAttrs(children[1], nil, lexicon.SecurityAttrID) != nil || len(children[1].Children()) == 0 {
 			return out, ErrProfile
 		}
 
@@ -343,17 +363,17 @@ func baselineLayoutFor(selected document.Element) (baselineLayout, error) {
 		return out, err
 	}
 
-	if len(properties) < 1 || len(properties) > 2 || properties[0].Name() != name("SignedSignatureProperties") {
+	if len(properties) < 1 || len(properties) > 2 || properties[0].Name() != name(nameSignedSignatureProperties) {
 		return out, ErrProfile
 	}
 
 	out.signature = properties[0]
-	if baselineAttrs(out.signature, nil, "Id") != nil || len(out.signature.Children()) == 0 {
+	if baselineAttrs(out.signature, nil, lexicon.SecurityAttrID) != nil || len(out.signature.Children()) == 0 {
 		return out, ErrProfile
 	}
 
 	if len(properties) == 2 {
-		if properties[1].Name() != name("SignedDataObjectProperties") || baselineAttrs(properties[1], nil, "Id") != nil || len(properties[1].Children()) == 0 {
+		if properties[1].Name() != name(nameSignedDataObjectProperties) || baselineAttrs(properties[1], nil, lexicon.SecurityAttrID) != nil || len(properties[1].Children()) == 0 {
 			return out, ErrProfile
 		}
 
@@ -371,7 +391,7 @@ func baselineAttrs(element document.Element, required []string, optional ...stri
 			return ErrProfile
 		}
 
-		if attr.Name.Local == "Id" && !tree.NCName(attr.Value) {
+		if attr.Name.Local == lexicon.SecurityAttrID && !tree.NCName(attr.Value) {
 			return ErrProfile
 		}
 
@@ -433,14 +453,14 @@ func cloneDERValues(values [][]byte) [][]byte {
 }
 
 func baselineReferenceID(signatureID string, index int) string {
-	return signatureID + "-data-reference-" + strconv.Itoa(index+1)
+	return signatureID + dataReferenceIDSuffix + strconv.Itoa(index+1)
 }
 
 func signatureByID(doc *document.Document, id string) (document.Element, error) {
 	var found document.Element
 
 	for _, selected := range xmldsig.Signatures(doc) {
-		if localAttribute(selected, "Id") == id {
+		if localAttribute(selected, lexicon.SecurityAttrID) == id {
 			if found.Valid() {
 				return found, ErrProfile
 			}
@@ -522,8 +542,8 @@ func checkBaselineUnsigned(element document.Element) error {
 	previous := -1
 
 	for _, child := range values {
-		index := slices.Index([]document.Name{name("UnsignedSignatureProperties"), name("UnsignedDataObjectProperties")}, child.Name())
-		if index < 0 || index <= previous || baselineAttrs(child, nil, "Id") != nil {
+		index := slices.Index([]document.Name{name(nameUnsignedSignatureProperties), name(nameUnsignedDataObjectProperties)}, child.Name())
+		if index < 0 || index <= previous || baselineAttrs(child, nil, lexicon.SecurityAttrID) != nil {
 			return ErrProfile
 		}
 
@@ -535,7 +555,7 @@ func checkBaselineUnsigned(element document.Element) error {
 		}
 
 		for _, entry := range entries {
-			if entry.Name() == name("CounterSignature") {
+			if entry.Name() == name(nameCounterSignature) {
 				if err := checkCounterContainer(entry); err != nil {
 					return err
 				}
@@ -575,16 +595,16 @@ func findBaselineQualifying(selected document.Element) (document.Element, error)
 	var qualifying document.Element
 
 	for _, object := range selected.Children() {
-		if object.Name() != ds("Object") {
+		if object.Name() != ds(lexicon.DSigElementObject) {
 			continue
 		}
 
 		for _, child := range object.Children() {
-			if child.Name() == name("QualifyingPropertiesReference") {
+			if child.Name() == name(nameQualifyingPropertiesReference) {
 				return document.Element{}, ErrProfile
 			}
 
-			if child.Name() != name("QualifyingProperties") {
+			if child.Name() != name(nameQualifyingProperties) {
 				continue
 			}
 
@@ -600,12 +620,12 @@ func findBaselineQualifying(selected document.Element) (document.Element, error)
 }
 
 func normalizeBaselineVerifyOptions(options BaselineVerifyOptions) (BaselineVerifyOptions, error) {
-	if len(options.CertificateValues) > 64 || len(options.PolicyDocument) > 8<<20 {
+	if len(options.CertificateValues) > maximumCertificateValues || len(options.PolicyDocument) > maximumPolicyDocumentBytes {
 		return options, ErrProfile
 	}
 
 	for _, value := range options.CertificateValues {
-		if len(value) == 0 || len(value) > 1<<20 {
+		if len(value) == 0 || len(value) > maximumCertificateBytes {
 			return options, ErrCertificate
 		}
 	}

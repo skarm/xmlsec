@@ -41,6 +41,8 @@ const (
 	RSAOAEP = Namespace11 + "rsa-oaep"
 	// RSAOAEP10 is the legacy XML Encryption RSA-OAEP URI with fixed MGF1-SHA1.
 	RSAOAEP10 = Namespace + "rsa-oaep-mgf1p"
+	// RSA15 is legacy RSA PKCS#1 v1.5 key transport. It requires AllowLegacy.
+	RSA15 = Namespace + "rsa-1_5"
 	// MGF1SHA1 is the MGF1-SHA1 mask-generation URI, requiring AllowLegacy.
 	MGF1SHA1 = Namespace11 + "mgf1sha1"
 	// MGF1SHA224 is the MGF1-SHA224 mask-generation URI.
@@ -83,7 +85,8 @@ var (
 // the selected cipher, even when another cipher is supported. An optional
 // EncryptionMethod/KeySize must match the data key, wrapping key or RSA modulus.
 type Options struct {
-	// AllowLegacy explicitly permits CBC data encryption and TripleDES key wrap.
+	// AllowLegacy explicitly permits CBC data encryption, TripleDES key wrap
+	// and explicitly selected RSA15 key transport.
 	// CBC plaintext is unauthenticated. Callers must establish any required
 	// ciphertext integrity before decryption and keep legacy keys separate from
 	// GCM keys. This flag changes no algorithm choice and grants no trust.
@@ -93,6 +96,12 @@ type Options struct {
 	// DataAlgorithm selects the expected data cipher; empty selects AES256GCM.
 	// Decryption rejects ciphertext declaring a different algorithm.
 	DataAlgorithm string
+	// KeyTransportAlgorithm selects RSA15 explicitly for legacy interoperability.
+	// Empty uses RSA-OAEP with OAEP parameters. RSA15 requires AllowLegacy,
+	// rejects OAEP parameters and is disabled in FIPS mode. It must be used
+	// behind ciphertext authentication to avoid decryption-oracle exposure.
+	// Only the RSA APIs accept this field; key graphs use their own bindings.
+	KeyTransportAlgorithm string
 	// OAEP selects RSA-OAEP parameters. Nil uses SHA-256 and an empty label.
 	// These parameters are rejected by direct-key and AES Key Wrap APIs.
 	OAEP *OAEPParameters

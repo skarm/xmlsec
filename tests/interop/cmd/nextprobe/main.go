@@ -26,6 +26,10 @@ import (
 	"github.com/skarm/xmlsec/xmlenc"
 )
 
+const outputFileMode = 0o600
+
+const probeTimeout = 30 * time.Second
+
 type task struct {
 	Mode            string
 	Key             string
@@ -55,7 +59,11 @@ type output struct {
 	Data   []byte `json:"data,omitempty"`
 	Text   string `json:"text,omitempty"`
 	Report any    `json:"report,omitempty"`
-	Error  string `json:"error,omitempty"`
+}
+
+type reply struct {
+	output
+	Error string `json:"error,omitempty"`
 }
 
 func main() {
@@ -64,15 +72,15 @@ func main() {
 	d := json.NewDecoder(os.Stdin)
 	d.DisallowUnknownFields()
 
-	o := output{}
+	o := reply{}
 	if e := d.Decode(&t); e != nil {
 		o.Error = e.Error()
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 
 		var e error
 
-		o, e = process(ctx, t)
+		o.output, e = process(ctx, t)
 
 		cancel()
 
@@ -173,12 +181,22 @@ func process(ctx context.Context, t task) (o output, err error) {
 		return o, e
 	}
 
-	var doc *document.Document
-	if t.Mode != "redirect-verify" && t.Mode != "encrypt" && t.Mode != nameEncryptWrap && t.Mode != nameEncryptDirect && t.Mode != "pki-verify" {
-		doc, e = document.Parse(ctx, b, document.DefaultLimits())
-		if e != nil {
-			return o, e
-		}
+	switch t.Mode {
+	case "encrypt":
+		return probeEncrypt(ctx, t, b, options)
+	case nameEncryptWrap:
+		return probeKeyWrap(ctx, t, b, nil, options)
+	case nameEncryptDirect:
+		return probeSymmetric(ctx, t, b, nil, options)
+	case "redirect-verify":
+		return probeRedirectVerify(ctx, t, b)
+	case "pki-verify":
+		return probePKIVerify(ctx, t, b)
+	}
+
+	doc, e := document.Parse(ctx, b, document.DefaultLimits())
+	if e != nil {
+		return o, e
 	}
 
 	switch t.Mode {
@@ -186,24 +204,18 @@ func process(ctx context.Context, t task) (o output, err error) {
 		return probeElement(ctx, t, doc, options)
 	case "externalize":
 		return probeExternalize(ctx, t, doc)
-	case nameEncryptDirect, "decrypt-direct":
+	case "decrypt-direct":
 		return probeSymmetric(ctx, t, b, doc, options)
 	case "xades-sign":
 		return probeXAdESSign(ctx, t, doc)
 	case "xades-verify":
 		return probeXAdESVerify(ctx, t, doc)
-	case "encrypt":
-		return probeEncrypt(ctx, t, b, options)
 	case "decrypt":
 		return probeDecrypt(ctx, t, doc, options)
-	case nameEncryptWrap, "decrypt-wrap":
+	case "decrypt-wrap":
 		return probeKeyWrap(ctx, t, b, doc, options)
 	case "redirect-sign":
 		return probeRedirectSign(ctx, t, doc)
-	case "redirect-verify":
-		return probeRedirectVerify(ctx, t, b)
-	case "pki-verify":
-		return probePKIVerify(ctx, t, b)
 	default:
 		return o, errors.New("unknown mode")
 	}
@@ -290,7 +302,7 @@ func probeExternalize(ctx context.Context, t task, doc *document.Document) (o ou
 		return o, err
 	}
 
-	if err := os.WriteFile(t.Resource, body, 0o600); err != nil {
+	if err := os.WriteFile(t.Resource, body, outputFileMode); err != nil {
 		return o, err
 	}
 

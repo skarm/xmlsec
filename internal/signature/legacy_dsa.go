@@ -10,6 +10,12 @@ import (
 	"math/big"
 )
 
+const (
+	legacyDSAPBits  = 1024
+	legacyDSAQBits  = 160
+	primalityRounds = 32
+)
+
 // LegacyDSAKey validates the 1024/160 public-key profile required for
 // XMLDSig 1.1 DSA-SHA1 verification. It does not authorize signature use.
 // Sizes are checked before primality tests and exponentiation bound work.
@@ -18,7 +24,7 @@ func LegacyDSAKey(k *dsa.PublicKey) error {
 		return Err
 	}
 
-	if k.P.Sign() <= 0 || k.Q.Sign() <= 0 || k.P.BitLen() != 1024 || k.Q.BitLen() != 160 {
+	if k.P.Sign() <= 0 || k.Q.Sign() <= 0 || k.P.BitLen() != legacyDSAPBits || k.Q.BitLen() != legacyDSAQBits {
 		return Err
 	}
 
@@ -27,7 +33,7 @@ func LegacyDSAKey(k *dsa.PublicKey) error {
 		return Err
 	}
 
-	if !k.P.ProbablyPrime(32) || !k.Q.ProbablyPrime(32) {
+	if !k.P.ProbablyPrime(primalityRounds) || !k.Q.ProbablyPrime(primalityRounds) {
 		return Err
 	}
 
@@ -44,6 +50,9 @@ func LegacyDSAKey(k *dsa.PublicKey) error {
 // legacy DSA form that crypto/x509 can parse but does not marshal. Other key
 // types retain crypto/x509's validation and encoding.
 func MarshalPublicKey(key crypto.PublicKey) ([]byte, error) {
+	// ASN.1 BitString.BitLength counts bits, rather than encoded octets.
+	const bitsPerOctet = 8
+
 	k, ok := key.(*dsa.PublicKey)
 	if !ok {
 		return x509.MarshalPKIXPublicKey(key)
@@ -72,6 +81,6 @@ func MarshalPublicKey(key crypto.PublicKey) ([]byte, error) {
 		Key       asn1.BitString
 	}{
 		Algorithm: pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 10040, 4, 1}, Parameters: asn1.RawValue{FullBytes: parameters}},
-		Key:       asn1.BitString{Bytes: value, BitLength: len(value) * 8},
+		Key:       asn1.BitString{Bytes: value, BitLength: len(value) * bitsPerOctet},
 	})
 }

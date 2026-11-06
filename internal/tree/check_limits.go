@@ -20,7 +20,12 @@ func CheckSnapshotLimits(ctx context.Context, d *Document, limits Limits) error 
 		return fmt.Errorf("%w: input bytes", ErrLimit)
 	}
 
-	checker := snapshotLimitChecker{ctx: ctx, document: d, limits: limits, scope: newNamespaceContext(nil)}
+	var parent *Node
+	if d.contextual && d.root != nil {
+		parent = d.root.Parent
+	}
+
+	checker := snapshotLimitChecker{ctx: ctx, document: d, limits: limits, scope: newNamespaceContext(parent)}
 
 	for _, n := range d.children {
 		if err := checker.visit(n, 0); err != nil {

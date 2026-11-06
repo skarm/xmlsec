@@ -16,15 +16,17 @@ verification, and supported SAML WebSSO flows. Builds without CGO.
 
 - **Sign and verify XML documents** with XMLDSig, including enveloped, enveloping
   and detached signatures.
-- **Encrypt and decrypt XML or bytes** with AES-GCM, using direct keys, RSA-OAEP
-  or AES Key Wrap.
+- **Encrypt and decrypt XML or bytes** with AES-GCM, using direct keys, RSA-OAEP,
+  AES Key Wrap or ECDH-ES/ConcatKDF.
 - **Select, transform and canonicalize XML** with XPath, XSLT and canonicalization
   APIs for documents, subtrees and node sets.
 - **Work with keys, certificates and signature evidence** using PEM/DER,
   protected PKCS#8/PKCS#12 containers, offline PKIX validation, CMS, timestamps
   and supported XAdES profiles.
 - **Build solicited SAML WebSSO flows** for service providers and identity
-  providers, with signed metadata, POST/Redirect bindings and state/replay stores.
+  providers, with signed metadata, POST/Redirect/Artifact bindings, bearer and
+  holder-of-key ECP, and state/replay stores. Separate APIs handle logout,
+  identifier management, authority queries and assertion retrieval.
 
 The optional [CLI](docs/cli.md) exposes operations through the same public APIs.
 
@@ -138,15 +140,19 @@ The API is **experimental**. The library implements specific profiles of the
 listed standards; full standards conformance and an independent security audit
 have not been established.
 
-The document security parser rejects DTDs and external entities. XPath/XSLT
-language input has a separate bounded, nonvalidating DTD mode with explicit
-external resource policy; see
+The document security parser rejects DTDs and external entities. Explicit
+`document.ParseOptions{NonValidating: true}` and XPath/XSLT language input provide
+bounded, nonvalidating DTD processing with explicit external resource policy; see
 [XML input profiles](docs/transforms.md#xml-input-profiles). XSD validation is
 unsupported. The XPath/XSLT engine implements selected XPath 1.0/2.0/3.0/3.1
 and XSLT 1.0/2.0/3.0 features. Complete Basic XSLT conformance remains open;
 [validation profiles](docs/language-baseline.md) define the required suite checks.
 Schema awareness and W3C streamable execution are unsupported. SAML support covers
-solicited WebSSO; it does not include SLO, Artifact/ECP or encrypted assertions.
+solicited WebSSO, including encrypted assertions, identifiers and attributes,
+SLO, Artifact/SOAP, bearer and X.509 holder-of-key ECP/PAOS, and NameID management.
+See [SAML integration](docs/saml.md) for supported editions and state contracts,
+and [authority integration](docs/saml-authority.md) for queries, assertion retrieval
+and NameID Mapping.
 
 See [compatibility](docs/compatibility.md) for supported profiles, exclusions and
 known interoperability differences, and [standards](docs/standards.md) for primary
@@ -162,7 +168,9 @@ its consistency checks do not establish full standards conformance.
   [key formats](examples/keys) and [certificate and evidence verification](examples/trust).
 - **XML processing:** [XPath/XSLT guide](docs/transforms.md),
   [transform examples](examples/transforms) and [streaming and memory](docs/streaming.md).
-- **SAML:** [WebSSO example](examples/sso) and [Redirect binding](examples/redirect).
+- **SAML:** [integration guide](docs/saml.md),
+  [authority queries and mapping](docs/saml-authority.md),
+  [WebSSO example](examples/sso) and [Redirect binding](examples/redirect).
 - **Reference:** [API guide](docs/usage.md), [all examples](examples),
   [CLI](docs/cli.md), [package architecture](docs/architecture.md) and
   [security policy](SECURITY.md).

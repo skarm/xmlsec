@@ -7,6 +7,22 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+const (
+	hoursPerDay             = 24
+	leapYearInterval        = 4
+	maximumSigningTimeBytes = 4096
+	// Largest positive year representable by the bounded time.Time conversion path.
+	maximumTimeYear          = 9999
+	minutesPerHour           = 60
+	monthsPerYear            = 12
+	nanosecondFractionDigits = 9
+	nanosecondsPerSecond     = 1_000_000_000
+	secondsPerMinute         = 60
+	yearsPerCentury          = 100
+	yearsPerGregorianEra     = 400
 )
 
 // baselineUTC retains decimal precision and unbounded XML Schema 1.0 year
@@ -28,7 +44,7 @@ func (value *baselineUTC) monthDays() int {
 		return 30
 	case 2:
 		var mod big.Int
-		if mod.Mod(&value.year, big.NewInt(400)).Sign() == 0 || mod.Mod(&value.year, big.NewInt(100)).Sign() != 0 && mod.Mod(&value.year, big.NewInt(4)).Sign() == 0 {
+		if mod.Mod(&value.year, big.NewInt(yearsPerGregorianEra)).Sign() == 0 || mod.Mod(&value.year, big.NewInt(yearsPerCentury)).Sign() != 0 && mod.Mod(&value.year, big.NewInt(leapYearInterval)).Sign() == 0 {
 			return 29
 		}
 
@@ -39,18 +55,18 @@ func (value *baselineUTC) monthDays() int {
 }
 
 func (value *baselineUTC) convenienceTime() time.Time {
-	if !value.year.IsInt64() || value.year.Int64() < 1 || value.year.Int64() > 9999 || len(value.fraction) > 9 {
+	if !value.year.IsInt64() || value.year.Int64() < 1 || value.year.Int64() > maximumTimeYear || len(value.fraction) > nanosecondFractionDigits {
 		return time.Time{}
 	}
 
-	fraction := value.fraction + strings.Repeat("0", 9-len(value.fraction))
+	fraction := value.fraction + strings.Repeat("0", nanosecondFractionDigits-len(value.fraction))
 	nanos, _ := strconv.Atoi(fraction)
 
 	return time.Date(int(value.year.Int64()), time.Month(value.month), value.day, value.hour, value.minute, value.second, nanos, time.UTC)
 }
 
 func (value *baselineUTC) normalizeMidnight() error {
-	if value.hour == 24 {
+	if value.hour == hoursPerDay {
 		if value.minute != 0 || value.second != 0 || value.fraction != "" {
 			return ErrProfile
 		}
@@ -62,7 +78,7 @@ func (value *baselineUTC) normalizeMidnight() error {
 			value.day = 1
 
 			value.month++
-			if value.month == 13 {
+			if value.month == monthsPerYear+1 {
 				value.month = 1
 				value.year.Add(&value.year, big.NewInt(1))
 			}
@@ -78,7 +94,7 @@ func parseBaselineTime(element document.Element) (string, time.Time, error) {
 		return "", time.Time{}, err
 	}
 
-	value = strings.Trim(value, " \t\r\n")
+	value = strings.Trim(value, lexicon.XMLWhitespace)
 
 	parsed, err := parseBaselineUTC(value)
 	if err != nil {
@@ -89,16 +105,25 @@ func parseBaselineTime(element document.Element) (string, time.Time, error) {
 }
 
 func parseBaselineUTC(value string) (baselineUTC, error) {
+	// Byte widths describe the accepted UTC lexical form, independently of
+	// the overall resource cap and the year value's supported magnitude.
+	const (
+		utcOffsetBytes             = 6 // +00:00 or -00:00
+		minimumUTCDateTimeBytes    = 20
+		unfractionatedTailBytes    = 16 // -MM-DDThh:mm:ssZ
+		minimumFractionalTailBytes = 18
+	)
+
 	var out baselineUTC
-	if len(value) > 4096 {
+	if len(value) > maximumSigningTimeBytes {
 		return out, ErrProfile
 	}
 
 	if strings.HasSuffix(value, "+00:00") || strings.HasSuffix(value, "-00:00") {
-		value = value[:len(value)-6] + "Z"
+		value = value[:len(value)-utcOffsetBytes] + "Z"
 	}
 
-	if len(value) < 20 || len(value) > 4096 || !strings.HasSuffix(value, "Z") {
+	if len(value) < minimumUTCDateTimeBytes || len(value) > maximumSigningTimeBytes || !strings.HasSuffix(value, "Z") {
 		return out, ErrProfile
 	}
 
@@ -108,7 +133,7 @@ func parseBaselineUTC(value string) (baselineUTC, error) {
 	}
 
 	tail := value[yearEnd:]
-	if len(tail) < 16 || tail[0] != '-' || tail[3] != '-' || tail[6] != 'T' || tail[9] != ':' || tail[12] != ':' {
+	if len(tail) < unfractionatedTailBytes || tail[0] != '-' || tail[3] != '-' || tail[6] != 'T' || tail[9] != ':' || tail[12] != ':' {
 		return out, ErrProfile
 	}
 
@@ -123,15 +148,15 @@ func parseBaselineUTC(value string) (baselineUTC, error) {
 		*fields[i] = int(part[0]-'0')*10 + int(part[1]-'0')
 	}
 
-	if len(tail) > 16 {
-		if tail[15] != '.' || len(tail) < 18 || !baselineDigits(tail[16:len(tail)-1]) {
+	if len(tail) > unfractionatedTailBytes {
+		if tail[15] != '.' || len(tail) < minimumFractionalTailBytes || !baselineDigits(tail[16:len(tail)-1]) {
 			return out, ErrProfile
 		}
 
 		out.fraction = strings.TrimRight(tail[16:len(tail)-1], "0")
 	}
 
-	if out.month < 1 || out.month > 12 || out.day < 1 || out.day > out.monthDays() || out.hour > 24 || out.minute > 59 || out.second > 59 {
+	if out.month < 1 || out.month > monthsPerYear || out.day < 1 || out.day > out.monthDays() || out.hour > hoursPerDay || out.minute > minutesPerHour-1 || out.second > secondsPerMinute-1 {
 		return out, ErrProfile
 	}
 
@@ -200,7 +225,7 @@ func (r *BaselineResult) CompareSigningTime(other time.Time) (int, error) {
 		}
 	}
 
-	fraction := strconv.Itoa(other.Nanosecond() + 1_000_000_000)[1:]
+	fraction := strconv.Itoa(other.Nanosecond() + nanosecondsPerSecond)[1:]
 	for i := range max(len(fraction), len(value.fraction)) {
 		a, b := byte('0'), byte('0')
 		if i < len(value.fraction) {
@@ -224,6 +249,9 @@ func (r *BaselineResult) CompareSigningTime(other time.Time) (int, error) {
 }
 
 func baselineTimeYear(value string, yearValue *big.Int) (int, error) {
+	// XML Schema dateTime years need at least four digits, excluding the sign.
+	const minimumYearDigits = 4
+
 	yearEnd := strings.IndexByte(value, '-')
 	if yearEnd == 0 {
 		next := strings.IndexByte(value[1:], '-')
@@ -234,7 +262,7 @@ func baselineTimeYear(value string, yearValue *big.Int) (int, error) {
 		yearEnd = next + 1
 	}
 
-	if yearEnd < 4 {
+	if yearEnd < minimumYearDigits {
 		return 0, ErrProfile
 	}
 
@@ -245,11 +273,11 @@ func baselineTimeYear(value string, yearValue *big.Int) (int, error) {
 		digits = digits[1:]
 	}
 
-	if len(digits) < 4 || len(digits) > 4 && digits[0] == '0' || !baselineDigits(digits) {
+	if len(digits) < minimumYearDigits || len(digits) > minimumYearDigits && digits[0] == '0' || !baselineDigits(digits) {
 		return 0, ErrProfile
 	}
 
-	if _, ok := yearValue.SetString(year, 10); !ok || yearValue.Sign() == 0 {
+	if _, ok := yearValue.SetString(year, decimalRadix); !ok || yearValue.Sign() == 0 {
 		return 0, ErrProfile
 	}
 

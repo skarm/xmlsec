@@ -17,6 +17,14 @@ import (
 	"github.com/skarm/xmlsec/internal/historicalproof"
 )
 
+const (
+	defaultMaxHistoricalPaths = 16
+	maxConstraintKeyBits      = 16385
+	maxCryptoConstraints      = 128
+	maxTrustAnchorSunsets     = 64
+	maximumHistoricalPaths    = 256
+)
+
 // ValidityModel selects the historical certificate calendar model.
 type ValidityModel string
 
@@ -78,20 +86,36 @@ type HistoricalConfig struct {
 // return immutable objects. Source authentication, freshness, proof of existence
 // and past acceptance are separate checks.
 type HistoricalSession struct {
-	mu            sync.Mutex
-	verifier      *Verifier
-	options       HistoricalOptions
-	now           time.Time
-	evidence      Evidence
-	paths         map[[32]byte][]*HistoricalPath
-	certificates  map[[32]byte]*x509.Certificate
-	targetBytes   int
-	pathWork      int
+	// mu serializes operation-local caches and cumulative work counters.
+	mu sync.Mutex
+	// verifier retains the explicit certificate and revocation policy.
+	verifier *Verifier
+	// options retains the normalized historical validation policy.
+	options HistoricalOptions
+	// now fixes the operation's current observation time.
+	now time.Time
+	// evidence owns the supplied offline evidence snapshot.
+	evidence Evidence
+	// paths caches prospective paths by exact target certificate digest.
+	paths map[[sha256.Size]byte][]*HistoricalPath
+	// certificates indexes parsed certificates by exact DER digest.
+	certificates map[[sha256.Size]byte]*x509.Certificate
+	// targetBytes accounts for target certificate input charged to the session.
+	targetBytes int
+	// pathWork accounts for cumulative prospective-path search work.
+	pathWork int
+	// signatureWork accounts for cumulative cryptographic verification work.
 	signatureWork int
-	sourcesReady  bool
-	lists         []*parsedCRL
-	responses     []parsedOCSP
-	claims        map[[32]byte][]historicalClaim
+	// sourcesReady records completion of source evidence preparation.
+	sourcesReady bool
+	// lists caches parsed CRLs without treating parsing as authentication.
+	lists []*parsedCRL
+	// responses caches parsed OCSP responses without treating parsing as
+	// authentication.
+	responses []parsedOCSP
+	// claims caches authenticated evidence claims by exact prospective path
+	// fingerprint.
+	claims map[[sha256.Size]byte][]historicalClaim
 }
 
 // NewHistoricalSession snapshots an explicit trust configuration and operation.
@@ -217,9 +241,13 @@ func (s *HistoricalSession) validPath(path *HistoricalPath) error {
 // HistoricalPath is a candidate certificate path bound to its producing session.
 // Only that session can assess or use it. Constructing a path grants no trust.
 type HistoricalPath struct {
-	session     *HistoricalSession
-	chain       []*x509.Certificate
-	fingerprint [32]byte
+	// session binds this path to the policy and evidence operation that discovered
+	// it.
+	session *HistoricalSession
+	// chain retains the exact prospective certificate path.
+	chain []*x509.Certificate
+	// fingerprint identifies the complete path by SHA-256.
+	fingerprint [sha256.Size]byte
 }
 
 // ChainDER returns owned copies in target-to-anchor order.
@@ -240,9 +268,12 @@ func (p *HistoricalPath) ChainDER() [][]byte {
 // path. It establishes neither historical proof of existence nor document signature
 // validity.
 type HistoricalPathAssessment struct {
-	path      *HistoricalPath
+	// path is the prospective path checked by this assessment.
+	path *HistoricalPath
+	// reference is the calendar model's checking time, not a proven signing time.
 	reference time.Time
-	model     ValidityModel
+	// model records the selected certificate validity model.
+	model ValidityModel
 }
 
 // Model returns the selected calendar model.
@@ -293,8 +324,11 @@ type TimeTransition struct {
 // PastCertificateResult records successful past certificate validation under the
 // selected policy. Document signature and past-signature validation remain separate.
 type PastCertificateResult struct {
-	path     *HistoricalPath
-	at       time.Time
+	// path is the exact path accepted by past certificate validation.
+	path *HistoricalPath
+	// at is the calculated historical control time.
+	at time.Time
+	// evidence retains the authenticated source assertions used in validation.
 	evidence []*VerifiedEvidence
 }
 
@@ -328,11 +362,17 @@ func (r *PastCertificateResult) Evidence() []*VerifiedEvidence {
 // PastCertificateReport contains past certificate diagnostics. Acceptance requires
 // a non-nil result in addition to the report.
 type PastCertificateReport struct {
+	// subIndication is the detailed diagnostic code, or empty on success.
 	subIndication string
-	transitions   []TimeTransition
-	cause         error
-	path          *HistoricalPath
-	evidence      []*VerifiedEvidence
+	// transitions records the historical control-time changes.
+	transitions []TimeTransition
+	// cause retains the failure responsible for the diagnostic outcome.
+	cause error
+	// path is the prospective path considered by validation.
+	path *HistoricalPath
+	// evidence retains authenticated source diagnostics independently of
+	// acceptance.
+	evidence []*VerifiedEvidence
 }
 
 // SubIndication returns the precise diagnostic code, or empty on success.
@@ -395,7 +435,7 @@ func (v *Verifier) NewHistoricalSession(ctx context.Context, options HistoricalO
 		return nil, errors.Join(ErrLimit, err)
 	}
 
-	if len(input.Sources) > 1024 {
+	if len(input.Sources) > maxSourceObservations {
 		return nil, fmt.Errorf("%w: %w: historical source count", ErrPolicy, ErrLimit)
 	}
 
@@ -409,7 +449,7 @@ func (v *Verifier) NewHistoricalSession(ctx context.Context, options HistoricalO
 		return nil, err
 	}
 
-	return &HistoricalSession{verifier: v, options: options, now: now.UTC(), evidence: owned, paths: make(map[[32]byte][]*HistoricalPath), claims: make(map[[32]byte][]historicalClaim)}, nil
+	return &HistoricalSession{verifier: v, options: options, now: now.UTC(), evidence: owned, paths: make(map[[sha256.Size]byte][]*HistoricalPath), claims: make(map[[sha256.Size]byte][]historicalClaim)}, nil
 }
 
 func (v *Verifier) historicalOptions(options HistoricalOptions) (HistoricalOptions, error) {
@@ -422,10 +462,10 @@ func (v *Verifier) historicalOptions(options HistoricalOptions) (HistoricalOptio
 	}
 
 	if options.MaxPaths == 0 {
-		options.MaxPaths = 16
+		options.MaxPaths = defaultMaxHistoricalPaths
 	}
 
-	if options.MaxPaths < 1 || options.MaxPaths > 256 || len(options.CryptoConstraints) > 128 || len(options.TrustAnchorSunsets) > 64 {
+	if options.MaxPaths < 1 || options.MaxPaths > maximumHistoricalPaths || len(options.CryptoConstraints) > maxCryptoConstraints || len(options.TrustAnchorSunsets) > maxTrustAnchorSunsets {
 		return options, ErrPolicy
 	}
 
@@ -491,7 +531,7 @@ func validHistoricalCryptoRule(rule CryptoConstraint) bool {
 			return false
 		}
 
-		if rule.MinimumKeyBits < 1 || rule.MinimumKeyBits > 16385 {
+		if rule.MinimumKeyBits < 1 || rule.MinimumKeyBits > maxConstraintKeyBits {
 			return false
 		}
 

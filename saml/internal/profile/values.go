@@ -9,8 +9,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
+
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/internal/xmltime"
+)
+
+// Bound the supported positive day/time duration subset to 365 days; calendar years/months are rejected and fractions retain nanosecond precision.
+const (
+	maximumDuration = 365 * 24 * time.Hour
+)
+
+// HTTPRelayStateMaxBytes is the byte ceiling of opaque RelayState in HTTP bindings. ECP SOAP relay text has a separate, larger profile limit.
+const (
+	HTTPRelayStateMaxBytes = 80
+)
+
+// SAML unsigned index and day/time duration components use decimal lexical digits; hexadecimal prefixes and numeric separators are not enabled.
+const (
+	decimalRadix = 10
 )
 
 // ErrSchema reports unsupported or invalid SAML structure or values.
@@ -18,12 +35,17 @@ var ErrSchema = errors.New("unsupported or invalid SAML structure")
 
 // NewID generates an unpredictable SAML ID using crypto/rand.
 func NewID() (string, error) {
-	var b [20]byte
+	const (
+		identifierPrefix      = "_"
+		identifierRandomBytes = 20
+	)
+
+	var b [identifierRandomBytes]byte
 	if _, e := rand.Read(b[:]); e != nil {
 		return "", e
 	}
 
-	return "_" + hex.EncodeToString(b[:]), nil
+	return identifierPrefix + hex.EncodeToString(b[:]), nil
 }
 
 // ParseTime parses SAML UTC dateTime values with four-digit positive years and
@@ -41,11 +63,21 @@ func ParseTime(s string) (time.Time, error) {
 func Time(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 // ID reports whether s is an allowed SAML ID.
-func ID(s string) bool { return len(s) > 0 && len(s) <= 256 && xmlchar.IsValidNCName(s) }
+func ID(s string) bool {
+	const (
+		maximumIDBytes = 256
+	)
+
+	return len(s) > 0 && len(s) <= maximumIDBytes && xmlchar.IsValidNCName(s)
+}
 
 // URI reports whether s is a bounded absolute URI without XML whitespace.
 func URI(s string) bool {
-	if len(s) == 0 || len(s) > 2048 || strings.ContainsAny(s, " \t\r\n") {
+	const (
+		maximumURIBytes = 2048
+	)
+
+	if len(s) == 0 || len(s) > maximumURIBytes || strings.ContainsAny(s, lexicon.XMLWhitespace) {
 		return false
 	}
 
@@ -56,16 +88,26 @@ func URI(s string) bool {
 
 // Endpoint checks a bounded absolute HTTPS endpoint, permitting HTTP only when requested.
 func Endpoint(s string, allowHTTP bool) bool {
+	const (
+		maximumEndpointBytes = 4096
+	)
+
 	u, e := url.Parse(s)
-	return e == nil && len(s) <= 4096 && u.Host != "" && u.User == nil && u.Fragment == "" && u.Opaque == "" && (u.Scheme == "https" || (allowHTTP && u.Scheme == "http"))
+
+	return e == nil && len(s) <= maximumEndpointBytes && u.Host != "" && u.User == nil && u.Fragment == "" && u.Opaque == "" && (u.Scheme == lexicon.SchemeHTTPS || (allowHTTP && u.Scheme == lexicon.SchemeHTTP))
 }
 
 // Bool parses an XML Schema boolean.
 func Bool(s string) (bool, error) {
-	switch strings.Trim(s, " \t\r\n") {
-	case "false", "0":
+	const (
+		xmlBooleanFalseDigit = "0"
+		xmlBooleanTrueDigit  = "1"
+	)
+
+	switch strings.Trim(s, lexicon.XMLWhitespace) {
+	case lexicon.ValueFalse, xmlBooleanFalseDigit:
 		return false, nil
-	case "true", "1":
+	case lexicon.ValueTrue, xmlBooleanTrueDigit:
 		return true, nil
 	}
 
@@ -75,7 +117,11 @@ func Bool(s string) (bool, error) {
 // Index parses the XSD 1.0 xs:unsignedShort endpoint index used by SAML.
 // Its lexical space contains decimal digits with XML whitespace collapsed.
 func Index(s string) (uint16, error) {
-	n, err := strconv.ParseUint(strings.Trim(s, " \t\r\n"), 10, 16)
+	const (
+		indexBitSize = 16
+	)
+
+	n, err := strconv.ParseUint(strings.Trim(s, lexicon.XMLWhitespace), decimalRadix, indexBitSize)
 	if err != nil {
 		return 0, ErrSchema
 	}
@@ -85,8 +131,14 @@ func Index(s string) (uint16, error) {
 
 // Duration parses positive day/time XML Schema durations up to 365 days, with
 // at most nine fractional second digits. Calendar years/months are unsupported.
-func Duration(s string) (time.Duration, error) { // day/time subset; calendar years/months fail explicitly.
-	if len(s) < 3 || len(s) > 64 || s[0] != 'P' {
+func Duration(s string) (time.Duration, error) {
+	const (
+		maximumDurationLexicalBytes = 64
+		minimumDurationLexicalBytes = 3
+	)
+
+	// day/time subset; calendar years/months fail explicitly.
+	if len(s) < minimumDurationLexicalBytes || len(s) > maximumDurationLexicalBytes || s[0] != 'P' {
 		return 0, ErrSchema
 	}
 
@@ -134,7 +186,7 @@ func Duration(s string) (time.Duration, error) { // day/time subset; calendar ye
 		last = order
 
 		amount, err := durationAmount(s[:i], scale)
-		if err != nil || amount > 365*24*time.Hour-total {
+		if err != nil || amount > maximumDuration-total {
 			return 0, ErrSchema
 		}
 
@@ -151,20 +203,26 @@ func Duration(s string) (time.Duration, error) { // day/time subset; calendar ye
 }
 
 func durationAmount(s string, unit time.Duration) (time.Duration, error) {
+	const (
+		durationFractionBitSize = 32
+		durationFractionDigits  = 9
+		durationWholeBitSize    = 64
+	)
+
 	whole, fraction, hasFraction := strings.Cut(s, ".")
-	if whole == "" || hasFraction && (unit != time.Second || len(fraction) == 0 || len(fraction) > 9) {
+	if whole == "" || hasFraction && (unit != time.Second || len(fraction) == 0 || len(fraction) > durationFractionDigits) {
 		return 0, ErrSchema
 	}
 
-	n, err := strconv.ParseInt(whole, 10, 64)
-	if err != nil || n < 0 || n > int64(365*24*time.Hour/unit) {
+	n, err := strconv.ParseInt(whole, decimalRadix, durationWholeBitSize)
+	if err != nil || n < 0 || n > int64(maximumDuration/unit) {
 		return 0, ErrSchema
 	}
 
 	amount := time.Duration(n) * unit
 
 	if hasFraction {
-		nanos, err := strconv.ParseUint(fraction+strings.Repeat("0", 9-len(fraction)), 10, 32)
+		nanos, err := strconv.ParseUint(fraction+strings.Repeat("0", durationFractionDigits-len(fraction)), decimalRadix, durationFractionBitSize)
 		if err != nil {
 			return 0, ErrSchema
 		}
@@ -176,6 +234,14 @@ func durationAmount(s string, unit time.Duration) (time.Duration, error) {
 }
 
 func durationUnit(kind byte, inTime bool) (int, time.Duration, bool) {
+	const (
+		durationDay         = 24 * time.Hour
+		durationDayOrder    = 1
+		durationHourOrder   = 2
+		durationMinuteOrder = 3
+		durationSecondOrder = 4
+	)
+
 	order := 0
 
 	var scale time.Duration
@@ -186,28 +252,28 @@ func durationUnit(kind byte, inTime bool) (int, time.Duration, bool) {
 			return 0, 0, false
 		}
 
-		order = 1
-		scale = 24 * time.Hour
+		order = durationDayOrder
+		scale = durationDay
 	case 'H':
 		if !inTime {
 			return 0, 0, false
 		}
 
-		order = 2
+		order = durationHourOrder
 		scale = time.Hour
 	case 'M':
 		if !inTime {
 			return 0, 0, false
 		}
 
-		order = 3
+		order = durationMinuteOrder
 		scale = time.Minute
 	case 'S':
 		if !inTime {
 			return 0, 0, false
 		}
 
-		order = 4
+		order = durationSecondOrder
 		scale = time.Second
 	default:
 		return 0, 0, false

@@ -10,6 +10,16 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Concat repeats its sole declared parameter type across at least two
+// arguments. Format-number has two required arguments and an optional named
+// decimal-format argument; these counts belong to those standard signatures.
+const (
+	concatMinimumArity          = 2
+	concatRepeatedParameterType = true
+	formatNumberRequiredArity   = 2
+	formatNumberNamedArity      = 3
+)
+
 // functionSignature stores the declared parameter and return types for a built-in function.
 type functionSignature struct {
 	ParamTypes      []xdm.SequenceType
@@ -64,18 +74,18 @@ func lookupFunctionSignature(version int, uri, name string, arity int) *function
 		return nil
 	}
 
-	if name == nameConcat && arity >= 2 {
+	if name == nameConcat && arity >= concatMinimumArity {
 		signature := newFunctionSignature([]xdm.SequenceType{stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceZeroOrOne)}, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
-		signature.RepeatParamType = true
+		signature.RepeatParamType = concatRepeatedParameterType
 
 		return signature
 	}
 	// XSLT 2.0 supplies these host functions before their adoption into F&O.
 	switch name {
 	case lexicon.FnFormatNumber:
-		if arity == 2 || arity == 3 {
+		if arity == formatNumberRequiredArity || arity == formatNumberNamedArity {
 			params := []xdm.SequenceType{stAtomic(xdm.TypeNumeric, xdm.OccurrenceZeroOrOne), stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}
-			if arity == 3 {
+			if arity == formatNumberNamedArity {
 				params = append(params, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
 			}
 
@@ -83,7 +93,7 @@ func lookupFunctionSignature(version int, uri, name string, arity int) *function
 		}
 	case lexicon.FnGenerateID, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime,
 		fnNameUnparsedText, nameUnparsedTextLines, fnNameUnparsedTextAvailable:
-		return lookupStandardSignature(31, key)
+		return lookupStandardSignature(xpathVersion31, key)
 	}
 
 	return nil

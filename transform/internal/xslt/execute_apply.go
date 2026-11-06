@@ -132,6 +132,10 @@ func (ec *execContext) execApplyTemplates(ctx context.Context, inst *applyTempla
 
 // selectApplyTemplateItems preserves sequence order and array/map identity.
 func (ec *execContext) selectApplyTemplateItems(ctx context.Context, inst *applyTemplatesInst) (xdm.ItemSlice, error) {
+	const (
+		errCodeXTTE0520 = "XTTE0520"
+	)
+
 	var items xdm.ItemSlice
 
 	if inst.Select != nil {
@@ -144,9 +148,9 @@ func (ec *execContext) selectApplyTemplateItems(ctx context.Context, inst *apply
 		// match=".[. instance of array(*)]"). Flattening would destroy the
 		// array before template matching can see it.
 		items = xdm.Materialize(result.Sequence())
-		if ec.stylesheet.processorLanguage() == 20 {
+		if ec.stylesheet.processorLanguage() == processorXSLT20 {
 			if _, nodesOnly := xdm.NodesFrom(items); !nodesOnly {
-				return nil, dynamicError("XTTE0520", "XSLT 2.0 apply-templates selection must contain only nodes")
+				return nil, dynamicError(errCodeXTTE0520, "XSLT 2.0 apply-templates selection must contain only nodes")
 			}
 		}
 	} else {
@@ -272,6 +276,10 @@ func (ec *execContext) applyBuiltinTemplateItem(ctx context.Context, item xdm.It
 // The implicit ?* selection concatenates members without recursively flattening
 // nested arrays. Matching sees the whole selection's position and size.
 func (ec *execContext) applyBuiltinArray(ctx context.Context, array xdm.ArrayItem, mode string, params map[string]xdm.Sequence) error {
+	const (
+		builtinArrayNodeFallback = 1_000_000
+	)
+
 	var items xdm.ItemSlice
 
 	for _, member := range array.MembersView() {
@@ -280,7 +288,7 @@ func (ec *execContext) applyBuiltinArray(ctx context.Context, array xdm.ArrayIte
 				return err
 			}
 
-			if len(items) >= xpath.NodeLimit(ctx, 1_000_000) {
+			if len(items) >= xpath.NodeLimit(ctx, builtinArrayNodeFallback) {
 				return xpath.ErrNodeSetLimit
 			}
 
@@ -625,18 +633,44 @@ func (ec *execContext) execNextAtomicMatch(ctx context.Context, mode string, pv 
 	templates := ec.activeModePackage().modeTemplates[mode]
 	foundCurrent := false
 
-	for _, tmpl := range templates {
+	failOnMultiple := ec.onMultipleMatchFail(mode)
+	for i, tmpl := range templates {
 		if tmpl == ec.currentTemplate {
 			foundCurrent = true
 			continue
 		}
 
 		if foundCurrent && tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, ec.contextItem) {
+			if failOnMultiple {
+				if err := ec.checkNextAtomicMatchConflicts(ctx, templates[i+1:], tmpl, mode); err != nil {
+					return err
+				}
+			}
+
 			return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, pv)
 		}
 	}
 
 	return ec.applyBuiltinTemplateItem(ctx, ec.contextItem, mode, pv)
+}
+
+func (ec *execContext) checkNextAtomicMatchConflicts(ctx context.Context, candidates []*template, best *template, mode string) error {
+	for _, other := range candidates {
+		if other.ImportPrec < best.ImportPrec || (other.ImportPrec == best.ImportPrec && other.Priority < best.Priority) {
+			break
+		}
+
+		if other == best || (other.splitOriginID != nil && other.splitOriginID == best.splitOriginID) {
+			continue
+		}
+
+		if other.Match != nil && ec.matchAtomicTemplate(ctx, other, ec.contextItem) {
+			return dynamicError(errCodeXTDE0540,
+				"ambiguous rule match for atomic item in mode %q (on-multiple-match=fail)", mode)
+		}
+	}
+
+	return nil
 }
 
 func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsInst) error {

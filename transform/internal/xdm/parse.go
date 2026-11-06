@@ -7,9 +7,13 @@ import (
 	"io"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 )
+
+// Local absolute POSIX entity bases retain the file URI authority prefix.
+const localFileURIPrefix = lexicon.SchemeFile + "://"
 
 // ParseOptions configures XML-to-XDM construction through internal/tree.
 // DTD resources can only use the explicitly supplied invocation opener.
@@ -61,7 +65,8 @@ func (o ParseOptions) ParseText(ctx context.Context, text string) (*Document, er
 	return o.wrapDocument(ctx, d)
 }
 
-// ParseReader incrementally constructs XDM nodes without buffering source XML.
+// ParseReader constructs an XDM view over the parsed snapshot. DTD-free mode
+// parses incrementally; AllowDTD can retain decoded and expanded input buffers.
 func (o ParseOptions) ParseReader(ctx context.Context, r io.Reader) (*Document, error) {
 	d, err := o.parserOptions().ParseReader(ctx, r)
 	if err != nil {
@@ -109,7 +114,7 @@ func (o ParseOptions) parserOptions() tree.ParseOptions {
 	if uripath.IsWindowsAbsolute(options.BaseURI) {
 		options.BaseURI = uripath.WindowsToFileURI(options.BaseURI)
 	} else if strings.HasPrefix(options.BaseURI, "/") {
-		options.BaseURI = "file://" + options.BaseURI
+		options.BaseURI = localFileURIPrefix + options.BaseURI
 	}
 
 	if o.DTDOpen != nil {

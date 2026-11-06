@@ -27,9 +27,14 @@ for complete option contracts.
 
 ## XML input profiles
 
-`Engine.Parse`, record input and approved XMLDSig programs use the DTD-free
-UTF-8/UTF-16 security profile. `AllowSingleByteEncodings` additionally permits
-supported ASCII-compatible IANA encodings; raw and decoded bytes remain bounded.
+`Engine.Parse`, `Engine.ParseReader`, stylesheet record input and approved
+XMLDSig programs reject DTDs and external entities. UTF-8/UTF-16 are accepted;
+`AllowSingleByteEncodings` additionally permits supported ASCII-compatible IANA
+encodings. Raw and decoded bytes remain bounded.
+
+The engine's XML input preserves relative namespace names without resolving them
+against a base URI. The default `document.Parse` / `ParseReader` and C14N reject
+those names. Importing or exporting a snapshot does not change its namespace names.
 
 Language XML input (`doc`, `parse-xml`, stylesheets and document resources) uses
 bounded nonvalidating DTD processing: entities, default attributes and declared
@@ -238,5 +243,10 @@ processing.AllowedTransforms = append(processing.AllowedTransforms, approved.Alg
 Approval includes the exact program and complete namespace context as serialized
 in the signature. No program is approved by default; building XML grants no
 approval. Standalone application functions are unavailable in these transforms.
-Resource preflight and program checks happen before execution. See the
-[signature-transform example](../examples/transforms/main.go).
+`MaxProgramBytes` bounds each approved XPath/Filter2 expression and the complete
+approved stylesheet. `NewEngine` compiles each trusted program with a timeout of
+`max(Limits.Timeout, 3s)`, sharing the work and value budgets across that program's
+expressions. The configured timeout still bounds each runtime invocation, including
+values shorter than three seconds.
+Resource preflight and program checks happen before execution. For standalone
+XPath and XSLT usage, see the [runnable examples](../examples/transforms/main.go).

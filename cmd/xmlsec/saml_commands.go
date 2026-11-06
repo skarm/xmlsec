@@ -19,6 +19,17 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+// Per-format byte limits cover operator-selected SAML input. A zero metadata lifetime delegates its default to the metadata API; trusted-key count is a separate CLI admission limit.
+const (
+	cliDefaultMetadataLifetime = 0
+	cliMaxTrustedKeys          = 64
+	cliMaxPOSTFormBytes        = 16 << 20
+	cliMaxPOSTXMLBytes         = 8 << 20
+	cliMaxRedirectQueryBytes   = 4 << 20
+	cliMaxRedirectMessageBytes = 16 << 20
+	cliMaxMetadataBytes        = 16 << 20
+)
+
 func runSAML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := args[0]
 	fs := flag.NewFlagSet("saml "+cmd, flag.ContinueOnError)
@@ -36,7 +47,7 @@ func runSAML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	extract := fs.String("extract", "", "write authenticated Redirect XML to this local file")
 	pin := fs.String("document-sha256", "", "explicit SHA-256 pin for trusted unsigned metadata bytes")
 	allowHTTP := fs.Bool("allow-http", false, "explicitly permit HTTP endpoints in metadata")
-	lifetime := fs.Duration("max-lifetime", 0, "maximum metadata lifetime; 0 uses library default")
+	lifetime := fs.Duration("max-lifetime", cliDefaultMetadataLifetime, "maximum metadata lifetime; 0 uses library default")
 
 	var trusted repeatedFlag
 	fs.Var(&trusted, "trust-key", "explicit trusted metadata/protocol signer key; repeatable")
@@ -201,7 +212,7 @@ func (c samlCommand) keys(ctx context.Context) ([]crypto.PublicKey, error) {
 		paths = append(paths, c.key)
 	}
 
-	if len(paths) == 0 || len(paths) > 64 {
+	if len(paths) == 0 || len(paths) > cliMaxTrustedKeys {
 		return nil, usageError("verification requires 1..64 explicit trusted keys")
 	}
 
@@ -227,7 +238,7 @@ func (c samlCommand) post(ctx context.Context, stdin io.Reader, stdout io.Writer
 	}
 
 	e := execution(ctx)
-	limits := binding.POSTLimits{MaxFormBytes: min(e.xml.MaxBytes, 16<<20), MaxXMLBytes: min(e.xml.MaxBytes, 8<<20), XMLLimits: e.xml}
+	limits := binding.POSTLimits{MaxFormBytes: min(e.xml.MaxBytes, cliMaxPOSTFormBytes), MaxXMLBytes: min(e.xml.MaxBytes, cliMaxPOSTXMLBytes), XMLLimits: e.xml}
 
 	if c.command == namePostEncode {
 		doc, err := readDocument(ctx, c.input, stdin)
@@ -269,7 +280,7 @@ func (c samlCommand) redirect(ctx context.Context, stdin io.Reader, stdout io.Wr
 		return err
 	}
 
-	opt := binding.Options{Policy: policy, MaxQueryBytes: min(e.xml.MaxBytes, 4<<20), MaxMessageBytes: min(e.xml.MaxBytes, 16<<20), XMLLimits: e.xml}
+	opt := binding.Options{Policy: policy, MaxQueryBytes: min(e.xml.MaxBytes, cliMaxRedirectQueryBytes), MaxMessageBytes: min(e.xml.MaxBytes, cliMaxRedirectMessageBytes), XMLLimits: e.xml}
 
 	if c.command == nameRedirectSign {
 		kind := binding.Request
@@ -325,6 +336,10 @@ func (c samlCommand) redirect(ctx context.Context, stdin io.Reader, stdout io.Wr
 			if err := documentOutput(ctx, c.extract, stdout, result.Document()); err != nil {
 				return err
 			}
+
+			if err := separateOutput(c.extract, c.output, "extract"); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -342,7 +357,7 @@ func (c samlCommand) metadata(ctx context.Context, stdin io.Reader, stdout io.Wr
 		return err
 	}
 
-	opt := metadata.Options{MaxBytes: min(execution(ctx).xml.MaxBytes, 16<<20), Policy: policy, AllowHTTP: c.allowHTTP, MaxLifetime: c.lifetime}
+	opt := metadata.Options{MaxBytes: min(execution(ctx).xml.MaxBytes, cliMaxMetadataBytes), Policy: policy, AllowHTTP: c.allowHTTP, MaxLifetime: c.lifetime}
 	if c.command == nameMetadataBuild {
 		return c.buildMetadata(ctx, at, opt, stdout)
 	}
@@ -451,7 +466,7 @@ func (c samlCommand) verifyRequest(ctx context.Context, stdin io.Reader, stdout 
 			return err
 		}
 
-		result, verifyErr = protocol.VerifyRedirectRequest(ctx, string(raw), keys, opt, binding.Options{Policy: policy, MaxQueryBytes: min(execution(ctx).xml.MaxBytes, 4<<20), MaxMessageBytes: min(execution(ctx).xml.MaxBytes, 16<<20), XMLLimits: execution(ctx).xml})
+		result, verifyErr = protocol.VerifyRedirectRequest(ctx, string(raw), keys, opt, binding.Options{Policy: policy, MaxQueryBytes: min(execution(ctx).xml.MaxBytes, cliMaxRedirectQueryBytes), MaxMessageBytes: min(execution(ctx).xml.MaxBytes, cliMaxRedirectMessageBytes), XMLLimits: execution(ctx).xml})
 	} else {
 		doc, err := readDocument(ctx, c.input, stdin)
 		if err != nil {

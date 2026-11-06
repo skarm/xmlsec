@@ -10,11 +10,19 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 	"github.com/skarm/xmlsec/transform/internal/xslt"
+)
+
+// Approved XMLDSig programs have a count cap and a compilation-time floor separate from the caller's runtime timeout. ID lookup also bounds the number of input tokens.
+const (
+	maximumApprovedPrograms    = 64
+	approvedCompilationTimeout = 3 * time.Second
+	maximumIDTokens            = 65_536
 )
 
 var _ reference.ExtensionProcessor = (*Engine)(nil)
@@ -103,7 +111,7 @@ type v1Processor struct {
 
 // newV1Processor compiles the approved XMLDSig compatibility programs.
 func newV1Processor(e *Engine, programs []reference.Transform) (*v1Processor, error) {
-	if len(programs) == 0 || len(programs) > 64 {
+	if len(programs) == 0 || len(programs) > maximumApprovedPrograms {
 		return nil, fmt.Errorf("%w: 1..64 approved programs required", reference.ErrPolicy)
 	}
 
@@ -121,6 +129,10 @@ func newV1Processor(e *Engine, programs []reference.Transform) (*v1Processor, er
 		}
 
 		if t.Algorithm == reference.XSLT {
+			if len(t.Stylesheet) > limits.MaxProgramBytes {
+				return nil, ErrLimit
+			}
+
 			sheet, err := compileV1Stylesheet(e, t.Stylesheet)
 			if err != nil {
 				return nil, err
@@ -131,45 +143,67 @@ func newV1Processor(e *Engine, programs []reference.Transform) (*v1Processor, er
 			continue
 		}
 
-		ctx := xpath.WithBudget(context.Background(), limits.MaxOperations, limits.MaxNodes, limits.MaxOutputBytes, limits.MaxDepth)
-
-		var expressions []compiled
-
-		for _, x := range t.XPath {
-			ns := x.Namespaces
-			if ns == nil {
-				ns = make(map[string]string)
-			}
-
-			ns["xml"] = document.XMLNamespace
-			functions := map[string]xpath.Function{"here": hereFunction(document.Element{}, nil)}
-
-			expr, err := xpath.NewCompiler().Context(ctx).Language(10, ns).Compile(x.Expression)
-			if err != nil {
-				return nil, executionError(err)
-			}
-
-			if err := expr.Validate(ns); err != nil {
-				return nil, executionError(err)
-			}
-
-			if err := xpath.CheckStandaloneFunctions(expr, ns, functions); err != nil {
-				return nil, executionError(err)
-			}
-
-			if len(expr.StaticReferences(ns).FreeVariables) > 0 {
-				return nil, fmt.Errorf("%w: XMLDSig XPath has no variable bindings", reference.ErrInput)
-			}
-
-			ev := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(ns).Functions(functions, nil).OpLimit(p.operations)
-
-			expressions = append(expressions, compiled{expr, ev})
+		expressions, err := compileV1XPathProgram(e, t)
+		if err != nil {
+			return nil, err
 		}
 
 		p.programs[key] = expressions
 	}
 
 	return p, nil
+}
+
+// Approved programs are trusted setup; preserve the historical XSLT timeout
+// floor independently of the shorter timeout an application can use at runtime.
+func (e *Engine) approvedCompilationContext() (context.Context, context.CancelFunc) {
+	limits := e.limits
+	ctx := xpath.WithBudget(context.Background(), limits.MaxOperations, limits.MaxNodes, limits.MaxOutputBytes, limits.MaxDepth)
+
+	return context.WithTimeout(ctx, max(limits.Timeout, approvedCompilationTimeout))
+}
+
+func compileV1XPathProgram(e *Engine, t reference.Transform) ([]compiled, error) {
+	ctx, cancel := e.approvedCompilationContext()
+	defer cancel()
+
+	var expressions []compiled
+
+	for _, x := range t.XPath {
+		if len(x.Expression) > e.limits.MaxProgramBytes {
+			return nil, ErrLimit
+		}
+
+		ns := x.Namespaces
+		if ns == nil {
+			ns = make(map[string]string)
+		}
+
+		ns[lexicon.PrefixXML] = document.XMLNamespace
+		functions := map[string]xpath.Function{"here": hereFunction(document.Element{}, nil)}
+
+		expr, err := xpath.NewCompiler().Context(ctx).Language(int(XPath10), ns).Compile(x.Expression)
+		if err != nil {
+			return nil, executionError(err)
+		}
+
+		if err := expr.Validate(ns); err != nil {
+			return nil, executionError(err)
+		}
+
+		if err := xpath.CheckStandaloneFunctions(expr, ns, functions); err != nil {
+			return nil, executionError(err)
+		}
+
+		if len(expr.StaticReferences(ns).FreeVariables) > 0 {
+			return nil, fmt.Errorf("%w: XMLDSig XPath has no variable bindings", reference.ErrInput)
+		}
+
+		ev := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(ns).Functions(functions, nil).OpLimit(e.limits.MaxOperations)
+		expressions = append(expressions, compiled{expr, ev})
+	}
+
+	return expressions, ctx.Err()
 }
 
 // Validate preflights the compiled allowed transform before reference I/O.
@@ -206,10 +240,9 @@ func (p *v1Processor) Apply(ctx context.Context, t reference.Transform, in refer
 	}
 	defer cancel()
 
-	limits := document.DefaultLimits()
+	limits := p.engine.limits.xmlLimits()
 	limits.MaxBytes = p.input
 	limits.MaxNodes = p.nodes
-	limits.MaxDepth = p.engine.limits.MaxDepth
 
 	if err := tree.CheckSnapshotLimits(ctx, doc, limits); err != nil {
 		return reference.Data{}, executionError(err)
@@ -241,7 +274,7 @@ func (p *v1Processor) Apply(ctx context.Context, t reference.Transform, in refer
 	order := xpath.NewDocOrderCache()
 
 	for i := range program {
-		functions := map[string]xpath.Function{"here": hereFunction(t.XPath[i].Here, view), "id": idFunction(resolve, min(p.nodes, 65536))}
+		functions := map[string]xpath.Function{"here": hereFunction(t.XPath[i].Here, view), "id": idFunction(resolve, min(p.nodes, maximumIDTokens))}
 		evaluators[i] = program[i].evaluator.Functions(functions, nil).DocOrderCache(order)
 	}
 

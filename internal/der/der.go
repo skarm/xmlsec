@@ -7,12 +7,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"time"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
+)
+
+const (
+	defaultMaxNodes              = 100000
+	defaultReadDepth             = 33
+	generalizedTimeDigits        = 14
+	generalizedTimeSecondsLayout = "20060102150405"
+	utcTimeDigits                = 12
+	utcTimeSecondsLayout         = "060102150405"
+)
+
+// ASN.1 identifier and length parameters shared by the DER encoder and the
+// borrowed views. The views use them only after complete DER validation.
+const (
+	identifierClassShift = 6
+	identifierClassMask  = 3
+	highTagNumber        = 0x1f
+	constructedBit       = 0x20
+	base128Bits          = 7
+	base128PayloadMask   = 0x7f
+	base128Continuation  = 0x80
+	longLengthFlag       = 0x80
+	longLengthCountMask  = 0x7f
+	maximumLengthOctets  = 8
+	octetBits            = 8
+	octetRadix           = 256
+	minimumHeaderBytes   = 2
+	sequenceTag          = constructedBit | asn1.TagSequence
+	setTag               = constructedBit | asn1.TagSet
+	contextConstructed   = asn1.ClassContextSpecific<<identifierClassShift | constructedBit
 )
 
 // ErrInvalidDER reports invalid or unsupported DER.
@@ -25,7 +56,7 @@ var ErrLimit = errors.New("DER resource limit exceeded")
 // with at most 32 levels below the root and 100000 values. Implicit types,
 // DEFAULT omission and open-type semantics require schema-specific validation.
 func Read(b []byte, maximum int) (asn1.RawValue, error) {
-	return ReadLimits(b, maximum, 33, 100000)
+	return ReadLimits(b, maximum, defaultReadDepth, defaultMaxNodes)
 }
 
 // ReadLimits validates complete DER with explicit byte, depth and value-count budgets.
@@ -51,7 +82,7 @@ func ReadLimits(b []byte, maximum, maxDepth, maxNodes int) (asn1.RawValue, error
 
 // Children decodes the direct components of a constructed DER value.
 func Children(v asn1.RawValue) ([]asn1.RawValue, error) {
-	return ChildrenLimit(v, 100000)
+	return ChildrenLimit(v, defaultMaxNodes)
 }
 
 // ChildrenLimit decodes at most maximum direct components without allocating an oversized slice.
@@ -89,7 +120,7 @@ func Is(v asn1.RawValue, c, t int, compound bool) bool {
 
 // Sequence decodes a DER SEQUENCE with the required component-count range.
 func Sequence(v asn1.RawValue, minimum, maximum int) ([]asn1.RawValue, error) {
-	if !Is(v, 0, asn1.TagSequence, true) {
+	if !Is(v, asn1.ClassUniversal, asn1.TagSequence, true) {
 		return nil, ErrInvalidDER
 	}
 
@@ -127,7 +158,7 @@ func Unmarshal(b []byte, out any) error {
 
 // Explicit unwraps one explicitly tagged context-specific value.
 func Explicit(v asn1.RawValue, tag int) (asn1.RawValue, error) {
-	if !Is(v, 2, tag, true) {
+	if !Is(v, asn1.ClassContextSpecific, tag, true) {
 		return asn1.RawValue{}, ErrInvalidDER
 	}
 
@@ -141,10 +172,10 @@ func Explicit(v asn1.RawValue, tag int) (asn1.RawValue, error) {
 
 // Wrap encodes a DER tag and definite length around the supplied content.
 func Wrap(class, tag int, compound bool, b []byte) []byte {
-	if class >= 0 && class <= 3 && tag >= 0 && tag < 31 {
-		tagByte := byte(class&3)<<6 | byte(tag&0x1f)
+	if class >= 0 && class <= asn1.ClassPrivate && tag >= 0 && tag < highTagNumber {
+		tagByte := byte(class&identifierClassMask)<<identifierClassShift | byte(tag&highTagNumber)
 		if compound {
-			tagByte |= 0x20
+			tagByte |= constructedBit
 		}
 
 		return wrapParts(tagByte, b)
@@ -159,23 +190,23 @@ func Wrap(class, tag int, compound bool, b []byte) []byte {
 }
 
 // Seq encodes a DER SEQUENCE from encoded components.
-func Seq(parts ...[]byte) []byte { return wrapParts(0x30, parts...) }
+func Seq(parts ...[]byte) []byte { return wrapParts(sequenceTag, parts...) }
 
 // Set encodes a DER SET OF with lexicographically sorted encoded components.
 func Set(parts ...[]byte) []byte {
 	parts = append([][]byte(nil), parts...)
 	slices.SortFunc(parts, bytes.Compare)
 
-	return wrapParts(0x31, parts...)
+	return wrapParts(setTag, parts...)
 }
 
 // Ctx encodes a constructed context-specific value from encoded components.
 func Ctx(tag int, parts ...[]byte) []byte {
-	if tag >= 0 && tag < 31 {
-		return wrapParts(0xa0|byte(tag), parts...)
+	if tag >= 0 && tag < highTagNumber {
+		return wrapParts(contextConstructed|byte(tag), parts...)
 	}
 
-	return Wrap(2, tag, true, bytes.Join(parts, nil))
+	return Wrap(asn1.ClassContextSpecific, tag, true, bytes.Join(parts, nil))
 }
 
 // OID encodes an object identifier, returning nil for an invalid value.
@@ -189,7 +220,7 @@ func OID(o asn1.ObjectIdentifier) []byte {
 }
 
 // Octets encodes a DER OCTET STRING.
-func Octets(b []byte) []byte { return Wrap(0, asn1.TagOctetString, false, b) }
+func Octets(b []byte) []byte { return Wrap(asn1.ClassUniversal, asn1.TagOctetString, false, b) }
 
 // Int encodes a DER INTEGER.
 func Int(n int) []byte { b, _ := asn1.Marshal(n); return b }
@@ -228,46 +259,46 @@ func SetFields(v asn1.RawValue, c, t, maximum int) ([]asn1.RawValue, error) {
 // storage. Its length is checked before allocating the body; trailing data is
 // rejected. The parsed model and this encoding remain materialized.
 func ReadSequence(ctx context.Context, src io.Reader, maximum int) (asn1.RawValue, error) {
-	if ctx == nil || nilcheck.IsNil(src) || maximum < 2 {
+	if ctx == nil || nilcheck.IsNil(src) || maximum < minimumHeaderBytes {
 		return asn1.RawValue{}, ErrInvalidDER
 	}
 
 	source := &streamio.Reader{Context: ctx, Source: src, Limit: int64(maximum), LimitError: ErrLimit}
 
-	var header [10]byte
-	if _, err := io.ReadFull(source, header[:2]); err != nil {
+	var header [minimumHeaderBytes + maximumLengthOctets]byte
+	if _, err := io.ReadFull(source, header[:minimumHeaderBytes]); err != nil {
 		return asn1.RawValue{}, err
 	}
 
-	if header[0] != 0x30 {
+	if header[0] != sequenceTag {
 		return asn1.RawValue{}, ErrInvalidDER
 	}
 
-	length, used := int(header[1]), 2
-	if length >= 128 {
-		count := length & 127
-		if count == 0 || count > 8 {
+	length, used := int(header[1]), minimumHeaderBytes
+	if length >= longLengthFlag {
+		count := length & longLengthCountMask
+		if count == 0 || count > maximumLengthOctets {
 			return asn1.RawValue{}, ErrInvalidDER
 		}
 
-		if _, err := io.ReadFull(source, header[2:2+count]); err != nil {
+		if _, err := io.ReadFull(source, header[minimumHeaderBytes:minimumHeaderBytes+count]); err != nil {
 			return asn1.RawValue{}, err
 		}
 
-		if header[2] == 0 {
+		if header[minimumHeaderBytes] == 0 {
 			return asn1.RawValue{}, ErrInvalidDER
 		}
 
 		length = 0
-		for _, c := range header[2 : 2+count] {
-			if length > (maximum-int(c))/256 {
+		for _, c := range header[minimumHeaderBytes : minimumHeaderBytes+count] {
+			if length > (maximum-int(c))/octetRadix {
 				return asn1.RawValue{}, ErrLimit
 			}
 
-			length = length*256 + int(c)
+			length = length*octetRadix + int(c)
 		}
 
-		if length < 128 {
+		if length < longLengthFlag {
 			return asn1.RawValue{}, ErrInvalidDER
 		}
 
@@ -301,25 +332,25 @@ func ReadSequence(ctx context.Context, src io.Reader, maximum int) (asn1.RawValu
 // Header encodes a short-tag DER header without allocating its payload.
 // tag includes class/construction bits; length must be nonnegative.
 func Header(tag byte, length int) []byte {
-	if length < 0 || tag&0x1f == 0x1f {
+	if length < 0 || tag&highTagNumber == highTagNumber {
 		panic("der.Header: invalid internal tag or length")
 	}
 
-	if length < 128 {
-		return []byte{tag, byte(length & 127)}
+	if length < longLengthFlag {
+		return []byte{tag, byte(length & longLengthCountMask)}
 	}
 
-	var encoded [8]byte
+	var encoded [maximumLengthOctets]byte
 
 	used := len(encoded)
 	for length > 0 {
 		used--
-		encoded[used] = byte(length & 255)
-		length >>= 8
+		encoded[used] = byte(length & math.MaxUint8)
+		length >>= octetBits
 	}
 
-	result := make([]byte, 2, 2+len(encoded)-used)
-	result[0], result[1] = tag, 0x80|byte(len(encoded)-used)
+	result := make([]byte, minimumHeaderBytes, minimumHeaderBytes+len(encoded)-used)
+	result[0], result[1] = tag, longLengthFlag|byte(len(encoded)-used)
 
 	return append(result, encoded[used:]...)
 }
@@ -330,7 +361,7 @@ func read(b []byte, depth int, count *int, maxDepth, maxNodes int) (asn1.RawValu
 		return asn1.RawValue{}, nil, fmt.Errorf("%w: %w", ErrInvalidDER, ErrLimit)
 	}
 
-	if len(b) < 2 {
+	if len(b) < minimumHeaderBytes {
 		return asn1.RawValue{}, nil, ErrInvalidDER
 	}
 
@@ -369,7 +400,7 @@ func validateConstructedDER(v asn1.RawValue, depth int, count *int, maxDepth, ma
 			return err
 		}
 
-		if v.Class == 0 && v.Tag == asn1.TagSet && previous.FullBytes != nil {
+		if v.Class == asn1.ClassUniversal && v.Tag == asn1.TagSet && previous.FullBytes != nil {
 			lexicalOrder = lexicalOrder && bytes.Compare(previous.FullBytes, child.FullBytes) <= 0
 			tagOrder = tagOrder && (previous.Class < child.Class || previous.Class == child.Class && previous.Tag < child.Tag)
 		}
@@ -381,7 +412,7 @@ func validateConstructedDER(v asn1.RawValue, depth int, count *int, maxDepth, ma
 	// SET and SET OF share a tag. Without a schema, either canonical order is
 	// possible (X.690 10.3 / 11.6). Known SET OF fields use SetFields to enforce
 	// their schema's lexical ordering, including implicitly tagged sets.
-	if v.Class == 0 && v.Tag == asn1.TagSet && !lexicalOrder && !tagOrder {
+	if v.Class == asn1.ClassUniversal && v.Tag == asn1.TagSet && !lexicalOrder && !tagOrder {
 		return fmt.Errorf("%w: SET order", ErrInvalidDER)
 	}
 
@@ -389,7 +420,7 @@ func validateConstructedDER(v asn1.RawValue, depth int, count *int, maxDepth, ma
 }
 
 func validateUniversalDER(v asn1.RawValue) error {
-	if v.Class != 0 {
+	if v.Class != asn1.ClassUniversal {
 		return nil
 	}
 
@@ -399,7 +430,8 @@ func validateUniversalDER(v asn1.RawValue) error {
 			return ErrInvalidDER
 		}
 	case asn1.TagBoolean:
-		if v.IsCompound || len(v.Bytes) != 1 || (v.Bytes[0] != 0 && v.Bytes[0] != 255) {
+		const derTrue = 0xff
+		if v.IsCompound || len(v.Bytes) != 1 || (v.Bytes[0] != 0 && v.Bytes[0] != derTrue) {
 			return ErrInvalidDER
 		}
 	case asn1.TagInteger, asn1.TagEnum:
@@ -437,7 +469,7 @@ func validDEROID(content []byte) bool {
 	}
 
 	for at := 0; at < len(content); {
-		if content[at] == 128 { // Leading zero base-128 group is nonminimal.
+		if content[at] == base128Continuation { // Leading zero base-128 group is nonminimal.
 			return false
 		}
 
@@ -451,12 +483,12 @@ func validDEROID(content []byte) bool {
 			octet := content[at]
 			at++
 
-			value = value<<7 | int64(octet&127)
-			if value > 1<<31-1 {
+			value = value<<base128Bits | int64(octet&base128PayloadMask)
+			if value > math.MaxInt32 {
 				return false
 			}
 
-			if octet&128 == 0 {
+			if octet&base128Continuation == 0 {
 				break
 			}
 		}
@@ -476,13 +508,19 @@ func validDERContent(tag int, b []byte) bool {
 			}
 		}
 	case asn1.TagBMPString:
-		if len(b)%2 != 0 {
+		const (
+			codeUnitBytes  = 2
+			firstSurrogate = 0xd800
+			lastSurrogate  = 0xdfff
+			firstNonchar   = 0xfffe
+		)
+		if len(b)%codeUnitBytes != 0 {
 			return false
 		}
 
-		for i := 0; i < len(b); i += 2 {
-			c := uint16(b[i])<<8 | uint16(b[i+1])
-			if c >= 0xd800 && c <= 0xdfff || c >= 0xfffe {
+		for i := 0; i < len(b); i += codeUnitBytes {
+			c := uint16(b[i])<<octetBits | uint16(b[i+1])
+			if c >= firstSurrogate && c <= lastSurrogate || c >= firstNonchar {
 				return false
 			}
 		}
@@ -496,18 +534,29 @@ func validDERContent(tag int, b []byte) bool {
 func validDERCharacter(tag int, c byte) bool {
 	switch tag {
 	case asn1.TagIA5String:
-		return c < 128
+		return c < utf8.RuneSelf
 	case asn1.TagNumericString:
 		return c == ' ' || c >= '0' && c <= '9'
 	default: // X.680 Table 10, without Go's legacy '*' and '&' exceptions.
-		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || bytes.IndexByte([]byte(" '()+,-./:=?"), c) >= 0
+		const printablePunctuation = " '()+,-./:=?"
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || bytes.IndexByte([]byte(printablePunctuation), c) >= 0
 	}
 }
 
 func validDERTime(tag int, b []byte) bool {
-	width, layout := 12, "060102150405"
+	// Fractional GeneralizedTime needs a dot, at least one digit and final Z.
+	const minimumFractionSuffixBytes = 3
+
+	const (
+		generalizedClockOffset = 8
+		leapSecondClock        = "235960"
+		ordinaryLastSecond     = "59"
+		secondDigits           = 2
+	)
+
+	width, layout := utcTimeDigits, utcTimeSecondsLayout
 	if tag == asn1.TagGeneralizedTime {
-		width, layout = 14, "20060102150405"
+		width, layout = generalizedTimeDigits, generalizedTimeSecondsLayout
 	}
 
 	if len(b) < width+1 || b[len(b)-1] != 'Z' {
@@ -521,7 +570,7 @@ func validDERTime(tag int, b []byte) bool {
 	}
 
 	if len(b) != width+1 {
-		if tag != asn1.TagGeneralizedTime || len(b) < width+3 || b[width] != '.' || b[len(b)-2] == '0' {
+		if tag != asn1.TagGeneralizedTime || len(b) < width+minimumFractionSuffixBytes || b[width] != '.' || b[len(b)-2] == '0' {
 			return false
 		}
 
@@ -534,9 +583,9 @@ func validDERTime(tag int, b []byte) bool {
 	}
 
 	calendar := string(b[:width])
-	if tag == asn1.TagGeneralizedTime && calendar[8:] == "235960" {
+	if tag == asn1.TagGeneralizedTime && calendar[generalizedClockOffset:] == leapSecondClock {
 		// GeneralizedTime follows ISO 8601, including the leap-second notation.
-		calendar = calendar[:width-2] + "59"
+		calendar = calendar[:width-secondDigits] + ordinaryLastSecond
 	}
 
 	_, err := time.Parse(layout, calendar)
@@ -545,18 +594,24 @@ func validDERTime(tag int, b []byte) bool {
 }
 
 func validDERInteger(v asn1.RawValue) bool {
-	return !(v.IsCompound || len(v.Bytes) == 0 || len(v.Bytes) > 1 && ((v.Bytes[0] == 0 && v.Bytes[1]&128 == 0) || (v.Bytes[0] == 255 && v.Bytes[1]&128 != 0)))
+	const (
+		signBit        = 0x80
+		negativePrefix = 0xff
+	)
+
+	return !(v.IsCompound || len(v.Bytes) == 0 || len(v.Bytes) > 1 && ((v.Bytes[0] == 0 && v.Bytes[1]&signBit == 0) || (v.Bytes[0] == negativePrefix && v.Bytes[1]&signBit != 0)))
 }
 
 func validDERBitString(v asn1.RawValue) bool {
-	return !(v.IsCompound || len(v.Bytes) == 0 || v.Bytes[0] > 7 || len(v.Bytes) == 1 && v.Bytes[0] != 0 || len(v.Bytes) > 1 && v.Bytes[len(v.Bytes)-1]&byte((1<<v.Bytes[0])-1) != 0)
+	const maximumUnusedBits = octetBits - 1
+	return !(v.IsCompound || len(v.Bytes) == 0 || v.Bytes[0] > maximumUnusedBits || len(v.Bytes) == 1 && v.Bytes[0] != 0 || len(v.Bytes) > 1 && v.Bytes[len(v.Bytes)-1]&byte((1<<v.Bytes[0])-1) != 0)
 }
 
 // wrapParts copies encoded components directly into the owned final value.
 func wrapParts(tag byte, parts ...[]byte) []byte {
 	size := 0
 	for _, part := range parts {
-		if len(part) > int(^uint(0)>>1)-size {
+		if len(part) > math.MaxInt-size {
 			panic("der: encoded value too large")
 		}
 
@@ -564,7 +619,7 @@ func wrapParts(tag byte, parts ...[]byte) []byte {
 	}
 
 	header := Header(tag, size)
-	if size > int(^uint(0)>>1)-len(header) {
+	if size > math.MaxInt-len(header) {
 		panic("der: encoded value too large")
 	}
 

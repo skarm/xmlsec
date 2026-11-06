@@ -8,13 +8,18 @@ import (
 	"github.com/skarm/xmlsec/evidence"
 )
 
+const (
+	// Caps acquisition-metadata observations supplied with one evidence set.
+	maxSourceObservations = 1024
+)
+
 type evidenceBinding struct {
 	kind evidence.Kind
-	hash [32]byte
+	hash [sha256.Size]byte
 }
 
 func (v *Verifier) validatedSources(ctx context.Context, leaf []byte, input Evidence) (map[evidenceBinding][]*evidence.Observation, error) {
-	if len(input.Sources) > 1024 {
+	if len(input.Sources) > maxSourceObservations {
 		return nil, ErrPolicy
 	}
 

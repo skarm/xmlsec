@@ -198,17 +198,6 @@ func FuzzPattern(f *testing.F) {
 	})
 }
 
-func compileTest(t testing.TB, source string, options patternpkg.Options) *patternpkg.Program {
-	t.Helper()
-
-	p, err := patternpkg.Compile(source, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return p
-}
-
 // BenchmarkPrograms separates immutable program reuse from parsing costs and
 // includes a bounded ambiguous failure rather than unbounded backtracking.
 func BenchmarkPrograms(b *testing.B) {
@@ -256,4 +245,15 @@ func BenchmarkPrograms(b *testing.B) {
 			})
 		})
 	}
+}
+
+func compileTest(t testing.TB, source string, options patternpkg.Options) *patternpkg.Program {
+	t.Helper()
+
+	p, err := patternpkg.Compile(source, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return p
 }

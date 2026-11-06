@@ -12,10 +12,6 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
-func testName(tag int, value string) []byte {
-	return der.Seq(der.Set(der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(0, tag, false, []byte(value)))))
-}
-
 func TestNamePreparationStructureAndFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name, a, b string
@@ -198,4 +194,8 @@ func BenchmarkNameKeyUnicode(b *testing.B) {
 		}
 		index++
 	}
+}
+
+func testName(tag int, value string) []byte {
+	return der.Seq(der.Set(der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(0, tag, false, []byte(value)))))
 }

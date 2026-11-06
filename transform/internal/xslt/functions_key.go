@@ -17,6 +17,16 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Local names of system-property and available-system-properties QNames in the XSLT namespace; output serialization parameters use their own vocabulary.
+const (
+	systemPropertyProductVersion = "product-version"
+	systemPropertyVendor         = "vendor"
+	systemPropertyVendorURL      = "vendor-url"
+	systemPropertyVersion        = "version"
+	systemPropertyXPathVersion   = "xpath-version"
+	systemPropertyXSDVersion     = "xsd-version"
+)
+
 type keyFunction struct {
 	ec    *execContext
 	scope *Stylesheet
@@ -27,11 +37,11 @@ func (f *keyFunction) MinArity() int { return 2 }
 func (f *keyFunction) MaxArity() int { return 3 }
 
 func (f *keyFunction) FuncParamTypesForArity(arity int) []xdm.SequenceType {
-	return xsltFunctionTypes()[functionTypeKey{nameKey2, arity}].params
+	return xsltFunctionTypes()[functionTypeKey{keyLocalName, arity}].params
 }
 
 func (f *keyFunction) FuncReturnTypeForArity(arity int) *xdm.SequenceType {
-	return xsltFunctionTypes()[functionTypeKey{nameKey2, arity}].result
+	return xsltFunctionTypes()[functionTypeKey{keyLocalName, arity}].result
 }
 
 func (f *keyFunction) BindFunctionReference() xpath.Function {
@@ -157,11 +167,14 @@ func (ec *execContext) fnSystemProperty(ctx context.Context, args []xdm.Sequence
 	return introspectionSystemProperty(ctx, args, ec.stylesheet.processorLanguage(), ec.stylesheet.dynamicEvaluationDisabled)
 }
 
-// available-system-properties() returns a sequence of QNames for all
-// available system properties in the XSLT namespace.
-// fnStreamAvailable implements fn:stream-available — returns true when the
-// URI identifies a resource that can be streamed.
+// fnStreamAvailable implements XSLT stream-available(): it checks read policy
+// and the resource prolog without loading a complete source tree. A true result
+// does not imply W3C streamable execution support.
 func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const (
+		errCodeFODC0005 = "FODC0005"
+	)
+
 	if xdm.SequenceLen(args[0]) == 0 {
 		return xdm.SingleBoolean(false), nil
 	}
@@ -178,7 +191,11 @@ func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequenc
 
 	resolved, err := xpath.ResolveDocumentURI(ctx, uri)
 	if err != nil {
-		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == "FODC0005" {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
+		if detail, ok := errors.AsType[*xdm.Error](err); ok && detail.Code == errCodeFODC0005 {
 			return nil, err
 		}
 
@@ -196,6 +213,10 @@ func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequenc
 
 	reader, err := ec.retrieveDocumentReader(ctx, resolved)
 	if err != nil {
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return nil, failure
+		}
+
 		if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 			return nil, err
 		}
@@ -203,9 +224,18 @@ func (ec *execContext) fnStreamAvailable(ctx context.Context, args []xdm.Sequenc
 		return xdm.SingleBoolean(false), nil
 	}
 
-	options := ec.inputParseOptions().WithByteLimit(ec.resourceLimit())
+	var options xdm.ParseOptions
+	if configured := ec.inputParseOptions(); configured != nil {
+		options = *configured
+	}
+
+	options = options.WithByteLimit(ec.resourceLimit())
 	err = options.CheckXMLProlog(ctx, reader)
+
 	err = errors.Join(err, reader.Close())
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
 
 	return xdm.SingleBoolean(err == nil), nil
 }
@@ -224,12 +254,12 @@ func (ec *execContext) fnCurrentOutputURI(ctx context.Context, _ []xdm.Sequence)
 
 // unparsed-entity-uri(name [, doc]) returns the URI of an unparsed entity.
 func (ec *execContext) fnUnparsedEntityURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return ec.unparsedEntity(ctx, args, "unparsed-entity-uri", errCodeXTDE1370)
+	return ec.unparsedEntity(ctx, args, nameUnparsedEntityURI, errCodeXTDE1370)
 }
 
 // unparsed-entity-public-id(name) returns the public identifier of an unparsed entity.
 func (ec *execContext) fnUnparsedEntityPublicID(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	return ec.unparsedEntity(ctx, args, "unparsed-entity-public-id", errCodeXTDE1380)
+	return ec.unparsedEntity(ctx, args, nameUnparsedEntityPublicID, errCodeXTDE1380)
 }
 
 func documentRoot(node xdm.Node) xdm.Node {
@@ -266,7 +296,7 @@ func keyArgumentName(ctx context.Context, arg xdm.Sequence, processor int) (stri
 		}
 	}
 
-	if processor < 30 && !xmlchar.IsValidQName(name) {
+	if processor < processorXSLT30 && !xmlchar.IsValidQName(name) {
 		return "", dynamicError(errCodeXTDE1260, "invalid key name %q", name)
 	}
 
@@ -306,21 +336,37 @@ func introspectionSystemProperty(ctx context.Context, args []xdm.Sequence, proce
 }
 
 func systemPropertyValue(ctx context.Context, local string, processor int) xdm.Sequence {
+	const (
+		processorMajorVersionFormat = "%d.0"
+		processorProductVersion     = "0.1"
+		processorVendorURL          = "https://github.com/skarm/xmlsec"
+	)
+
+	// Text advertised by the version properties is distinct from encoded selector
+	// integers and from XML output declaration versions.
+	const (
+		xpathVersion10Text     = "1.0"
+		xpathVersion20Text     = "2.0"
+		xpathVersion31Text     = "3.1"
+		xmlSchemaVersion10Text = "1.0"
+		xmlSchemaVersion11Text = "1.1"
+	)
+
 	switch local {
-	case lexicon.SerializationVersion:
-		if processor == 10 {
-			return xdm.SingleDouble(1)
+	case systemPropertyVersion:
+		if processor == processorXSLT10 {
+			return xdm.SingleDouble(xsltMajorVersion1)
 		}
 
-		return xdm.SingleString(fmt.Sprintf("%d.0", processor/10))
-	case "vendor":
+		return xdm.SingleString(fmt.Sprintf(processorMajorVersionFormat, processor/processorVersionScale))
+	case systemPropertyVendor:
 		return xdm.SingleString(processorProductName)
-	case "vendor-url":
-		return xdm.SingleString("https://github.com/skarm/xmlsec")
+	case systemPropertyVendorURL:
+		return xdm.SingleString(processorVendorURL)
 	case nameProductName:
 		return xdm.SingleString(processorProductName)
-	case "product-version":
-		return xdm.SingleString("0.1")
+	case systemPropertyProductVersion:
+		return xdm.SingleString(processorProductVersion)
 	case nameIsSchemaAware:
 		return xdm.SingleString(lexicon.ValueNo)
 	case nameSupportsSerialization:
@@ -339,33 +385,37 @@ func systemPropertyValue(ctx context.Context, local string, processor int) xdm.S
 		return xdm.SingleString(lexicon.ValueYes)
 	case textSupportsHigherOrderFunctions:
 		return xdm.SingleString(lexicon.ValueYes)
-	case "xpath-version":
-		return xdm.SingleString(map[int]string{10: lexicon.XSLTVersion10, 20: lexicon.XSLTVersion20, 30: "3.1"}[processor])
-	case "xsd-version":
-		if xpath.XMLSchemaVersion(ctx) == 10 {
-			return xdm.SingleString(lexicon.XSLTVersion10)
+	case systemPropertyXPathVersion:
+		return xdm.SingleString(map[int]string{processorXSLT10: xpathVersion10Text, processorXSLT20: xpathVersion20Text, processorXSLT30: xpathVersion31Text}[processor])
+	case systemPropertyXSDVersion:
+		if xpath.XMLSchemaVersion(ctx) == xmlSchemaProfile10 {
+			return xdm.SingleString(xmlSchemaVersion10Text)
 		}
 
-		return xdm.SingleString("1.1")
+		return xdm.SingleString(xmlSchemaVersion11Text)
 	default:
 		return xdm.SingleString("")
 	}
 }
 
 func fnAvailableSystemProperties(_ context.Context, _ []xdm.Sequence) (xdm.Sequence, error) {
+	const (
+		systemPropertyQNamePrefix = "xsl"
+	)
+
 	props := []string{
-		lexicon.SerializationVersion, "vendor", "vendor-url", nameProductName, "product-version",
+		systemPropertyVersion, systemPropertyVendor, systemPropertyVendorURL, nameProductName, systemPropertyProductVersion,
 		nameIsSchemaAware, nameSupportsSerialization,
 		textSupportsBackwardsCompatibility, nameSupportsNamespaceAxis,
 		nameSupportsStreaming, nameSupportsDynamicEvaluation,
-		textSupportsHigherOrderFunctions, "xpath-version", "xsd-version",
+		textSupportsHigherOrderFunctions, systemPropertyXPathVersion, systemPropertyXSDVersion,
 	}
 
 	seq := make(xdm.ItemSlice, 0, len(props))
 	for _, p := range props {
 		seq = append(seq, xdm.AtomicValue{
 			TypeName: xdm.TypeQName,
-			Value:    xdm.QNameValue{Prefix: "xsl", URI: lexicon.NamespaceXSLT, Local: p},
+			Value:    xdm.QNameValue{Prefix: systemPropertyQNamePrefix, URI: lexicon.NamespaceXSLT, Local: p},
 		})
 	}
 
@@ -386,7 +436,7 @@ func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, 
 
 		item, err = xpath.FnContextItem(ctx)
 		if err != nil {
-			if ec.stylesheet.processorLanguage() < 30 {
+			if ec.stylesheet.processorLanguage() < processorXSLT30 {
 				return nil, dynamicError(errorCode, "%s requires a context node", functionName)
 			}
 
@@ -396,7 +446,7 @@ func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, 
 
 	node, ok := item.(xdm.NodeItem)
 	if !ok {
-		if ec.stylesheet.processorLanguage() < 30 {
+		if ec.stylesheet.processorLanguage() < processorXSLT30 {
 			return nil, dynamicError(errorCode, "%s requires a context node", functionName)
 		}
 
@@ -441,8 +491,18 @@ func (ec *execContext) unparsedEntity(ctx context.Context, args []xdm.Sequence, 
 // documentNodeFromNode walks up to the root of a node's tree and returns
 // the document node if the root is a document, or nil otherwise.
 func documentNodeFromNode(n xdm.Node) *xdm.Document {
-	for n.Parent() != nil {
-		n = n.Parent()
+	n = normalizeNode(n)
+	if n == nil {
+		return nil
+	}
+
+	for {
+		parent := normalizeNode(n.Parent())
+		if parent == nil {
+			break
+		}
+
+		n = parent
 	}
 
 	if doc, ok := n.(*xdm.Document); ok {

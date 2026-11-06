@@ -284,7 +284,7 @@ func TestResponseWriterCompatibilityAndErrors(t *testing.T) {
 	c := testcert.New(t)
 	v := verifier(t, c)
 
-	evidence := pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}
+	e := pki.Evidence{CRLs: [][]byte{testcert.CRL(t, c)}}
 	for _, h := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
 		q, err := timestamp.CreateRequest(t.Context(), []byte("payload"), timestamp.RequestOptions{Hash: h, Policy: policy()})
 		if err != nil {
@@ -300,7 +300,7 @@ func TestResponseWriterCompatibilityAndErrors(t *testing.T) {
 			t.Fatal("response size", n, err)
 		}
 
-		result, err := v.VerifyResponseReader(t.Context(), bytes.NewReader(output.Bytes()), q, testcert.Now(), evidence)
+		result, err := v.VerifyResponseReader(t.Context(), bytes.NewReader(output.Bytes()), q, testcert.Now(), e)
 		if err != nil || result.Info().Imprint().Hash != h {
 			t.Fatal("writer response failed verification", err)
 		}
@@ -1047,7 +1047,7 @@ func TestTimestampTSAAlternativeNameBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := verifier(t, chain)
-	evidence := pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}
+	e := pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}
 	for _, tc := range []struct {
 		name string
 		tag  int
@@ -1076,7 +1076,7 @@ func TestTimestampTSAAlternativeNameBindings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := v.VerifyToken(t.Context(), token, timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}, testcert.Now(), evidence)
+			result, err := v.VerifyToken(t.Context(), token, timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}, testcert.Now(), e)
 			if tc.want != nil {
 				if result != nil || !errors.Is(err, tc.want) {
 					t.Fatalf("TSA binding returned %v, %v; want %v", result != nil, err, tc.want)
@@ -1179,67 +1179,6 @@ func TestTimestampRejectsUnevaluatedESSPathRestrictions(t *testing.T) {
 	if result, err := verifier(t, chain).VerifyToken(t.Context(), token, want, testcert.Now(), pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}); result != nil || !errors.Is(err, cms.ErrUnsupported) {
 		t.Fatal("unsupported ESS path restriction returned trusted assertion", err)
 	}
-}
-
-func timestampDuplicateESSID(t *testing.T, raw []byte, key crypto.Signer, variant ...string) []byte {
-	t.Helper()
-	outer, _ := der.Read(raw, len(raw))
-	ci, _ := der.Sequence(outer, 2, 2)
-	content, _ := der.Explicit(ci[1], 0)
-	sd, _ := der.Sequence(content, 4, 6)
-	signers, _ := der.SetFields(sd[len(sd)-1], 0, asn1.TagSet, 1)
-	signer, _ := der.Sequence(signers[0], 6, 6)
-	attributes, _ := der.Children(signer[3])
-	attrs := make([][]byte, 0, len(attributes))
-	for _, value := range attributes {
-		attribute, _ := der.Sequence(value, 2, 2)
-		var oid asn1.ObjectIdentifier
-		if der.Decode(attribute[0], &oid) != nil {
-			t.Fatal("attribute OID")
-		}
-		if oid.Equal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}) {
-			values, _ := der.SetFields(attribute[1], 0, asn1.TagSet, 1)
-			top, _ := der.Sequence(values[0], 1, 2)
-			ids, _ := der.Sequence(top[0], 1, 1)
-			if len(variant) == 0 {
-				attrs = append(attrs, der.Seq(attribute[0].FullBytes, der.Set(der.Seq(der.Seq(ids[0].FullBytes, ids[0].FullBytes)))))
-			} else {
-				id, _ := der.Sequence(ids[0], 2, 2)
-				issuer, _ := der.Sequence(id[1], 2, 2)
-				names, _ := der.Sequence(issuer[0], 1, 1)
-				extra := der.Wrap(2, 6, false, []byte("https://unrelated.test/"))
-				if variant[0] == "directoryName" {
-					extra = names[0].FullBytes
-				}
-				changed := der.Seq(id[0].FullBytes, der.Seq(der.Seq(names[0].FullBytes, extra), issuer[1].FullBytes))
-				attrs = append(attrs, der.Seq(attribute[0].FullBytes, der.Set(der.Seq(der.Seq(changed)))))
-			}
-		} else {
-			attrs = append(attrs, value.FullBytes)
-		}
-	}
-	set := der.Set(attrs...)
-	signedAttrs, _ := der.Read(set, len(set))
-	parts := make([][]byte, len(signer))
-	for i := range signer {
-		parts[i] = signer[i].FullBytes
-	}
-	parts[3] = der.Wrap(2, 0, true, signedAttrs.Bytes)
-	algorithm, err := signature.Algorithm(signer[4])
-	if err != nil {
-		t.Fatal(err)
-	}
-	signed, err := signature.Sign(t.Context(), key, algorithm, set)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parts[5] = der.Octets(signed)
-	sdParts := make([][]byte, len(sd))
-	for i := range sd {
-		sdParts[i] = sd[i].FullBytes
-	}
-	sdParts[len(sdParts)-1] = der.Set(der.Seq(parts...))
-	return der.Seq(ci[0].FullBytes, der.Ctx(0, der.Seq(sdParts...)))
 }
 
 func TestTimestampRejectsExplicitDefaultFields(t *testing.T) {
@@ -1396,8 +1335,8 @@ func FuzzResponse(f *testing.F) {
 		f.Fatal(e)
 	}
 
-	evidence := pki.Evidence{CRLs: [][]byte{fixture.Read(f, "ts-ecdsa-256/crl.der")}}
-	if result, e := v.VerifyResponse(f.Context(), raw, q, fixture.At, evidence); e != nil || result == nil {
+	ev := pki.Evidence{CRLs: [][]byte{fixture.Read(f, "ts-ecdsa-256/crl.der")}}
+	if result, e := v.VerifyResponse(f.Context(), raw, q, fixture.At, ev); e != nil || result == nil {
 		f.Fatalf("invalid positive timestamp fixture: %v", e)
 	}
 
@@ -1412,7 +1351,7 @@ func FuzzResponse(f *testing.F) {
 			return
 		}
 
-		result, e := v.VerifyResponse(t.Context(), b, q, fixture.At, evidence)
+		result, e := v.VerifyResponse(t.Context(), b, q, fixture.At, ev)
 		if e != nil && result != nil || e == nil && (result == nil || result.Trust() == nil || result.Trust().RevocationStatus() != pki.Valid) {
 			t.Fatal("inconsistent timestamp verification result")
 		}
@@ -1440,5 +1379,282 @@ func BenchmarkVerifyResponse(b *testing.B) {
 		if _, err := v.VerifyResponse(b.Context(), raw, q, testcert.Now(), e); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func timestampDuplicateESSID(t *testing.T, raw []byte, key crypto.Signer, variant ...string) []byte {
+	t.Helper()
+	outer, _ := der.Read(raw, len(raw))
+	ci, _ := der.Sequence(outer, 2, 2)
+	content, _ := der.Explicit(ci[1], 0)
+	sd, _ := der.Sequence(content, 4, 6)
+	signers, _ := der.SetFields(sd[len(sd)-1], 0, asn1.TagSet, 1)
+	signer, _ := der.Sequence(signers[0], 6, 6)
+	attributes, _ := der.Children(signer[3])
+	attrs := make([][]byte, 0, len(attributes))
+	for _, value := range attributes {
+		attribute, _ := der.Sequence(value, 2, 2)
+		var oid asn1.ObjectIdentifier
+		if der.Decode(attribute[0], &oid) != nil {
+			t.Fatal("attribute OID")
+		}
+		if oid.Equal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}) {
+			values, _ := der.SetFields(attribute[1], 0, asn1.TagSet, 1)
+			top, _ := der.Sequence(values[0], 1, 2)
+			ids, _ := der.Sequence(top[0], 1, 1)
+			if len(variant) == 0 {
+				attrs = append(attrs, der.Seq(attribute[0].FullBytes, der.Set(der.Seq(der.Seq(ids[0].FullBytes, ids[0].FullBytes)))))
+			} else {
+				id, _ := der.Sequence(ids[0], 2, 2)
+				issuer, _ := der.Sequence(id[1], 2, 2)
+				names, _ := der.Sequence(issuer[0], 1, 1)
+				extra := der.Wrap(2, 6, false, []byte("https://unrelated.test/"))
+				if variant[0] == "directoryName" {
+					extra = names[0].FullBytes
+				}
+				changed := der.Seq(id[0].FullBytes, der.Seq(der.Seq(names[0].FullBytes, extra), issuer[1].FullBytes))
+				attrs = append(attrs, der.Seq(attribute[0].FullBytes, der.Set(der.Seq(der.Seq(changed)))))
+			}
+		} else {
+			attrs = append(attrs, value.FullBytes)
+		}
+	}
+	set := der.Set(attrs...)
+	signedAttrs, _ := der.Read(set, len(set))
+	parts := make([][]byte, len(signer))
+	for i := range signer {
+		parts[i] = signer[i].FullBytes
+	}
+	parts[3] = der.Wrap(2, 0, true, signedAttrs.Bytes)
+	algorithm, err := signature.Algorithm(signer[4])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signature.Sign(t.Context(), key, algorithm, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[5] = der.Octets(signed)
+	sdParts := make([][]byte, len(sd))
+	for i := range sd {
+		sdParts[i] = sd[i].FullBytes
+	}
+	sdParts[len(sdParts)-1] = der.Set(der.Seq(parts...))
+	return der.Seq(ci[0].FullBytes, der.Ctx(0, der.Seq(sdParts...)))
+}
+
+func TestConfiguredCertificatesBuildTimestampPath(t *testing.T) {
+	for _, separateIntermediate := range []bool{false, true} {
+		name := "lookup candidates"
+		if separateIntermediate {
+			name = "retain PKI intermediates"
+		}
+		t.Run(name, func(t *testing.T) {
+			chain := testcert.New(t)
+			parent, parentKey := chain.Root, crypto.Signer(chain.RootKey)
+			var configured [][]byte
+			if separateIntermediate {
+				key := testcert.Key(t)
+				parent = testcert.Issue(t, timestampIntermediate(20, "configured CA"), parent, key.Public(), parentKey)
+				parentKey = key
+				configured = [][]byte{parent.Raw}
+			}
+			intermediate := testcert.Issue(t, timestampIntermediate(21, "lookup CA"), parent, chain.LeafKey.Public(), parentKey)
+			template := *chain.TSA
+			for _, extension := range chain.TSA.Extensions {
+				if extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 37}) {
+					template.ExtraExtensions = append(template.ExtraExtensions, extension)
+				}
+			}
+			tsa := testcert.Issue(t, &template, intermediate, chain.TSAKey.Public(), chain.LeafKey)
+			request, err := timestamp.CreateRequest(t.Context(), []byte("configured path candidates"), timestamp.RequestOptions{Policy: policy(), OmitCertificates: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, tsa.Raw, timestamp.IssueOptions{Policy: policy(), SerialNumber: big.NewInt(22), GenTime: testcert.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := timestamp.Config{
+				PKI:                      pki.Config{Roots: [][]byte{chain.Root.Raw}, Intermediates: configured, Revocation: pki.NoRevocation},
+				AllowedPolicies:          []asn1.ObjectIdentifier{policy()},
+				Certificates:             [][]byte{tsa.Raw, intermediate.Raw},
+				AllowUncheckedRevocation: true,
+			}
+			verifier, err := timestamp.NewVerifier(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			allCandidates := append([][]byte{tsa.Raw, intermediate.Raw}, configured...)
+			control, err := verifier.WithEvidenceCertificates(allCandidates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := control.VerifyResponse(t.Context(), raw, request, testcert.Now(), pki.Evidence{}); result == nil || err != nil {
+				t.Fatal("same candidate set must form a valid control path", err)
+			}
+			if result, err := verifier.VerifyResponse(t.Context(), raw, request, testcert.Now(), pki.Evidence{}); result == nil || err != nil {
+				t.Error("Config.Certificates did not supply the timestamp path", err)
+			} else if len(result.Trust().ChainDER()) != 3+len(configured) || result.Trust().RevocationStatus() != pki.NotChecked {
+				t.Error("configured path or unchecked-revocation result changed")
+			}
+			response, err := timestamp.ParseResponse(t.Context(), raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := timestamp.ParseToken(t.Context(), response.TokenDER())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := timestamp.Expectation{Imprint: request.Imprint(), Nonce: request.Nonce(), Policy: request.Policy()}
+			if authenticated, err := verifier.Authenticate(t.Context(), token, want, testcert.Now().AddDate(100, 0, 0)); authenticated == nil || err != nil || !authenticated.Valid() {
+				t.Error("crypto-only authentication acquired a current-PKIX requirement", err)
+			}
+			session, err := verifier.NewHistoricalSession(t.Context(), pki.HistoricalOptions{}, testcert.Now(), pki.Evidence{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if paths, err := session.Paths(t.Context(), tsa.Raw); err != nil || len(paths) != 1 || len(paths[0].ChainDER()) != 3+len(configured) {
+				t.Error("historical discovery lost configured path candidates", err)
+			}
+			config.PKI.Roots = [][]byte{testcert.New(t).Root.Raw}
+			config.Certificates = append([][]byte(nil), allCandidates...)
+			config.Certificates = append(config.Certificates, chain.Root.Raw)
+			untrusted, err := timestamp.NewVerifier(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := untrusted.VerifyResponse(t.Context(), raw, request, testcert.Now(), pki.Evidence{}); result != nil || !errors.Is(err, timestamp.ErrTrust) {
+				t.Error("lookup candidates became trust anchors", err)
+			}
+		})
+	}
+}
+
+func TestConfiguredCertificatesSharePKIBounds(t *testing.T) {
+	chain := testcert.New(t)
+	config := timestamp.Config{
+		PKI:                      pki.Config{Roots: [][]byte{chain.Root.Raw}, Intermediates: [][]byte{chain.TSA.Raw}},
+		AllowedPolicies:          []asn1.ObjectIdentifier{policy()},
+		Certificates:             [][]byte{chain.TSA.Raw},
+		AllowUncheckedRevocation: true,
+	}
+	config.PKI.MaxEvidenceBytes = len(chain.Root.Raw) + len(chain.TSA.Raw)
+	if verifier, err := timestamp.NewVerifier(config); verifier == nil || err != nil {
+		t.Fatal("duplicate configured certificate must consume one byte budget", err)
+	}
+	config.PKI.Intermediates = nil
+	config.PKI.MaxEvidenceBytes--
+	if verifier, err := timestamp.NewVerifier(config); verifier != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("configured lookup candidate escaped aggregate PKI byte bound", err)
+	}
+	if len(config.Certificates) != 1 || !bytes.Equal(config.Certificates[0], chain.TSA.Raw) {
+		t.Fatal("constructor mutated caller certificate configuration")
+	}
+
+	config.PKI.MaxEvidenceBytes = 0
+	for index := range 64 {
+		template := *chain.TSA
+		template.SerialNumber = big.NewInt(int64(100 + index))
+		certificate := testcert.Issue(t, &template, chain.Root, chain.TSAKey.Public(), chain.RootKey)
+		config.PKI.Intermediates = append(config.PKI.Intermediates, certificate.Raw)
+	}
+	if verifier, err := timestamp.NewVerifier(config); verifier != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("configured lookup candidate escaped combined PKI certificate count", err)
+	}
+	config.Certificates = config.PKI.Intermediates[:1]
+	if verifier, err := timestamp.NewVerifier(config); verifier == nil || err != nil {
+		t.Fatal("duplicate candidate must not exceed the 64-certificate count", err)
+	}
+}
+
+func timestampIntermediate(serial int64, name string) *x509.Certificate {
+	return &x509.Certificate{
+		SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: name},
+		NotBefore: testcert.Now().Add(-time.Hour), NotAfter: testcert.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+}
+
+func TestCheckEvidenceLimits(t *testing.T) {
+	chain := testcert.New(t)
+	verifier, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL, MaxEvidenceBytes: 4096}, Certificates: [][]byte{chain.TSA.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{{1, 2, 3, 4}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := make([][]byte, 64)
+	for i := range roots {
+		roots[i] = chain.Root.Raw
+	}
+	dedup := append([][]byte(nil), roots...)
+	dedup[0] = chain.TSA.Raw
+	for _, tc := range []struct {
+		name  string
+		input pki.Evidence
+		over  bool
+	}{
+		{name: "empty adds lookup"},
+		{name: "combined exact bytes", input: pki.Evidence{CRLs: [][]byte{make([]byte, 4096-len(chain.TSA.Raw))}}},
+		{name: "combined byte over", input: pki.Evidence{CRLs: [][]byte{make([]byte, 4097-len(chain.TSA.Raw))}}, over: true},
+		{name: "raw count over", input: pki.Evidence{Intermediates: make([][]byte, 65)}, over: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var first []byte
+			if len(tc.input.Intermediates) > 0 {
+				first = bytes.Clone(tc.input.Intermediates[0])
+			}
+			err := verifier.CheckEvidenceLimits(t.Context(), tc.input)
+			if tc.over {
+				if !errors.Is(err, pki.ErrLimit) {
+					t.Fatal("limit", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if len(tc.input.Intermediates) > 0 && !bytes.Equal(tc.input.Intermediates[0], first) {
+				t.Fatal("input overwritten")
+			}
+		})
+	}
+	// A separate generous byte budget isolates configured lookup count and dedup.
+	counted, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL, MaxEvidenceBytes: 128 << 10}, Certificates: [][]byte{chain.TSA.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{{1, 2, 3, 4}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []pki.Evidence{{Intermediates: roots[:63]}, {Intermediates: dedup}} {
+		if err := counted.CheckEvidenceLimits(t.Context(), input); err != nil {
+			t.Fatal("count or dedup positive", err)
+		}
+	}
+	for i := range roots {
+		if !bytes.Equal(roots[i], chain.Root.Raw) {
+			t.Fatal("lookup merge overwrote caller slice", i)
+		}
+	}
+	if err := counted.CheckEvidenceLimits(t.Context(), pki.Evidence{Intermediates: roots}); !errors.Is(err, pki.ErrLimit) {
+		t.Fatal("combined count", err)
+	}
+	for _, v := range []*timestamp.Verifier{nil, {}} {
+		if err := v.CheckEvidenceLimits(t.Context(), pki.Evidence{}); !errors.Is(err, timestamp.ErrPolicy) {
+			t.Fatal("invalid verifier", err)
+		}
+	}
+	if err := verifier.CheckEvidenceLimits(nil, pki.Evidence{}); !errors.Is(err, pki.ErrPolicy) {
+		t.Fatal("nil context identity", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := verifier.CheckEvidenceLimits(ctx, pki.Evidence{Intermediates: make([][]byte, 65)}); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled preflight", err)
+	}
+	over := pki.Evidence{Intermediates: make([][]byte, 65)}
+	if session, err := verifier.NewHistoricalSession(nil, pki.HistoricalOptions{}, testcert.Now(), over); session != nil || !errors.Is(err, pki.ErrPolicy) || errors.Is(err, pki.ErrLimit) {
+		t.Fatal("nil context request identity", session, err)
+	}
+	if session, err := verifier.NewHistoricalSession(ctx, pki.HistoricalOptions{}, time.Time{}, over); session != nil || !errors.Is(err, pki.ErrPolicy) || errors.Is(err, pki.ErrLimit) {
+		t.Fatal("zero time request identity", session, err)
+	}
+	if session, err := verifier.NewHistoricalSession(ctx, pki.HistoricalOptions{}, testcert.Now(), over); session != nil || !errors.Is(err, context.Canceled) {
+		t.Fatal("session cancellation cause", session, err)
 	}
 }

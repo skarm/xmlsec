@@ -17,17 +17,60 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// JSON escape alphabets retain their case across parsers, XML mapping and
+// serializers; lowercase fallback and uppercase serialization remain distinct.
 const (
 	jsonHexLower = "0123456789abcdef"
 	jsonHexUpper = "0123456789ABCDEF"
 )
 
+// JSON option keys are shared by parsing and XML mapping. Argument-count
+// presence, map-item cardinality and diagnostic positions have different roles.
+const (
+	jsonOptionLiberal = "liberal"
+	jsonOptionEscape  = "escape"
+
+	jsonOptionsArgumentThreshold      = 1
+	jsonOptionsMapCardinality         = 1
+	jsonOptionDiagnosticArgumentIndex = 0 // zero-based synthetic option argument
+)
+
+// An internal invalid-character frame decodes to one NUL byte followed by a
+// six-byte raw escape payload. Short escapes add four padding spaces.
+// These are representation widths, never accepted-input limits.
+const (
+	jsonInvalidEscapeSentinel     = 0
+	jsonInvalidEscapePayloadStart = 1
+	jsonInvalidEscapeFrameBytes   = 7
+	jsonInvalidEscapeWirePrefix   = `\u0000\\`
+	jsonInvalidShortEscapePadding = "    "
+	jsonInvalidBackspacePayload   = `\b    `
+	jsonInvalidFormfeedPayload    = `\f    `
+)
+
+// Unicode escapes use source byte offsets and UTF-16 payload bits as named.
+// Two-byte short escapes and the two-byte Unicode escape prefix remain distinct.
+const (
+	jsonShortEscapeBytes          = 2
+	jsonCodeUnitEscapePrefixBytes = 2
+	jsonLowSurrogateMarkerOffset  = 7
+	jsonLowSurrogateHexStart      = 8
+	jsonHighSurrogateFirst        = 0xD800
+	jsonHighSurrogateLast         = 0xDBFF
+	jsonLowSurrogateFirst         = 0xDC00
+	jsonLowSurrogateLast          = 0xDFFF
+	jsonSurrogatePayloadBits      = 10
+	jsonSupplementaryPlaneFirst   = 0x10000
+	jsonC0ControlFirst            = 0x00
+	jsonC0ControlLast             = 0x1F
+)
+
 func lookupFunctionsJSON(name string) (*builtinFunc, bool) {
 	switch name {
-	case "parse-json":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnParseJSON}, true
-	case "json-doc":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnJSONDoc}, true
+	case fnNameParseJSON:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnParseJSON}, true
+	case fnNameJSONDoc:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnJSONDoc}, true
 	}
 
 	return nil, false
@@ -36,8 +79,7 @@ func lookupFunctionsJSON(name string) (*builtinFunc, bool) {
 // jsonOptions holds parsed options for fn:parse-json.
 type jsonOptions struct {
 	fallback   *xdm.FunctionItem
-	invalidEsc map[rune]string
-	duplicates string // "reject", "use-first", "use-last" (default)
+	duplicates string // parse-json starts with use-first; json-to-xml may retain duplicates
 	liberal    bool
 	escape     bool
 	validate   bool // validate=true(): type-annotate the json-to-xml result tree
@@ -68,12 +110,10 @@ func fnParseJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, err
 	}
 
-	s, invalidEsc, err := preprocessJSONStringLiterals(s)
+	s, err = preprocessJSONStringLiterals(s)
 	if err != nil {
 		return nil, err
 	}
-
-	opts.invalidEsc = invalidEsc
 
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.UseNumber()
@@ -105,11 +145,11 @@ func fnParseJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 // parseJSONOptions extracts and validates options from the second argument.
 func parseJSONOptions(ctx context.Context, args []xdm.Sequence) (jsonOptions, error) {
 	opts := jsonOptions{duplicates: duplicatesUseFirst} // XPath spec default.
-	if len(args) <= 1 || xdm.SequenceLen(args[1]) == 0 {
+	if len(args) <= jsonOptionsArgumentThreshold || xdm.SequenceLen(args[1]) == 0 {
 		return opts, nil
 	}
 
-	if xdm.SequenceLen(args[1]) > 1 {
+	if xdm.SequenceLen(args[1]) > jsonOptionsMapCardinality {
 		return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "options argument must be a single map"}
 	}
 
@@ -120,7 +160,7 @@ func parseJSONOptions(ctx context.Context, args []xdm.Sequence) (jsonOptions, er
 
 	var err error
 
-	opts.liberal, err = parseJSONBooleanOption(ctx, options, "liberal")
+	opts.liberal, err = parseJSONBooleanOption(ctx, options, jsonOptionLiberal)
 	if err != nil {
 		return opts, err
 	}
@@ -130,7 +170,7 @@ func parseJSONOptions(ctx context.Context, args []xdm.Sequence) (jsonOptions, er
 		return opts, err
 	}
 
-	opts.escape, err = parseJSONBooleanOption(ctx, options, "escape")
+	opts.escape, err = parseJSONBooleanOption(ctx, options, jsonOptionEscape)
 	if err != nil {
 		return opts, err
 	}
@@ -146,7 +186,7 @@ func parseJSONBooleanOption(ctx context.Context, options xdm.MapItem, name strin
 		return false, nil
 	}
 
-	converted, err := coerceFuncallArg(ctx, value, stAtomic(xdm.TypeBoolean, xdm.OccurrenceExactlyOne), "JSON option "+name, 0, getFnContext(ctx))
+	converted, err := coerceFuncallArg(ctx, value, stAtomic(xdm.TypeBoolean, xdm.OccurrenceExactlyOne), "JSON option "+name, jsonOptionDiagnosticArgumentIndex, getFnContext(ctx))
 	if err != nil {
 		return false, err
 	}
@@ -192,7 +232,7 @@ func finalizeJSONFallbackOption(ctx context.Context, options xdm.MapItem, opts *
 
 	required := stFunc([]xdm.SequenceType{stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne)}, stAtomic(xdm.TypeString, xdm.OccurrenceExactlyOne))
 
-	converted, err := coerceFuncallArg(ctx, value, required, "JSON fallback option", 0, getFnContext(ctx))
+	converted, err := coerceFuncallArg(ctx, value, required, "JSON fallback option", jsonOptionDiagnosticArgumentIndex, getFnContext(ctx))
 	if err != nil {
 		return err
 	}
@@ -225,10 +265,12 @@ type jsonBudget struct {
 }
 
 func newJSONBudget(ctx context.Context) *jsonBudget {
+	const jsonDefaultDepthThreshold = 0 // nonpositive selects fallback depth
+
 	ec := getFnContext(ctx)
 
 	maxDepth := DefaultMaxRecursionDepth
-	if ec != nil && ec.maxRecursionDepth > 0 {
+	if ec != nil && ec.maxRecursionDepth > jsonDefaultDepthThreshold {
 		maxDepth = ec.maxRecursionDepth
 	}
 
@@ -239,8 +281,10 @@ func newJSONBudget(ctx context.Context) *jsonBudget {
 // nests deeper than the recursion limit, so adversarial JSON cannot exhaust the
 // goroutine stack. It returns the incremented depth for nested calls.
 func (b *jsonBudget) enter(depth int) (int, error) {
+	const jsonDepthLimitDisabled = 0 // nonpositive means no local depth cap
+
 	depth++
-	if b.maxDepth > 0 && depth > b.maxDepth {
+	if b.maxDepth > jsonDepthLimitDisabled && depth > b.maxDepth {
 		return depth, ErrRecursionLimit
 	}
 
@@ -252,7 +296,9 @@ func (b *jsonBudget) enter(depth int) (int, error) {
 // context cancellation), so a wide JSON container respects OpLimit and stays
 // cancellable.
 func (b *jsonBudget) charge(ctx context.Context, count int) error {
-	if b.maxNodes > 0 && count+1 > b.maxNodes {
+	const jsonMemberLimitDisabled = 0 // nonpositive means no local member cap
+
+	if b.maxNodes > jsonMemberLimitDisabled && count+1 > b.maxNodes {
 		return ErrNodeSetLimit
 	}
 
@@ -423,8 +469,8 @@ func consumeJSONClose(dec *json.Decoder, expected json.Delim, kind string) error
 	return nil
 }
 
-func preprocessJSONStringLiterals(source string) (string, map[rune]string, error) {
-	preprocessor := jsonStringPreprocessor{source: source, invalidEsc: make(map[rune]string)}
+func preprocessJSONStringLiterals(source string) (string, error) {
+	preprocessor := jsonStringPreprocessor{source: source}
 	inString := false
 
 	for i := 0; i < len(source); {
@@ -447,13 +493,13 @@ func preprocessJSONStringLiterals(source string) (string, map[rune]string, error
 		case '\\':
 			next, err := preprocessor.writeEscape(i)
 			if err != nil {
-				return "", nil, err
+				return "", err
 			}
 
 			i = next
 		default:
-			if char < 0x20 {
-				return "", nil, &xdm.Error{Code: errCodeFOJS0001, Message: "invalid JSON: unescaped control character in string"}
+			if char < jsonFirstPrintableASCII {
+				return "", &xdm.Error{Code: errCodeFOJS0001, Message: "invalid JSON: unescaped control character in string"}
 			}
 
 			preprocessor.output.WriteString(source[i : i+size])
@@ -461,13 +507,12 @@ func preprocessJSONStringLiterals(source string) (string, map[rune]string, error
 		}
 	}
 
-	return preprocessor.output.String(), preprocessor.invalidEsc, nil
+	return preprocessor.output.String(), nil
 }
 
 type jsonStringPreprocessor struct {
-	source     string
-	output     strings.Builder
-	invalidEsc map[rune]string
+	source string
+	output strings.Builder
 }
 
 func (p *jsonStringPreprocessor) writeEscape(offset int) (int, error) {
@@ -477,14 +522,12 @@ func (p *jsonStringPreprocessor) writeEscape(offset int) (int, error) {
 
 	switch next := p.source[offset+1]; next {
 	case '"', '\\', '/', 'n', 'r', 't':
-		p.output.WriteString(p.source[offset : offset+2])
-		return offset + 2, nil
+		p.output.WriteString(p.source[offset : offset+jsonShortEscapeBytes])
+		return offset + jsonShortEscapeBytes, nil
 	case 'b', 'f':
-		if err := p.writePlaceholder(p.source[offset : offset+2]); err != nil {
-			return 0, err
-		}
+		p.writeInvalidEscape(p.source[offset : offset+jsonShortEscapeBytes])
 
-		return offset + 2, nil
+		return offset + jsonShortEscapeBytes, nil
 	case 'u':
 		return p.writeUnicodeEscape(offset)
 	default:
@@ -493,71 +536,72 @@ func (p *jsonStringPreprocessor) writeEscape(offset int) (int, error) {
 }
 
 func (p *jsonStringPreprocessor) writeUnicodeEscape(offset int) (int, error) {
-	if offset+6 > len(p.source) {
+	if offset+jsonCodeUnitEscapeBytes > len(p.source) {
 		return 0, &xdm.Error{Code: errCodeFOJS0001, Message: "invalid JSON: incomplete \\u escape"}
 	}
 
-	escapeText := p.source[offset : offset+6]
+	escapeText := p.source[offset : offset+jsonCodeUnitEscapeBytes]
 
-	codepoint, err := parseJSONHexEscape(p.source[offset+2 : offset+6])
+	codepoint, err := parseJSONHexEscape(p.source[offset+jsonCodeUnitEscapePrefixBytes : offset+jsonCodeUnitEscapeBytes])
 	if err != nil {
 		return 0, err
 	}
 
 	if validJSONSurrogatePair(p.source, offset, codepoint) {
-		p.output.WriteString(p.source[offset : offset+12])
-		return offset + 12, nil
+		p.output.WriteString(p.source[offset : offset+jsonSurrogatePairEscapeBytes])
+		return offset + jsonSurrogatePairEscapeBytes, nil
 	}
 
-	if codepoint >= 0xD800 && codepoint <= 0xDFFF || !isValidXMLCodepoint(int(codepoint)) {
-		if err := p.writePlaceholder(escapeText); err != nil {
-			return 0, err
-		}
+	if codepoint >= jsonHighSurrogateFirst && codepoint <= jsonLowSurrogateLast || !isValidXMLCodepoint(int(codepoint)) {
+		p.writeInvalidEscape(escapeText)
 	} else {
 		p.output.WriteString(escapeText)
 	}
 
-	return offset + 6, nil
+	return offset + jsonCodeUnitEscapeBytes, nil
 }
 
-func (p *jsonStringPreprocessor) writePlaceholder(escapeText string) error {
-	placeholder, err := nextJSONPlaceholderRune(p.source, p.invalidEsc)
-	if err != nil {
-		return err
+// Encode an invalid escape as a decoded NUL plus its original six-byte raw
+// spelling. Short escapes have four padding spaces. A genuine XML string cannot
+// contain NUL: raw controls are rejected above and escaped NUL is encoded here.
+// This preserves every valid character without reserving a finite rune pool.
+func (p *jsonStringPreprocessor) writeInvalidEscape(escapeText string) {
+	p.output.WriteString(jsonInvalidEscapeWirePrefix)
+	p.output.WriteString(escapeText[1:])
+
+	if len(escapeText) == jsonShortEscapeBytes {
+		p.output.WriteString(jsonInvalidShortEscapePadding)
 	}
-
-	p.invalidEsc[placeholder] = escapeText
-	p.output.WriteRune(placeholder)
-
-	return nil
 }
 
 func validJSONSurrogatePair(source string, offset int, high uint32) bool {
-	if high < 0xD800 || high > 0xDBFF || offset+12 > len(source) {
+	if high < jsonHighSurrogateFirst || high > jsonHighSurrogateLast || offset+jsonSurrogatePairEscapeBytes > len(source) {
 		return false
 	}
 
-	if source[offset+6] != '\\' || source[offset+7] != 'u' {
+	if source[offset+jsonCodeUnitEscapeBytes] != '\\' || source[offset+jsonLowSurrogateMarkerOffset] != 'u' {
 		return false
 	}
 
-	low, err := parseJSONHexEscape(source[offset+8 : offset+12])
+	low, err := parseJSONHexEscape(source[offset+jsonLowSurrogateHexStart : offset+jsonSurrogatePairEscapeBytes])
 
-	return err == nil && low >= 0xDC00 && low <= 0xDFFF
+	return err == nil && low >= jsonLowSurrogateFirst && low <= jsonLowSurrogateLast
 }
 
 func parseJSONHexEscape(hex string) (uint32, error) {
+	const jsonHexLetterDigitOffset = 10 // letters follow decimal hexadecimal digits
+
 	var cp uint32
 	for _, c := range hex {
-		cp <<= 4
+		cp <<= jsonHexDigitBits
 
 		switch {
 		case c >= '0' && c <= '9':
 			cp += uint32(c - '0')
 		case c >= 'a' && c <= 'f':
-			cp += uint32(c-'a') + 10
+			cp += uint32(c-'a') + jsonHexLetterDigitOffset
 		case c >= 'A' && c <= 'F':
-			cp += uint32(c-'A') + 10
+			cp += uint32(c-'A') + jsonHexLetterDigitOffset
 		default:
 			return 0, &xdm.Error{Code: errCodeFOJS0001, Message: fmt.Sprintf("invalid JSON: invalid hex digit in \\u escape: %c", c)}
 		}
@@ -566,64 +610,102 @@ func parseJSONHexEscape(hex string) (uint32, error) {
 	return cp, nil
 }
 
-func nextJSONPlaceholderRune(source string, used map[rune]string) (rune, error) {
-	for r := rune(0xF0000); r <= 0xFFFFD; r++ {
-		if _, exists := used[r]; exists {
-			continue
-		}
-
-		if !strings.ContainsRune(source, r) {
-			return r, nil
-		}
-	}
-
-	return 0, &xdm.Error{Code: errCodeFOJS0001, Message: "exhausted JSON placeholder runes"}
-}
-
 func applyJSONStringOptions(ctx context.Context, s string, opts jsonOptions) (string, error) {
-	if opts.escape {
-		var b strings.Builder
-
-		for _, r := range s {
-			if raw, found := opts.invalidEsc[r]; found {
-				b.WriteString(canonicalInvalidJSONEscape(raw))
-
-				continue
-			}
-
-			appendEscapedJSONStringRune(&b, r)
-		}
-
-		return b.String(), nil
-	}
-
 	var b strings.Builder
 
-	for _, r := range s {
-		raw, found := opts.invalidEsc[r]
-		if !found {
-			b.WriteRune(r)
+	for offset := 0; offset < len(s); {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
+		r, size := utf8.DecodeRuneInString(s[offset:])
+		if r != jsonInvalidEscapeSentinel {
+			if err := ChargeString(ctx, jsonStringRuneSize(r, opts.escape)); err != nil {
+				return "", err
+			}
+
+			if opts.escape {
+				appendEscapedJSONStringRune(&b, r)
+			} else {
+				b.WriteRune(r)
+			}
+
+			offset += size
+
 			continue
 		}
 
-		repl := string(rune(0xFFFD))
-
-		if opts.fallback != nil {
-			seq, err := opts.fallback.Invoke(ctx, []xdm.Sequence{xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeString, Value: raw}}})
-			if err != nil {
-				return "", err
-			}
-
-			repl, err = seqToStringErr(ctx, seq)
-			if err != nil {
-				return "", err
-			}
+		raw, err := jsonInvalidEscape(s[offset:])
+		if err != nil {
+			return "", err
 		}
 
-		b.WriteString(repl)
+		offset += jsonInvalidEscapeFrameBytes
+
+		replacement, err := jsonInvalidEscapeReplacement(ctx, raw, opts)
+		if err != nil {
+			return "", err
+		}
+
+		if err := ChargeString(ctx, len(replacement)); err != nil {
+			return "", err
+		}
+
+		b.WriteString(replacement)
 	}
 
 	return b.String(), nil
+}
+
+func jsonStringRuneSize(r rune, escape bool) int {
+	if escape {
+		switch r {
+		case '\\', '\b', '\f', '\n', '\r', '\t':
+			return jsonShortEscapeBytes
+		default:
+			if !isValidXMLCodepoint(int(r)) {
+				return jsonCodeUnitEscapeBytes
+			}
+		}
+	}
+
+	return utf8.RuneLen(r)
+}
+
+func jsonInvalidEscapeReplacement(ctx context.Context, raw string, opts jsonOptions) (string, error) {
+	if opts.escape {
+		return canonicalInvalidJSONEscape(raw), nil
+	}
+
+	if opts.fallback == nil {
+		return string(utf8.RuneError), nil
+	}
+
+	seq, err := opts.fallback.Invoke(ctx, []xdm.Sequence{xdm.SingleString(raw)})
+	if err != nil {
+		return "", err
+	}
+
+	return seqToStringErr(ctx, seq)
+}
+
+// jsonInvalidEscape decodes the fixed-width payload after the internal sentinel.
+// Reject malformed payloads rather than slicing beyond the decoded JSON string.
+func jsonInvalidEscape(encoded string) (string, error) {
+	if len(encoded) >= jsonInvalidEscapeFrameBytes {
+		raw := encoded[jsonInvalidEscapePayloadStart:jsonInvalidEscapeFrameBytes]
+		if raw == jsonInvalidBackspacePayload || raw == jsonInvalidFormfeedPayload {
+			return raw[:jsonShortEscapeBytes], nil
+		}
+
+		if strings.HasPrefix(raw, `\u`) {
+			if _, err := parseJSONHexEscape(raw[jsonCodeUnitEscapePrefixBytes:]); err == nil {
+				return raw, nil
+			}
+		}
+	}
+
+	return "", &xdm.Error{Code: errCodeFOJS0001, Message: "invalid internal JSON escape marker"}
 }
 
 func appendEscapedJSONStringRune(b *strings.Builder, r rune) {
@@ -641,7 +723,7 @@ func appendEscapedJSONStringRune(b *strings.Builder, r rune) {
 	case '\t':
 		b.WriteString(`\t`)
 	default:
-		if (r >= 0x00 && r <= 0x1F) || !isValidXMLCodepoint(int(r)) {
+		if (r >= jsonC0ControlFirst && r <= jsonC0ControlLast) || !isValidXMLCodepoint(int(r)) {
 			appendJSONCodeUnit(b, uint16(r), jsonHexLower) // #nosec G115 -- Decoded Unicode runes reach this branch only for disallowed BMP code points.
 			return
 		}
@@ -669,7 +751,7 @@ func appendSerializedJSONStringRune(b *strings.Builder, r rune) {
 	case '\t':
 		b.WriteString(`\t`)
 	default:
-		if (r >= 0x00 && r <= 0x1F) || (r >= 0x7F && r <= 0x9F) || !isValidXMLCodepoint(int(r)) {
+		if (r >= jsonC0ControlFirst && r <= jsonC0ControlLast) || (r >= jsonEscapedControlStart && r <= jsonEscapedControlEnd) || !isValidXMLCodepoint(int(r)) {
 			appendJSONCodeUnit(b, uint16(r), jsonHexUpper) // #nosec G115 -- Decoded Unicode runes reach this branch only for disallowed BMP code points.
 			return
 		}
@@ -680,7 +762,9 @@ func appendSerializedJSONStringRune(b *strings.Builder, r rune) {
 
 // appendJSONCodeUnit writes one UTF-16 code unit as a fixed-width JSON escape.
 func appendJSONCodeUnit(b *strings.Builder, unit uint16, digits string) {
-	escaped := [6]byte{'\\', 'u', digits[unit>>12], digits[(unit>>8)&0x0F], digits[(unit>>4)&0x0F], digits[unit&0x0F]}
+	const jsonCodeUnitMiddleShift = 8 // second hexadecimal nibble in a 16-bit code unit
+
+	escaped := [jsonCodeUnitEscapeBytes]byte{'\\', 'u', digits[unit>>jsonCodeUnitHighShift], digits[(unit>>jsonCodeUnitMiddleShift)&jsonHexDigitMask], digits[(unit>>jsonHexDigitBits)&jsonHexDigitMask], digits[unit&jsonHexDigitMask]}
 	b.Write(escaped[:])
 }
 
@@ -714,7 +798,7 @@ func fnJSONDoc(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	// Delegate to parse-json logic, preserving any caller-supplied options.
 	parseArgs := []xdm.Sequence{xdm.ItemSlice{xdm.AtomicValue{TypeName: xdm.TypeString, Value: body}}}
-	if len(args) > 1 {
+	if len(args) > jsonOptionsArgumentThreshold {
 		parseArgs = append(parseArgs, args[1])
 	}
 

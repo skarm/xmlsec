@@ -87,11 +87,14 @@ Prepare both Saxon classpaths, `SERIALIZATION_SCHEMA_DIR`, `JSON_SCHEMA_FILE`,
 Serialization schemas come from the W3C
 [3.0](https://www.w3.org/TR/2014/REC-xslt-xquery-serialization-30-20140408/#serparams-schema)
 and [3.1](https://www.w3.org/TR/2017/REC-xslt-xquery-serialization-31-20170321/#serparams-schema)
-Recommendations, with SHA-256 pins
-`1cbcc49ac5ed8942ba58276699254469ca2144e229f68faeeb48f784c1037953` and
-`256736a2f4e7923e888047dee757c17bc3ee707e285f00639fd8fb1d962d11b0`.
-The [XSLT 3.0 JSON schema](https://www.w3.org/TR/2017/REC-xslt-30-20170608/#schema-for-json)
-pin is `3ba9d28cc77ac0ba876a7e3dd88308381c4e32334ea412b17961968a37ba6f9d`.
+Recommendations, with SHA-256 pins over the downloaded bytes, including the
+final newline:
+`1b95a61f1f1ee5905898544542e7b283c7780ed63dd6313010c078183d626242` and
+`f191b0dc69513670883c0abae97d1dab76965b8bfe3fb0b08a2df1b85d228cd3`.
+For XPath 3.1, use the [F&O 3.1 Appendix C.2 JSON schema](https://www.w3.org/TR/2017/REC-xpath-functions-31-20170321/schema-for-json.xsd).
+Its pin is `34407695050d165be14931c0f378f832d24abe3de682a069d2d6121f07661ec3`.
+The older XSLT 3.0 Appendix B.1 schema has different attribute declarations and
+does not supply these F&O 3.1 controls.
 
 Keep inputs and generated captures/reports outside Git. Sources and register must
 stay fixed across baseline runs and captures. Docker mounts need the checkout's

@@ -13,6 +13,10 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	profileEnvelopedWithTime = "xmlsec-enveloped-with-time-v1"
+)
+
 // WithTimeConfig selects the separate B-T profile. It checks signer PKIX and
 // revocation at the earliest proven existence of SignatureValue, with evidence
 // fresh at that proof time. TSA trust and evidence freshness are checked at
@@ -222,7 +226,7 @@ func (r *WithTimeReport) Profile() string {
 		return ""
 	}
 
-	return "xmlsec-enveloped-with-time-v1"
+	return profileEnvelopedWithTime
 }
 
 // WithTimeResult retains an immutable signature accepted under the configured closed
@@ -286,5 +290,5 @@ func (r *WithTimeResult) Profile() string {
 		return ""
 	}
 
-	return "xmlsec-enveloped-with-time-v1"
+	return profileEnvelopedWithTime
 }

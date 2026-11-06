@@ -5,9 +5,9 @@ package html
 
 import "strings"
 
-// HTML element name constants used throughout the html package.
-// Extracted to satisfy the goconst linter; these names appear many times
-// in the element tables and parseOptions logic below.
+// Exact HTML element spellings are shared by descriptor lookup, HTML/XHTML
+// serialization rules and attribute-context tables. Recognition remains ASCII
+// case-insensitive at the existing call sites.
 const (
 	elemBasefont = "basefont"
 	elemIsindex  = "isindex"
@@ -49,10 +49,111 @@ const (
 	elemXmp      = "xmp"
 )
 
-// HTML5 named character entity keys that collide with element-name literals.
-// These are entity names (e.g. &div; == U+00F7), not HTML element references,
-// so they are kept distinct from the elem* constants.
-const ()
+// Descriptor layout codes preserve the libxml2 table distinctions. Both
+// nonzero codes suppress automatic formatting line breaks. Empty-element
+// metadata selects whether this table treats a tag as having no content.
+const (
+	blockLayout       = 0
+	inlineLayout      = 1
+	mixedInlineLayout = 2
+	emptyElement      = true
+	pairedElement     = false
+)
+
+// Additional element vocabulary follows the pinned HTML4/HTML5 descriptor
+// and XHTML classification tables; these names do not add table membership.
+const (
+	elemA          = "a"
+	elemAbbr       = "abbr"
+	elemAcronym    = "acronym"
+	elemApplet     = "applet"
+	elemArticle    = "article"
+	elemAside      = "aside"
+	elemB          = "b"
+	elemBase       = "base"
+	elemBdi        = "bdi"
+	elemBdo        = "bdo"
+	elemBgsound    = "bgsound"
+	elemBr         = "br"
+	elemButton     = "button"
+	elemCanvas     = "canvas"
+	elemCite       = "cite"
+	elemCode       = "code"
+	elemCommand    = "command"
+	elemDatalist   = "datalist"
+	elemDd         = "dd"
+	elemDel        = "del"
+	elemDetails    = "details"
+	elemDfn        = "dfn"
+	elemDialog     = "dialog"
+	elemDl         = "dl"
+	elemDt         = "dt"
+	elemEm         = "em"
+	elemFigcaption = "figcaption"
+	elemFigure     = "figure"
+	elemFooter     = "footer"
+	elemH1         = "h1"
+	elemH2         = "h2"
+	elemH3         = "h3"
+	elemH4         = "h4"
+	elemH5         = "h5"
+	elemH6         = "h6"
+	elemHeader     = "header"
+	elemHgroup     = "hgroup"
+	elemHr         = "hr"
+	elemI          = "i"
+	elemIframe     = "iframe"
+	elemIns        = "ins"
+	elemKbd        = "kbd"
+	elemLabel      = "label"
+	elemLegend     = "legend"
+	elemLi         = "li"
+	elemMain       = "main"
+	elemMap        = "map"
+	elemMark       = "mark"
+	elemMath       = "math"
+	elemMenuitem   = "menuitem"
+	elemMeta       = "meta"
+	elemMeter      = "meter"
+	elemNav        = "nav"
+	elemNobr       = "nobr"
+	elemNoembed    = "noembed"
+	elemNoframes   = "noframes"
+	elemNoscript   = "noscript"
+	elemOl         = "ol"
+	elemOptgroup   = "optgroup"
+	elemOutput     = "output"
+	elemP          = "p"
+	elemParam      = "param"
+	elemPicture    = "picture"
+	elemPlaintext  = "plaintext"
+	elemProgress   = "progress"
+	elemQ          = "q"
+	elemRb         = "rb"
+	elemRp         = "rp"
+	elemRt         = "rt"
+	elemRtc        = "rtc"
+	elemRuby       = "ruby"
+	elemS          = "s"
+	elemSamp       = "samp"
+	elemSection    = "section"
+	elemSelect     = "select"
+	elemSlot       = "slot"
+	elemStrong     = "strong"
+	elemSummary    = "summary"
+	elemSup        = "sup"
+	elemSVG        = "svg"
+	elemTd         = "td"
+	elemTemplate   = "template"
+	elemTextarea   = "textarea"
+	elemTh         = "th"
+	elemTime       = "time"
+	elemTr         = "tr"
+	elemTt         = "tt"
+	elemU          = "u"
+	elemUl         = "ul"
+	elemVar        = "var"
+)
 
 // LowerASCII folds HTML names without changing non-ASCII code points. Unicode
 // lowercasing would turn U+0130 into i and falsely recognize an HTML element.
@@ -127,10 +228,10 @@ type htmlElemDesc struct {
 // retains basefont, frame and isindex, an explicitly permitted choice.
 func SerializationVoidElement(name string, html5 bool, edition int) bool {
 	switch LowerASCII(name) {
-	case elemArea, "base", "br", elemCol, "hr", elemImg, elemInput, nameLink, "meta", "param", elemBasefont, elemFrame, elemIsindex:
+	case elemArea, elemBase, elemBr, elemCol, elemHr, elemImg, elemInput, nameLink, elemMeta, elemParam, elemBasefont, elemFrame, elemIsindex:
 		return true
 	case elemEmbed:
-		return html5 || edition != 20
+		return html5 || edition != serializationEdition20
 	case elemKeygen, elemSource, elemTrack, elemWbr:
 		return html5
 	default:
@@ -144,62 +245,62 @@ func SerializationVoidElement(name string, html5 bool, edition int) bool {
 func lookupElement(name string) *htmlElemDesc {
 	name = LowerASCII(name)
 	switch name {
-	case "a", "abbr", "acronym", "bdo", "cite", "code", "dfn", "kbd", "label", "q", "samp", "select", nameSpan, "var":
-		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
-	case elemAddress, nameBlockquote, elemCaption, elemDiv, "dl", elemFieldset, elemForm, "h1", "h2", "h3", "h4", "h5", "h6", "legend", "noscript", "ol", "optgroup", elemPre, elemTable, "td", "tr", "ul":
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "applet":
-		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataNormal}
-	case elemArea, "base", elemCol, "hr", nameLink, "meta", "param":
-		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
-	case "b", nameBig, "em", "i", "nobr", nameSmall, "strong", nameSub, "sup", "tt":
-		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
+	case elemA, elemAbbr, elemAcronym, elemBdo, elemCite, elemCode, elemDfn, elemKbd, elemLabel, elemQ, elemSamp, elemSelect, nameSpan, elemVar:
+		return &htmlElemDesc{empty: pairedElement, inline: inlineLayout, dataMode: dataNormal}
+	case elemAddress, nameBlockquote, elemCaption, elemDiv, elemDl, elemFieldset, elemForm, elemH1, elemH2, elemH3, elemH4, elemH5, elemH6, elemLegend, elemNoscript, elemOl, elemOptgroup, elemPre, elemTable, elemTd, elemTr, elemUl:
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
+	case elemApplet:
+		return &htmlElemDesc{empty: pairedElement, inline: mixedInlineLayout, dataMode: dataNormal}
+	case elemArea, elemBase, elemCol, elemHr, nameLink, elemMeta, elemParam:
+		return &htmlElemDesc{empty: emptyElement, inline: blockLayout, dataMode: dataNormal}
+	case elemB, nameBig, elemEm, elemI, elemNobr, nameSmall, elemStrong, nameSub, elemSup, elemTt:
+		return &htmlElemDesc{empty: pairedElement, inline: inlineLayout, dataMode: dataNormal}
 	case elemBasefont:
-		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
-	case "bgsound", elemKeygen, elemSource, elemTrack, elemWbr:
-		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
+		return &htmlElemDesc{empty: emptyElement, inline: inlineLayout, dataMode: dataNormal}
+	case elemBgsound, elemKeygen, elemSource, elemTrack, elemWbr:
+		return &htmlElemDesc{empty: emptyElement, inline: blockLayout, dataMode: dataNormal}
 	case elemBody, elemHead, elemHTML:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "br", elemImg, elemInput:
-		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
-	case "button", "del", "ins", "map", elemObject:
-		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataNormal}
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
+	case elemBr, elemImg, elemInput:
+		return &htmlElemDesc{empty: emptyElement, inline: inlineLayout, dataMode: dataNormal}
+	case elemButton, elemDel, elemIns, elemMap, elemObject:
+		return &htmlElemDesc{empty: pairedElement, inline: mixedInlineLayout, dataMode: dataNormal}
 	case elemCenter:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case elemColgroup, "dd", "dt", nameOption, "p", elemTfoot, "th", elemThead:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
+	case elemColgroup, elemDd, elemDt, nameOption, elemP, elemTfoot, elemTh, elemThead:
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
 	case elemDir, elemMenu:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
 	case elemEmbed:
-		return &htmlElemDesc{empty: true, inline: 1, dataMode: dataNormal}
-	case elemFont, "s", nameStrike, "u":
-		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataNormal}
+		return &htmlElemDesc{empty: emptyElement, inline: inlineLayout, dataMode: dataNormal}
+	case elemFont, elemS, nameStrike, elemU:
+		return &htmlElemDesc{empty: pairedElement, inline: inlineLayout, dataMode: dataNormal}
 	case elemFrame:
-		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
+		return &htmlElemDesc{empty: emptyElement, inline: blockLayout, dataMode: dataNormal}
 	case elemFrameset:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "iframe":
-		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataRawText}
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
+	case elemIframe:
+		return &htmlElemDesc{empty: pairedElement, inline: mixedInlineLayout, dataMode: dataRawText}
 	case elemIsindex:
-		return &htmlElemDesc{empty: true, inline: 0, dataMode: dataNormal}
-	case "li":
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "noembed", nameStyle:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataRawText}
-	case "noframes":
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataRawText}
-	case "plaintext":
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataPlaintext}
+		return &htmlElemDesc{empty: emptyElement, inline: blockLayout, dataMode: dataNormal}
+	case elemLi:
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
+	case elemNoembed, nameStyle:
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataRawText}
+	case elemNoframes:
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataRawText}
+	case elemPlaintext:
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataPlaintext}
 	case nameScript:
-		return &htmlElemDesc{empty: false, inline: 2, dataMode: dataScript}
+		return &htmlElemDesc{empty: pairedElement, inline: mixedInlineLayout, dataMode: dataScript}
 	case elemTbody:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataNormal}
-	case "textarea":
-		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataRCDATA}
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataNormal}
+	case elemTextarea:
+		return &htmlElemDesc{empty: pairedElement, inline: inlineLayout, dataMode: dataRCDATA}
 	case elemTitle:
-		return &htmlElemDesc{empty: false, inline: 0, dataMode: dataRCDATA}
+		return &htmlElemDesc{empty: pairedElement, inline: blockLayout, dataMode: dataRCDATA}
 	case elemXmp:
-		return &htmlElemDesc{empty: false, inline: 1, dataMode: dataRawText}
+		return &htmlElemDesc{empty: pairedElement, inline: inlineLayout, dataMode: dataRawText}
 	default:
 		return nil
 	}

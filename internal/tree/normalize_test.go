@@ -3,6 +3,8 @@ package tree_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -134,6 +136,12 @@ func TestUnicodeNormalizationConformance(t *testing.T) {
 	data, err := os.ReadFile("../../tests/testdata/unicode/NormalizationTest-17.0.0.txt")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// Pin the complete official Unicode 17 corpus, not only a minimum row count.
+	const expectedSHA256 = "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db"
+	if digest := sha256.Sum256(data); hex.EncodeToString(digest[:]) != expectedSHA256 {
+		t.Fatalf("Unicode 17 normalization corpus SHA-256 mismatch: %x", digest)
 	}
 
 	prefix := "q" + strings.Repeat("\u0315", 31) + "\u0300\u034f"
@@ -310,25 +318,6 @@ func TestByteNormalizationBoundaries(t *testing.T) {
 	}
 }
 
-func assertByteNormalization(t *testing.T, form normalization.Form, input, want string) {
-	t.Helper()
-
-	source := []byte(input)
-
-	got := form.Bytes(source)
-	if string(got) != want || string(source) != input {
-		t.Fatalf("byte normalization form %d: got %U, source %U; want %U", form, []rune(string(got)), []rune(string(source)), []rune(want))
-	}
-
-	if input == want && len(source) != 0 && &got[0] != &source[0] {
-		t.Fatal("already normalized bytes were copied")
-	}
-}
-
-type normalizationFailWriter struct{}
-
-func (normalizationFailWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
-
 func BenchmarkExactNormalizationWriter(b *testing.B) {
 	for _, tc := range []struct {
 		name string
@@ -390,6 +379,25 @@ func TestNormalizationASCIICancellationInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func assertByteNormalization(t *testing.T, form normalization.Form, input, want string) {
+	t.Helper()
+
+	source := []byte(input)
+
+	got := form.Bytes(source)
+	if string(got) != want || string(source) != input {
+		t.Fatalf("byte normalization form %d: got %U, source %U; want %U", form, []rune(string(got)), []rune(string(source)), []rune(want))
+	}
+
+	if input == want && len(source) != 0 && &got[0] != &source[0] {
+		t.Fatal("already normalized bytes were copied")
+	}
+}
+
+type normalizationFailWriter struct{}
+
+func (normalizationFailWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 type normalizationCancelWriter struct{ cancel context.CancelFunc }
 

@@ -21,11 +21,29 @@ import (
 
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/ecdsakey"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
 const (
-	namePss = "pss"
+	maximumECDSASignatureDERBytes = 256
+	maximumPSSParametersBytes     = 4096
+	maximumRSAKeyBits             = 16384
+	minimumRSAExponent            = 3
+	minimumRSAKeyBits             = 2048
+)
+
+const (
+	// The supported PSS profile encodes exactly hash, MGF and salt fields;
+	// their context-specific tags are shared by construction and validation.
+	pssParameterFields = 3
+	pssHashTag         = 0
+	pssMGFTag          = 1
+	pssSaltTag         = 2
+	// SHA-256 starts each contiguous SHA-2 signature OID range. SHA-384 and
+	// SHA-512 use the next two arcs, in the digest dispatch order below.
+	rsaSHA2FirstArc   = 11
+	ecdsaSHA2FirstArc = 2
 )
 
 // Err reports unsupported or invalid ASN.1 signature.
@@ -35,6 +53,10 @@ var Err = errors.New("unsupported or invalid ASN.1 signature")
 type SignerProvider interface {
 	Public() crypto.PublicKey
 	Sign(context.Context, io.Reader, []byte, crypto.SignerOpts) ([]byte, error)
+}
+
+type contextual interface {
+	sign(context.Context, io.Reader, []byte, crypto.SignerOpts) ([]byte, error)
 }
 
 // SignerAdapter bridges a context-aware provider to crypto.Signer. It can be
@@ -80,7 +102,7 @@ func MGF1() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 1135
 func Key(k crypto.PublicKey) error {
 	switch p := k.(type) {
 	case *rsa.PublicKey:
-		if p == nil || p.N == nil || p.N.BitLen() < 2048 || p.N.BitLen() > 16384 || p.N.Sign() <= 0 || p.E < 3 || p.E%2 == 0 {
+		if p == nil || p.N == nil || p.N.BitLen() < minimumRSAKeyBits || p.N.BitLen() > maximumRSAKeyBits || p.N.Sign() <= 0 || p.E < minimumRSAExponent || p.E%2 == 0 {
 			return Err
 		}
 	case *ecdsa.PublicKey:
@@ -126,7 +148,7 @@ func DigestAlgorithm(h crypto.Hash) (pkix.AlgorithmIdentifier, error) {
 
 // NullOrAbsent reports whether ASN.1 parameters are NULL or omitted.
 func NullOrAbsent(v asn1.RawValue) bool {
-	return len(v.FullBytes) == 0 && len(v.Bytes) == 0 && v.Tag == 0 || der.Is(v, 0, asn1.TagNull, false) && len(v.Bytes) == 0
+	return len(v.FullBytes) == 0 && len(v.Bytes) == 0 && v.Tag == 0 || der.Is(v, asn1.ClassUniversal, asn1.TagNull, false) && len(v.Bytes) == 0
 }
 
 // Hash decodes a supported digest identifier; SHA-1 requires explicit permission.
@@ -163,7 +185,12 @@ func Sum(h crypto.Hash, b []byte) ([]byte, error) {
 
 // Algorithm decodes a complete AlgorithmIdentifier.
 func Algorithm(v asn1.RawValue) (pkix.AlgorithmIdentifier, error) {
-	f, e := der.Sequence(v, 1, 2)
+	const (
+		minimumFields = 1
+		maximumFields = 2
+	)
+
+	f, e := der.Sequence(v, minimumFields, maximumFields)
 	if e != nil {
 		return pkix.AlgorithmIdentifier{}, e
 	}
@@ -174,7 +201,7 @@ func Algorithm(v asn1.RawValue) (pkix.AlgorithmIdentifier, error) {
 	}
 
 	a := pkix.AlgorithmIdentifier{Algorithm: o}
-	if len(f) == 2 {
+	if len(f) == maximumFields {
 		a.Parameters = f[1]
 	}
 
@@ -186,7 +213,7 @@ func EncAlgorithm(a pkix.AlgorithmIdentifier) []byte {
 	p := [][]byte{der.OID(a.Algorithm)}
 	if len(a.Parameters.FullBytes) > 0 {
 		p = append(p, a.Parameters.FullBytes)
-	} else if a.Parameters.Tag != 0 || a.Parameters.Class != 0 || len(a.Parameters.Bytes) > 0 {
+	} else if a.Parameters.Tag != 0 || a.Parameters.Class != asn1.ClassUniversal || len(a.Parameters.Bytes) > 0 {
 		b, _ := asn1.Marshal(a.Parameters)
 		p = append(p, b)
 	}
@@ -218,14 +245,14 @@ func Select(k crypto.PublicKey, h crypto.Hash, pss bool) (pkix.AlgorithmIdentifi
 		if pss {
 			da, _ := DigestAlgorithm(h)
 			d := EncAlgorithm(da)
-			params := der.Seq(der.Ctx(0, d), der.Ctx(1, der.Seq(der.OID(MGF1()), d)), der.Ctx(2, der.Int(h.Size())))
+			params := der.Seq(der.Ctx(pssHashTag, d), der.Ctx(pssMGFTag, der.Seq(der.OID(MGF1()), d)), der.Ctx(pssSaltTag, der.Int(h.Size())))
 
 			return pkix.AlgorithmIdentifier{Algorithm: PSS(), Parameters: asn1.RawValue{FullBytes: params}}, nil
 		}
 
-		return pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11 + i}, Parameters: asn1.NullRawValue}, nil
+		return pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, rsaSHA2FirstArc + i}, Parameters: asn1.NullRawValue}, nil
 	case *ecdsa.PublicKey:
-		return pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2 + i}}, nil
+		return pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, ecdsaSHA2FirstArc + i}}, nil
 	}
 
 	return pkix.AlgorithmIdentifier{}, Err
@@ -238,18 +265,18 @@ func Details(a pkix.AlgorithmIdentifier) (crypto.Hash, string, error) {
 		if len(raw.FullBytes) > 0 {
 			var e error
 
-			raw, e = der.Read(raw.FullBytes, 4096)
+			raw, e = der.Read(raw.FullBytes, maximumPSSParametersBytes)
 			if e != nil {
 				return 0, "", Err
 			}
 		}
 
-		f, e := der.Sequence(raw, 3, 3)
+		f, e := der.Sequence(raw, pssParameterFields, pssParameterFields)
 		if e != nil {
 			return 0, "", Err
 		}
 
-		x, e := der.Explicit(f[0], 0)
+		x, e := der.Explicit(f[0], pssHashTag)
 		if e != nil {
 			return 0, "", Err
 		}
@@ -264,7 +291,7 @@ func Details(a pkix.AlgorithmIdentifier) (crypto.Hash, string, error) {
 			return 0, "", Err
 		}
 
-		x, e = der.Explicit(f[1], 1)
+		x, e = der.Explicit(f[1], pssMGFTag)
 		if e != nil {
 			return 0, "", Err
 		}
@@ -284,14 +311,14 @@ func Details(a pkix.AlgorithmIdentifier) (crypto.Hash, string, error) {
 			return 0, "", Err
 		}
 
-		x, e = der.Explicit(f[2], 2)
+		x, e = der.Explicit(f[2], pssSaltTag)
 
 		var salt int
 		if e != nil || der.Decode(x, &salt) != nil || salt != h.Size() {
 			return 0, "", Err
 		}
 
-		return h, namePss, nil
+		return h, lexicon.SignatureFamilyRSAPSS, nil
 	}
 
 	if returned0, returned1, matched := detailsEntries(&a); matched {
@@ -299,24 +326,6 @@ func Details(a pkix.AlgorithmIdentifier) (crypto.Hash, string, error) {
 	}
 
 	return 0, "", Err
-}
-
-func detailsEntries(a *pkix.AlgorithmIdentifier) (returned0 crypto.Hash, returned1 string, matched bool) {
-	for i, h := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
-		if a.Algorithm.Equal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11 + i}) && NullOrAbsent(a.Parameters) {
-			return h, "rsa", true
-		}
-
-		if a.Algorithm.Equal(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2 + i}) && len(a.Parameters.FullBytes) == 0 && a.Parameters.Tag == 0 {
-			return h, "ecdsa", true
-		}
-	}
-
-	return
-}
-
-type contextual interface {
-	sign(context.Context, io.Reader, []byte, crypto.SignerOpts) ([]byte, error)
 }
 
 // SignDigest sends the caller context to adapted providers. Plain crypto.Signer
@@ -360,7 +369,7 @@ func Sign(ctx context.Context, s crypto.Signer, a pkix.AlgorithmIdentifier, mess
 	}
 
 	var opt crypto.SignerOpts = h
-	if mode == namePss {
+	if mode == lexicon.SignatureFamilyRSAPSS {
 		opt = &rsa.PSSOptions{SaltLength: h.Size(), Hash: h}
 	}
 
@@ -418,19 +427,19 @@ func VerifyDigest(k crypto.PublicKey, a pkix.AlgorithmIdentifier, digest, value 
 	switch p := k.(type) {
 	case *rsa.PublicKey:
 		switch mode {
-		case "rsa":
+		case lexicon.SignatureFamilyRSA:
 			e = rsa.VerifyPKCS1v15(p, h, digest, value)
-		case namePss:
+		case lexicon.SignatureFamilyRSAPSS:
 			e = rsa.VerifyPSS(p, h, digest, value, &rsa.PSSOptions{SaltLength: h.Size(), Hash: h})
 		default:
 			return Err
 		}
 	case *ecdsa.PublicKey:
-		if mode != "ecdsa" {
+		if mode != lexicon.SignatureFamilyECDSA {
 			return Err
 		}
 
-		if _, e := der.Read(value, 256); e != nil {
+		if _, e := der.Read(value, maximumECDSASignatureDERBytes); e != nil {
 			return e
 		}
 
@@ -464,4 +473,18 @@ func MatchCertificate(s crypto.Signer, c *x509.Certificate) error {
 	}
 
 	return nil
+}
+
+func detailsEntries(a *pkix.AlgorithmIdentifier) (returned0 crypto.Hash, returned1 string, matched bool) {
+	for i, h := range []crypto.Hash{crypto.SHA256, crypto.SHA384, crypto.SHA512} {
+		if a.Algorithm.Equal(asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, rsaSHA2FirstArc + i}) && NullOrAbsent(a.Parameters) {
+			return h, lexicon.SignatureFamilyRSA, true
+		}
+
+		if a.Algorithm.Equal(asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, ecdsaSHA2FirstArc + i}) && len(a.Parameters.FullBytes) == 0 && a.Parameters.Tag == 0 {
+			return h, lexicon.SignatureFamilyECDSA, true
+		}
+	}
+
+	return
 }

@@ -68,15 +68,23 @@ type key struct {
 // NewMemoryStore creates an empty bounded replay store using default limits for zero Config
 // fields.
 func NewMemoryStore(c Config) (*MemoryStore, error) {
+	const (
+		defaultReplayLifetime = time.Hour
+		defaultStoreCapacity  = 100000
+		maximumReplayLifetime = 7 * 24 * time.Hour
+		maximumStoreCapacity  = 10000000
+		minimumStoreLifetime  = time.Second
+	)
+
 	if c.Capacity == 0 {
-		c.Capacity = 100000
+		c.Capacity = defaultStoreCapacity
 	}
 
 	if c.MaxTTL == 0 {
-		c.MaxTTL = time.Hour
+		c.MaxTTL = defaultReplayLifetime
 	}
 
-	if c.Capacity < 1 || c.Capacity > 10000000 || c.MaxTTL < time.Second || c.MaxTTL > 7*24*time.Hour {
+	if c.Capacity < 1 || c.Capacity > maximumStoreCapacity || c.MaxTTL < minimumStoreLifetime || c.MaxTTL > maximumReplayLifetime {
 		return nil, ErrPolicy
 	}
 
@@ -86,7 +94,13 @@ func NewMemoryStore(c Config) (*MemoryStore, error) {
 // Consume atomically consumes all supplied scoped identifiers or none. It prunes expired
 // entries and never evicts unexpired identifiers.
 func (m *MemoryStore) Consume(ctx context.Context, entries []Entry, now time.Time) error {
-	if m == nil || ctx == nil || now.IsZero() || len(entries) < 1 || len(entries) > 16 {
+	const (
+		inlineConsumeEntries    = 16
+		maximumConsumeEntries   = 256
+		maximumReplayFieldBytes = 1024
+	)
+
+	if m == nil || ctx == nil || now.IsZero() || len(entries) < 1 || len(entries) > maximumConsumeEntries {
 		return ErrPolicy
 	}
 
@@ -94,13 +108,20 @@ func (m *MemoryStore) Consume(ctx context.Context, entries []Entry, now time.Tim
 		return err
 	}
 
-	var snapshot [16]Entry
+	var snapshot [inlineConsumeEntries]Entry
 
-	copied := snapshot[:copy(snapshot[:], entries)]
+	var copied []Entry
+	if len(entries) > len(snapshot) {
+		copied = make([]Entry, len(entries))
+	} else {
+		copied = snapshot[:len(entries)]
+	}
+
+	copy(copied, entries)
 
 	seen := make(map[key]struct{}, len(copied))
 	for _, e := range copied {
-		if e.Scope == "" || e.ID == "" || len(e.Scope) > 1024 || len(e.ID) > 1024 || !e.ExpiresAt.After(now) || e.ExpiresAt.After(now.Add(m.maxTTL)) {
+		if e.Scope == "" || e.ID == "" || len(e.Scope) > maximumReplayFieldBytes || len(e.ID) > maximumReplayFieldBytes || !e.ExpiresAt.After(now) || e.ExpiresAt.After(now.Add(m.maxTTL)) {
 			return ErrPolicy
 		}
 
@@ -158,8 +179,14 @@ func (m *MemoryStore) Len() int {
 }
 
 func (m *MemoryStore) prune(ctx context.Context, at time.Time) error {
+	const (
+		pruneMinimumCapacity    = 1024
+		pruneSweepBatch         = 256
+		retainedCapacityDivisor = 4
+	)
+
 	for removed := 0; ; removed++ {
-		if removed%256 == 0 {
+		if removed%pruneSweepBatch == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -174,10 +201,10 @@ func (m *MemoryStore) prune(ctx context.Context, at time.Time) error {
 		delete(m.entries, key)
 	}
 
-	if m.peak > 1024 && len(m.entries) <= m.peak/4 {
+	if m.peak > pruneMinimumCapacity && len(m.entries) <= m.peak/retainedCapacityDivisor {
 		entries := make(map[key]time.Time, len(m.entries))
 		for key, value := range m.entries {
-			if len(entries)%256 == 0 {
+			if len(entries)%pruneSweepBatch == 0 {
 				if err := ctx.Err(); err != nil {
 					return err
 				}

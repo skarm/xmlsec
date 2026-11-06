@@ -235,120 +235,6 @@ func BenchmarkDirectKey(b *testing.B) {
 	)
 }
 
-func key(t *testing.T) *rsa.PrivateKey {
-	t.Helper()
-
-	k, e := rsa.GenerateKey(rand.Reader, 2048)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return k
-}
-
-func parse(t *testing.T, b []byte) *document.Document {
-	t.Helper()
-
-	d, e := document.Parse(t.Context(), b, document.DefaultLimits())
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return d
-}
-
-type provider struct {
-	k      *rsa.PrivateKey
-	want   context.Context
-	calls  int
-	cancel context.CancelFunc
-}
-
-func (p *provider) Public() crypto.PublicKey { return &p.k.PublicKey }
-
-func (p *provider) Decrypt(ctx context.Context, r io.Reader, c []byte, o crypto.DecrypterOpts) ([]byte, error) {
-	if ctx != p.want {
-		return nil, errors.New("context not passed")
-	}
-
-	p.calls++
-	if p.cancel != nil {
-		p.cancel()
-	}
-
-	return p.k.Decrypt(r, c, o)
-}
-
-func benchmarkByteEncryption(b *testing.B, encrypt func([]byte) (*document.Document, error), decrypt func(*document.Document) ([]byte, error)) {
-	b.Helper()
-
-	plain := make([]byte, 4096)
-
-	encrypted, err := encrypt(plain)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	for _, operation := range []struct {
-		name string
-		run  func() error
-	}{
-		{"Encrypt", func() error { _, err := encrypt(plain); return err }},
-		{"Decrypt", func() error { _, err := decrypt(encrypted); return err }},
-	} {
-		b.Run(operation.name, func(b *testing.B) {
-			b.ReportAllocs()
-
-			for b.Loop() {
-				if err := operation.run(); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
-func agreementChild(t testing.TB, parent document.Element, namespace, local string) document.Element {
-	t.Helper()
-	var result document.Element
-	for _, child := range parent.Children() {
-		if child.Name() == (document.Name{Space: namespace, Local: local}) {
-			if result.Valid() {
-				t.Fatal("duplicate", local)
-			}
-			result = child
-		}
-	}
-	if !result.Valid() {
-		t.Fatal("missing", local)
-	}
-	return result
-}
-
-func agreementMethod(t testing.TB, doc *document.Document) document.Element {
-	t.Helper()
-	info := agreementChild(t, doc.Root(), xmlenc.SignatureNamespace, "KeyInfo")
-	wrapped := agreementChild(t, info, xmlenc.Namespace, "EncryptedKey")
-	info = agreementChild(t, wrapped, xmlenc.SignatureNamespace, "KeyInfo")
-	return agreementChild(t, info, xmlenc.Namespace, "AgreementMethod")
-}
-
-func agreementPoint(t testing.TB, info document.Element) document.Element {
-	t.Helper()
-	value := agreementChild(t, info, xmlenc.SignatureNamespace, "KeyValue")
-	value = agreementChild(t, value, xmlenc.SignatureNamespace11, "ECKeyValue")
-	return agreementChild(t, value, xmlenc.SignatureNamespace11, "PublicKey")
-}
-
-func agreementKey(t testing.TB, curve ecdh.Curve) *ecdh.PrivateKey {
-	t.Helper()
-	key, err := curve.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key
-}
-
 func TestECDHRoundTripAndWire(t *testing.T) {
 	for _, curve := range []ecdh.Curve{ecdh.P256(), ecdh.P384(), ecdh.P521()} {
 		recipient := agreementKey(t, curve)
@@ -475,30 +361,6 @@ func TestECDHRejectsMetadataBeforeProvider(t *testing.T) {
 	}
 }
 
-type agreementProvider struct {
-	key    *ecdh.PrivateKey
-	want   context.Context
-	calls  int
-	cancel context.CancelFunc
-	trim   bool
-}
-
-func (p *agreementProvider) PublicKey() *ecdh.PublicKey { return p.key.PublicKey() }
-func (p *agreementProvider) ECDH(ctx context.Context, peer *ecdh.PublicKey) ([]byte, error) {
-	if ctx != p.want {
-		return nil, errors.New("context not passed")
-	}
-	p.calls++
-	if p.cancel != nil {
-		p.cancel()
-	}
-	secret, err := p.key.ECDH(peer)
-	if p.trim && len(secret) > 0 {
-		secret = secret[1:]
-	}
-	return secret, err
-}
-
 func TestECDHPolicyAndContext(t *testing.T) {
 	recipient := agreementKey(t, ecdh.P256())
 	doc, err := xmlenc.EncryptBytesWithECDH(t.Context(), []byte("secret"), recipient.PublicKey(), xmlenc.ECDHOptions{})
@@ -538,22 +400,6 @@ func TestECDHPolicyAndContext(t *testing.T) {
 	if out, err := xmlenc.EncryptBytesWithECDH(t.Context(), []byte("x"), unsupported.PublicKey(), xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal(out, err)
 	}
-}
-
-func agreementCurveLabel(curve ecdh.Curve) string { return fmt.Sprint(curve) }
-
-func agreementRecipientXML(t testing.TB, raw []byte, replacement string) []byte {
-	t.Helper()
-	start := bytes.Index(raw, []byte("<xenc:RecipientKeyInfo"))
-	if start < 0 {
-		t.Fatal("recipient info absent")
-	}
-	end := bytes.Index(raw[start:], []byte("</xenc:RecipientKeyInfo>"))
-	if end < 0 {
-		t.Fatal("recipient close absent")
-	}
-	end += start + len("</xenc:RecipientKeyInfo>")
-	return append(append(append([]byte{}, raw[:start]...), []byte(replacement)...), raw[end:]...)
 }
 
 func TestECDHLeadingZeroSecret(t *testing.T) {
@@ -746,4 +592,158 @@ func TestECDHLegacyDataPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func key(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+
+	k, e := rsa.GenerateKey(rand.Reader, 2048)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return k
+}
+
+func parse(t *testing.T, b []byte) *document.Document {
+	t.Helper()
+
+	d, e := document.Parse(t.Context(), b, document.DefaultLimits())
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return d
+}
+
+type provider struct {
+	k      *rsa.PrivateKey
+	want   context.Context
+	calls  int
+	cancel context.CancelFunc
+}
+
+func (p *provider) Public() crypto.PublicKey { return &p.k.PublicKey }
+
+func (p *provider) Decrypt(ctx context.Context, r io.Reader, c []byte, o crypto.DecrypterOpts) ([]byte, error) {
+	if ctx != p.want {
+		return nil, errors.New("context not passed")
+	}
+
+	p.calls++
+	if p.cancel != nil {
+		p.cancel()
+	}
+
+	return p.k.Decrypt(r, c, o)
+}
+
+func benchmarkByteEncryption(b *testing.B, encrypt func([]byte) (*document.Document, error), decrypt func(*document.Document) ([]byte, error)) {
+	b.Helper()
+
+	plain := make([]byte, 4096)
+
+	encrypted, err := encrypt(plain)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	for _, operation := range []struct {
+		name string
+		run  func() error
+	}{
+		{"Encrypt", func() error { _, err := encrypt(plain); return err }},
+		{"Decrypt", func() error { _, err := decrypt(encrypted); return err }},
+	} {
+		b.Run(operation.name, func(b *testing.B) {
+			b.ReportAllocs()
+
+			for b.Loop() {
+				if err := operation.run(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func agreementChild(t testing.TB, parent document.Element, namespace, local string) document.Element {
+	t.Helper()
+	var result document.Element
+	for _, child := range parent.Children() {
+		if child.Name() == (document.Name{Space: namespace, Local: local}) {
+			if result.Valid() {
+				t.Fatal("duplicate", local)
+			}
+			result = child
+		}
+	}
+	if !result.Valid() {
+		t.Fatal("missing", local)
+	}
+	return result
+}
+
+func agreementMethod(t testing.TB, doc *document.Document) document.Element {
+	t.Helper()
+	info := agreementChild(t, doc.Root(), xmlenc.SignatureNamespace, "KeyInfo")
+	wrapped := agreementChild(t, info, xmlenc.Namespace, "EncryptedKey")
+	info = agreementChild(t, wrapped, xmlenc.SignatureNamespace, "KeyInfo")
+	return agreementChild(t, info, xmlenc.Namespace, "AgreementMethod")
+}
+
+func agreementPoint(t testing.TB, info document.Element) document.Element {
+	t.Helper()
+	value := agreementChild(t, info, xmlenc.SignatureNamespace, "KeyValue")
+	value = agreementChild(t, value, xmlenc.SignatureNamespace11, "ECKeyValue")
+	return agreementChild(t, value, xmlenc.SignatureNamespace11, "PublicKey")
+}
+
+func agreementKey(t testing.TB, curve ecdh.Curve) *ecdh.PrivateKey {
+	t.Helper()
+	key, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+type agreementProvider struct {
+	key    *ecdh.PrivateKey
+	want   context.Context
+	calls  int
+	cancel context.CancelFunc
+	trim   bool
+}
+
+func (p *agreementProvider) PublicKey() *ecdh.PublicKey { return p.key.PublicKey() }
+func (p *agreementProvider) ECDH(ctx context.Context, peer *ecdh.PublicKey) ([]byte, error) {
+	if ctx != p.want {
+		return nil, errors.New("context not passed")
+	}
+	p.calls++
+	if p.cancel != nil {
+		p.cancel()
+	}
+	secret, err := p.key.ECDH(peer)
+	if p.trim && len(secret) > 0 {
+		secret = secret[1:]
+	}
+	return secret, err
+}
+
+func agreementCurveLabel(curve ecdh.Curve) string { return fmt.Sprint(curve) }
+
+func agreementRecipientXML(t testing.TB, raw []byte, replacement string) []byte {
+	t.Helper()
+	start := bytes.Index(raw, []byte("<xenc:RecipientKeyInfo"))
+	if start < 0 {
+		t.Fatal("recipient info absent")
+	}
+	end := bytes.Index(raw[start:], []byte("</xenc:RecipientKeyInfo>"))
+	if end < 0 {
+		t.Fatal("recipient close absent")
+	}
+	end += start + len("</xenc:RecipientKeyInfo>")
+	return append(append(append([]byte{}, raw[:start]...), []byte(replacement)...), raw[end:]...)
 }

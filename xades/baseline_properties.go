@@ -24,6 +24,26 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	nameCity                        = "City"
+	nameCountryName                 = "CountryName"
+	nameIssuerSerialV2              = "IssuerSerialV2"
+	namePostalCode                  = "PostalCode"
+	nameSignatureProductionPlaceV2  = "SignatureProductionPlaceV2"
+	nameStateOrProvince             = "StateOrProvince"
+	nameStreetAddress               = "StreetAddress"
+	maximumAttributeCertificates    = 64
+	maximumCertificateCandidates    = 256
+	maximumDigestLexicalBytes       = 256
+	maximumIssuerNames              = 32
+	maximumIssuerSerialBytes        = 16384
+	maximumIssuerSerialLexicalBytes = 32768
+	// Bounds Base64 text for embedded attribute certificates before decoding, in bytes.
+	maximumRoleCertificateLexicalBytes = 2 << 20
+	maximumSigningCertificateIDs       = 64
+	maximumTextPropertyBytes           = 8192
+)
+
 func parseBaselineSigned(ctx context.Context, layout baselineLayout, certificate *x509.Certificate, options BaselineVerifyOptions, verified *xmldsig.SignatureResult) (*BaselineResult, error) {
 	limits, err := normalizeDataTimestampLimits(options.DataTimestamps)
 	if err != nil {
@@ -69,7 +89,7 @@ func parseBaselineSignatureClaims(ctx context.Context, element document.Element,
 			return err
 		}
 
-		order := slices.Index([]document.Name{name("SigningTime"), name("SigningCertificateV2"), name("SignaturePolicyIdentifier"), name("SignatureProductionPlaceV2"), name("SignerRoleV2")}, child.Name())
+		order := slices.Index([]document.Name{name(nameSigningTime), name(nameSigningCertificateV2), name(nameSignaturePolicyIdentifier), name(nameSignatureProductionPlaceV2), name(nameSignerRoleV2)}, child.Name())
 		if order < 0 || order <= previous {
 			return ErrProfile
 		}
@@ -122,7 +142,7 @@ func parseBaselineDataClaims(ctx context.Context, element document.Element, veri
 
 func parseBaselineDataClaim(ctx context.Context, child document.Element, verified *xmldsig.SignatureResult, limits DataTimestampLimits, options BaselineVerifyOptions, result *BaselineResult) (int, error) {
 	switch child.Name() {
-	case name("DataObjectFormat"):
+	case name(nameDataObjectFormat):
 		value, err := parseDataObjectFormat(child)
 		if err != nil {
 			return 0, err
@@ -131,7 +151,7 @@ func parseBaselineDataClaim(ctx context.Context, child document.Element, verifie
 		result.data = append(result.data, value)
 
 		return 0, nil
-	case name("CommitmentTypeIndication"):
+	case name(nameCommitmentTypeIndication):
 		value, err := parseCommitment(child)
 		if err != nil {
 			return 0, err
@@ -140,7 +160,7 @@ func parseBaselineDataClaim(ctx context.Context, child document.Element, verifie
 		result.commitments = append(result.commitments, value)
 
 		return 1, nil
-	case name("AllDataObjectsTimeStamp"), name("IndividualDataObjectsTimeStamp"):
+	case name(nameAllDataObjectsTimeStamp), name(nameIndividualDataObjectsTimeStamp):
 		if len(result.dataTimestamps) >= limits.MaxTimestamps {
 			return 0, ErrProfile
 		}
@@ -152,7 +172,7 @@ func parseBaselineDataClaim(ctx context.Context, child document.Element, verifie
 
 		result.dataTimestamps = append(result.dataTimestamps, value)
 
-		if child.Name() == name("IndividualDataObjectsTimeStamp") {
+		if child.Name() == name(nameIndividualDataObjectsTimeStamp) {
 			return 3, nil
 		}
 
@@ -163,12 +183,12 @@ func parseBaselineDataClaim(ctx context.Context, child document.Element, verifie
 }
 
 func buildBaselineProperties(ctx context.Context, certificate *x509.Certificate, signatureID, propertiesID string, properties BaselineProperties, options BaselineVerifyOptions) (*document.Document, error) {
-	qp := xnode("QualifyingProperties")
-	qp.NS = []tree.Namespace{{Prefix: nameXades, URI: Namespace}, {Prefix: "ds", URI: xmldsig.Namespace}, {Prefix: prefixXades141, URI: Namespace141}}
-	attr(qp, "Target", "#"+signatureID)
+	qp := xnode(nameQualifyingProperties)
+	qp.NS = []tree.Namespace{{Prefix: prefixXAdES, URI: Namespace}, {Prefix: lexicon.PrefixDSig, URI: xmldsig.Namespace}, {Prefix: prefixXAdES141, URI: Namespace141}}
+	attr(qp, lexicon.SecurityAttrTarget, "#"+signatureID)
 
-	sp := xnode("SignedProperties")
-	attr(sp, "Id", propertiesID)
+	sp := xnode(nameSignedProperties)
+	attr(sp, lexicon.SecurityAttrID, propertiesID)
 	add(qp, sp)
 
 	ssp, err := buildBaselineSignatureClaims(ctx, certificate, properties, options)
@@ -196,13 +216,13 @@ func buildBaselineSignatureClaims(ctx context.Context, certificate *x509.Certifi
 		return nil, err
 	}
 
-	ssp := xnode("SignedSignatureProperties")
-	leaf(ssp, "SigningTime", value)
+	ssp := xnode(nameSignedSignatureProperties)
+	leaf(ssp, nameSigningTime, value)
 
-	sc := xnode("SigningCertificateV2")
+	sc := xnode(nameSigningCertificateV2)
 
 	identifiers := append([]CertificateIdentifier{{DER: certificate.Raw, DigestMethod: properties.SigningCertificateDigest}}, properties.AdditionalCertificates...)
-	if len(identifiers) > 64 {
+	if len(identifiers) > maximumSigningCertificateIDs {
 		return nil, ErrProfile
 	}
 
@@ -276,9 +296,9 @@ func buildBaselineCertificate(ctx context.Context, identifier CertificateIdentif
 		return nil, err
 	}
 
-	out := xnode("Cert")
+	out := xnode(nameCert)
 
-	digest, err := baselineDigestNode(ctx, "CertDigest", identifier.DigestMethod, c.Raw, options)
+	digest, err := baselineDigestNode(ctx, nameCertDigest, identifier.DigestMethod, c.Raw, options)
 	if err != nil {
 		return nil, err
 	}
@@ -291,14 +311,14 @@ func buildBaselineCertificate(ctx context.Context, identifier CertificateIdentif
 			return nil, err
 		}
 
-		leaf(out, "IssuerSerialV2", base64.StdEncoding.EncodeToString(encoded))
+		leaf(out, nameIssuerSerialV2, base64.StdEncoding.EncodeToString(encoded))
 	}
 
 	return out, nil
 }
 
 func buildProductionPlace(value ProductionPlace) (*tree.Node, error) {
-	out := xnode("SignatureProductionPlaceV2")
+	out := xnode(nameSignatureProductionPlaceV2)
 	names := productionPlaceNames()
 
 	for i, field := range []string{value.City, value.StreetAddress, value.StateOrProvince, value.PostalCode, value.CountryName} {
@@ -324,7 +344,7 @@ func buildBaselineDataClaims(ctx context.Context, properties BaselineProperties,
 		return nil, ErrProfile
 	}
 
-	out := xnode("SignedDataObjectProperties")
+	out := xnode(nameSignedDataObjectProperties)
 
 	for _, format := range properties.DataObjects {
 		value, err := buildDataObjectFormat(format)
@@ -386,7 +406,7 @@ func baselineContent(element document.Element) ([]document.Element, error) {
 }
 
 func baselineURI(value string) bool {
-	if len(value) > 8192 {
+	if len(value) > maximumTextPropertyBytes {
 		return false
 	}
 
@@ -422,7 +442,7 @@ func baselinePropertyValue(ctx context.Context, value PropertyValue, expected do
 
 	n.Name = expected
 	if expected.Space == Namespace141 {
-		n.Prefix = prefixXades141
+		n.Prefix = prefixXAdES141
 	}
 
 	text(n, value.Text)
@@ -468,7 +488,7 @@ func baselineDigestNode(ctx context.Context, local, method string, data []byte, 
 
 	node := xnode(local)
 	dm := dsnode(lexicon.DSigElementDigestMethod)
-	attr(dm, "Algorithm", method)
+	attr(dm, lexicon.SecurityAttrAlgorithm, method)
 	add(node, dm)
 
 	dv := dsnode(lexicon.DSigElementDigestValue)
@@ -488,11 +508,11 @@ func parseBaselineDigest(ctx context.Context, element document.Element, options 
 		return "", nil, err
 	}
 
-	if attrs(elements[0], "Algorithm") != nil || len(elements[0].Children()) != 0 || !tree.IsXMLSpace(elements[0].Text()) {
+	if attrs(elements[0], lexicon.SecurityAttrAlgorithm) != nil || len(elements[0].Children()) != 0 || !tree.IsXMLSpace(elements[0].Text()) {
 		return "", nil, ErrProfile
 	}
 
-	method := localAttribute(elements[0], "Algorithm")
+	method := localAttribute(elements[0], lexicon.SecurityAttrAlgorithm)
 
 	h, err := baselineHash(method, options)
 	if err != nil {
@@ -503,7 +523,7 @@ func parseBaselineDigest(ctx context.Context, element document.Element, options 
 		return "", nil, ErrProfile
 	}
 
-	sum, err := decodeElementBase64(ctx, elements[1], 256, h.Size())
+	sum, err := decodeElementBase64(ctx, elements[1], maximumDigestLexicalBytes, h.Size())
 	if err != nil || len(sum) != h.Size() {
 		return "", nil, errors.Join(ErrProfile, err)
 	}
@@ -517,7 +537,7 @@ func parseBaselineCertificates(ctx context.Context, element document.Element, si
 	}
 
 	entries, err := baselineContent(element)
-	if err != nil || len(entries) == 0 || len(entries) > 64 {
+	if err != nil || len(entries) == 0 || len(entries) > maximumSigningCertificateIDs {
 		return nil, ErrProfile
 	}
 
@@ -531,7 +551,7 @@ func parseBaselineCertificates(ctx context.Context, element document.Element, si
 	candidates = append(candidates, options.CertificateValues...)
 
 	candidates = append(candidates, embedded...)
-	if len(candidates) > 256 {
+	if len(candidates) > maximumCertificateCandidates {
 		return nil, ErrProfile
 	}
 
@@ -561,7 +581,7 @@ func parseBaselineCertificate(ctx context.Context, entry document.Element, candi
 	}
 
 	values, err := baselineContent(entry)
-	if entry.Name() != name("Cert") || baselineAttrs(entry, nil, "URI") != nil || err != nil || len(values) < 1 || len(values) > 2 || values[0].Name() != name("CertDigest") {
+	if entry.Name() != name(nameCert) || baselineAttrs(entry, nil, lexicon.SecurityAttrURI) != nil || err != nil || len(values) < 1 || len(values) > 2 || values[0].Name() != name(nameCertDigest) {
 		return out, ErrProfile
 	}
 
@@ -575,17 +595,17 @@ func parseBaselineCertificate(ctx context.Context, entry document.Element, candi
 		return out, err
 	}
 
-	out = CertificateReference{digestMethod: method, digest: sum, certificate: matched, uri: localAttribute(entry, "URI")}
+	out = CertificateReference{digestMethod: method, digest: sum, certificate: matched, uri: localAttribute(entry, lexicon.SecurityAttrURI)}
 	if !baselineURI(out.uri) {
 		return out, ErrProfile
 	}
 
 	if len(values) == 2 {
-		if values[1].Name() != name("IssuerSerialV2") || attrs(values[1]) != nil {
+		if values[1].Name() != name(nameIssuerSerialV2) || attrs(values[1]) != nil {
 			return out, ErrProfile
 		}
 
-		out.issuerSerial, err = decodeElementBase64(ctx, values[1], 32768, 16384)
+		out.issuerSerial, err = decodeElementBase64(ctx, values[1], maximumIssuerSerialLexicalBytes, maximumIssuerSerialBytes)
 		if err != nil {
 			return out, err
 		}
@@ -605,7 +625,7 @@ func matchBaselineCertificate(candidates [][]byte, method string, sum []byte, op
 	}
 
 	for _, candidate := range candidates {
-		if len(candidate) > 1<<20 {
+		if len(candidate) > maximumCertificateBytes {
 			return nil, ErrCertificate
 		}
 
@@ -628,7 +648,7 @@ func matchBaselineCertificate(candidates [][]byte, method string, sum []byte, op
 }
 
 func baselineIssuerSerial(certificate *x509.Certificate) ([]byte, error) {
-	issuer, err := asn1.Marshal(asn1.RawValue{Class: 2, Tag: 4, IsCompound: true, Bytes: certificate.RawIssuer})
+	issuer, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: lexicon.GeneralNameDirectory, IsCompound: true, Bytes: certificate.RawIssuer})
 	if err != nil {
 		return nil, err
 	}
@@ -647,28 +667,30 @@ func baselineIssuerSerial(certificate *x509.Certificate) ([]byte, error) {
 }
 
 func checkBaselineIssuerSerial(raw []byte) error {
-	value, err := der.Read(raw, 16384)
+	const issuerSerialFields = 2 // GeneralNames and certificate serial number
+
+	value, err := der.Read(raw, maximumIssuerSerialBytes)
 	if err != nil {
 		return errors.Join(ErrProfile, err)
 	}
 
-	fields, err := der.Sequence(value, 2, 2)
+	fields, err := der.Sequence(value, issuerSerialFields, issuerSerialFields)
 	if err != nil {
 		return ErrProfile
 	}
 
-	names, err := der.Sequence(fields[0], 1, 32)
+	names, err := der.Sequence(fields[0], 1, maximumIssuerNames)
 	if err != nil {
 		return ErrProfile
 	}
 
 	for _, name := range names {
-		if name.Class != 2 || name.Tag != 4 || !name.IsCompound {
+		if name.Class != asn1.ClassContextSpecific || name.Tag != lexicon.GeneralNameDirectory || !name.IsCompound {
 			return ErrProfile
 		}
 
-		v, err := der.Explicit(name, 4)
-		if err != nil || !der.Is(v, 0, asn1.TagSequence, true) {
+		v, err := der.Explicit(name, lexicon.GeneralNameDirectory)
+		if err != nil || !der.Is(v, asn1.ClassUniversal, asn1.TagSequence, true) {
 			return ErrProfile
 		}
 	}
@@ -682,7 +704,7 @@ func checkBaselineIssuerSerial(raw []byte) error {
 }
 
 func productionPlaceNames() []string {
-	return []string{"City", "StreetAddress", "StateOrProvince", "PostalCode", "CountryName"}
+	return []string{nameCity, nameStreetAddress, nameStateOrProvince, namePostalCode, nameCountryName}
 }
 
 func parseProductionPlace(element document.Element) (*ProductionPlace, error) {
@@ -755,7 +777,7 @@ func baselineEmbeddedCertificates(ctx context.Context, sig document.Element, sig
 				continue
 			}
 
-			raw, err := decodeElementBase64(ctx, value, 2<<20, 1<<20)
+			raw, err := decodeElementBase64(ctx, value, maximumRoleCertificateLexicalBytes, maximumCertificateBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -765,7 +787,7 @@ func baselineEmbeddedCertificates(ctx context.Context, sig document.Element, sig
 				found = true
 			}
 
-			if len(out) > 64 {
+			if len(out) > maximumAttributeCertificates {
 				return nil, ErrProfile
 			}
 		}

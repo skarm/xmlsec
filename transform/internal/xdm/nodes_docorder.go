@@ -7,7 +7,21 @@ import (
 	"cmp"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+)
+
+// Cached positions leave one virtual namespace slot after each real node.
+// Stack capacity is a starting node count, not an admission limit. Unknown
+// document registration and within-tree position retain separate sentinel roles.
+const (
+	docOrderPositionStride    = 2
+	namespacePositionOffset   = 1
+	initialDocOrderStackNodes = 256
+	unknownDocumentOrder      = -1
+	unknownNodePosition       = -1
 )
 
 // DocOrderCache caches document-order positions for nodes grouped by
@@ -44,11 +58,11 @@ type DocOrderCache struct {
 // order results may be stale.
 func (c *DocOrderCache) Reset() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	c.keys = nil
 	c.documents = nil
 	c.reserved = nil
+	c.mu.Unlock()
 }
 
 // Position returns the document-order position of a node, or -1 if unknown.
@@ -57,8 +71,8 @@ func (c *DocOrderCache) Reset() {
 // fresh NamespaceNodeWrapper on each traversal) so they cannot be indexed
 // during BuildFrom. They receive position parent_pos + 1, which is a dedicated slot between the
 // parent element and its first attribute/child (indexWalk uses stride 2).
-// SliceStable preserves input order for equal positions, keeping
-// same-parent namespace nodes in their traversal order. Namespace nodes
+// Namespace prefixes break ties between same-parent namespace nodes in the
+// comparisons and sorting paths. Namespace nodes
 // of an element are deduplicated by NamespaceNodeKey in DeduplicateNodes/MergeNodeSets,
 // so duplicates from different union branches are already eliminated.
 func (c *DocOrderCache) Position(n Node) int {
@@ -103,13 +117,7 @@ func (c *DocOrderCache) Compare(a, b Node) int {
 
 	kb := c.lookupSortKeyLocked(b)
 	if ka.docOrder >= 0 && kb.docOrder >= 0 {
-		// Both nodes are indexed, so their document registration order
-		// already tells whether they share a root.
-		if ka.docOrder == kb.docOrder {
-			return cmp.Compare(ka.position, kb.position)
-		}
-
-		return cmp.Compare(ka.docOrder, kb.docOrder)
+		return compareNodeSortKeys(a, b, ka, kb)
 	}
 
 	// At least one node is not described by any indexed document. Resolve the
@@ -161,7 +169,7 @@ func (c *DocOrderCache) sortKeyLocked(n Node) sortKey {
 		return unknownSortKey()
 	}
 
-	return sortKey{docOrder: pk.docOrder, position: pk.position + 1}
+	return sortKey{docOrder: pk.docOrder, position: pk.position + namespacePositionOffset}
 }
 
 // ensureSortKeyLocked returns the sort key of n, indexing n's document first if
@@ -178,7 +186,7 @@ func (c *DocOrderCache) ensureSortKeyLocked(n Node) sortKey {
 				return unknownSortKey()
 			}
 
-			return sortKey{docOrder: pk.docOrder, position: pk.position + 1}
+			return sortKey{docOrder: pk.docOrder, position: pk.position + namespacePositionOffset}
 		}
 	}
 	// A parentless namespace wrapper resolves to itself as a root, so it is
@@ -225,13 +233,16 @@ func (c *DocOrderCache) indexInDocOrder(nodes []Node) bool {
 
 	ordered := true
 
-	prev := c.ensureSortKeyLocked(nodes[0])
+	previous := nodes[0]
+
+	prev := c.ensureSortKeyLocked(previous)
 	for _, n := range nodes[1:] {
 		key := c.ensureSortKeyLocked(n)
-		if ordered && !prev.before(key) {
+		if ordered && compareNodeSortKeys(previous, n, prev, key) >= 0 {
 			ordered = false
 		}
 
+		previous = n
 		prev = key
 	}
 
@@ -323,7 +334,7 @@ func (c *DocOrderCache) indexWalk(cur Node, order int, pos *int) {
 		return
 	}
 
-	stack := make([]Node, 0, 256)
+	stack := make([]Node, 0, initialDocOrderStackNodes)
 	stack = append(stack, cur)
 	// childBuf is reused across stack iterations to collect a node's owned
 	// children before pushing them in reverse.
@@ -336,12 +347,12 @@ func (c *DocOrderCache) indexWalk(cur Node, order int, pos *int) {
 		c.keys[n] = sortKey{docOrder: order, position: *pos}
 		// Stride 2: each node occupies an even slot, leaving odd slots
 		// for virtual namespace nodes (position = parent + 1).
-		*pos += 2
+		*pos += docOrderPositionStride
 
 		if elem, ok := n.(*Element); ok {
 			elem.ForEachAttribute(func(attr *Attribute) bool {
 				c.keys[Node(attr)] = sortKey{docOrder: order, position: *pos}
-				*pos += 2
+				*pos += docOrderPositionStride
 
 				return true
 			})
@@ -358,9 +369,6 @@ func (c *DocOrderCache) indexWalk(cur Node, order int, pos *int) {
 		}
 	}
 }
-
-// unknownSortKey is the key of a node no indexed document describes.
-func unknownSortKey() sortKey { return sortKey{docOrder: -1, position: -1} }
 
 // NSNodeKey identifies a namespace node of an element by that parent element
 // and its prefix (see NamespaceNodeKey).
@@ -399,9 +407,9 @@ func DocumentRegistered(c *DocOrderCache, n Node) bool {
 	root := DocumentRoot(n)
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	_, ok := c.documents[root]
+	c.mu.Unlock()
 
 	return ok
 }
@@ -534,11 +542,16 @@ func DeduplicateNodesPreserveOrder(nodes []Node, maxNodes int) ([]Node, error) {
 	return result, nil
 }
 
-// CompareNodeOrder compares two nodes by document order using ancestor-chain
-// walking. Returns -1 if a comes before b, +1 if after, 0 if same node.
-// This is O(depth) per call, avoiding the need to index the entire document.
+// CompareNodeOrder compares nodes within one rooted tree by walking ancestor
+// and sibling chains. It returns -1 if a comes before b, +1 if after, and 0
+// for the same logical node, nil inputs, or nodes from different roots. Use
+// DocOrderCache to establish an order spanning multiple trees.
 func CompareNodeOrder(a, b Node) int {
-	if a == b {
+	if IsNilNode(a) || IsNilNode(b) || a == b {
+		return 0
+	}
+
+	if DocumentRoot(a) != DocumentRoot(b) {
 		return 0
 	}
 
@@ -639,6 +652,11 @@ func DocumentRoot(n Node) Node {
 	return top
 }
 
+// unknownSortKey is the key of a node no indexed document describes.
+func unknownSortKey() sortKey {
+	return sortKey{docOrder: unknownDocumentOrder, position: unknownNodePosition}
+}
+
 func compareOwnedEntryOrder(a, b, owner Node) int {
 	// Namespace nodes come before attribute nodes.
 	if a.Type() == NamespaceNode && b.Type() == AttributeNode {
@@ -650,7 +668,7 @@ func compareOwnedEntryOrder(a, b, owner Node) int {
 	}
 
 	if a.Type() != AttributeNode {
-		return compareSiblingOrder(a, b)
+		return compareNamespacePrefixes(a.Name(), b.Name())
 	}
 
 	element, ok := AsNode[*Element](owner)
@@ -826,12 +844,38 @@ type sortKey struct {
 	position int // position within the document
 }
 
-func (k sortKey) before(other sortKey) bool {
-	if k.docOrder != other.docOrder {
-		return k.docOrder < other.docOrder
+func compareNodeSortKeys(a, b Node, ka, kb sortKey) int {
+	if ka.docOrder != kb.docOrder {
+		return cmp.Compare(ka.docOrder, kb.docOrder)
 	}
 
-	return k.position < other.position
+	if ka.position != kb.position {
+		return cmp.Compare(ka.position, kb.position)
+	}
+
+	if ka.position >= 0 && a.Type() == NamespaceNode && b.Type() == NamespaceNode {
+		return compareNamespacePrefixes(a.Name(), b.Name())
+	}
+
+	return 0
+}
+
+// Namespace order is implementation-dependent, but every path must use the
+// same total order. Keep the implicit xml binding first.
+func compareNamespacePrefixes(a, b string) int {
+	if a == b {
+		return 0
+	}
+
+	if a == lexicon.PrefixXML {
+		return -1
+	}
+
+	if b == lexicon.PrefixXML {
+		return 1
+	}
+
+	return strings.Compare(a, b)
 }
 
 // sortByPrecomputedKeys sorts result by precomputed sort keys, avoiding
@@ -842,8 +886,7 @@ func sortByPrecomputedKeys(result []Node, keys []sortKey) {
 	sorted := true
 
 	for i := 1; i < len(keys); i++ {
-		ki, kj := keys[i-1], keys[i]
-		if ki.docOrder > kj.docOrder || (ki.docOrder == kj.docOrder && ki.position > kj.position) {
+		if compareNodeSortKeys(result[i-1], result[i], keys[i-1], keys[i]) > 0 {
 			sorted = false
 			break
 		}
@@ -862,12 +905,8 @@ func sortByPrecomputedKeys(result []Node, keys []sortKey) {
 	}
 
 	sort.SliceStable(idx, func(i, j int) bool {
-		ki, kj := keys[idx[i]], keys[idx[j]]
-		if ki.docOrder != kj.docOrder {
-			return ki.docOrder < kj.docOrder
-		}
-
-		return ki.position < kj.position
+		a, b := idx[i], idx[j]
+		return compareNodeSortKeys(result[a], result[b], keys[a], keys[b]) < 0
 	})
 	// Apply the permutation to result.
 	tmp := make([]Node, n)

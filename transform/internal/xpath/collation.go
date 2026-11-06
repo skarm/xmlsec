@@ -20,11 +20,49 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
+// UCA query selectors keep their defined case; locale extensions enable the
+// matching x/text options without changing query fallback semantics.
 const (
 	collationOptionNumeric    = "numeric"
 	collationAlternateShifted = "shifted"
-	maxIdleCollators          = 2
-	maxPooledCollationInput   = 4096
+)
+
+const (
+	collationOptionStrength           = "strength"
+	collationOptionAlternate          = "alternate"
+	collationOptionCaseFirst          = "caseFirst"
+	collationOptionCaseLevel          = "caseLevel"
+	collationOptionBackwards          = "backwards"
+	collationOptionNormalization      = "normalization"
+	collationOptionReorder            = "reorder"
+	collationOptionMaxVariable        = "maxVariable"
+	collationOptionVersion            = "version"
+	collationOptionKeyword            = "keyword"
+	collationOptionHiraganaQuaternary = "hiraganaQuaternary"
+	collationStrengthIdentical        = "identical"
+	collationStrengthPrimary          = "primary"
+	collationStrengthSecondary        = "secondary"
+	collationAlternateNonIgnorable    = "non-ignorable"
+	collationFallbackUnknown          = "unknown"
+	collationExtensionRootTag         = "und-u"
+	collationBackwardsExtension       = "kb-true"
+	collationCaseLevelExtension       = "kc-true"
+)
+
+// Idle retention is bounded by two collator objects. Inputs above 4096 bytes
+// drop their collator to avoid retaining enlarged internal element buffers.
+const (
+	maxIdleCollators        = 2
+	maxPooledCollationInput = 4096
+)
+
+// Case tie-break keys sort the preferred case before the other case after a
+// zero separator from the base key. Missing substring boundaries use -1.
+const (
+	collationCaseKeySeparator    = 0
+	collationPreferredCaseWeight = 0x01
+	collationOtherCaseWeight     = 0x02
+	collationMatchNotFound       = -1
 )
 
 // caseblindCollationURI is the QT3 test suite's case-blind collation URI.
@@ -143,7 +181,7 @@ func newCodepointCollation() *collationImpl {
 		indexOf: func(s, substr string) (int, int) {
 			idx := strings.Index(s, substr)
 			if idx < 0 {
-				return -1, 0
+				return collationMatchNotFound, 0
 			}
 
 			return idx, len(substr)
@@ -181,7 +219,7 @@ func newHTMLASCIICaseInsensitiveCollation() *collationImpl {
 
 			idx := strings.Index(ls, lsub)
 			if idx < 0 {
-				return -1, 0
+				return collationMatchNotFound, 0
 			}
 
 			return idx, len(substr)
@@ -242,13 +280,13 @@ func makeUCACollation(params string) (*collationImpl, error) {
 	}
 
 	if opts.caseLevel || opts.backwards {
-		tagParts := []string{"und-u"}
+		tagParts := []string{collationExtensionRootTag}
 		if opts.backwards {
-			tagParts = append(tagParts, "kb-true")
+			tagParts = append(tagParts, collationBackwardsExtension)
 		}
 
 		if opts.caseLevel {
-			tagParts = append(tagParts, "kc-true")
+			tagParts = append(tagParts, collationCaseLevelExtension)
 		}
 
 		if extraTag, err := language.Parse(strings.Join(tagParts, "-")); err == nil {
@@ -300,7 +338,7 @@ func makeUCACollation(params string) (*collationImpl, error) {
 				return base
 			}
 
-			base = append(base, 0)
+			base = append(base, collationCaseKeySeparator)
 
 			return append(base, caseKey...)
 		}
@@ -352,10 +390,10 @@ type ucaParams struct {
 func (p ucaParams) ignoreVariableRunes() bool {
 	switch p.alternate {
 	case nameBlanked:
-		return p.strength != "identical"
+		return p.strength != collationStrengthIdentical
 	case collationAlternateShifted:
 		switch p.strength {
-		case "primary", "secondary", nameTertiary:
+		case collationStrengthPrimary, collationStrengthSecondary, nameTertiary:
 			return true
 		default:
 			return false
@@ -406,19 +444,19 @@ func (p *ucaParamParser) apply(key, value string) {
 		p.applyFallback(value)
 	case lexicon.AttrLang:
 		p.applyLanguage(value)
-	case "strength":
+	case collationOptionStrength:
 		p.applyStrength(value)
-	case "alternate":
+	case collationOptionAlternate:
 		p.applyAlternate(value)
-	case "caseFirst":
-		if value == nameUpper2 || value == nameLower {
+	case collationOptionCaseFirst:
+		if value == nameUpperCase || value == nameLower {
 			p.params.caseFirst = value
 		} else {
 			p.invalid = true
 		}
-	case "caseLevel", "backwards", collationOptionNumeric, "normalization":
+	case collationOptionCaseLevel, collationOptionBackwards, collationOptionNumeric, collationOptionNormalization:
 		p.applyBoolean(key, value)
-	case "reorder", "maxVariable", "version", "keyword", "hiraganaQuaternary":
+	case collationOptionReorder, collationOptionMaxVariable, collationOptionVersion, collationOptionKeyword, collationOptionHiraganaQuaternary:
 		p.unsupported = true
 	default:
 		p.invalid = true
@@ -429,7 +467,7 @@ func (p *ucaParamParser) applyFallback(value string) {
 	switch value {
 	case lexicon.ValueNo:
 		p.params.fallbackNo = true
-	case lexicon.ValueYes, "unknown":
+	case lexicon.ValueYes, collationFallbackUnknown:
 		// Unknown values are implementation-defined unless fallback=no
 		// explicitly requests strict rejection.
 	default:
@@ -455,10 +493,10 @@ func (p *ucaParamParser) applyStrength(value string) {
 	p.params.strength = value
 
 	switch value {
-	case "primary":
+	case collationStrengthPrimary:
 		p.params.collateOpts = append(p.params.collateOpts, collate.IgnoreCase, collate.IgnoreDiacritics)
 		p.params.ignoreCase = true
-	case "secondary":
+	case collationStrengthSecondary:
 		p.params.collateOpts = append(p.params.collateOpts, collate.IgnoreCase)
 		p.params.ignoreCase = true
 	case nameTertiary:
@@ -470,7 +508,7 @@ func (p *ucaParamParser) applyStrength(value string) {
 
 func (p *ucaParamParser) applyAlternate(value string) {
 	switch value {
-	case "non-ignorable":
+	case collationAlternateNonIgnorable:
 		p.params.alternate = ""
 	case nameBlanked, collationAlternateShifted:
 		p.params.alternate = value
@@ -490,12 +528,12 @@ func (p *ucaParamParser) applyBoolean(key, value string) {
 	enabled := value == lexicon.ValueYes
 
 	switch key {
-	case "caseLevel":
+	case collationOptionCaseLevel:
 		p.params.caseLevel = enabled
 		if enabled {
 			p.unsupported = true
 		}
-	case "backwards":
+	case collationOptionBackwards:
 		p.params.backwards = enabled
 	case collationOptionNumeric:
 		if enabled {
@@ -503,7 +541,7 @@ func (p *ucaParamParser) applyBoolean(key, value string) {
 		}
 
 		p.params.numeric = enabled
-	case "normalization":
+	case collationOptionNormalization:
 		if enabled {
 			p.unsupported = true
 		}
@@ -550,23 +588,72 @@ func projectVariableRunes(s string) projectedString {
 func ucaIndexOf(cmp func(a, b string) int, s, substr string, numeric bool) (int, int) {
 	start, end := ucaIndexOfRange(cmp, s, substr, numeric)
 	if start < 0 {
-		return -1, 0
+		return collationMatchNotFound, 0
 	}
 
-	sRunes := []rune(s)
-	bytePos := len(string(sRunes[:start]))
-	byteLen := len(string(sRunes[start:end]))
+	bytePos := ucaRuneByteOffset(s, start)
+	byteLen := ucaRuneByteOffset(s, end) - bytePos
 
 	return bytePos, byteLen
 }
 
+// ucaRuneByteOffset maps a decoded rune boundary to the original byte offset.
+// A malformed UTF-8 byte occupies one source byte, even though its rune is
+// RuneError. The caller supplies a boundary between zero and the rune count.
+func ucaRuneByteOffset(s string, index int) int {
+	for offset := range s {
+		if index == 0 {
+			return offset
+		}
+
+		index--
+	}
+
+	return len(s)
+}
+
+func ucaCandidateBoundaries(s, needle string, runeCount int) []int {
+	if !utf8.ValidString(needle) || !utf8.ValidString(s) {
+		return nil
+	}
+
+	if runeCount == len(s) {
+		return []int{} // A non-nil empty slice marks ASCII byte boundaries.
+	}
+
+	boundaries := make([]int, runeCount+1)
+
+	index := 0
+	for offset := range s {
+		boundaries[index] = offset
+		index++
+	}
+
+	boundaries[index] = len(s)
+
+	return boundaries
+}
+
+func ucaCandidateString(s string, runes []rune, boundaries []int, start, end int) string {
+	if boundaries == nil {
+		return string(runes[start:end])
+	}
+
+	if len(boundaries) == 0 {
+		return s[start:end]
+	}
+
+	return s[boundaries[start]:boundaries[end]]
+}
+
 func ucaIndexOfRange(cmp func(a, b string) int, s, substr string, numeric bool) (int, int) {
-	if substr == "" {
+	if substr == "" || cmp("", substr) == 0 {
 		return 0, 0
 	}
 
 	subRuneLen := len([]rune(substr))
 	sRunes := []rune(s)
+	boundaries := ucaCandidateBoundaries(s, substr, len(sRunes))
 
 	for i := range sRunes {
 		// Try match lengths from subRuneLen to end of string
@@ -574,7 +661,7 @@ func ucaIndexOfRange(cmp func(a, b string) int, s, substr string, numeric bool) 
 
 		maxLen := len(sRunes) - i
 		for matchLen := minLen; matchLen <= maxLen; matchLen++ {
-			candidate := string(sRunes[i : i+matchLen])
+			candidate := ucaCandidateString(s, sRunes, boundaries, i, i+matchLen)
 			if cmp(candidate, substr) == 0 {
 				if numeric && splitsDigitRun(sRunes, i, i+matchLen) {
 					continue
@@ -585,7 +672,7 @@ func ucaIndexOfRange(cmp func(a, b string) int, s, substr string, numeric bool) 
 		}
 		// Also try shorter matches (for cases where collation compresses)
 		for matchLen := minLen - 1; matchLen > 0; matchLen-- {
-			candidate := string(sRunes[i : i+matchLen])
+			candidate := ucaCandidateString(s, sRunes, boundaries, i, i+matchLen)
 			if cmp(candidate, substr) == 0 {
 				if numeric && splitsDigitRun(sRunes, i, i+matchLen) {
 					continue
@@ -596,7 +683,7 @@ func ucaIndexOfRange(cmp func(a, b string) int, s, substr string, numeric bool) 
 		}
 	}
 
-	return -1, -1
+	return collationMatchNotFound, collationMatchNotFound
 }
 
 // splitsDigitRun returns true if the match boundary [start, end) in runes
@@ -625,21 +712,22 @@ func ucaHasPrefix(cmp func(a, b string) int, s, prefix string, numeric bool) (bo
 		return false, 0
 	}
 
-	sRunes := []rune(s)
-
-	return true, len(string(sRunes[:matchEnd]))
+	return true, ucaRuneByteOffset(s, matchEnd)
 }
 
 func ucaHasPrefixRange(cmp func(a, b string) int, s, prefix string, numeric bool) (int, bool) {
+	if prefix == "" || cmp("", prefix) == 0 {
+		return 0, true
+	}
+
 	prefixRunes := []rune(prefix)
 
 	sRunes := []rune(s)
-	if len(sRunes) < len(prefixRunes) {
-		return 0, false
-	}
+	boundaries := ucaCandidateBoundaries(s, prefix, len(sRunes))
+	initialLength := min(len(prefixRunes), len(sRunes))
 	// Try match lengths from len(prefixRunes) upward to handle numeric expansion
-	for matchLen := len(prefixRunes); matchLen <= len(sRunes); matchLen++ {
-		candidate := string(sRunes[:matchLen])
+	for matchLen := initialLength; matchLen <= len(sRunes); matchLen++ {
+		candidate := ucaCandidateString(s, sRunes, boundaries, 0, matchLen)
 		if cmp(candidate, prefix) == 0 {
 			if numeric && splitsDigitRun(sRunes, 0, matchLen) {
 				continue
@@ -649,8 +737,8 @@ func ucaHasPrefixRange(cmp func(a, b string) int, s, prefix string, numeric bool
 		}
 	}
 	// Also try shorter matches
-	for matchLen := len(prefixRunes) - 1; matchLen > 0; matchLen-- {
-		candidate := string(sRunes[:matchLen])
+	for matchLen := initialLength - 1; matchLen > 0; matchLen-- {
+		candidate := ucaCandidateString(s, sRunes, boundaries, 0, matchLen)
 		if cmp(candidate, prefix) == 0 {
 			if numeric && splitsDigitRun(sRunes, 0, matchLen) {
 				continue
@@ -669,23 +757,24 @@ func ucaHasSuffix(cmp func(a, b string) int, s, suffix string, numeric bool) (bo
 		return false, 0
 	}
 
-	sRunes := []rune(s)
-
-	return true, len(string(sRunes[matchStart:]))
+	return true, len(s) - ucaRuneByteOffset(s, matchStart)
 }
 
 func ucaHasSuffixRange(cmp func(a, b string) int, s, suffix string, numeric bool) (int, bool) {
+	if suffix == "" || cmp("", suffix) == 0 {
+		return utf8.RuneCountInString(s), true
+	}
+
 	suffixRunes := []rune(suffix)
 
 	sRunes := []rune(s)
-	if len(sRunes) < len(suffixRunes) {
-		return 0, false
-	}
+	boundaries := ucaCandidateBoundaries(s, suffix, len(sRunes))
+	initialLength := min(len(suffixRunes), len(sRunes))
 	// Try match lengths from len(suffixRunes) upward
-	for matchLen := len(suffixRunes); matchLen <= len(sRunes); matchLen++ {
+	for matchLen := initialLength; matchLen <= len(sRunes); matchLen++ {
 		start := len(sRunes) - matchLen
 
-		candidate := string(sRunes[start:])
+		candidate := ucaCandidateString(s, sRunes, boundaries, start, len(sRunes))
 		if cmp(candidate, suffix) == 0 {
 			if numeric && splitsDigitRun(sRunes, start, len(sRunes)) {
 				continue
@@ -695,10 +784,10 @@ func ucaHasSuffixRange(cmp func(a, b string) int, s, suffix string, numeric bool
 		}
 	}
 	// Also try shorter matches
-	for matchLen := len(suffixRunes) - 1; matchLen > 0; matchLen-- {
+	for matchLen := initialLength - 1; matchLen > 0; matchLen-- {
 		start := len(sRunes) - matchLen
 
-		candidate := string(sRunes[start:])
+		candidate := ucaCandidateString(s, sRunes, boundaries, start, len(sRunes))
 		if cmp(candidate, suffix) == 0 {
 			if numeric && splitsDigitRun(sRunes, start, len(sRunes)) {
 				continue
@@ -721,7 +810,11 @@ func ucaVariableIndexOf(cmp func(a, b string) int, s, substr string, numeric boo
 
 	start, end := ucaIndexOfRange(cmp, projectedS.value, projectedSub.value, numeric)
 	if start < 0 {
-		return -1, 0
+		return collationMatchNotFound, 0
+	}
+
+	if start == end {
+		return 0, 0
 	}
 
 	byteStart := projectedS.starts[start]
@@ -743,6 +836,10 @@ func ucaVariableHasPrefix(cmp func(a, b string) int, s, prefix string, numeric b
 		return false, 0
 	}
 
+	if matchEnd == 0 {
+		return true, 0
+	}
+
 	return true, projectedS.ends[matchEnd-1]
 }
 
@@ -757,6 +854,10 @@ func ucaVariableHasSuffix(cmp func(a, b string) int, s, suffix string, numeric b
 	matchStart, ok := ucaHasSuffixRange(cmp, projectedS.value, projectedSuffix.value, numeric)
 	if !ok {
 		return false, 0
+	}
+
+	if matchStart == len(projectedS.starts) {
+		return true, 0
 	}
 
 	return true, len(s) - projectedS.starts[matchStart]
@@ -776,15 +877,15 @@ func buildCaseFirstKey(s, caseFirst string) []byte {
 		switch caseFirst {
 		case nameLower:
 			if unicode.IsLower(r) {
-				key = append(key, 0x01)
+				key = append(key, collationPreferredCaseWeight)
 			} else {
-				key = append(key, 0x02)
+				key = append(key, collationOtherCaseWeight)
 			}
-		case nameUpper2:
+		case nameUpperCase:
 			if unicode.IsUpper(r) {
-				key = append(key, 0x01)
+				key = append(key, collationPreferredCaseWeight)
 			} else {
-				key = append(key, 0x02)
+				key = append(key, collationOtherCaseWeight)
 			}
 		}
 	}

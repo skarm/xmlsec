@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+const (
+	rootBackdate = 24 * time.Hour
+	rootLifetime = 365 * 24 * time.Hour
+	leafBackdate = time.Hour
+	leafLifetime = 24 * time.Hour
+	crlBackdate  = time.Minute
+	crlLifetime  = time.Hour
+)
+
 // Chain contains disposable certificates, private keys and a complete CRL for examples.
 type Chain struct {
 	Root      *x509.Certificate
@@ -50,7 +59,7 @@ func New(at time.Time) (Chain, error) {
 
 		return x509.ParseCertificate(b)
 	}
-	rt := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ephemeral example root"}, NotBefore: at.Add(-24 * time.Hour), NotAfter: at.Add(365 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
+	rt := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ephemeral example root"}, NotBefore: at.Add(-rootBackdate), NotAfter: at.Add(rootLifetime), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 
 	var e error
 
@@ -60,7 +69,7 @@ func New(at time.Time) (Chain, error) {
 	}
 
 	leaf := func(serial int64, cn string) *x509.Certificate {
-		return &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: cn}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(24 * time.Hour), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature}
+		return &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: cn}, NotBefore: at.Add(-leafBackdate), NotAfter: at.Add(leafLifetime), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature}
 	}
 	st := leaf(2, "example document signer")
 	st.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}
@@ -91,7 +100,7 @@ func New(at time.Time) (Chain, error) {
 		return c, e
 	}
 
-	c.CRL, e = x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour)}, c.Root, c.RootKey)
+	c.CRL, e = x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: at.Add(-crlBackdate), NextUpdate: at.Add(crlLifetime)}, c.Root, c.RootKey)
 
 	return c, e
 }

@@ -118,7 +118,7 @@ func TestSAMLTimeLexicalForm(t *testing.T) {
 	} {
 		t.Run(s, func(t *testing.T) {
 			t.Parallel()
-			if got, err := profile.ParseTime(s); !got.IsZero() || !errors.Is(err, profile.ErrSchema) {
+			if got, err := profile.ParseTime(s); got != (time.Time{}) || !errors.Is(err, profile.ErrSchema) {
 				t.Fatalf("invalid/unsupported dateTime accepted: %v, %v", got, err)
 			}
 		})
@@ -137,7 +137,7 @@ func TestSAMLMidnight(t *testing.T) {
 	}
 
 	for _, s := range []string{"2026-12-31T24:00:00.001Z", "2026-12-31T24:01:00Z", "9999-12-31T24:00:00Z"} {
-		if got, err := profile.ParseTime(s); !got.IsZero() || !errors.Is(err, profile.ErrSchema) {
+		if got, err := profile.ParseTime(s); got != (time.Time{}) || !errors.Is(err, profile.ErrSchema) {
 			t.Fatalf("invalid/unsupported midnight accepted: %v, %v", got, err)
 		}
 	}

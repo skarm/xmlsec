@@ -14,6 +14,11 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// Only consecutive zero-byte/no-error reads count as stalled; progress resets the counter before the normal close/error path reports io.ErrNoProgress.
+const (
+	maximumStalledResourceReads = 100
+)
+
 type boundedBuffer struct {
 	bytes.Buffer
 	ctx   context.Context
@@ -86,7 +91,7 @@ func (e *Engine) openResource(ctx context.Context, limit int, open func() (io.Re
 
 	r, err := open()
 	if err != nil {
-		if !nilcheck.IsNil(r) {
+		if r != nil && !nilcheck.IsNil(r) {
 			err = errors.Join(err, r.Close())
 		}
 
@@ -179,7 +184,7 @@ func (r *resourceStream) Read(p []byte) (int, error) {
 		r.stalled = 0
 	} else if err == nil {
 		r.stalled++
-		if r.stalled >= 100 {
+		if r.stalled >= maximumStalledResourceReads {
 			err = io.ErrNoProgress
 		}
 	}

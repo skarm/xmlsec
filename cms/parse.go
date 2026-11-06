@@ -21,16 +21,45 @@ import (
 	"github.com/skarm/xmlsec/internal/x509name"
 )
 
+// CMS envelope cardinalities are shared by DER validation and BER normalization.
+// SignedData has two optional fields; EncapsulatedContentInfo has optional content.
+const (
+	contentInfoFields                = 2
+	signedDataMinimumFields          = 4
+	signedDataMaximumFields          = 6
+	encapsulatedContentMinimumFields = 1
+	encapsulatedContentMaximumFields = 2
+)
+
+const (
+	// Bounds certificate bytes used for signing, matching and authenticated trust.
+	// Inspection parsing of an embedded bag instead uses the container byte limit.
+	maximumCertificateBytes = 1 << 20
+	// Caps positive certificate serial numbers before certificate matching or signing.
+	maximumSerialBits     = 160
+	maximumSignatureBytes = 2048
+	// Bounds the subject-key identifier carried by a SignerIdentifier, in bytes.
+	maximumSubjectKeyIDBytes = 128
+)
+
 // SignedData is an immutable parsed container. Parsing does not authenticate
 // content or embedded certificates; use Verify with caller-selected certificates.
 type SignedData struct {
-	raw          []byte
-	content      []byte
-	contentType  asn1.ObjectIdentifier
-	detached     bool
-	signers      []parsedSigner
+	// raw owns the definite-length container encoding, including any BER
+	// normalization.
+	raw []byte
+	// content retains encapsulated content; detached messages supply it separately.
+	content []byte
+	// contentType identifies the encapsulated content syntax.
+	contentType asn1.ObjectIdentifier
+	// detached records the absence of encapsulated content.
+	detached bool
+	// signers retains parsed, unauthenticated signer descriptions.
+	signers []parsedSigner
+	// certificates holds embedded DER candidates without establishing trust.
 	certificates [][]byte
-	limits       Limits
+	// limits retains the normalized parsing and verification budgets.
+	limits Limits
 }
 
 type parsedSigner struct {
@@ -152,7 +181,7 @@ func (s *SignedData) Certificates() [][]byte {
 
 // MatchesSigner checks only a SignerIdentifier, not a signature or PKIX trust.
 func (s *SignedData) MatchesSigner(index int, raw []byte) bool {
-	if s == nil || index < 0 || index >= len(s.signers) || len(raw) > 1<<20 {
+	if s == nil || index < 0 || index >= len(s.signers) || len(raw) > maximumCertificateBytes {
 		return false
 	}
 
@@ -167,14 +196,14 @@ func (s *SignedData) MatchesSigner(index int, raw []byte) bool {
 }
 
 func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, digests map[crypto.Hash]struct{}, version int) error {
-	si, e := der.SetFields(value, 0, asn1.TagSet, s.limits.MaxSigners)
+	si, e := der.SetFields(value, asn1.ClassUniversal, asn1.TagSet, s.limits.MaxSigners)
 	if e != nil || len(si) == 0 {
 		return ErrSyntax
 	}
 
-	wanted := 1
+	wanted := signedDataVersion1
 	if !s.contentType.Equal(oidData()) {
-		wanted = 3
+		wanted = signedDataVersion3
 	}
 
 	for _, rv := range si {
@@ -197,7 +226,7 @@ func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, dige
 		}
 
 		if len(p.ski) > 0 {
-			wanted = 3
+			wanted = signedDataVersion3
 		}
 
 		s.signers = append(s.signers, p)
@@ -212,9 +241,12 @@ func (s *SignedData) parseSigners(ctx context.Context, value asn1.RawValue, dige
 
 // parseOwned takes a strictly validated DER value backed by private storage.
 func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, error) {
+	// Version, digestAlgorithms and encapContentInfo precede optional fields.
+	const signedDataRequiredPrefixFields = 3
+
 	b := v.FullBytes
 
-	ci, e := der.Sequence(v, 2, 2)
+	ci, e := der.Sequence(v, contentInfoFields, contentInfoFields)
 	if e != nil || !der.OIDEqual(ci[0], oidSignedData()) {
 		return nil, ErrSyntax
 	}
@@ -224,7 +256,7 @@ func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, er
 		return nil, ErrSyntax
 	}
 
-	f, e := der.Sequence(sd, 4, 6)
+	f, e := der.Sequence(sd, signedDataMinimumFields, signedDataMaximumFields)
 	if e != nil {
 		return nil, ErrSyntax
 	}
@@ -239,19 +271,19 @@ func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, er
 		return nil, e
 	}
 
-	ec, e := der.Sequence(f[2], 1, 2)
+	ec, e := der.Sequence(f[2], encapsulatedContentMinimumFields, encapsulatedContentMaximumFields)
 	if e != nil {
 		return nil, ErrSyntax
 	}
 
-	s := &SignedData{raw: b, limits: l, detached: len(ec) == 1}
+	s := &SignedData{raw: b, limits: l, detached: len(ec) == encapsulatedContentMinimumFields}
 	if der.Decode(ec[0], &s.contentType) != nil {
 		return nil, ErrSyntax
 	}
 
 	if !s.detached {
 		x, e := der.Explicit(ec[1], 0)
-		if e != nil || !der.Is(x, 0, 4, false) || len(x.Bytes) > l.MaxContentBytes {
+		if e != nil || !der.Is(x, asn1.ClassUniversal, asn1.TagOctetString, false) || len(x.Bytes) > l.MaxContentBytes {
 			return nil, ErrSyntax
 		}
 	}
@@ -261,8 +293,8 @@ func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, er
 		s.content = x.Bytes
 	}
 
-	i := 3
-	if i < len(f) && der.Is(f[i], 2, 0, true) {
+	i := signedDataRequiredPrefixFields
+	if i < len(f) && der.Is(f[i], asn1.ClassContextSpecific, 0, true) {
 		certificates, e := parseCertificateBag(ctx, f[i], l)
 		if e != nil {
 			return nil, e
@@ -289,7 +321,7 @@ func parseOwned(ctx context.Context, v asn1.RawValue, l Limits) (*SignedData, er
 }
 
 func parseDigestAlgorithms(value asn1.RawValue, l Limits) (map[crypto.Hash]struct{}, error) {
-	ds, e := der.SetFields(value, 0, asn1.TagSet, l.MaxSigners)
+	ds, e := der.SetFields(value, asn1.ClassUniversal, asn1.TagSet, l.MaxSigners)
 	if e != nil || len(ds) == 0 {
 		return nil, ErrSyntax
 	}
@@ -321,7 +353,7 @@ func parseCertificateBag(ctx context.Context, value asn1.RawValue, l Limits) ([]
 	var certificates [][]byte
 	// OpenSSL emits a definite-length BER CertificateSet in insertion order. Only
 	// this untrusted certificate bag may be unsorted; signedAttrs remain strict DER.
-	cs, e := der.Children(value)
+	cs, e := der.ChildrenLimit(value, l.MaxCertificates)
 	if e != nil || len(cs) == 0 || len(cs) > l.MaxCertificates {
 		return nil, ErrSyntax
 	}
@@ -333,7 +365,7 @@ func parseCertificateBag(ctx context.Context, value asn1.RawValue, l Limits) ([]
 			return nil, err
 		}
 
-		if !der.Is(rv, 0, asn1.TagSequence, true) {
+		if !der.Is(rv, asn1.ClassUniversal, asn1.TagSequence, true) {
 			return nil, ErrSyntax
 		}
 
@@ -366,7 +398,16 @@ func certificateMatch(ctx context.Context, p parsedSigner, c *x509.Certificate) 
 }
 
 func parseSigner(v asn1.RawValue, l Limits) (parsedSigner, error) {
-	f, e := der.Sequence(v, 5, 7)
+	// Signed and unsigned attributes are optional; the first three fields
+	// precede signedAttrs and the signature algorithm/value pair.
+	const (
+		signerInfoMinimumFields = 5
+		signerInfoMaximumFields = 7
+		signerInfoPrefixFields  = 3
+		issuerAndSerialFields   = 2 // issuer Name and serialNumber
+	)
+
+	f, e := der.Sequence(v, signerInfoMinimumFields, signerInfoMaximumFields)
 	if e != nil {
 		return parsedSigner{}, ErrSyntax
 	}
@@ -378,15 +419,15 @@ func parseSigner(v asn1.RawValue, l Limits) (parsedSigner, error) {
 
 	p := parsedSigner{}
 
-	if der.Is(f[1], 2, 0, false) {
-		if version != 3 || len(f[1].Bytes) < 1 || len(f[1].Bytes) > 128 {
+	if der.Is(f[1], asn1.ClassContextSpecific, 0, false) {
+		if version != signerSubjectKeyIDVersion || len(f[1].Bytes) < 1 || len(f[1].Bytes) > maximumSubjectKeyIDBytes {
 			return p, ErrSyntax
 		}
 
 		p.ski = f[1].Bytes
 	} else {
-		x, e := der.Sequence(f[1], 2, 2)
-		if e != nil || version != 1 || !der.Is(x[0], 0, asn1.TagSequence, true) || der.Decode(x[1], &p.serial) != nil || p.serial == nil || p.serial.Sign() <= 0 || p.serial.BitLen() > 160 {
+		x, e := der.Sequence(f[1], issuerAndSerialFields, issuerAndSerialFields)
+		if e != nil || version != signerIssuerSerialVersion || !der.Is(x[0], asn1.ClassUniversal, asn1.TagSequence, true) || der.Decode(x[1], &p.serial) != nil || p.serial == nil || p.serial.Sign() <= 0 || p.serial.BitLen() > maximumSerialBits {
 			return p, ErrSyntax
 		}
 
@@ -398,9 +439,9 @@ func parseSigner(v asn1.RawValue, l Limits) (parsedSigner, error) {
 		return p, ErrSyntax
 	}
 
-	i := 3
-	if der.Is(f[i], 2, 0, true) {
-		p.signed, e = parseAttributes(f[i], 0, l.MaxAttributes)
+	i := signerInfoPrefixFields
+	if der.Is(f[i], asn1.ClassContextSpecific, signedAttributesTag, true) {
+		p.signed, e = parseAttributes(f[i], signedAttributesTag, l.MaxAttributes)
 		if e != nil {
 			return p, e
 		}
@@ -421,13 +462,13 @@ func parseSigner(v asn1.RawValue, l Limits) (parsedSigner, error) {
 	}
 
 	i++
-	if der.Decode(f[i], &p.sig) != nil || len(p.sig) == 0 || len(p.sig) > 2048 {
+	if der.Decode(f[i], &p.sig) != nil || len(p.sig) == 0 || len(p.sig) > maximumSignatureBytes {
 		return p, ErrSyntax
 	}
 
 	i++
 	if i < len(f) {
-		p.unsigned, e = parseAttributes(f[i], 1, l.MaxAttributes)
+		p.unsigned, e = parseAttributes(f[i], unsignedAttributesTag, l.MaxAttributes)
 		if e != nil {
 			return p, e
 		}

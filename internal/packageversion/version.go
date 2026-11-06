@@ -7,8 +7,11 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
+
+const keywordTo = "to"
 
 // Version retains arbitrary precision integer portions as decimal strings.
 type Version struct {
@@ -25,7 +28,7 @@ type Version struct {
 
 // Parse reads a package version, preserving arbitrarily large numeric components.
 func Parse(s string) Version {
-	s = strings.Trim(s, " \t\r\n")
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 	v := Version{Raw: s}
 
 	numbers := s
@@ -123,13 +126,13 @@ type versionRange struct {
 
 // ParseConstraint reads the XSLT version-range syntax; empty selects any version.
 func ParseConstraint(s string) Constraint {
-	s = strings.Trim(s, " \t\r\n")
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 	if s == "" || s == "*" {
 		return Constraint{valid: true, alternatives: []versionRange{{wildcard: true}}}
 	}
 
 	for _, r := range s {
-		if unicode.IsSpace(r) && !strings.ContainsRune(" \t\r\n", r) {
+		if unicode.IsSpace(r) && !strings.ContainsRune(lexicon.XMLWhitespace, r) {
 			return Constraint{}
 		}
 	}
@@ -183,18 +186,25 @@ func (c Constraint) Matches(v Version) bool {
 }
 
 func parseVersionRange(part string) (versionRange, bool) {
+	// The grammar distinguishes a single version form, "to upper", and "lower to upper".
+	const (
+		singleVersionRangeFields = 1
+		upperOnlyRangeFields     = 2
+		closedRangeFields        = 3
+	)
+
 	fields := strings.Fields(part)
 	r := versionRange{}
 
 	switch {
-	case len(fields) == 2 && fields[0] == "to":
+	case len(fields) == upperOnlyRangeFields && fields[0] == keywordTo:
 		upper, prefix := parseUpperVersion(fields[1])
 		if !upper.valid {
 			return versionRange{}, false
 		}
 
 		r.upper, r.prefix = &upper, prefix
-	case len(fields) == 3 && fields[1] == "to":
+	case len(fields) == closedRangeFields && fields[1] == keywordTo:
 		lower := Parse(fields[0])
 
 		upper, prefix := parseUpperVersion(fields[2])
@@ -203,7 +213,7 @@ func parseVersionRange(part string) (versionRange, bool) {
 		}
 
 		r.lower, r.upper, r.prefix = &lower, &upper, prefix
-	case len(fields) == 1:
+	case len(fields) == singleVersionRangeFields:
 		value := fields[0]
 		if before, ok := strings.CutSuffix(value, "+"); ok {
 			lower := Parse(before)

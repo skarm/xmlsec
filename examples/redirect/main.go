@@ -20,6 +20,12 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+const (
+	replayCapacity      = 10
+	replayMaxTTL        = time.Minute
+	replayEntryLifetime = 30 * time.Second
+)
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -55,14 +61,14 @@ func run() error {
 	fmt.Printf("binding-integrity=valid kind=%s protocol-validation=not-performed\n", verified.Kind())
 	// Separate storage primitive: a real profile must validate issuer, destination,
 	// request/session correlation, subject and time BEFORE consuming these IDs.
-	store, err := replay.NewMemoryStore(replay.Config{Capacity: 10, MaxTTL: time.Minute})
+	store, err := replay.NewMemoryStore(replay.Config{Capacity: replayCapacity, MaxTTL: replayMaxTTL})
 	if err != nil {
 		return err
 	}
 
 	now := time.Now().UTC()
 
-	entries := []replay.Entry{{Scope: "example-only", ID: "already-validated-id", ExpiresAt: now.Add(30 * time.Second)}}
+	entries := []replay.Entry{{Scope: "example-only", ID: "already-validated-id", ExpiresAt: now.Add(replayEntryLifetime)}}
 	if err = store.Consume(ctx, entries, now); err != nil {
 		return err
 	}

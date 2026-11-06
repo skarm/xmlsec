@@ -47,7 +47,7 @@ func (s *Stylesheet) WriteRecords(ctx context.Context, dst io.Writer, src io.Rea
 
 	ctx, cancel, err := s.engine.invocation(ctx)
 	if err != nil {
-		return 0, err
+		return 0, wrap("stream XSLT", err)
 	}
 	defer cancel()
 
@@ -112,6 +112,13 @@ func (s *Stylesheet) recordLimits(limits document.Limits) document.Limits {
 	limits.MaxBytes = min(limits.MaxBytes, s.engine.limits.MaxInputBytes)
 	limits.MaxNodes = min(limits.MaxNodes, s.engine.limits.MaxNodes)
 	limits.MaxDepth = min(limits.MaxDepth, s.engine.limits.MaxDepth)
+	limits.MaxAttributesPerElement = min(limits.MaxAttributesPerElement, s.engine.limits.MaxAttributesPerElement)
+	// Resolve the document default before intersecting the effective namespace limits.
+	if limits.MaxInScopeNamespaces == 0 {
+		limits.MaxInScopeNamespaces = document.DefaultLimits().MaxInScopeNamespaces
+	}
+
+	limits.MaxInScopeNamespaces = min(limits.MaxInScopeNamespaces, s.engine.limits.MaxInScopeNamespaces)
 
 	return limits
 }

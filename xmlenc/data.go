@@ -10,6 +10,17 @@ import (
 	"io"
 )
 
+const (
+	// AES-128 key size in bytes, shared by cipher selection, key wrapping and agreement.
+	aes128KeyBytes = 16
+	// AES-192 key size in bytes, shared by cipher selection, key wrapping and agreement.
+	aes192KeyBytes = 24
+	// AES-256 key size in bytes, shared by cipher selection, key wrapping and agreement.
+	aes256KeyBytes = 32
+	// Three-key TripleDES key size in bytes, shared by CBC selection and legacy wrapping.
+	tripleDESKeyBytes = 24
+)
+
 // dataCipher records the wire layout independently of key transport.
 type dataCipher struct {
 	keyBytes   int
@@ -104,25 +115,25 @@ func dataAlgorithm(algorithm string, allowLegacy bool) (dataCipher, error) {
 
 	switch algorithm {
 	case AES128GCM, AES192GCM, AES256GCM:
-		d = dataCipher{keyBytes: 16, ivBytes: gcmNonceBytes, extraBytes: gcmTagBytes}
+		d = dataCipher{keyBytes: aes128KeyBytes, ivBytes: gcmNonceBytes, extraBytes: gcmTagBytes}
 
 		switch algorithm {
 		case AES192GCM:
-			d.keyBytes = 24
+			d.keyBytes = aes192KeyBytes
 		case AES256GCM:
-			d.keyBytes = 32
+			d.keyBytes = aes256KeyBytes
 		}
 	case AES128CBC, AES192CBC, AES256CBC:
-		d = dataCipher{keyBytes: 16, ivBytes: aes.BlockSize, blockBytes: aes.BlockSize, extraBytes: aes.BlockSize}
+		d = dataCipher{keyBytes: aes128KeyBytes, ivBytes: aes.BlockSize, blockBytes: aes.BlockSize, extraBytes: aes.BlockSize}
 
 		switch algorithm {
 		case AES192CBC:
-			d.keyBytes = 24
+			d.keyBytes = aes192KeyBytes
 		case AES256CBC:
-			d.keyBytes = 32
+			d.keyBytes = aes256KeyBytes
 		}
 	case TripleDESCBC:
-		d = dataCipher{keyBytes: 24, ivBytes: des.BlockSize, blockBytes: des.BlockSize, extraBytes: des.BlockSize, tripleDES: true}
+		d = dataCipher{keyBytes: tripleDESKeyBytes, ivBytes: des.BlockSize, blockBytes: des.BlockSize, extraBytes: des.BlockSize, tripleDES: true}
 	default:
 		return dataCipher{}, ErrPolicy
 	}

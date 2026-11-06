@@ -14,6 +14,11 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
+const (
+	maximumCoverageRequirements = 64
+	maximumPreservedNodes       = 64
+)
+
 // SignatureRequirement supplies explicit trust for an existing signature that must
 // remain valid during template signing. Signature and Options.RequiredElements
 // handles must belong to the original input snapshot.
@@ -85,7 +90,7 @@ func signTemplate(ctx context.Context, doc *document.Document, selected document
 		return nil, err
 	}
 
-	if len(opt.Preserve) > 64 {
+	if len(opt.Preserve) > maximumPreservedNodes {
 		return nil, fmt.Errorf("%w: preservation count", ErrPolicy)
 	}
 
@@ -119,7 +124,7 @@ func signTemplate(ctx context.Context, doc *document.Document, selected document
 		return nil, err
 	}
 	// Validate the method/key match before any expensive provider operation.
-	if err := credential.validateSigner(original.spec); err != nil {
+	if err := credential.validateSigner(original.spec, original.policy); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +174,7 @@ func signTemplate(ctx context.Context, doc *document.Document, selected document
 		return nil, err
 	}
 
-	value, err := credential.signPrepared(ctx, plan.spec, canonical)
+	value, err := credential.signPrepared(ctx, plan.spec, plan.policy, canonical)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +221,7 @@ func signTemplate(ctx context.Context, doc *document.Document, selected document
 }
 
 func checkPreservation(ctx context.Context, doc *document.Document, selected document.Element, requirements []SignatureRequirement) error {
-	if len(requirements) > 64 {
+	if len(requirements) > maximumCoverageRequirements {
 		return fmt.Errorf("%w: preservation count", ErrPolicy)
 	}
 
@@ -247,7 +252,7 @@ func checkPreservation(ctx context.Context, doc *document.Document, selected doc
 		}
 
 		req, hasRequirement := required[n]
-		if emptyValue(sv, lexicon.DSigElementSignatureValue, "Id") == nil {
+		if emptyValue(sv, lexicon.DSigElementSignatureValue, lexicon.SecurityAttrID) == nil {
 			if hasRequirement {
 				return fmt.Errorf("%w: cannot preserve an unsigned template", ErrPolicy)
 			}
@@ -346,7 +351,7 @@ func fillTemplateDigests(ctx context.Context, out *document.Document, plan *core
 	for _, task := range order {
 		_, checked, err := processCoreTask(ctx, out, plan, budget, task)
 		if err != nil {
-			return nil, task.wrap("process", err)
+			return nil, task.wrap(stageProcess, err)
 		}
 
 		replaceValue(task.ref.digestNode, base64.StdEncoding.EncodeToString(checked.digest))

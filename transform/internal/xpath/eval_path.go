@@ -14,6 +14,27 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Name-test modes select the default-namespace rule: an unprefixed attribute
+// has no namespace, while an element uses the static default. Namespace
+// projection keeps the universally bound xml prefix (dropXML=false).
+const (
+	elementNamespaceMode     = false
+	attributeNamespaceMode   = true
+	namespaceDropXMLDisabled = false
+)
+
+// These cardinalities describe distinct XPath contracts or recognition fast
+// paths. Zero is the nonpositive boundary before the first valid focus position;
+// position() itself is a zero-argument function.
+const (
+	qnameTokenCardinality      = 1
+	documentElementCardinality = 1
+	singlePredicateResult      = 1
+	singleAttributePathStep    = 1
+	nonpositiveFocusPosition   = 0
+	positionFunctionArity      = 0
+)
+
 func evalLiteral(e LiteralExpr) (xdm.Sequence, error) {
 	switch v := e.Value.(type) {
 	case string:
@@ -418,7 +439,7 @@ func unionMemberCastOK(val string, m xdm.NodeItemUnionMember, node xdm.Node, qna
 
 	if m.Atomized == xdm.TypeQName || m.Atomized == xdm.TypeNOTATION ||
 		m.TypeName == xdm.TypeQName || m.TypeName == xdm.TypeNOTATION {
-		if len(xsdListFields(val)) != 1 {
+		if len(xsdListFields(val)) != qnameTokenCardinality {
 			return false
 		}
 
@@ -453,7 +474,7 @@ func inScopeNSMap(n xdm.Node) map[string]string {
 	}
 
 	out := make(map[string]string)
-	for prefix, ns := range xdm.InScopeNamespaces(e, false) {
+	for prefix, ns := range xdm.InScopeNamespaces(e, namespaceDropXMLDisabled) {
 		out[prefix] = ns.URI()
 	}
 
@@ -549,7 +570,7 @@ func applyVMPredicate(evalFn exprEvaluator, ctx context.Context, ec *evalContext
 }
 
 func applyVMPositionPredicate(nodes []xdm.Node, pred vmPositionPredicateExpr) []xdm.Node {
-	if pred.Position <= 0 || pred.Position > len(nodes) {
+	if pred.Position <= nonpositiveFocusPosition || pred.Position > len(nodes) {
 		return nil
 	}
 
@@ -591,7 +612,7 @@ func applyVMAttributeEqualsStringPredicate(evalFn exprEvaluator, ctx context.Con
 		}
 
 		if !ok {
-			frame := ec.pushNodeContext(n, i+1, size)
+			frame := ec.pushNodeContext(n, i+focusPositionOrigin, size)
 			r, err := evalFn(ctx, ec, pred.Fallback)
 			ec.restoreContext(frame)
 
@@ -599,7 +620,7 @@ func applyVMAttributeEqualsStringPredicate(evalFn exprEvaluator, ctx context.Con
 				return nil, err
 			}
 
-			predMatch, err := predicateTrue(r, i+1)
+			predMatch, err := predicateTrue(r, i+focusPositionOrigin)
 			if err != nil {
 				return nil, err
 			}
@@ -623,6 +644,7 @@ func vmAttributeEqualsStringPredicateMatches(ctx context.Context, ec *evalContex
 
 	mustFallback := false
 	matched := false
+	collation := ec.resolveDefaultCollation()
 
 	var cancelErr error
 
@@ -641,7 +663,12 @@ func vmAttributeEqualsStringPredicateMatches(ctx context.Context, ec *evalContex
 			return false
 		}
 
-		if attr.Value() == pred.Value {
+		equal := attr.Value() == pred.Value
+		if collation != nil {
+			equal = collation.compare(attr.Value(), pred.Value) == 0
+		}
+
+		if equal {
 			matched = true
 			return false
 		}
@@ -838,7 +865,7 @@ func matchElementTest(test xdm.ElementTest, n xdm.Node, ec *evalContext) bool {
 	}
 
 	if test.Name != "" && test.Name != "*" {
-		if !matchElementOrAttributeName(test.Name, n, ec, false) {
+		if !matchElementOrAttributeName(test.Name, n, ec, elementNamespaceMode) {
 			return false
 		}
 	}
@@ -869,7 +896,7 @@ func matchAttributeTest(test xdm.AttributeTest, n xdm.Node, ec *evalContext) boo
 	}
 
 	if test.Name != "" && test.Name != "*" {
-		if !matchElementOrAttributeName(test.Name, n, ec, true) {
+		if !matchElementOrAttributeName(test.Name, n, ec, attributeNamespaceMode) {
 			return false
 		}
 	}
@@ -903,7 +930,7 @@ func matchDocumentTest(test xdm.DocumentTest, n xdm.Node, ec *evalContext) bool 
 			switch c.Type() {
 			case xdm.ElementNode:
 				elemCount++
-				if elemCount > 1 {
+				if elemCount > documentElementCardinality {
 					return false
 				}
 
@@ -915,7 +942,7 @@ func matchDocumentTest(test xdm.DocumentTest, n xdm.Node, ec *evalContext) bool 
 			}
 		}
 
-		return elemCount == 1 && matchedInner
+		return elemCount == documentElementCardinality && matchedInner
 	}
 
 	return true
@@ -937,7 +964,7 @@ func matchSchemaElementTest(test xdm.SchemaElementTest, n xdm.Node, ec *evalCont
 		return xdm.LocalNameOf(n) == local
 	}
 
-	local, ns := resolveSchemaTestName(test.Name, ec, false)
+	local, ns := resolveSchemaTestName(test.Name, ec, elementNamespaceMode)
 
 	nameMatch := xdm.LocalNameOf(n) == local && xdm.NodeNamespaceURI(n) == ns
 	if !nameMatch {
@@ -994,7 +1021,7 @@ func matchSchemaAttributeTest(test xdm.SchemaAttributeTest, n xdm.Node, ec *eval
 		return attr.LocalName() == local
 	}
 
-	local, ns := resolveSchemaTestName(test.Name, ec, true)
+	local, ns := resolveSchemaTestName(test.Name, ec, attributeNamespaceMode)
 	if attr.LocalName() != local || attr.URI() != ns {
 		return false
 	}
@@ -1102,7 +1129,7 @@ func matchNameTest(test xdm.NameTest, n xdm.Node, axis AxisType, ec *evalContext
 	}
 
 	if test.Local == "*" {
-		if test.URI != "" {
+		if test.URIQualified || test.URI != "" {
 			return xdm.NodeNamespaceURI(n) == test.URI
 		}
 
@@ -1117,7 +1144,7 @@ func matchNameTest(test xdm.NameTest, n xdm.Node, axis AxisType, ec *evalContext
 		return false
 	}
 
-	if test.URI != "" {
+	if test.URIQualified || test.URI != "" {
 		return xdm.NodeNamespaceURI(n) == test.URI
 	}
 
@@ -1193,7 +1220,7 @@ func applyPredicate(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	var result []xdm.Node
 
 	for i, n := range nodes {
-		frame := ec.pushNodeContext(n, i+1, size)
+		frame := ec.pushNodeContext(n, i+focusPositionOrigin, size)
 		r, err := evalFn(ctx, ec, pred)
 		ec.restoreContext(frame)
 
@@ -1201,7 +1228,7 @@ func applyPredicate(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 			return nil, err
 		}
 
-		match, err := predicateTrue(r, i+1)
+		match, err := predicateTrue(r, i+focusPositionOrigin)
 		if err != nil {
 			return nil, err
 		}
@@ -1284,7 +1311,7 @@ func resolveTestTypeName(raw string, ec *evalContext) string {
 // predicateTrue evaluates a predicate result per XPath spec:
 // numeric → compare to position, otherwise → EBV.
 func predicateTrue(r xdm.Sequence, position int) (bool, error) {
-	if xdm.SequenceLen(r) == 1 {
+	if xdm.SequenceLen(r) == singlePredicateResult {
 		if av, ok := r.Get(0).(xdm.AtomicValue); ok && av.IsNumeric() {
 			return compareNumeric(TokenEq, xdm.PromoteSchemaType(av), xdm.AtomicValue{
 				TypeName: xdm.TypeInteger, Value: int64(position),
@@ -1357,13 +1384,13 @@ func vmPositionFromLiteral(expr LiteralExpr) (int, bool) {
 		}
 
 		n := v.Int64()
-		if n <= 0 || n > math.MaxInt {
+		if n <= nonpositiveFocusPosition || n > math.MaxInt {
 			return 0, false
 		}
 
 		return int(n), true
 	case float64:
-		if v <= 0 || v != math.Trunc(v) || v > math.MaxInt {
+		if v <= nonpositiveFocusPosition || v != math.Trunc(v) || v > math.MaxInt {
 			return 0, false
 		}
 
@@ -1377,7 +1404,7 @@ func positionCall(expr Expr) bool {
 	switch e := expr.(type) {
 	case FunctionCall:
 		local, isFn := lexicalFnLocalName(e.Name, e.Prefix)
-		return len(e.Args) == 0 && isFn && local == lexicon.FnPosition
+		return len(e.Args) == positionFunctionArity && isFn && local == lexicon.FnPosition
 	case *FunctionCall:
 		if e == nil {
 			return false
@@ -1385,7 +1412,7 @@ func positionCall(expr Expr) bool {
 
 		local, isFn := lexicalFnLocalName(e.Name, e.Prefix)
 
-		return len(e.Args) == 0 && isFn && local == lexicon.FnPosition
+		return len(e.Args) == positionFunctionArity && isFn && local == lexicon.FnPosition
 	default:
 		return false
 	}
@@ -1454,7 +1481,7 @@ func vmSingleRelativeAttributePath(expr Expr) (xdm.NodeTest, bool) {
 }
 
 func vmAttributeNodeTestFromLocationPath(absolute bool, steps []Step) (xdm.NodeTest, bool) {
-	if absolute || len(steps) != 1 {
+	if absolute || len(steps) != singleAttributePathStep {
 		return nil, false
 	}
 
@@ -1467,7 +1494,7 @@ func vmAttributeNodeTestFromLocationPath(absolute bool, steps []Step) (xdm.NodeT
 }
 
 func vmAttributeNodeTestFromVMLocationPath(absolute bool, steps []vmLocationStep) (xdm.NodeTest, bool) {
-	if absolute || len(steps) != 1 {
+	if absolute || len(steps) != singleAttributePathStep {
 		return nil, false
 	}
 

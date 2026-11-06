@@ -11,7 +11,8 @@ import (
 const (
 	collationCacheCapacity = 128
 	collationCacheKeyBytes = 4096
-	maxIdlePathProbes      = 4
+	// maxIdlePathProbes bounds retained scratch probes, not active evaluations.
+	maxIdlePathProbes = 4
 )
 
 // evaluationRuntime owns reusable execution resources for an evaluator family.
@@ -79,10 +80,12 @@ func (r *evaluationRuntime) resolveCollation(uri, baseURI string) (*collationImp
 	// Resolve outside the lock; readers keep the sync.Map fast path. Serialize
 	// insertion and eviction so concurrent misses cannot exceed the capacity.
 	r.collationMu.Lock()
-	defer r.collationMu.Unlock()
 
 	if stored, ok := r.collations.Load(key); ok {
-		return stored.(*collationImpl), nil //nolint:forcetypeassert // Only collationImpl pointers are stored in this cache.
+		coll = stored.(*collationImpl) //nolint:forcetypeassert // Only collationImpl pointers are stored in this cache.
+		r.collationMu.Unlock()
+
+		return coll, nil
 	}
 
 	if len(r.collationKeys) == collationCacheCapacity {
@@ -94,6 +97,7 @@ func (r *evaluationRuntime) resolveCollation(uri, baseURI string) (*collationImp
 	}
 
 	r.collations.Store(key, coll)
+	r.collationMu.Unlock()
 
 	return coll, nil
 }

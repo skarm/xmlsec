@@ -160,6 +160,10 @@ func TestConcatBitDigest(t *testing.T) {
 		{crypto.SHA256, 809, "8219618b7728ac89237705ecf84012cc7c80293c4cf171d86139449d9361d8fe5b881f33ddd9ebd526ba56a8b24661b831fedba78abb854521e8736156edb5df4eee370bf5b6e62d43ee145ebf931e9942a74c15fe26f8d2be3bf3726fb4244be0b472bac680", "b857f827ec3a28a9997600f545cd8e189eb75185c9c8c8e0d046c9247e3c109e"},
 	} {
 		t.Run(tc.algorithm.String()+"/"+strconv.Itoa(tc.length), func(t *testing.T) {
+			if tc.algorithm == crypto.SHA1 && fips140.Enabled() {
+				t.Skip("legacy SHA-1 vectors are outside the FIPS ConcatKDF profile")
+			}
+
 			data, err := hex.DecodeString(tc.message)
 			if err != nil {
 				t.Fatal(err)

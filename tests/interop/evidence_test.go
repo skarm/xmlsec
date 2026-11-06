@@ -33,14 +33,14 @@ const (
 
 const (
 	flagData = "-data"
-	nameCms  = "cms"
+	nameCMS  = "cms"
 )
 
 func TestCMSBEROpenSSL(t *testing.T) {
 	fixture := newInteropFixture(t)
 	selected(t, "portable")
 
-	for _, name := range []string{nameRsaSha256, nameEcdsaSha256} {
+	for _, name := range []string{nameRSASHA256, nameECDSASHA256} {
 		t.Run(name, func(t *testing.T) { checkCMSBEROpenSSL(t, fixture, name) })
 	}
 }
@@ -118,7 +118,7 @@ func TestEvidenceExchange(t *testing.T) {
 	goProbe := func(mode string, args ...string) {
 		command(t, fixture, true, nil, p, append([]string{"-mode", mode, "-at", at.Format(time.RFC3339)}, args...)...)
 	}
-	rootKey := generateKey(t, dir, nameEcdsaSha384)
+	rootKey := generateKey(t, dir, nameECDSASHA384)
 	rootTpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "temporary evidence root"}, NotBefore: at.Add(-24 * time.Hour), NotAfter: at.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 	rootCert, rootDER, rootPEM := certificateFiles(t, dir, nameRoot, rootTpl, rootTpl, rootKey.signer, rootKey.signer)
 
@@ -130,7 +130,7 @@ func TestEvidenceExchange(t *testing.T) {
 	crl := write(t, filepath.Join(dir, "crl.der"), crlRaw)
 
 	data := write(t, filepath.Join(dir, nameContent), []byte("CMS and timestamp payload\x00\r\n"))
-	for _, name := range []string{nameRsaSha256, nameEcdsaSha256} {
+	for _, name := range []string{nameRSASHA256, nameECDSASHA256} {
 		key := generateKey(t, dir, name)
 		issue := func(label string, serial int64, eku x509.ExtKeyUsage) (*x509.Certificate, string, string) {
 			tpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: label}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{eku}}
@@ -144,7 +144,7 @@ func TestEvidenceExchange(t *testing.T) {
 
 		for _, hash := range []int{256, 384, 512} {
 			pssValues := []bool{false}
-			if name == nameRsaSha256 {
+			if name == nameRSASHA256 {
 				pssValues = append(pssValues, true)
 			}
 
@@ -163,7 +163,7 @@ func TestEvidenceExchange(t *testing.T) {
 		goProbe("ocsp-request", flagCert, leafDER, "-issuer", rootDER, "-nonce", "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", flagOut, request)
 
 		args := []string{"-request", request, flagCert, responderDER, "-issuer", rootDER, flagData, leafDER, flagKey, key.private, flagOut, response}
-		if name == nameRsaSha256 {
+		if name == nameRSASHA256 {
 			args = append(args, "-pss")
 		}
 
@@ -242,70 +242,6 @@ func TestEvidenceExchange(t *testing.T) {
 	t.Log("18 CMS, 6 RFC3161, 2 XAdES-T, 4 archive exchanges each direction; 2 Go OCSP responses verified by OpenSSL")
 }
 
-func certificateFiles(t *testing.T, dir, name string, tpl, parent *x509.Certificate, signer, issuer crypto.Signer) (*x509.Certificate, string, string) {
-	t.Helper()
-
-	der, err := x509.CreateCertificate(rand.Reader, tpl, parent, signer.Public(), issuer)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return cert, write(t, filepath.Join(dir, name+".der"), der), write(t, filepath.Join(dir, name+".pem"), pem.EncodeToMemory(&pem.Block{Type: nameCERTIFICATE, Bytes: der}))
-}
-
-func testEvidenceExchangeCase(t *testing.T, dir *string, key *testKey, signerDER *string, data *string, hash *int, pss *bool, detached *bool, goProbe *func(mode string, args ...string), fixture **interopFixture, signerPEM *string) {
-	ours, theirs, verified := filepath.Join((*dir), "go.cms"), filepath.Join((*dir), "ref.cms"), filepath.Join((*dir), "verified")
-
-	args := []string{flagKey, key.private, flagCert, (*signerDER), flagData, (*data), flagOut, ours, "-hash", strconv.Itoa((*hash))}
-	if *pss {
-		args = append(args, "-pss")
-	}
-
-	if *detached {
-		args = append(args, "-detached")
-	}
-
-	(*goProbe)("cms-sign", args...)
-
-	args = []string{nameCms, flagVerify, flagBinary, "-inform", nameDER, flagIn, ours, "-noverify", flagOut, verified}
-	if *detached {
-		args = append(args, "-content", (*data))
-	}
-
-	command(t, (*fixture), true, nil, "openssl", args...)
-
-	if !bytes.Equal(read(t, verified), read(t, (*data))) {
-		t.Fatal("CMS content changed")
-	}
-
-	args = []string{nameCms, "-sign", flagBinary, flagIn, (*data), "-signer", (*signerPEM), flagInkey, key.private, "-md", fmt.Sprintf("sha%d", (*hash)), "-nosmimecap", "-cades", "-outform", nameDER, flagOut, theirs}
-	if !(*detached) {
-		args = append(args, "-nodetach")
-	}
-
-	if *pss {
-		args = append(args, "-keyopt", "rsa_padding_mode:pss", "-keyopt", "rsa_pss_saltlen:digest")
-	}
-
-	command(t, (*fixture), true, nil, "openssl", args...)
-
-	args = []string{flagIn, theirs, flagCert, (*signerDER), flagData, (*data), flagOut, verified}
-	if *detached {
-		args = append(args, "-detached")
-	}
-
-	(*goProbe)("cms-verify", args...)
-
-	if !bytes.Equal(read(t, verified), read(t, (*data))) {
-		t.Fatal("CMS content changed")
-	}
-}
-
 func TestEvidenceFixtures(t *testing.T) {
 	fixture := newInteropFixture(t)
 
@@ -348,14 +284,14 @@ func testEvidenceFixturesCase(t *testing.T, base *string, tc *struct {
 
 	epoch := strconv.FormatInt(at.Unix(), 10)
 	asPEM := func(source, name string) string {
-		return write(t, filepath.Join((*dir), name+".pem"), pem.EncodeToMemory(&pem.Block{Type: nameCERTIFICATE, Bytes: read(t, source)}))
+		return write(t, filepath.Join((*dir), name+".pem"), pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: read(t, source)}))
 	}
 
 	switch tc.Group {
-	case nameCms:
+	case nameCMS:
 		output := filepath.Join((*dir), "cms-content")
 
-		args := []string{nameCms, flagVerify, flagBinary, "-inform", nameDER, flagIn, path("signature.der"), "-noverify", flagOut, output}
+		args := []string{nameCMS, flagVerify, flagBinary, "-inform", nameDER, flagIn, path("signature.der"), "-noverify", flagOut, output}
 		if tc.Detached {
 			args = append(args, "-content", path("content.bin"))
 		}
@@ -479,10 +415,10 @@ func TestCMSTrustBindingsOpenSSL(t *testing.T) {
 	selected(t, "portable")
 	dir := t.TempDir()
 	at := time.Now().UTC().Truncate(time.Second)
-	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootKey := generateKey(t, dir, nameECDSASHA256)
 	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "CMS trust fixture root"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 	root, rootDER, rootPEM := certificateFiles(t, dir, "cms-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
-	signerKey := generateKey(t, dir, nameEcdsaSha384)
+	signerKey := generateKey(t, dir, nameECDSASHA384)
 	signerTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "CMS selected signer"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}}
 	signer, _, signerPEM := certificateFiles(t, dir, "cms-signer", signerTemplate, root, signerKey.signer, rootKey.signer)
 	content := []byte("independent CMS content, certificate and trust bindings\x00\xff")
@@ -549,10 +485,10 @@ func TestOCSPAuthorizationOpenSSL(t *testing.T) {
 	selected(t, "portable")
 	dir := t.TempDir()
 	at := time.Now().UTC().Truncate(time.Second)
-	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootKey := generateKey(t, dir, nameECDSASHA256)
 	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "OCSP authority root"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 	root, _, rootPEM := certificateFiles(t, dir, "ocsp-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
-	leafKey := generateKey(t, dir, nameEcdsaSha384)
+	leafKey := generateKey(t, dir, nameECDSASHA384)
 	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "OCSP target"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
 	leaf, _, leafPEM := certificateFiles(t, dir, "ocsp-leaf", leafTemplate, root, leafKey.signer, rootKey.signer)
 	request, err := pki.CreateOCSPRequest(leaf.Raw, root.Raw, crypto.SHA256, nil)
@@ -561,7 +497,7 @@ func TestOCSPAuthorizationOpenSSL(t *testing.T) {
 	}
 	for _, local := range []bool{false, true} {
 		t.Run(strconv.FormatBool(local), func(t *testing.T) {
-			responderKey := generateKey(t, t.TempDir(), nameEcdsaSha256)
+			responderKey := generateKey(t, t.TempDir(), nameECDSASHA256)
 			responderTemplate := &x509.Certificate{AuthorityKeyId: root.SubjectKeyId, SerialNumber: big.NewInt(3), Subject: root.Subject, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, Value: []byte{5, 0}}}}
 			parent, issuerKey := root, rootKey.signer
 			if local {
@@ -642,10 +578,10 @@ func TestOCSPNonceBindingOpenSSL(t *testing.T) {
 	selected(t, "portable")
 	dir := t.TempDir()
 	at := time.Now().UTC().Truncate(time.Second)
-	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootKey := generateKey(t, dir, nameECDSASHA256)
 	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "OCSP nonce root"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
 	root, _, rootPEM := certificateFiles(t, dir, "nonce-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
-	leafKey := generateKey(t, dir, nameEcdsaSha384)
+	leafKey := generateKey(t, dir, nameECDSASHA384)
 	leaf, _, _ := certificateFiles(t, dir, "nonce-leaf", &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "OCSP nonce target"}, NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}, root, leafKey.signer, rootKey.signer)
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
@@ -696,10 +632,10 @@ func TestHistoricalPKIAuthenticationOpenSSL(t *testing.T) {
 	dir := t.TempDir()
 	issued := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	now := issued.Add(3 * time.Hour)
-	rootKey := generateKey(t, dir, nameEcdsaSha256)
+	rootKey := generateKey(t, dir, nameECDSASHA256)
 	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "historical PKI oracle root"}, NotBefore: issued.Add(-24 * time.Hour), NotAfter: issued.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{9, 8, 7}}
 	root, _, rootPEM := certificateFiles(t, dir, "history-root", rootTemplate, rootTemplate, rootKey.signer, rootKey.signer)
-	leafKey := generateKey(t, dir, nameEcdsaSha384)
+	leafKey := generateKey(t, dir, nameECDSASHA384)
 	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "expired historical target"}, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
 	leaf, _, leafPEM := certificateFiles(t, dir, "history-target", leafTemplate, root, leafKey.signer, rootKey.signer)
 	command(t, fixture, true, nil, "openssl", "verify", "-purpose", "any", "-CAfile", rootPEM, "-attime", strconv.FormatInt(issued.Unix(), 10), leafPEM)
@@ -768,5 +704,69 @@ func TestHistoricalPKIAuthenticationOpenSSL(t *testing.T) {
 			}
 			t.Log("Independent OpenSSL signature, status and path-time agreement; sliding time uses the literal EN319102-1 branch expectation, not an OpenSSL historical oracle")
 		})
+	}
+}
+
+func certificateFiles(t *testing.T, dir, name string, tpl, parent *x509.Certificate, signer, issuer crypto.Signer) (*x509.Certificate, string, string) {
+	t.Helper()
+
+	der, err := x509.CreateCertificate(rand.Reader, tpl, parent, signer.Public(), issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return cert, write(t, filepath.Join(dir, name+".der"), der), write(t, filepath.Join(dir, name+".pem"), pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: der}))
+}
+
+func testEvidenceExchangeCase(t *testing.T, dir *string, key *testKey, signerDER *string, data *string, hash *int, pss *bool, detached *bool, goProbe *func(mode string, args ...string), fixture **interopFixture, signerPEM *string) {
+	ours, theirs, verified := filepath.Join((*dir), "go.cms"), filepath.Join((*dir), "ref.cms"), filepath.Join((*dir), "verified")
+
+	args := []string{flagKey, key.private, flagCert, (*signerDER), flagData, (*data), flagOut, ours, "-hash", strconv.Itoa((*hash))}
+	if *pss {
+		args = append(args, "-pss")
+	}
+
+	if *detached {
+		args = append(args, "-detached")
+	}
+
+	(*goProbe)("cms-sign", args...)
+
+	args = []string{nameCMS, flagVerify, flagBinary, "-inform", nameDER, flagIn, ours, "-noverify", flagOut, verified}
+	if *detached {
+		args = append(args, "-content", (*data))
+	}
+
+	command(t, (*fixture), true, nil, "openssl", args...)
+
+	if !bytes.Equal(read(t, verified), read(t, (*data))) {
+		t.Fatal("CMS content changed")
+	}
+
+	args = []string{nameCMS, "-sign", flagBinary, flagIn, (*data), "-signer", (*signerPEM), flagInkey, key.private, "-md", fmt.Sprintf("sha%d", (*hash)), "-nosmimecap", "-cades", "-outform", nameDER, flagOut, theirs}
+	if !(*detached) {
+		args = append(args, "-nodetach")
+	}
+
+	if *pss {
+		args = append(args, "-keyopt", "rsa_padding_mode:pss", "-keyopt", "rsa_pss_saltlen:digest")
+	}
+
+	command(t, (*fixture), true, nil, "openssl", args...)
+
+	args = []string{flagIn, theirs, flagCert, (*signerDER), flagData, (*data), flagOut, verified}
+	if *detached {
+		args = append(args, "-detached")
+	}
+
+	(*goProbe)("cms-verify", args...)
+
+	if !bytes.Equal(read(t, verified), read(t, (*data))) {
+		t.Fatal("CMS content changed")
 	}
 }

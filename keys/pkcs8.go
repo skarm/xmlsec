@@ -16,6 +16,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/ecdsakey"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
@@ -62,7 +63,7 @@ func ParsePrivateWithOptions(ctx context.Context, data []byte, options PrivatePa
 	}
 	defer decoded.clear()
 
-	if options.AllowBER && (decoded.label == "" || decoded.label == "PRIVATE KEY") {
+	if options.AllowBER && (decoded.label == "" || decoded.label == lexicon.PEMPrivateKey) {
 		// An unlabelled traditional key is already a strict DER format. Detect
 		// only PrivateKeyInfo's AlgorithmIdentifier in the second field.
 		normalized, err := normalizePrivateBER(ctx, decoded.der, limits.MaxKeyBytes, limits, false)
@@ -115,7 +116,7 @@ func ParseEncryptedPrivateWithOptions(ctx context.Context, data, password []byte
 	}
 	defer decoded.clear()
 
-	if decoded.label != "" && decoded.label != "ENCRYPTED PRIVATE KEY" {
+	if decoded.label != "" && decoded.label != lexicon.PEMEncryptedPrivateKey {
 		return nil, ErrFormat
 	}
 
@@ -167,7 +168,7 @@ func privateMaterial(ctx context.Context, data []byte, maximum int, limits Limit
 	}
 
 	trimmed := bytes.TrimSpace(data)
-	if bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+	if bytes.HasPrefix(trimmed, []byte(pemBeginMarker)) {
 		return decodePEM(ctx, trimmed, maximum)
 	}
 
@@ -179,6 +180,8 @@ func privateMaterial(ctx context.Context, data []byte, maximum int, limits Limit
 }
 
 func decryptPrivateInfo(state *passwordState, raw []byte) (crypto.Signer, error) {
+	const encryptedPrivateKeyInfoFields = 2 // encryptionAlgorithm and encryptedData
+
 	if state.allowBER {
 		normalized, err := normalizePrivateBER(state.ctx, raw, state.limits.MaxContainerBytes, state.limits, true)
 		if err != nil {
@@ -194,8 +197,8 @@ func decryptPrivateInfo(state *passwordState, raw []byte) (crypto.Signer, error)
 		return nil, err
 	}
 
-	f, err := der.Sequence(v, 2, 2)
-	if err != nil || !der.Is(f[1], 0, asn1.TagOctetString, false) {
+	f, err := der.Sequence(v, encryptedPrivateKeyInfoFields, encryptedPrivateKeyInfoFields)
+	if err != nil || !der.Is(f[1], asn1.ClassUniversal, asn1.TagOctetString, false) {
 		return nil, ErrFormat
 	}
 
@@ -237,7 +240,7 @@ func parseDecryptedPrivate(state *passwordState, plain []byte) (crypto.Signer, e
 		return nil, ErrDecrypt
 	}
 
-	key, err := parsePrivateDER("PRIVATE KEY", plain, state.limits)
+	key, err := parsePrivateDER(lexicon.PEMPrivateKey, plain, state.limits)
 	if err != nil {
 		if !errors.Is(err, ErrLimit) {
 			return nil, ErrDecrypt
@@ -387,7 +390,7 @@ func prepareEncryptedPrivate(ctx context.Context, key crypto.Signer, password []
 		return nil, err
 	}
 
-	out := frameDER(0x30, derParts{alg}, frameDER(4, derParts{encrypted}))
+	out := frameDER(encodedSequenceTag, derParts{alg}, frameDER(asn1.TagOctetString, derParts{encrypted}))
 	if out.size() > state.limits.MaxContainerBytes {
 		return nil, ErrLimit
 	}

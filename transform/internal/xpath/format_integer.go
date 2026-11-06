@@ -16,7 +16,106 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Alphabetic and sequential-symbol numbering preserve these ordered Unicode
+// alphabets/ranges. Symbol count is per block; the Roman ceiling and CJK myriad
+// unit have different roles although their numeric values coincide.
+const (
+	greekAlphabetLower       = "αβγδεζηθικλμνξοπρστυφχψω"
+	greekAlphabetUpper       = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"
+	greekLowerFirst          = 0x03B1
+	greekLowerLast           = 0x03C9
+	greekUpperFirst          = 0x0391
+	greekUpperLast           = 0x03A9
+	circledSymbolFirst       = 0x2460
+	circledSymbolLast        = 0x2473
+	parenthesizedSymbolFirst = 0x2474
+	parenthesizedSymbolLast  = 0x2487
+	fullstopSymbolFirst      = 0x2488
+	fullstopSymbolLast       = 0x249B
+	sequentialSymbolCount    = 20
+	latinAlphabetSize        = 26
+	cjkMyriadUnit            = 10000
+	romanMaximumValue        = 10000
+)
+
+// Word-formatting control thresholds count numeric values, not string lengths.
+// The vocabulary tables below remain language data. German zero is a word,
+// separate from the identical JSON null element-name spelling.
+const (
+	wordGermanZero       = "null"
+	wordSmallNumberLimit = 20
+	wordHundred          = 100
+	wordThousand         = 1000
+	wordMillion          = 1000000
+	wordBillion          = 1000000000
+	wordTrillion         = 1000000000000
+)
+
+// Ordinal selectors and suffixes are implementation-supported F&O language
+// hints. English teen exceptions inspect the last two decimal digits; French
+// composite tens and Italian vowel elision are independent language rules.
+const (
+	ordinalSpellout             = "%spellout-ordinal"
+	ordinalSpelloutMasculine    = "%spellout-ordinal-masculine"
+	ordinalSpelloutFeminine     = "%spellout-ordinal-feminine"
+	ordinalMasculineSuffix      = "-o"
+	ordinalFeminineSuffix       = "-a"
+	ordinalLastTwoDigitsModulus = 100
+	ordinalTeenFirst            = 11
+	ordinalTeenLast             = 13
+	ordinalFirstLastDigit       = 1
+	ordinalSecondLastDigit      = 2
+	ordinalThirdLastDigit       = 3
+	ordinalEnglishGeneralSuffix = "th"
+	ordinalEnglishFirstSuffix   = "st"
+	ordinalEnglishSecondSuffix  = "nd"
+	ordinalEnglishThirdSuffix   = "rd"
+	frenchCompositeSeventy      = 7
+	frenchCompositeEighty       = 8
+	frenchCompositeNinety       = 9
+	frenchElevenUnit            = 11
+	italianElidedOne            = 1
+	italianElidedEight          = 8
+	frenchConjunctionOne        = 1     // units digit receiving et outside composite80/90
+	ordinalMasculine            = false // masculine vocabulary in italianOrdinalWord
+	ordinalFeminine             = true  // feminine vocabulary in italianOrdinalWord
+	italianOrdinalDecimalFormat = "%d°"
+	integerRepeatingGroupPair   = 2 // one separator between two groups repeats
+	integerMinimumDecimalDigits = 1
+)
+
 const wordGermanSeven = "sieben"
+
+// FormatGreekAlphabetic uses the 24-letter Greek alphabet, excluding the
+// unassigned capital U+03A2 and the context-specific lowercase final sigma.
+// It is shared with XSLT numbering so both execution paths use the same digits.
+func FormatGreekAlphabetic(n *big.Int, upper bool) string {
+	if n.Sign() <= 0 {
+		return n.String()
+	}
+
+	alphabet := []rune(greekAlphabetLower)
+	if upper {
+		alphabet = []rune(greekAlphabetUpper)
+	}
+
+	value, one, size := new(big.Int).Set(n), big.NewInt(1), big.NewInt(int64(len(alphabet)))
+
+	var (
+		digits    []rune
+		remainder big.Int
+	)
+
+	for value.Sign() > 0 {
+		value.Sub(value, one)
+		value.DivMod(value, size, &remainder)
+		digits = append(digits, alphabet[remainder.Int64()])
+	}
+
+	slices.Reverse(digits)
+
+	return string(digits)
+}
 
 func fnFormatInteger(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	// format-integer($value, $picture [, $lang])
@@ -64,7 +163,7 @@ func fnFormatInteger(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		return nil, fmt.Errorf("xpath: internal error: expected integer value for %s, got %T", valAtom.TypeName, valAtom.Value)
 	}
 
-	lang := "en"
+	lang := defaultFormattingLanguage
 	if ec := getFnContext(ctx); ec != nil {
 		lang = ec.getDefaultLanguage()
 	}
@@ -85,8 +184,26 @@ func fnFormatInteger(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		lang = strings.ToLower(defaultLanguage)
 	}
 
+	// Bound picture scanning and integer conversion before allocating formatted
+	// text; charge its output even if a caller consumes only string-length().
+	if err := Charge(ctx, len(picture)); err != nil {
+		return nil, err
+	}
+
+	if err := ChargeString(ctx, len(picture)); err != nil {
+		return nil, err
+	}
+
+	if err := preflightNumeric(ctx, n.BitLen()); err != nil {
+		return nil, err
+	}
+
 	result, err := formatIntegerPicture(n, picture, lang)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := ChargeString(ctx, len(result)); err != nil {
 		return nil, err
 	}
 
@@ -95,7 +212,7 @@ func fnFormatInteger(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 
 func isSupportedIntegerLanguage(lang string) bool {
 	switch lang {
-	case "en", "de", "fr", "it":
+	case formatLanguageEnglish, formatLanguageGerman, formatLanguageFrench, formatLanguageItalian:
 		return true
 	default:
 		return false
@@ -133,28 +250,28 @@ func formatIntegerPicture(n *big.Int, picture, lang string) (string, error) {
 	)
 
 	switch primary {
-	case "A":
-		result = formatAlpha(absN, true)
-	case "a":
-		result = formatAlpha(absN, false)
-	case "I":
-		result = formatRoman(absN, true)
-	case "i":
-		result = formatRoman(absN, false)
-	case "W":
-		result = formatWords(absN, lang, nameUpper2)
+	case formatAlphaUpper:
+		result = formatAlpha(absN, formatUppercase)
+	case formatAlphaLower:
+		result = formatAlpha(absN, formatLowercase)
+	case formatRomanUpper:
+		result = formatRoman(absN, formatUppercase)
+	case formatRomanLower:
+		result = formatRoman(absN, formatLowercase)
+	case formatWordsUpper:
+		result = formatWords(absN, lang, nameUpperCase)
 		if ordinal {
-			result = applyOrdinalWords(result, lang, nameUpper2, ordSuffix)
+			result = applyOrdinalWords(result, lang, nameUpperCase, ordSuffix)
 		}
-	case "w":
+	case formatWordsLower:
 		result = formatWords(absN, lang, nameLower)
 		if ordinal {
 			result = applyOrdinalWords(result, lang, nameLower, ordSuffix)
 		}
-	case "Ww":
-		result = formatWords(absN, lang, "title")
+	case formatWordsTitle:
+		result = formatWords(absN, lang, formatCaseTitle)
 		if ordinal {
-			result = applyOrdinalWords(result, lang, "title", ordSuffix)
+			result = applyOrdinalWords(result, lang, formatCaseTitle, ordSuffix)
 		}
 	default:
 		if tok := classifyFormatToken(primary); tok != fmtTokenDecimal {
@@ -198,37 +315,6 @@ const (
 	fmtTokenUnknown
 )
 
-// FormatGreekAlphabetic uses the 24-letter Greek alphabet, excluding the
-// unassigned capital U+03A2 and the context-specific lowercase final sigma.
-// It is shared with XSLT numbering so both execution paths use the same digits.
-func FormatGreekAlphabetic(n *big.Int, upper bool) string {
-	if n.Sign() <= 0 {
-		return n.String()
-	}
-
-	alphabet := []rune("αβγδεζηθικλμνξοπρστυφχψω")
-	if upper {
-		alphabet = []rune("ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ")
-	}
-
-	value, one, size := new(big.Int).Set(n), big.NewInt(1), big.NewInt(int64(len(alphabet)))
-
-	var (
-		digits    []rune
-		remainder big.Int
-	)
-
-	for value.Sign() > 0 {
-		value.Sub(value, one)
-		value.DivMod(value, size, &remainder)
-		digits = append(digits, alphabet[remainder.Int64()])
-	}
-
-	slices.Reverse(digits)
-
-	return string(digits)
-}
-
 func classifyFormatToken(primary string) formatTokenKind {
 	runes := []rune(primary)
 	if len(runes) == 0 {
@@ -267,15 +353,15 @@ func classifyFormatToken(primary string) formatTokenKind {
 	}
 
 	switch {
-	case r >= 0x03B1 && r <= 0x03C9:
+	case r >= greekLowerFirst && r <= greekLowerLast:
 		return fmtTokenGreekLower
-	case r >= 0x0391 && r <= 0x03A9:
+	case r >= greekUpperFirst && r <= greekUpperLast:
 		return fmtTokenGreekUpper
-	case r >= 0x2460 && r <= 0x2473:
+	case r >= circledSymbolFirst && r <= circledSymbolLast:
 		return fmtTokenCircled
-	case r >= 0x2474 && r <= 0x2487:
+	case r >= parenthesizedSymbolFirst && r <= parenthesizedSymbolLast:
 		return fmtTokenParenthesized
-	case r >= 0x2488 && r <= 0x249B:
+	case r >= fullstopSymbolFirst && r <= fullstopSymbolLast:
 		return fmtTokenFullstopDigit
 	default:
 		return fmtTokenUnknown
@@ -285,20 +371,20 @@ func classifyFormatToken(primary string) formatTokenKind {
 func formatSpecialToken(n *big.Int, primary string, kind formatTokenKind) (string, error) {
 	switch kind {
 	case fmtTokenGreekLower:
-		return FormatGreekAlphabetic(n, false), nil
+		return FormatGreekAlphabetic(n, formatLowercase), nil
 	case fmtTokenGreekUpper:
-		return FormatGreekAlphabetic(n, true), nil
+		return FormatGreekAlphabetic(n, formatUppercase), nil
 	case fmtTokenCJK:
 		return formatCJK(n), nil
 	case fmtTokenCircled:
-		return formatSequentialSymbol(n, 0x2460, 20), nil
+		return formatSequentialSymbol(n, circledSymbolFirst, sequentialSymbolCount), nil
 	case fmtTokenParenthesized:
-		return formatSequentialSymbol(n, 0x2474, 20), nil
+		return formatSequentialSymbol(n, parenthesizedSymbolFirst, sequentialSymbolCount), nil
 	case fmtTokenFullstopDigit:
-		return formatSequentialSymbol(n, 0x2488, 20), nil
+		return formatSequentialSymbol(n, fullstopSymbolFirst, sequentialSymbolCount), nil
 	case fmtTokenUnknown:
 		// Spec: if the format token is not recognized, use decimal fallback
-		return formatIntegerDecimal(n, "1")
+		return formatIntegerDecimal(n, formatDecimalDefault)
 	default:
 		return formatIntegerDecimal(n, primary)
 	}
@@ -349,8 +435,8 @@ func int64ToCJK(n int64) string {
 	// Split into 4-digit (myriad) groups, least-significant first.
 	var groups []int64
 	for n > 0 {
-		groups = append(groups, n%10000)
-		n /= 10000
+		groups = append(groups, n%cjkMyriadUnit)
+		n /= cjkMyriadUnit
 	}
 
 	var parts []string
@@ -490,12 +576,12 @@ func validateModifier(mod string) error {
 // formatAlpha formats a number using alphabetic numbering (a=1, b=2, ..., z=26, aa=27, ...).
 func formatAlpha(n *big.Int, upper bool) string {
 	if n.Sign() == 0 {
-		return "0"
+		return formatZeroDigit
 	}
 
 	val := new(big.Int).Set(n)
 	one := big.NewInt(1)
-	twentySix := big.NewInt(26)
+	twentySix := big.NewInt(latinAlphabetSize)
 
 	var digits []rune
 
@@ -517,7 +603,11 @@ func formatAlpha(n *big.Int, upper bool) string {
 
 func formatRoman(n *big.Int, upper bool) string {
 	if n.Sign() == 0 {
-		return "0"
+		return formatZeroDigit
+	}
+
+	if !n.IsInt64() {
+		return n.String()
 	}
 
 	val := n.Int64()
@@ -525,7 +615,7 @@ func formatRoman(n *big.Int, upper bool) string {
 		val = -val
 	}
 
-	if val > 10000 {
+	if val > romanMaximumValue {
 		return n.String()
 	}
 
@@ -568,7 +658,7 @@ func formatRoman(n *big.Int, upper bool) string {
 }
 
 func formatWords(n *big.Int, lang, caseStyle string) string {
-	if lang != "en" && lang != "" {
+	if lang != formatLanguageEnglish && lang != "" {
 		return formatWordsLang(n, lang, caseStyle)
 	}
 
@@ -579,9 +669,9 @@ func formatWords(n *big.Int, lang, caseStyle string) string {
 
 func applyCase(s, caseStyle string) string {
 	switch caseStyle {
-	case nameUpper2:
+	case nameUpperCase:
 		return strings.ToUpper(s)
-	case "title":
+	case formatCaseTitle:
 		return toTitleCase(s)
 	default:
 		return strings.ToLower(s)
@@ -649,10 +739,10 @@ func int64ToEnglishWords(n int64) string {
 	}
 
 	units := []unit{
-		{1000000000000, "trillion"},
-		{1000000000, "billion"},
-		{1000000, "million"},
-		{1000, "thousand"},
+		{wordTrillion, "trillion"},
+		{wordBillion, "billion"},
+		{wordMillion, "million"},
+		{wordThousand, "thousand"},
 	}
 
 	for _, u := range units {
@@ -662,9 +752,9 @@ func int64ToEnglishWords(n int64) string {
 		}
 	}
 
-	if n >= 100 {
-		parts = append(parts, onesWords(n/100)+" hundred")
-		n %= 100
+	if n >= wordHundred {
+		parts = append(parts, onesWords(n/wordHundred)+" hundred")
+		n %= wordHundred
 	}
 
 	if n > 0 {
@@ -672,12 +762,12 @@ func int64ToEnglishWords(n int64) string {
 			parts = append(parts, nameAnd)
 		}
 
-		if n < 20 {
+		if n < wordSmallNumberLimit {
 			parts = append(parts, onesWords(n))
 		} else {
-			s := tensWords(n / 10)
-			if n%10 > 0 {
-				s += " " + onesWords(n%10)
+			s := tensWords(n / numericDecimalRadix)
+			if n%numericDecimalRadix > 0 {
+				s += " " + onesWords(n%numericDecimalRadix)
 			}
 
 			parts = append(parts, s)
@@ -688,15 +778,15 @@ func int64ToEnglishWords(n int64) string {
 }
 
 func applyOrdinalWords(words, lang, caseStyle, suffix string) string {
-	if lang == "de" {
+	if lang == formatLanguageGerman {
 		return applyOrdinalWordsDe(words, caseStyle, suffix)
 	}
 
-	if lang == "fr" {
+	if lang == formatLanguageFrench {
 		return applyOrdinalWordsFr(words, caseStyle, suffix)
 	}
 
-	if lang == "it" {
+	if lang == formatLanguageItalian {
 		return applyOrdinalWordsIt(words, caseStyle, suffix)
 	}
 
@@ -743,7 +833,7 @@ func englishWordToOrdinal(word string) string {
 		return word[:len(word)-1] + "ieth"
 	}
 
-	return word + "th"
+	return word + ordinalEnglishGeneralSuffix
 }
 
 func applyOrdinalDecimal(result string, n *big.Int, lang, suffix string) string {
@@ -751,29 +841,29 @@ func applyOrdinalDecimal(result string, n *big.Int, lang, suffix string) string 
 	// NOT a literal suffix. We still use language-appropriate ordinal suffixes.
 	_ = suffix // language hint, not literal
 
-	if lang != "en" && lang != "" {
+	if lang != formatLanguageEnglish && lang != "" {
 		// For non-English, just append the number — implementation-defined
 		return result
 	}
 
 	// English ordinal suffixes
 	val := new(big.Int).Abs(n)
-	mod100 := new(big.Int).Mod(val, big.NewInt(100)).Int64()
-	mod10 := new(big.Int).Mod(val, big.NewInt(10)).Int64()
+	mod100 := new(big.Int).Mod(val, big.NewInt(ordinalLastTwoDigitsModulus)).Int64()
+	mod10 := new(big.Int).Mod(val, big.NewInt(numericDecimalRadix)).Int64()
 
-	if mod100 >= 11 && mod100 <= 13 {
-		return result + "th"
+	if mod100 >= ordinalTeenFirst && mod100 <= ordinalTeenLast {
+		return result + ordinalEnglishGeneralSuffix
 	}
 
 	switch mod10 {
-	case 1:
-		return result + "st"
-	case 2:
-		return result + "nd"
-	case 3:
-		return result + "rd"
+	case ordinalFirstLastDigit:
+		return result + ordinalEnglishFirstSuffix
+	case ordinalSecondLastDigit:
+		return result + ordinalEnglishSecondSuffix
+	case ordinalThirdLastDigit:
+		return result + ordinalEnglishThirdSuffix
 	default:
-		return result + "th"
+		return result + ordinalEnglishGeneralSuffix
 	}
 }
 
@@ -785,7 +875,7 @@ func formatIntegerDecimal(n *big.Int, picture string) (string, error) {
 
 	result := n.String()
 	if len(result) < parsed.minDigits {
-		result = strings.Repeat("0", parsed.minDigits-len(result)) + result
+		result = strings.Repeat(formatZeroDigit, parsed.minDigits-len(result)) + result
 	}
 
 	if len(parsed.groups) > 1 {
@@ -858,13 +948,13 @@ func parseIntegerDecimalPicture(picture string) (integerDecimalPicture, error) {
 		return parsed, &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid picture: '#' after '0' in %q", picture)}
 	}
 
-	parsed.minDigits = max(parsed.minDigits, 1)
+	parsed.minDigits = max(parsed.minDigits, integerMinimumDecimalDigits)
 
 	return parsed, nil
 }
 
 func integerGroupingRepeats(groups []int) bool {
-	if len(groups) == 2 {
+	if len(groups) == integerRepeatingGroupPair {
 		return true // One separator repeats at its rightmost interval.
 	}
 
@@ -929,19 +1019,24 @@ func unicodeDigitZero(r rune) rune {
 	if r >= '0' && r <= '9' {
 		return '0'
 	}
-	// Unicode decimal digit blocks are consecutive groups of 10.
-	// Walk backwards from r to find the zero.
-	for z := r; z >= r-9 && z >= 0; z-- {
-		if !unicode.IsDigit(z) {
-			return z + 1
+	// Contiguous Nd ranges can contain several adjacent digit alphabets.
+	for _, block := range unicode.Nd.R16 {
+		if r >= rune(block.Lo) && r <= rune(block.Hi) {
+			return r - (r-rune(block.Lo))%formatterDecimalDigitCount
 		}
 	}
 
-	return r - 9 // Fallback: assume it's a digit 9
+	for _, block := range unicode.Nd.R32 {
+		if r >= rune(block.Lo) && r <= rune(block.Hi) { // #nosec G115 -- Unicode Nd tables contain only scalar code points.
+			return r - (r-rune(block.Lo))%formatterDecimalDigitCount // #nosec G115 -- Unicode Nd tables contain only scalar code points.
+		}
+	}
+
+	return '0'
 }
 
 func isDecimalDigitInRange(r rune, zero rune) bool {
-	return r >= zero && r <= zero+9
+	return r >= zero && r <= zero+formatterLastDecimalDigitOffset
 }
 
 func translateDigits(s string, zeroDigit rune) string {
@@ -962,11 +1057,11 @@ func translateDigits(s string, zeroDigit rune) string {
 
 func formatWordsLang(n *big.Int, lang, caseStyle string) string {
 	switch lang {
-	case "de":
+	case formatLanguageGerman:
 		return applyCase(intToGermanWords(n), caseStyle)
-	case "fr":
+	case formatLanguageFrench:
 		return applyCase(intToFrenchWords(n), caseStyle)
-	case "it":
+	case formatLanguageItalian:
 		return applyCase(intToItalianWords(n), caseStyle)
 	default:
 		return applyCase(intToEnglishWords(n), caseStyle)
@@ -975,7 +1070,7 @@ func formatWordsLang(n *big.Int, lang, caseStyle string) string {
 
 func intToGermanWords(n *big.Int) string {
 	if n.Sign() == 0 {
-		return jsonKindNull
+		return wordGermanZero
 	}
 
 	if !n.IsInt64() {
@@ -987,19 +1082,19 @@ func intToGermanWords(n *big.Int) string {
 
 func int64ToGermanWords(n int64) string {
 	if n == 0 {
-		return jsonKindNull
+		return wordGermanZero
 	}
 
 	if n < 0 {
 		return "minus " + int64ToGermanWords(-n)
 	}
 
-	if n < 1000 {
+	if n < wordThousand {
 		return germanWordsUnderThousand(n)
 	}
 
-	if n < 1000000 {
-		q := n / 1000
+	if n < wordMillion {
+		q := n / wordThousand
 
 		w := ""
 		if q == 1 {
@@ -1009,15 +1104,15 @@ func int64ToGermanWords(n int64) string {
 		}
 
 		w += "tausend"
-		if n%1000 != 0 {
-			w += int64ToGermanWords(n % 1000)
+		if n%wordThousand != 0 {
+			w += int64ToGermanWords(n % wordThousand)
 		}
 
 		return w
 	}
 
-	if n < 1000000000 {
-		q := n / 1000000
+	if n < wordBillion {
+		q := n / wordMillion
 
 		w := ""
 		if q == 1 {
@@ -1026,14 +1121,14 @@ func int64ToGermanWords(n int64) string {
 			w = int64ToGermanWords(q) + " Millionen "
 		}
 
-		if n%1000000 != 0 {
-			w += int64ToGermanWords(n % 1000000)
+		if n%wordMillion != 0 {
+			w += int64ToGermanWords(n % wordMillion)
 		}
 
 		return w
 	}
 
-	return fmt.Sprintf("%d", n)
+	return fmt.Sprintf(formatDecimalPrintf, n)
 }
 
 func germanWordsUnderThousand(n int64) string {
@@ -1043,31 +1138,31 @@ func germanWordsUnderThousand(n int64) string {
 	}
 	tens := []string{"", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"}
 
-	if n < 20 {
+	if n < wordSmallNumberLimit {
 		return ones[n] // #nosec G602 -- The caller passes 1..999; this branch restricts n to 1..19.
 	}
 
-	if n < 100 {
-		if n%10 == 0 {
-			return tens[n/10]
+	if n < wordHundred {
+		if n%numericDecimalRadix == 0 {
+			return tens[n/numericDecimalRadix]
 		}
 
-		unit := ones[n%10]
-		if n%10 == 1 {
+		unit := ones[n%numericDecimalRadix]
+		if n%numericDecimalRadix == 1 {
 			unit = nameEin
 		}
 
-		return unit + "und" + tens[n/10]
+		return unit + "und" + tens[n/numericDecimalRadix]
 	}
 
-	w := ones[n/100]
+	w := ones[n/wordHundred]
 	if w == nameEins {
 		w = nameEin
 	}
 
 	w += "hundert"
-	if n%100 != 0 {
-		w += int64ToGermanWords(n % 100)
+	if n%wordHundred != 0 {
+		w += int64ToGermanWords(n % wordHundred)
 	}
 
 	return w
@@ -1075,7 +1170,7 @@ func germanWordsUnderThousand(n int64) string {
 
 func applyOrdinalWordsDe(words, caseStyle, suffix string) string {
 	base := germanOrdinalWord(strings.ToLower(words))
-	if suffix == "" || suffix == "%spellout-ordinal" {
+	if suffix == "" || suffix == ordinalSpellout {
 		return applyCase(base, caseStyle)
 	}
 
@@ -1084,7 +1179,7 @@ func applyOrdinalWordsDe(words, caseStyle, suffix string) string {
 
 func germanOrdinalWord(words string) string {
 	irregulars := map[string]string{
-		jsonKindNull:    "nullte",
+		wordGermanZero:  "nullte",
 		nameEin:         "erste",
 		nameEins:        "erste",
 		nameDrei:        "dritte",
@@ -1095,7 +1190,7 @@ func germanOrdinalWord(words string) string {
 		return ordinal
 	}
 
-	if n, ok := germanWordToNumber(words); ok && n < 20 {
+	if n, ok := germanWordToNumber(words); ok && n < wordSmallNumberLimit {
 		return words + "te"
 	}
 
@@ -1104,7 +1199,7 @@ func germanOrdinalWord(words string) string {
 
 func germanWordToNumber(word string) (int64, bool) {
 	units := map[string]int64{
-		jsonKindNull: 0, nameEin: 1, nameEins: 1, "zwei": 2, nameDrei: 3, "vier": 4,
+		wordGermanZero: 0, nameEin: 1, nameEins: 1, "zwei": 2, nameDrei: 3, "vier": 4,
 		"fünf": 5, "sechs": 6, wordGermanSeven: 7, nameAcht: 8, "neun": 9, "zehn": 10,
 		"elf": 11, "zwölf": 12, "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15,
 		"sechzehn": 16, "siebzehn": 17, "achtzehn": 18, "neunzehn": 19,
@@ -1188,16 +1283,16 @@ func int64ToFrenchWords(n int64) string {
 	}
 	tens := []string{"", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"} //nolint:misspell // French cardinal number, not an English spelling.
 
-	if n < 20 {
+	if n < wordSmallNumberLimit {
 		return ones[n]
 	}
 
-	if n < 100 {
+	if n < wordHundred {
 		return frenchTensWords(n, ones, tens)
 	}
 
-	if n < 1000 {
-		q := n / 100
+	if n < wordThousand {
+		q := n / wordHundred
 
 		w := ""
 		if q == 1 {
@@ -1206,7 +1301,7 @@ func int64ToFrenchWords(n int64) string {
 			w = ones[q] + " cent"
 		}
 
-		r := n % 100
+		r := n % wordHundred
 		if r == 0 && q > 1 {
 			w += "s"
 		}
@@ -1218,8 +1313,8 @@ func int64ToFrenchWords(n int64) string {
 		return w
 	}
 
-	if n < 1000000 {
-		q := n / 1000
+	if n < wordMillion {
+		q := n / wordThousand
 
 		w := ""
 		if q == 1 {
@@ -1228,7 +1323,7 @@ func int64ToFrenchWords(n int64) string {
 			w = int64ToFrenchWords(q) + " mille"
 		}
 
-		r := n % 1000
+		r := n % wordThousand
 		if r != 0 {
 			w += " " + int64ToFrenchWords(r)
 		}
@@ -1236,19 +1331,19 @@ func int64ToFrenchWords(n int64) string {
 		return w
 	}
 
-	return fmt.Sprintf("%d", n)
+	return fmt.Sprintf(formatDecimalPrintf, n)
 }
 
 func frenchTensWords(n int64, ones, tens []string) string {
-	t := n / 10
+	t := n / numericDecimalRadix
 
-	u := n % 10
-	if t == 7 || t == 9 {
-		u += 10
+	u := n % numericDecimalRadix
+	if t == frenchCompositeSeventy || t == frenchCompositeNinety {
+		u += numericDecimalRadix
 	}
 
 	if u == 0 {
-		if t == 8 {
+		if t == frenchCompositeEighty {
 			return "quatre-vingts"
 		}
 
@@ -1256,11 +1351,11 @@ func frenchTensWords(n int64, ones, tens []string) string {
 	}
 
 	sep := "-"
-	if u == 1 && t != 8 && t != 9 {
+	if u == frenchConjunctionOne && t != frenchCompositeEighty && t != frenchCompositeNinety {
 		sep = " et "
 	}
 
-	if u == 11 && t == 7 {
+	if u == frenchElevenUnit && t == frenchCompositeSeventy {
 		sep = " et "
 	}
 
@@ -1305,28 +1400,28 @@ func int64ToItalianWords(n int64) string {
 	}
 	tens := []string{"", "", "venti", "trenta", "quaranta", "cinquanta", "sessanta", "settanta", "ottanta", "novanta"}
 
-	if n < 20 {
+	if n < wordSmallNumberLimit {
 		return ones[n]
 	}
 
-	if n < 100 {
-		t := n / 10
-		u := n % 10
+	if n < wordHundred {
+		t := n / numericDecimalRadix
+		u := n % numericDecimalRadix
 
 		base := tens[t]
 		if u == 0 {
 			return base
 		}
 
-		if u == 1 || u == 8 {
+		if u == italianElidedOne || u == italianElidedEight {
 			base = base[:len(base)-1]
 		}
 
 		return base + ones[u]
 	}
 
-	if n < 1000 {
-		q := n / 100
+	if n < wordThousand {
+		q := n / wordHundred
 
 		w := ""
 		if q == 1 {
@@ -1335,7 +1430,7 @@ func int64ToItalianWords(n int64) string {
 			w = ones[q] + "cento"
 		}
 
-		r := n % 100
+		r := n % wordHundred
 		if r != 0 {
 			w += int64ToItalianWords(r)
 		}
@@ -1343,8 +1438,8 @@ func int64ToItalianWords(n int64) string {
 		return w
 	}
 
-	if n < 1000000 {
-		q := n / 1000
+	if n < wordMillion {
+		q := n / wordThousand
 
 		w := ""
 		if q == 1 {
@@ -1353,7 +1448,7 @@ func int64ToItalianWords(n int64) string {
 			w = int64ToItalianWords(q) + "mila"
 		}
 
-		r := n % 1000
+		r := n % wordThousand
 		if r != 0 {
 			w += int64ToItalianWords(r)
 		}
@@ -1361,21 +1456,21 @@ func int64ToItalianWords(n int64) string {
 		return w
 	}
 
-	return fmt.Sprintf("%d", n)
+	return fmt.Sprintf(formatDecimalPrintf, n)
 }
 
 func applyOrdinalWordsIt(words, caseStyle, suffix string) string {
 	lower := strings.ToLower(words)
 
 	switch suffix {
-	case "", "%spellout-ordinal", "%spellout-ordinal-masculine", "-o":
-		return applyCase(italianOrdinalWord(lower, false), caseStyle)
-	case "%spellout-ordinal-feminine", "-a":
-		return applyCase(italianOrdinalWord(lower, true), caseStyle)
+	case "", ordinalSpellout, ordinalSpelloutMasculine, ordinalMasculineSuffix:
+		return applyCase(italianOrdinalWord(lower, ordinalMasculine), caseStyle)
+	case ordinalSpelloutFeminine, ordinalFeminineSuffix:
+		return applyCase(italianOrdinalWord(lower, ordinalFeminine), caseStyle)
 	default:
 		n := italianWordToNumber(lower)
 		if n == 0 {
-			return applyCase(italianOrdinalWord(lower, false), caseStyle)
+			return applyCase(italianOrdinalWord(lower, ordinalMasculine), caseStyle)
 		}
 
 		return applyCase(italianOrdinalWithSuffix(n, suffix), caseStyle)
@@ -1438,5 +1533,5 @@ func italianOrdinalWithSuffix(n int64, suffix string) string {
 		return stem + sfx
 	}
 
-	return fmt.Sprintf("%d°", n)
+	return fmt.Sprintf(italianOrdinalDecimalFormat, n)
 }

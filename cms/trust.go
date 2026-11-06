@@ -12,6 +12,13 @@ import (
 	"github.com/skarm/xmlsec/pki"
 )
 
+const (
+	maximumEvidenceBytes         = 64 << 20
+	maximumEvidenceCRLs          = 256
+	maximumEvidenceIntermediates = 64
+	maximumEvidenceOCSPResponses = 256
+)
+
 // TrustOptions selects an immutable PKIX and offline revocation verifier and an
 // explicit validation time. Embedded certificates are untrusted path candidates.
 // The caller supplies trust anchors through Verifier; CMS SigningTime cannot
@@ -86,11 +93,11 @@ func (s *SignedData) applyTrust(ctx context.Context, result *Result, options Tru
 }
 
 func (s *SignedData) signerTrustEvidence(ctx context.Context, evidence pki.Evidence) (pki.Evidence, error) {
-	if len(evidence.Intermediates) > 64 || len(evidence.CRLs) > 256 || len(evidence.OCSPResponses) > 256 {
+	if len(evidence.Intermediates) > maximumEvidenceIntermediates || len(evidence.CRLs) > maximumEvidenceCRLs || len(evidence.OCSPResponses) > maximumEvidenceOCSPResponses {
 		return pki.Evidence{}, ErrPolicy
 	}
 
-	remaining := 64 << 20
+	remaining := maximumEvidenceBytes
 
 	for _, group := range [][][]byte{evidence.Intermediates, evidence.CRLs, evidence.OCSPResponses} {
 		for _, raw := range group {
@@ -103,7 +110,7 @@ func (s *SignedData) signerTrustEvidence(ctx context.Context, evidence pki.Evide
 	}
 
 	merged := evidence
-	merged.Intermediates = make([][]byte, 0, min(64, len(evidence.Intermediates)+len(s.certificates)))
+	merged.Intermediates = make([][]byte, 0, min(maximumEvidenceIntermediates, len(evidence.Intermediates)+len(s.certificates)))
 	seen := make(map[[sha256.Size]byte]struct{})
 
 	for _, group := range [][][]byte{evidence.Intermediates, s.certificates} {
@@ -112,7 +119,7 @@ func (s *SignedData) signerTrustEvidence(ctx context.Context, evidence pki.Evide
 				return pki.Evidence{}, err
 			}
 
-			if len(candidate) > 1<<20 {
+			if len(candidate) > maximumCertificateBytes {
 				return pki.Evidence{}, ErrPolicy
 			}
 
@@ -123,7 +130,7 @@ func (s *SignedData) signerTrustEvidence(ctx context.Context, evidence pki.Evide
 
 			seen[digest] = struct{}{}
 
-			if len(merged.Intermediates) == 64 {
+			if len(merged.Intermediates) == maximumEvidenceIntermediates {
 				return pki.Evidence{}, ErrPolicy
 			}
 
@@ -209,17 +216,17 @@ func unrestrictedESSBinding(attrs []Attribute) error {
 			continue
 		}
 
-		value, err := der.Read(raw, 1<<20)
+		value, err := der.Read(raw, maximumAttributeBytes)
 		if err != nil {
 			return ErrSyntax
 		}
 
-		fields, err := der.Sequence(value, 1, 2)
+		fields, err := der.Sequence(value, signingCertificateMinimumFields, signingCertificateMaximumFields)
 		if err != nil {
 			return ErrSyntax
 		}
 
-		ids, err := der.Sequence(fields[0], 1, 32)
+		ids, err := der.Sequence(fields[0], 1, maximumSigningCertificateIDs)
 		if err != nil {
 			return ErrSyntax
 		}

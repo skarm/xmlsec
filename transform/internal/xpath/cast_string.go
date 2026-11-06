@@ -20,6 +20,35 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
+// IEEE parsing/formatting widths are bits, not mantissa precision or accounting
+// bytes. Canonical XPath float output uses decimal notation in [1e-6, 1e6),
+// otherwise scientific notation; -1 requests strconv's shortest round-trip form.
+const (
+	singleFloatBits          = 32
+	doubleFloatBits          = 64
+	positiveInfinitySign     = 1
+	negativeInfinitySign     = -1
+	plainFloatMinimum        = 0.000001
+	plainFloatMaximum        = 1_000_000
+	plainFloatFormat         = 'f'
+	scientificFloatFormat    = 'E'
+	shortestFloatDigits      = -1
+	positiveZeroLexical      = "0"
+	negativeZeroLexical      = "-0"
+	scientificExponentMarker = "E"
+	scientificIntegralSuffix = ".0"
+)
+
+// Temporal output layouts preserve XML Schema canonical padding, including
+// nine nanosecond digits before trailing-zero removal and at least four year digits.
+const (
+	canonicalDateFormat       = "%s-%02d-%02d"
+	canonicalClockFormat      = "%02d:%02d:%02d"
+	canonicalNanosecondFormat = ".%09d"
+	negativeYearFormat        = "-%04d"
+	nonnegativeYearFormat     = "%04d"
+)
+
 // AtomicToString returns the canonical string representation of an atomic value.
 func AtomicToString(v xdm.AtomicValue) (string, error) {
 	return atomicToString(v)
@@ -76,7 +105,7 @@ func formatAtomicString(value xdm.AtomicValue) (string, error) {
 func formatAtomicInteger(value xdm.AtomicValue) (string, error) {
 	switch number := value.Value.(type) {
 	case int64:
-		return strconv.FormatInt(number, 10), nil
+		return strconv.FormatInt(number, numericDecimalRadix), nil
 	case *big.Int:
 		return number.String(), nil
 	default:
@@ -130,13 +159,13 @@ func formatAtomicTemporal(value xdm.AtomicValue) (string, error) {
 }
 
 func formatAtomicDate(instant time.Time) string {
-	return fmt.Sprintf("%s-%02d-%02d", formatXSDYear(instant.Year()), instant.Month(), instant.Day())
+	return fmt.Sprintf(canonicalDateFormat, formatXSDYear(instant.Year()), instant.Month(), instant.Day())
 }
 
 func formatAtomicClock(instant time.Time) string {
-	clock := fmt.Sprintf("%02d:%02d:%02d", instant.Hour(), instant.Minute(), instant.Second())
+	clock := fmt.Sprintf(canonicalClockFormat, instant.Hour(), instant.Minute(), instant.Second())
 	if nanos := instant.Nanosecond(); nanos > 0 {
-		clock += strings.TrimRight(fmt.Sprintf(".%09d", nanos), "0")
+		clock += strings.TrimRight(fmt.Sprintf(canonicalNanosecondFormat, nanos), "0")
 	}
 
 	return clock
@@ -186,7 +215,7 @@ func formatUserAtomicValue(value any) string {
 	case string:
 		return typed
 	case int64:
-		return strconv.FormatInt(typed, 10)
+		return strconv.FormatInt(typed, numericDecimalRadix)
 	case *big.Int:
 		return typed.String()
 	case *big.Rat:
@@ -213,29 +242,29 @@ func formatXPathDouble(f float64) string {
 		return lexicon.FloatNaN
 	}
 
-	if math.IsInf(f, 1) {
+	if math.IsInf(f, positiveInfinitySign) {
 		return lexicon.FloatINF
 	}
 
-	if math.IsInf(f, -1) {
+	if math.IsInf(f, negativeInfinitySign) {
 		return lexicon.FloatNegINF
 	}
 
 	if f == 0 {
 		if math.Signbit(f) {
-			return "-0"
+			return negativeZeroLexical
 		}
 
-		return "0"
+		return positiveZeroLexical
 	}
 
 	abs := math.Abs(f)
 	// XPath F&O: plain decimal for abs in [1e-6, 1e6), scientific notation otherwise.
-	if abs >= 0.000001 && abs < 1_000_000 {
-		return strconv.FormatFloat(f, 'f', -1, 64)
+	if abs >= plainFloatMinimum && abs < plainFloatMaximum {
+		return strconv.FormatFloat(f, plainFloatFormat, shortestFloatDigits, doubleFloatBits)
 	}
 
-	return canonicalScientificFloat(strconv.FormatFloat(f, 'E', -1, 64))
+	return canonicalScientificFloat(strconv.FormatFloat(f, scientificFloatFormat, shortestFloatDigits, doubleFloatBits))
 }
 
 // formatXPathFloat formats a float64 (representing an xs:float) using
@@ -246,39 +275,39 @@ func formatXPathFloat(f float64) string {
 		return lexicon.FloatNaN
 	}
 
-	if math.IsInf(float64(f32), 1) {
+	if math.IsInf(float64(f32), positiveInfinitySign) {
 		return lexicon.FloatINF
 	}
 
-	if math.IsInf(float64(f32), -1) {
+	if math.IsInf(float64(f32), negativeInfinitySign) {
 		return lexicon.FloatNegINF
 	}
 
 	if f32 == 0 {
 		if math.Signbit(float64(f32)) {
-			return "-0"
+			return negativeZeroLexical
 		}
 
-		return "0"
+		return positiveZeroLexical
 	}
 
 	abs := math.Abs(float64(f32))
-	if abs >= 0.000001 && abs < 1_000_000 {
-		return strconv.FormatFloat(float64(f32), 'f', -1, 32)
+	if abs >= plainFloatMinimum && abs < plainFloatMaximum {
+		return strconv.FormatFloat(float64(f32), plainFloatFormat, shortestFloatDigits, singleFloatBits)
 	}
 
-	return canonicalScientificFloat(strconv.FormatFloat(float64(f32), 'E', -1, 32))
+	return canonicalScientificFloat(strconv.FormatFloat(float64(f32), scientificFloatFormat, shortestFloatDigits, singleFloatBits))
 }
 
 // canonicalScientificFloat normalizes the exponent and requires a decimal point
 // in the mantissa of the scientific form produced by strconv.FormatFloat.
 func canonicalScientificFloat(s string) string {
-	if idx := strings.Index(s, "E"); idx >= 0 {
+	if idx := strings.Index(s, scientificExponentMarker); idx >= 0 {
 		mantissa := s[:idx]
 		expPart := s[idx+1:]
 
 		if !strings.Contains(mantissa, ".") {
-			mantissa += ".0"
+			mantissa += scientificIntegralSuffix
 		}
 
 		expPart = strings.TrimPrefix(expPart, "+")
@@ -296,7 +325,7 @@ func canonicalScientificFloat(s string) string {
 			}
 		}
 
-		s = mantissa + "E" + expPart
+		s = mantissa + scientificExponentMarker + expPart
 	}
 
 	return s
@@ -308,10 +337,10 @@ func canonicalScientificFloat(s string) string {
 // - Years > 9999 use as many digits as needed
 func formatXSDYear(year int) string {
 	if year < 0 {
-		return fmt.Sprintf("-%04d", -year)
+		return fmt.Sprintf(negativeYearFormat, -year)
 	}
 
-	return fmt.Sprintf("%04d", year)
+	return fmt.Sprintf(nonnegativeYearFormat, year)
 }
 
 func castToString(v xdm.AtomicValue) (xdm.AtomicValue, error) {
@@ -379,7 +408,7 @@ func collapseXMLWhitespace(s string) string { return xmlchar.CollapseSpace(s) }
 
 // parseXPathDouble parses an XML Schema double, using infinity on overflow.
 func parseXPathDouble(s string) (float64, error) {
-	return parseXPathFloating(s, 64)
+	return parseXPathFloating(s, doubleFloatBits)
 }
 
 func parseXPathFloating(s string, bits int) (float64, error) {
@@ -388,16 +417,16 @@ func parseXPathFloating(s string, bits int) (float64, error) {
 	}
 
 	switch s {
-	case "INF", "+INF":
-		return math.Inf(1), nil
+	case lexicon.FloatINF, lexicon.FloatPosINF:
+		return math.Inf(positiveInfinitySign), nil
 	case lexicon.FloatNegINF:
-		return math.Inf(-1), nil
+		return math.Inf(negativeInfinitySign), nil
 	case lexicon.FloatNaN:
 		return math.NaN(), nil
 	}
 
 	f, err := strconv.ParseFloat(s, bits)
-	if errors.Is(err, strconv.ErrRange) && math.IsInf(f, 0) {
+	if errors.Is(err, strconv.ErrRange) && math.IsInf(f, eitherInfinitySign) {
 		return f, nil
 	}
 

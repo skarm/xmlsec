@@ -270,7 +270,7 @@ func (ec *execContext) xmlSpacePreserve(elem *xdm.Element) bool {
 			break
 		}
 
-		if v, ok := e.GetAttribute("xml:space"); ok {
+		if v, ok := e.GetAttribute(lexicon.QNameXMLSpace); ok {
 			preserve = v == lexicon.SpacePreserve
 
 			chain = append(chain, e)
@@ -363,8 +363,12 @@ func (ec *execContext) stripWhitespaceFromNode(root xdm.Node) {
 // per node, and keeps this pre-pass consistent with shouldStripWhitespace
 // (both ultimately consult stripVerdict) without calling it directly.
 func (ec *execContext) stripWhitespaceFromNodeInto(root xdm.Node, removed map[xdm.Node]struct{}) {
+	const (
+		stripTraversalInitialCapacity = 32
+	)
+
 	// Use an explicit stack to avoid deep recursion on large documents.
-	stack := make([]stripStackFrame, 0, 32)
+	stack := make([]stripStackFrame, 0, stripTraversalInitialCapacity)
 
 	stack = append(stack, stripStackFrame{node: root, preserve: inheritedXMLSpace(root) == lexicon.SpacePreserve})
 	for len(stack) > 0 {
@@ -483,7 +487,11 @@ func rankSpaceRule(nt nameTest) int {
 }
 
 func packSpaceRank(importPrec, priority int) int {
-	return importPrec<<2 | priority
+	const (
+		spaceRulePriorityBits = 2
+	)
+
+	return importPrec<<spaceRulePriorityBits | priority
 }
 
 // matchSpaceNameTest checks if an element matches a strip/preserve-space
@@ -519,16 +527,22 @@ func matchSpaceExpandedName(nt nameTest, local, uri string) bool {
 // nameTestPriority returns the priority of a nameTest for conflict resolution.
 // Specific names > prefix:* or *:NCName > *
 func nameTestPriority(nt nameTest) int {
+	const (
+		spaceRuleAnyName           = 0
+		spaceRuleSpecificName      = 2
+		spaceRuleWildcardComponent = 1
+	)
+
 	if nt.Local == "*" && nt.Prefix == "" && !nt.HasURI {
-		return 0 // "*" (matches any element in any namespace)
+		return spaceRuleAnyName // "*" (matches any element in any namespace)
 	}
 
 	if nt.Local == "*" || nt.Prefix == "*" {
 		// "prefix:*" / "Q{uri}*" (namespace wildcard) or "*:NCName"
-		return 1
+		return spaceRuleWildcardComponent
 	}
 
-	return 2 // specific name
+	return spaceRuleSpecificName // specific name
 }
 
 // whitespaceStripParent returns the parent element to evaluate strip/preserve
@@ -556,7 +570,7 @@ func inheritedXMLSpace(node xdm.Node) string {
 			continue
 		}
 
-		if v, ok := e.GetAttribute("xml:space"); ok {
+		if v, ok := e.GetAttribute(lexicon.QNameXMLSpace); ok {
 			return v
 		}
 	}
@@ -573,7 +587,7 @@ func childXMLSpacePreserve(node xdm.Node, inherited bool) bool {
 		return inherited
 	}
 
-	if v, ok := elem.GetAttribute("xml:space"); ok {
+	if v, ok := elem.GetAttribute(lexicon.QNameXMLSpace); ok {
 		return v == lexicon.SpacePreserve
 	}
 

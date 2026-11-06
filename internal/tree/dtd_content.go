@@ -78,6 +78,10 @@ func (d *dtdState) attributeReference(text string) (string, string, error) {
 		return "", "", fmt.Errorf("%w: undeclared entity %q", ErrMalformed, name)
 	}
 
+	if d.standalone && !d.inDTD && entity.declaredOutside {
+		return "", "", fmt.Errorf("%w: standalone entity declared outside document entity", ErrMalformed)
+	}
+
 	if entity.external || entity.notation != "" {
 		return "", "", fmt.Errorf("%w: external entity in attribute", ErrMalformed)
 	}
@@ -282,11 +286,11 @@ func (p *dtdContentParser) step() error {
 	switch {
 	case strings.HasPrefix(p.text, dtdDoctypeOpen):
 		return p.doctype()
-	case strings.HasPrefix(p.text, "<!--"):
+	case strings.HasPrefix(p.text, dtdCommentOpen):
 		return p.comment()
 	case strings.HasPrefix(p.text, "<![CDATA["):
 		return p.cdata()
-	case strings.HasPrefix(p.text, "<?"):
+	case strings.HasPrefix(p.text, dtdPIOpen):
 		return p.processingInstruction()
 	case strings.HasPrefix(p.text, "</"):
 		return p.endTag()
@@ -383,6 +387,36 @@ func (p *dtdContentParser) processingInstruction() error {
 		return fmt.Errorf("%w: XML declaration position", ErrMalformed)
 	}
 
+	if body[:nameEnd] == lexicon.PrefixXML {
+		declaration, err := normalizeDTDVersion([]byte(body[nameEnd:]))
+		if err != nil {
+			return err
+		}
+
+		if _, err := validateDeclaration(declaration); err != nil {
+			return err
+		}
+
+		attrs, err := declarationAttributes(declaration)
+		if err != nil {
+			return err
+		}
+
+		for _, attr := range attrs {
+			if attr.Name.Local == lexicon.DeclStandalone && attr.Value == lexicon.ValueYes {
+				p.state.standalone = true
+			}
+		}
+
+		if err := p.output.write("<?xml" + string(declaration) + "?>"); err != nil {
+			return err
+		}
+
+		p.text = p.text[end:]
+
+		return nil
+	}
+
 	if body[:nameEnd] != lexicon.PrefixXML {
 		at := nameEnd
 		for at < len(body) && spaceByte(body[at]) {
@@ -411,7 +445,7 @@ func (p *dtdContentParser) endTag() error {
 		return err
 	}
 
-	name := strings.TrimRight(p.text[2:end-1], " \t\r\n")
+	name := strings.TrimRight(p.text[2:end-1], lexicon.XMLWhitespace)
 	if len(p.stack) == 0 || p.stack[len(p.stack)-1] != name {
 		return fmt.Errorf("%w: unbalanced entity elements", ErrMalformed)
 	}
@@ -495,6 +529,10 @@ func (p *dtdContentParser) reference() error {
 		entity, ok := p.state.entities[name]
 		if !ok {
 			return fmt.Errorf("%w: undeclared entity %q", ErrMalformed, name)
+		}
+
+		if p.state.standalone && entity.declaredOutside {
+			return fmt.Errorf("%w: standalone entity declared outside document entity", ErrMalformed)
 		}
 
 		if entity.notation != "" {

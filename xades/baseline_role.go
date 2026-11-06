@@ -10,7 +10,23 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+)
+
+const (
+	nameCertifiedRole                     = "CertifiedRole"
+	nameCertifiedRolesV2                  = "CertifiedRolesV2"
+	nameClaimedRole                       = "ClaimedRole"
+	nameClaimedRoles                      = "ClaimedRoles"
+	nameOtherAttributeCertificate         = "OtherAttributeCertificate"
+	nameSignedAssertion                   = "SignedAssertion"
+	nameSignedAssertions                  = "SignedAssertions"
+	nameX509AttributeCertificate          = "X509AttributeCertificate"
+	maximumAttributeCertificateAttributes = 256
+	maximumAttributeCertificateExtensions = 256
+	maximumAttributeCertificateValues     = 256
+	maximumRoleValues                     = 64
 )
 
 func parseBaselineRoles(ctx context.Context, element document.Element, result *BaselineResult) error {
@@ -26,7 +42,7 @@ func parseBaselineRoles(ctx context.Context, element document.Element, result *B
 	previous := -1
 
 	for _, group := range groups {
-		index := slices.Index([]document.Name{name("ClaimedRoles"), name("CertifiedRolesV2"), name("SignedAssertions")}, group.Name())
+		index := slices.Index([]document.Name{name(nameClaimedRoles), name(nameCertifiedRolesV2), name(nameSignedAssertions)}, group.Name())
 		if index < 0 || index <= previous || attrs(group) != nil {
 			return ErrProfile
 		}
@@ -41,7 +57,7 @@ func parseBaselineRoles(ctx context.Context, element document.Element, result *B
 		for _, value := range values {
 			switch index {
 			case 0:
-				if value.Name() != name("ClaimedRole") {
+				if value.Name() != name(nameClaimedRole) {
 					return ErrProfile
 				}
 
@@ -53,7 +69,7 @@ func parseBaselineRoles(ctx context.Context, element document.Element, result *B
 
 				result.certifiedRoles = append(result.certifiedRoles, value)
 			case 2:
-				if value.Name() != name("SignedAssertion") {
+				if value.Name() != name(nameSignedAssertion) {
 					return ErrProfile
 				}
 
@@ -66,16 +82,16 @@ func parseBaselineRoles(ctx context.Context, element document.Element, result *B
 }
 
 func buildBaselineRoles(ctx context.Context, properties BaselineProperties) (*tree.Node, error) {
-	out := xnode("SignerRoleV2")
+	out := xnode(nameSignerRoleV2)
 
 	groups := []struct {
 		local  string
 		child  string
 		values []PropertyValue
 	}{
-		{"ClaimedRoles", "ClaimedRole", properties.ClaimedRoles},
-		{"CertifiedRolesV2", "CertifiedRole", properties.CertifiedRoles},
-		{"SignedAssertions", "SignedAssertion", properties.SignedAssertions},
+		{nameClaimedRoles, nameClaimedRole, properties.ClaimedRoles},
+		{nameCertifiedRolesV2, nameCertifiedRole, properties.CertifiedRoles},
+		{nameSignedAssertions, nameSignedAssertion, properties.SignedAssertions},
 	}
 
 	for _, group := range groups {
@@ -83,7 +99,7 @@ func buildBaselineRoles(ctx context.Context, properties BaselineProperties) (*tr
 			continue
 		}
 
-		if len(group.values) > 64 {
+		if len(group.values) > maximumRoleValues {
 			return nil, ErrProfile
 		}
 
@@ -94,7 +110,7 @@ func buildBaselineRoles(ctx context.Context, properties BaselineProperties) (*tr
 				return nil, err
 			}
 
-			if group.child == "CertifiedRole" {
+			if group.child == nameCertifiedRole {
 				doc := tree.FromNodes([]*tree.Node{n}, document.DefaultLimits())
 				if err := checkCertifiedRole(ctx, doc.Root()); err != nil {
 					return nil, err
@@ -115,7 +131,7 @@ func buildBaselineRoles(ctx context.Context, properties BaselineProperties) (*tr
 }
 
 func checkCertifiedRole(ctx context.Context, element document.Element) error {
-	if element.Name() != name("CertifiedRole") || attrs(element) != nil {
+	if element.Name() != name(nameCertifiedRole) || attrs(element) != nil {
 		return ErrProfile
 	}
 
@@ -125,11 +141,11 @@ func checkCertifiedRole(ctx context.Context, element document.Element) error {
 	}
 
 	switch values[0].Name() {
-	case name("OtherAttributeCertificate"):
+	case name(nameOtherAttributeCertificate):
 		return nil // Domain syntax and authority remain explicitly external.
-	case name("X509AttributeCertificate"):
+	case name(nameX509AttributeCertificate):
 		value := values[0]
-		if baselineAttrs(value, nil, "Id", attributeEncoding) != nil {
+		if baselineAttrs(value, nil, lexicon.SecurityAttrID, attributeEncoding) != nil {
 			return ErrProfile
 		}
 
@@ -138,7 +154,7 @@ func checkCertifiedRole(ctx context.Context, element document.Element) error {
 			return ErrProfile
 		}
 
-		raw, err := decodeElementBase64(ctx, value, 2<<20, 1<<20)
+		raw, err := decodeElementBase64(ctx, value, maximumRoleCertificateLexicalBytes, maximumCertificateBytes)
 		if err != nil {
 			return err
 		}
@@ -153,23 +169,33 @@ func checkCertifiedRole(ctx context.Context, element document.Element) error {
 // signed-field structure. Issuer trust, holder matching, signatures and
 // attribute-specific authorization are separate caller policy decisions.
 func checkAttributeCertificate(raw []byte) error {
-	value, err := der.Read(raw, 1<<20)
+	// RFC 5755's v2 envelope has three fields. Its signed info has seven
+	// mandatory fields and optional issuerUniqueID/extensions; v2 is encoded as 1.
+	const (
+		attributeCertificateFields         = 3
+		attributeCertificateRequiredFields = 7
+		attributeCertificateMaximumFields  = 9
+		attributeCertificateVersion2       = 1
+		attributeCertificateValidityFields = 2
+	)
+
+	value, err := der.Read(raw, maximumCertificateBytes)
 	if err != nil {
 		return errors.Join(ErrProfile, err)
 	}
 
-	fields, err := der.Sequence(value, 3, 3)
+	fields, err := der.Sequence(value, attributeCertificateFields, attributeCertificateFields)
 	if err != nil {
 		return ErrProfile
 	}
 
-	info, err := der.Sequence(fields[0], 7, 9)
+	info, err := der.Sequence(fields[0], attributeCertificateRequiredFields, attributeCertificateMaximumFields)
 	if err != nil {
 		return ErrProfile
 	}
 
 	var version int
-	if der.Decode(info[0], &version) != nil || version != 1 {
+	if der.Decode(info[0], &version) != nil || version != attributeCertificateVersion2 {
 		return ErrProfile
 	}
 
@@ -177,7 +203,7 @@ func checkAttributeCertificate(raw []byte) error {
 		return err
 	}
 
-	if !(der.Is(info[2], 0, asn1.TagSequence, true) || der.Is(info[2], 2, 0, true)) || len(info[2].Bytes) == 0 {
+	if !(der.Is(info[2], asn1.ClassUniversal, asn1.TagSequence, true) || der.Is(info[2], asn1.ClassContextSpecific, 0, true)) || len(info[2].Bytes) == 0 {
 		return ErrProfile
 	}
 
@@ -194,8 +220,8 @@ func checkAttributeCertificate(raw []byte) error {
 		return ErrProfile
 	}
 
-	validity, err := der.Sequence(info[5], 2, 2)
-	if err != nil || !der.Is(validity[0], 0, asn1.TagGeneralizedTime, false) || !der.Is(validity[1], 0, asn1.TagGeneralizedTime, false) {
+	validity, err := der.Sequence(info[5], attributeCertificateValidityFields, attributeCertificateValidityFields)
+	if err != nil || !der.Is(validity[0], asn1.ClassUniversal, asn1.TagGeneralizedTime, false) || !der.Is(validity[1], asn1.ClassUniversal, asn1.TagGeneralizedTime, false) {
 		return ErrProfile
 	}
 
@@ -203,20 +229,20 @@ func checkAttributeCertificate(raw []byte) error {
 		return err
 	}
 
-	at := 7
-	if at < len(info) && der.Is(info[at], 0, asn1.TagBitString, false) {
+	at := attributeCertificateRequiredFields
+	if at < len(info) && der.Is(info[at], asn1.ClassUniversal, asn1.TagBitString, false) {
 		at++
 	}
 
 	if at < len(info) {
-		if _, err := der.Sequence(info[at], 1, 256); err != nil {
+		if _, err := der.Sequence(info[at], 1, maximumAttributeCertificateExtensions); err != nil {
 			return ErrProfile
 		}
 
 		at++
 	}
 
-	if at != len(info) || !der.Is(fields[2], 0, asn1.TagBitString, false) || len(fields[2].Bytes) < 2 || fields[2].Bytes[0] != 0 {
+	if at != len(info) || !der.Is(fields[2], asn1.ClassUniversal, asn1.TagBitString, false) || len(fields[2].Bytes) < 2 || fields[2].Bytes[0] != 0 {
 		return ErrProfile
 	}
 
@@ -224,8 +250,14 @@ func checkAttributeCertificate(raw []byte) error {
 }
 
 func baselineAlgorithmIdentifier(value asn1.RawValue) error {
-	fields, err := der.Sequence(value, 1, 2)
-	if err != nil || !der.Is(fields[0], 0, asn1.TagOID, false) {
+	// AlgorithmIdentifier has a required OID and optional parameters.
+	const (
+		algorithmIdentifierMinimumFields = 1
+		algorithmIdentifierMaximumFields = 2
+	)
+
+	fields, err := der.Sequence(value, algorithmIdentifierMinimumFields, algorithmIdentifierMaximumFields)
+	if err != nil || !der.Is(fields[0], asn1.ClassUniversal, asn1.TagOID, false) {
 		return ErrProfile
 	}
 
@@ -233,18 +265,20 @@ func baselineAlgorithmIdentifier(value asn1.RawValue) error {
 }
 
 func checkAttributeValues(value asn1.RawValue) error {
-	attributes, err := der.Sequence(value, 1, 256)
+	const attributeFields = 2 // type OID and SET OF values
+
+	attributes, err := der.Sequence(value, 1, maximumAttributeCertificateAttributes)
 	if err != nil {
 		return ErrProfile
 	}
 
 	for _, attribute := range attributes {
-		pair, err := der.Sequence(attribute, 2, 2)
-		if err != nil || !der.Is(pair[0], 0, asn1.TagOID, false) {
+		pair, err := der.Sequence(attribute, attributeFields, attributeFields)
+		if err != nil || !der.Is(pair[0], asn1.ClassUniversal, asn1.TagOID, false) {
 			return ErrProfile
 		}
 
-		if _, err := der.SetFields(pair[1], 0, asn1.TagSet, 256); err != nil || len(pair[1].Bytes) == 0 {
+		if _, err := der.SetFields(pair[1], asn1.ClassUniversal, asn1.TagSet, maximumAttributeCertificateValues); err != nil || len(pair[1].Bytes) == 0 {
 			return ErrProfile
 		}
 	}
@@ -253,14 +287,22 @@ func checkAttributeValues(value asn1.RawValue) error {
 }
 
 func checkAttributeHolder(value asn1.RawValue) error {
-	holder, err := der.Sequence(value, 1, 3)
+	// Holder permits nonempty selections of its three context-specific fields.
+	const (
+		holderMinimumFields = 1
+		holderMaximumFields = 3
+		holderFirstFieldTag = 0
+		holderLastFieldTag  = 2
+	)
+
+	holder, err := der.Sequence(value, holderMinimumFields, holderMaximumFields)
 	if err != nil {
 		return ErrProfile
 	}
 
 	previous := -1
 	for _, field := range holder {
-		if field.Class != 2 || !field.IsCompound || field.Tag < 0 || field.Tag > 2 || field.Tag <= previous || len(field.Bytes) == 0 {
+		if field.Class != asn1.ClassContextSpecific || !field.IsCompound || field.Tag < holderFirstFieldTag || field.Tag > holderLastFieldTag || field.Tag <= previous || len(field.Bytes) == 0 {
 			return ErrProfile
 		}
 

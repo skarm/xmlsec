@@ -11,6 +11,29 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Higher-order function dispatch and callback shape belong to F&O. A normal
+// typed reference has one declared type per parameter, not a repeated last type.
+const (
+	functionReferenceRepeatedParameterType = false
+	unaryCallbackArity                     = 1
+	binaryCallbackArity                    = 2
+	hofPredicateResultCardinality          = 1
+	hofApplyArrayCardinality               = 1
+	hofFunctionArgumentCardinality         = 1
+)
+
+// Nonpositive node configuration selects the existing default; nonpositive
+// operation limits disable only local accounting. Positive accumulating limits
+// bound item counts, including array members that contain no items. Work units
+// count logical iterations or the minimum cost of cloning one array member.
+const (
+	builtinNodeLimitDefault           = 0
+	builtinOperationLimitDisabled     = 0
+	accumulatingSequenceLimitDisabled = 0
+	builtinIterationWork              = 1
+	builtinMemberMinimumWork          = 1
+)
+
 // NewFunctionReference creates a typed reference without retaining an evaluation.
 // Argument conversion and calls use the live caller's context and resource policy.
 func NewFunctionReference(name QualifiedName, arity int, fn TypedFunction) xdm.FunctionItem {
@@ -19,7 +42,7 @@ func NewFunctionReference(name QualifiedName, arity int, fn TypedFunction) xdm.F
 	return xdm.FunctionItem{
 		Arity: arity, Name: name.Name, Namespace: name.URI,
 		ParamTypes: fn.FuncParamTypes(), ReturnType: fn.FuncReturnType(),
-		Invoke: lookupFunctionInvoker(nil, fn.FuncParamTypes(), false, qv, arity, fn),
+		Invoke: lookupFunctionInvoker(nil, fn.FuncParamTypes(), functionReferenceRepeatedParameterType, qv, arity, fn),
 	}
 }
 
@@ -32,7 +55,7 @@ func CallFunctionLookup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 }
 
 func fnFunctionLookup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	nameArg, err := extractSingleAtomicArg(args[0], "function-lookup()")
+	nameArg, err := extractSingleAtomicArg(args[0], fnNameFunctionLookup+"()")
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +64,7 @@ func fnFunctionLookup(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "function-lookup() first argument must be QName"}
 	}
 
-	arityArg, err := extractSingleAtomicArg(args[1], "function-lookup()")
+	arityArg, err := extractSingleAtomicArg(args[1], fnNameFunctionLookup+"()")
 	if err != nil {
 		return nil, err
 	}
@@ -166,23 +189,23 @@ func lookupRegisteredFunction(ec *evalContext, qv xdm.QNameValue, arity int) (Fu
 func lookupFunctionsHof(name string) (*builtinFunc, bool) {
 	switch name {
 	case nameForEach:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnForEach}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnForEach}, true
 	case nameFilter:
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnFilter}, true
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnFilter}, true
 	case nameFoldLeft:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnFoldLeft}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnFoldLeft}, true
 	case nameFoldRight:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnFoldRight}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnFoldRight}, true
 	case nameForEachPair:
-		return &builtinFunc{name: name, min: 3, max: 3, fn: fnForEachPair}, true
-	case "apply":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnApply}, true
-	case "function-lookup":
-		return &builtinFunc{name: name, min: 2, max: 2, fn: fnFunctionLookup}, true
-	case "function-arity":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnFunctionArity}, true
-	case "function-name":
-		return &builtinFunc{name: name, min: 1, max: 1, fn: fnFunctionName}, true
+		return &builtinFunc{name: name, min: builtinArityThree, max: builtinArityThree, fn: fnForEachPair}, true
+	case fnNameApply:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnApply}, true
+	case fnNameFunctionLookup:
+		return &builtinFunc{name: name, min: builtinArityTwo, max: builtinArityTwo, fn: fnFunctionLookup}, true
+	case fnNameFunctionArity:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnFunctionArity}, true
+	case fnNameFunctionName:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnFunctionName}, true
 	}
 
 	return nil, false
@@ -194,7 +217,7 @@ func lookupFunctionsHof(name string) (*builtinFunc, bool) {
 // (ec == nil) or the evaluation did not set an explicit limit, the package
 // default applies so unbounded materialization is still rejected.
 func fnMaxNodes(ec *evalContext) int {
-	if ec == nil || ec.maxNodes <= 0 {
+	if ec == nil || ec.maxNodes <= builtinNodeLimitDefault {
 		return maxNodeSetLength
 	}
 
@@ -210,7 +233,7 @@ func fnMaxNodes(ec *evalContext) int {
 // not just maxNodes, so a small OpLimit does not first materialize a slice
 // proportional to the input before the op charge rejects it.
 func fnRemainingOps(ec *evalContext) (remaining int, bounded bool) {
-	if ec == nil || ec.opLimit <= 0 || ec.opCount == nil {
+	if ec == nil || ec.opLimit <= builtinOperationLimitDisabled || ec.opCount == nil {
 		return 0, false
 	}
 
@@ -223,7 +246,7 @@ func fnRemainingOps(ec *evalContext) (remaining int, bounded bool) {
 // per iteration so a long-running higher-order call respects op/time limits.
 func fnCountOp(ctx context.Context, ec *evalContext) error {
 	if ec != nil {
-		return ec.countOps(ctx, 1)
+		return ec.countOps(ctx, builtinIterationWork)
 	}
 
 	return ctx.Err()
@@ -258,23 +281,23 @@ func fnCountOps(ctx context.Context, ec *evalContext, n int) error {
 //   - item count: a single member with a huge (possibly lazy) sequence could
 //     otherwise be cloned by NewArray past maxNodes items, so member length is
 //     bounded against the remaining headroom (maxNodes-total). The subtraction is
-//     overflow-safe because it only runs when maxNodes > 0.
+//     overflow-safe because it only runs when maxNodes > accumulatingSequenceLimitDisabled.
 //
 // The op charge is max(seqLen(member), 1): NewArray clones each member, so a
 // member with many items below maxNodes but above OpLimit must be rejected, AND
 // empty members must still each cost an op so a flood of them cannot bypass
 // OpLimit.
 func appendArrayMember(ctx context.Context, ec *evalContext, maxNodes int, dst []xdm.Sequence, total int, member xdm.Sequence) ([]xdm.Sequence, int, error) {
-	if maxNodes > 0 && len(dst)+1 > maxNodes {
+	if maxNodes > accumulatingSequenceLimitDisabled && len(dst)+1 > maxNodes {
 		return dst, total, ErrNodeSetLimit
 	}
 
 	mLen := xdm.SequenceLen(member)
-	if maxNodes > 0 && mLen > maxNodes-total {
+	if maxNodes > accumulatingSequenceLimitDisabled && mLen > maxNodes-total {
 		return dst, total, ErrNodeSetLimit
 	}
 
-	if err := fnCountOps(ctx, ec, max(mLen, 1)); err != nil {
+	if err := fnCountOps(ctx, ec, max(mLen, builtinMemberMinimumWork)); err != nil {
 		return dst, total, err
 	}
 
@@ -294,7 +317,7 @@ func fnForEach(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	var result xdm.ItemSlice
 
-	callArgs := make([]xdm.Sequence, 1)
+	callArgs := make([]xdm.Sequence, unaryCallbackArity)
 
 	for item := range xdm.SequenceItems(seq) {
 		if err := fnCountOp(ctx, ec); err != nil {
@@ -325,7 +348,7 @@ func fnFilter(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, err
 	}
 	// Per XPath 3.1, the callback must have arity 1
-	if fi.Arity >= 0 && fi.Arity != 1 {
+	if fi.Arity >= finiteArityFloor && fi.Arity != unaryCallbackArity {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("fn:filter callback must have arity 1, got %d", fi.Arity)}
 	}
 
@@ -334,7 +357,7 @@ func fnFilter(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 
 	var result xdm.ItemSlice
 
-	callArgs := make([]xdm.Sequence, 1)
+	callArgs := make([]xdm.Sequence, unaryCallbackArity)
 
 	for item := range xdm.SequenceItems(seq) {
 		if err := fnCountOp(ctx, ec); err != nil {
@@ -348,7 +371,7 @@ func fnFilter(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 			return nil, err
 		}
 		// Per XPath 3.1, the callback must return exactly one xs:boolean
-		if xdm.SequenceLen(r) != 1 {
+		if xdm.SequenceLen(r) != hofPredicateResultCardinality {
 			return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "fn:filter callback must return a single xs:boolean value"}
 		}
 
@@ -379,7 +402,7 @@ func fnFoldLeft(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 
 	ec := getFnContext(ctx)
 	maxNodes := fnMaxNodes(ec)
-	callArgs := make([]xdm.Sequence, 2)
+	callArgs := make([]xdm.Sequence, binaryCallbackArity)
 
 	for item := range xdm.SequenceItems(seq) {
 		if err := fnCountOp(ctx, ec); err != nil {
@@ -395,7 +418,7 @@ func fnFoldLeft(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		}
 		// The accumulator can grow without bound across iterations; reject once
 		// it would exceed the configured sequence/node-set limit.
-		if maxNodes > 0 && xdm.SequenceLen(acc) > maxNodes {
+		if maxNodes > accumulatingSequenceLimitDisabled && xdm.SequenceLen(acc) > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 	}
@@ -417,7 +440,7 @@ func fnFoldRight(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 	// Iterate from last to first WITHOUT materializing the input sequence, so a
 	// lazy/borrowed input is never fully realized before the per-item op-count
 	// and accumulator size-bound checks run (mirrors fnFoldLeft's streaming).
-	callArgs := make([]xdm.Sequence, 2)
+	callArgs := make([]xdm.Sequence, binaryCallbackArity)
 
 	for i := xdm.SequenceLen(seq); i > 0; i-- {
 		if err := fnCountOp(ctx, ec); err != nil {
@@ -433,7 +456,7 @@ func fnFoldRight(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		}
 		// The accumulator can grow without bound across iterations; reject once
 		// it would exceed the configured sequence/node-set limit.
-		if maxNodes > 0 && xdm.SequenceLen(acc) > maxNodes {
+		if maxNodes > accumulatingSequenceLimitDisabled && xdm.SequenceLen(acc) > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 	}
@@ -450,7 +473,7 @@ func fnForEachPair(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, erro
 		return nil, err
 	}
 	// Per XPath 3.1, the callback must have arity 2
-	if fi.Arity >= 0 && fi.Arity != 2 {
+	if fi.Arity >= finiteArityFloor && fi.Arity != binaryCallbackArity {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: fmt.Sprintf("fn:for-each-pair callback must have arity 2, got %d", fi.Arity)}
 	}
 
@@ -460,7 +483,7 @@ func fnForEachPair(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, erro
 
 	var result xdm.ItemSlice
 
-	callArgs := make([]xdm.Sequence, 2)
+	callArgs := make([]xdm.Sequence, binaryCallbackArity)
 
 	for i := range size {
 		if err := fnCountOp(ctx, ec); err != nil {
@@ -490,7 +513,7 @@ func fnApply(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, err
 	}
 
-	if xdm.SequenceLen(args[1]) != 1 {
+	if xdm.SequenceLen(args[1]) != hofApplyArrayCardinality {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "apply() second argument must be a single array"}
 	}
 
@@ -499,7 +522,7 @@ func fnApply(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "apply() second argument must be array"}
 	}
 
-	if fi.Arity >= 0 && arr.Size() != fi.Arity {
+	if fi.Arity >= finiteArityFloor && arr.Size() != fi.Arity {
 		return nil, &xdm.Error{Code: errCodeFOAP0001, Message: fmt.Sprintf("fn:apply: function has arity %d but array has %d members", fi.Arity, arr.Size())}
 	}
 
@@ -543,7 +566,7 @@ func fnFunctionName(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error
 }
 
 func extractFunctionItem(seq xdm.Sequence) (xdm.FunctionItem, error) {
-	if xdm.SequenceLen(seq) != 1 {
+	if xdm.SequenceLen(seq) != hofFunctionArgumentCardinality {
 		return xdm.FunctionItem{}, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "expected single function item"}
 	}
 	// asFunctionItem is the single source of truth for adapting maps and arrays

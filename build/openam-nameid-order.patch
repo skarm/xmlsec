@@ -1,0 +1,6 @@
+--- NameIDMappingResponseImpl.java
++++ NameIDMappingResponseImpl.java
+@@ -238,0 +239 @@
++        result.append(status.toXMLString(includeNSPrefix, declareNS));
+@@ -246 +246,0 @@
+-        result.append(status.toXMLString(includeNSPrefix, declareNS));

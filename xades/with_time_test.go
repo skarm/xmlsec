@@ -66,7 +66,9 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 	at := testcert.Now().Add(48 * time.Hour)
 	exportHistoricalPair(t, chain, sufficient, insufficient, at, at)
 	result, report, err := validator.Validate(t.Context(), sufficient, xmldsig.Signatures(sufficient)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
-	if err != nil || result == nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) || result.PastSignerTrust() == nil || result.CurrentSignerTrust() != nil {
+	if err != nil {
+		t.Fatal(err)
+	} else if result == nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) || result.PastSignerTrust() == nil || result.CurrentSignerTrust() != nil {
 		t.Fatalf("sufficient archive: indication=%v sub=%s best=%s err=%v steps=%+v stamps=%+v", report.Indication(), report.SubIndication(), report.BestSignatureTime(), err, report.Steps(), report.Timestamps())
 	}
 	if len(report.Proofs()) == 0 || len(report.Timestamps()) != 2 {
@@ -102,6 +104,8 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 		}
 		verifyOnlyXML(t, draft, chain)
 		result, report, err := validator.Validate(t.Context(), draft, xmldsig.Signatures(draft)[0], chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{})
+		// Verification reports retain diagnostics on failure.
+		//noinspection GoDfaErrorMayBeNotNil
 		if result != nil || !errors.Is(err, xades.ErrProfile) || report.Indication() == xades.Passed {
 			t.Fatal("multiple baseline tokens accepted", err)
 		}
@@ -117,6 +121,8 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 		t.Fatal("mutable historical facts")
 	}
 	result, negative, err := validator.Validate(t.Context(), insufficient, xmldsig.Signatures(insufficient)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result != nil || err == nil || negative.Indication() != xades.Indeterminate || negative.SubIndication() != "OUT_OF_BOUNDS_NO_POE" {
 		t.Fatalf("missing archive: %v %s %v", negative.Indication(), negative.SubIndication(), err)
 	}
@@ -131,6 +137,8 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, withSource, err := validator.Validate(t.Context(), insufficient, xmldsig.Signatures(insufficient)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{crl}, Sources: []*evidence.Observation{source}}})
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result != nil || err == nil || withSource.Indication() != xades.Indeterminate || withSource.SubIndication() != negative.SubIndication() {
 		t.Fatal("retrieval metadata minted PoE", err)
 	}
@@ -140,6 +148,8 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r, report, err := unknownAccuracy.Validate(t.Context(), sufficient, xmldsig.Signatures(sufficient)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{}); r != nil || err == nil || report.Indication() == xades.Passed {
 		t.Fatal("invented missing accuracy", err)
 	}
@@ -149,11 +159,15 @@ func TestHistoricalExpiredTSAArchiveEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r, report, err := obsolete.Validate(t.Context(), sufficient, xmldsig.Signatures(sufficient)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{}); r != nil || err == nil || report.Indication() == xades.Passed {
 		t.Fatal("timestamp backdated its own obsolete hash", err)
 	}
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r, report, err := validator.Validate(canceled, sufficient, xmldsig.Signatures(sufficient)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{}); r != nil || !errors.Is(err, context.Canceled) || report.Indication() == xades.Passed {
 		t.Fatal("cancellation", err)
 	}
@@ -203,7 +217,9 @@ func TestHistoricalTSARevocationNeedsIndependentArchive(t *testing.T) {
 				crl := datedCRL(t, chain, testcert.Now().Add(time.Hour), 2, x509.RevocationListEntry{SerialNumber: chain.TSA.SerialNumber, RevocationTime: tc.revoked, ReasonCode: reason})
 				result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: pki.Evidence{CRLs: [][]byte{crl}}})
 				if tc.pass {
-					if result == nil || err != nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) || !report.VerificationTime().Equal(at) {
+					if err != nil {
+						t.Fatal(err)
+					} else if result == nil || report.Indication() != xades.Passed || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) || !report.VerificationTime().Equal(at) {
 						t.Fatal("pre-revocation archive did not recover TSA", report.Indication(), report.SubIndication(), err)
 					}
 					found := false
@@ -223,6 +239,8 @@ func TestHistoricalTSARevocationNeedsIndependentArchive(t *testing.T) {
 					if reason == 6 {
 						want = "TRY_LATER"
 					}
+					// Verification reports retain diagnostics on failure.
+					//noinspection GoDfaErrorMayBeNotNil
 					if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != want {
 						t.Fatal("late or absent archive repaired revoked TSA", report.Indication(), report.SubIndication(), err)
 					}
@@ -246,6 +264,9 @@ func TestHistoricalTSADelegatedOCSPResponder(t *testing.T) {
 	responder := testcert.Issue(t, &template, chain.Root, chain.ResponderKey.Public(), chain.RootKey)
 	node := baselineTestNode(tree.Root(archived), xades.Namespace141, "ArchiveTimeStamp")
 	enc := baselineTestNode(node, xades.Namespace, "EncapsulatedTimeStamp")
+	if enc == nil {
+		t.Fatal("archive timestamp token missing")
+	}
 	var encoded strings.Builder
 	for _, child := range enc.Children {
 		if child.Kind == tree.TextNode {
@@ -316,12 +337,16 @@ func TestHistoricalTSADelegatedOCSPResponder(t *testing.T) {
 			verifyOnlyXML(t, tc.doc, chain)
 			result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: proof})
 			if !tc.pass {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != "REVOKED_NO_POE" {
 					t.Fatal("unproven response from revoked responder repaired TSA", report.SubIndication(), err)
 				}
 				return
 			}
-			if result == nil || err != nil || report.Indication() != xades.Passed {
+			if err != nil {
+				t.Fatal(err)
+			} else if result == nil || report.Indication() != xades.Passed {
 				t.Fatal("independent archive failed to recover delegated status", report.SubIndication(), err)
 			}
 			for _, stamp := range report.Timestamps() {
@@ -407,10 +432,14 @@ func TestHistoricalLocalOCSPGrantKeepsIssuerAndProofBoundaries(t *testing.T) {
 			verifyOnlyXML(t, tc.doc, chain)
 			result, report, err := validator.Validate(t.Context(), tc.doc, xmldsig.Signatures(tc.doc)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{TSA: proof})
 			if !tc.pass {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != "OUT_OF_BOUNDS_NO_POE" {
 					t.Fatal("issuer scope or independent proof was bypassed", report.Indication(), report.SubIndication(), err)
 				}
-			} else if result == nil || err != nil || report.Indication() != xades.Passed || result.CurrentSignerTrust() != nil || result.PastSignerTrust() == nil || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) {
+			} else if err != nil {
+				t.Fatal(err)
+			} else if result == nil || report.Indication() != xades.Passed || result.CurrentSignerTrust() != nil || result.PastSignerTrust() == nil || !report.BestSignatureTime().Equal(testcert.Now().Add(-time.Second)) {
 				t.Fatal("scoped authority failed historical recovery", report.SubIndication(), err)
 			}
 			if tc.doc == archived {
@@ -458,12 +487,16 @@ func TestHistoricalTrustAnchorSunsetNeedsMaterialProof(t *testing.T) {
 				}
 			}
 			if !tc.pass {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, xades.ErrHistorical) || report.Indication() != xades.Indeterminate || report.SubIndication() != "NO_CERTIFICATE_CHAIN_FOUND_NO_POE" {
 					t.Fatal("late material proof bypassed anchor sunset", report.SubIndication(), err)
 				}
 				return
 			}
-			if result == nil || err != nil || report.Indication() != xades.Passed {
+			if err != nil {
+				t.Fatal(err)
+			} else if result == nil || report.Indication() != xades.Passed {
 				t.Fatal("valid anchor policy rejected", report.SubIndication(), err)
 			}
 			if tc.sunset.IsZero() {
@@ -580,10 +613,14 @@ func TestHistoricalTSAResponderCyclesAndAuthorizationDepth(t *testing.T) {
 			verifyOnlyXML(t, timed, chain)
 			result, report, err := validator.Validate(t.Context(), timed, xmldsig.Signatures(timed)[0], chain.Leaf.Raw, now, xades.ValidationEvidence{Signer: timeOptions(t, chain).Evidence, TSA: graph(t, tc.cyclic)})
 			if tc.want == nil {
-				if result == nil || err != nil || report.Indication() != xades.Passed || len(report.Timestamps()) != 1 || report.Timestamps()[0].Indication != xades.Passed {
+				if err != nil {
+					t.Fatal(err)
+				} else if result == nil || report.Indication() != xades.Passed || len(report.Timestamps()) != 1 || report.Timestamps()[0].Indication != xades.Passed {
 					t.Fatal("valid TSA dependency rejected at exact depth", report.SubIndication(), err)
 				}
 			} else {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, xades.ErrHistorical) || !errors.Is(err, tc.want) || !errors.Is(report.Cause(), tc.want) || report.Indication() != xades.Indeterminate {
 					t.Fatal("TSA dependency failure lost its cause or returned partial trust", result != nil, report.SubIndication(), err)
 				}
@@ -602,80 +639,6 @@ func TestHistoricalTSAResponderCyclesAndAuthorizationDepth(t *testing.T) {
 	}
 }
 
-func historicalEmbeddedCRL(t testing.TB, doc *document.Document) []byte {
-	t.Helper()
-	stack := []document.Element{doc.Root()}
-	for len(stack) > 0 {
-		element := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if element.Name() == (document.Name{Space: xades.Namespace, Local: "EncapsulatedCRLValue"}) {
-			raw, err := base64.StdEncoding.DecodeString(element.Text())
-			if err != nil {
-				t.Fatal(err)
-			}
-			return raw
-		}
-		stack = append(stack, element.Children()...)
-	}
-	t.Fatal("missing embedded CRL")
-	return nil
-}
-
-func historicalArchivePair(t testing.TB, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
-	t.Helper()
-	return historicalArchivePairWithArchiveKey(t, nil, digest...)
-}
-
-func historicalArchivePairWithArchiveKey(t testing.TB, archiveKey crypto.Signer, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
-	t.Helper()
-	chain := testcert.New(t)
-	if archiveKey == nil {
-		archiveKey = chain.TSAKey
-	}
-	newTSA := *chain.TSA
-	newTSA.SerialNumber = big.NewInt(103)
-	newTSA.NotAfter = testcert.Now().Add(8 * 24 * time.Hour)
-	eku, err := asn1.Marshal([]asn1.ObjectIdentifier{{1, 3, 6, 1, 5, 5, 7, 3, 8}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	newTSA.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}
-	newTSA = *testcert.Issue(t, &newTSA, chain.Root, archiveKey.Public(), chain.RootKey)
-	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, Certificates: [][]byte{newTSA.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input, err := document.Parse(t.Context(), []byte(`<r ID="data" xmlns:unused="urn:archive-context"><amount>123</amount></r>`), document.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	basic, _, err := xades.SignBasicEnveloped(t.Context(), input, chain.LeafKey, chain.Leaf.Raw, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now()})
-	if len(digest) != 0 {
-		basic, _, err = xades.SignBaseline(t.Context(), input, input.Root(), chain.LeafKey, chain.Leaf.Raw, xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data", DigestMethod: digest[0], Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}, {Algorithm: c14n.Exclusive}}}}}, Properties: xades.BaselineProperties{SigningTime: testcert.Now()}, Validation: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}}})
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	proof := pki.Evidence{CRLs: [][]byte{historicalLongCRL(t, chain)}}
-	stamped, _, err := xades.AddSignatureTimestamp(t.Context(), basic, xmldsig.Signatures(basic)[0], chain.Leaf.Raw, &archiveTransport{key: chain.TSAKey, cert: chain.TSA.Raw, root: chain.Root.Raw, now: testcert.Now().Add(-time.Second)}, xades.AddTimestampOptions{Validation: xades.TimedOptions{TSA: tsa, At: testcert.Now(), Evidence: proof}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed, err := xades.NewValidator(xades.ValidatorConfig{SignerPKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, TSA: tsa, MinimumLevel: xades.LevelLT})
-	if err != nil {
-		t.Fatal(err)
-	}
-	material, _, err := closed.EmbedValidationMaterial(t.Context(), stamped, xmldsig.Signatures(stamped)[0], chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: proof, TSA: proof})
-	if err != nil {
-		t.Fatal(err)
-	}
-	archived, _, err := closed.AddArchiveTimestamp(t.Context(), material, xmldsig.Signatures(material)[0], chain.Leaf.Raw, testcert.Now().Add(30*time.Minute), &archiveTransport{key: archiveKey, cert: newTSA.Raw, root: chain.Root.Raw, now: testcert.Now().Add(30 * time.Minute)}, xades.AddArchiveOptions{Canonicalization: c14n.Canonical11})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return chain, archived, material, tsa
-}
-
 func TestHistoricalDigestMaterialRequiresItsOwnProof(t *testing.T) {
 	chain, archived, onlySignature, tsa := historicalArchivePair(t, xmldsig.SHA384)
 	zero := time.Duration(0)
@@ -685,11 +648,15 @@ func TestHistoricalDigestMaterialRequiresItsOwnProof(t *testing.T) {
 	}
 	at := testcert.Now().Add(12 * time.Hour)
 	result, report, err := v.Validate(t.Context(), onlySignature, xmldsig.Signatures(onlySignature)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result != nil || err == nil || report.Indication() != xades.Indeterminate || report.SubIndication() != "CRYPTO_CONSTRAINTS_FAILURE_NO_POE" {
 		t.Fatalf("borrowed SignatureValue proof for reference input: %v %s %v", report.Indication(), report.SubIndication(), err)
 	}
 	result, report, err = v.Validate(t.Context(), archived, xmldsig.Signatures(archived)[0], chain.Leaf.Raw, at, xades.ValidationEvidence{})
-	if result == nil || err != nil || report.Indication() != xades.Passed {
+	if err != nil {
+		t.Fatal(err)
+	} else if result == nil || report.Indication() != xades.Passed {
 		t.Fatalf("exact archive reference proof: %v %s %v", report.Indication(), report.SubIndication(), err)
 	}
 }
@@ -729,10 +696,14 @@ func TestHistoricalExplicitPolicyDigestConstraints(t *testing.T) {
 			}
 			result, report, err := verifier.Validate(t.Context(), signed, baseline.Basic().Signature().Signature(), chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}})
 			if tc.want != nil {
+				// Verification reports retain diagnostics on failure.
+				//noinspection GoDfaErrorMayBeNotNil
 				if result != nil || !errors.Is(err, tc.want) || report.SubIndication() != tc.sub || report.Cause() == nil {
 					t.Fatalf("historical policy: %v, %s, %v; want %s, %v", result != nil, report.SubIndication(), err, tc.sub, tc.want)
 				}
-			} else if result == nil || err != nil || report.Indication() != xades.Passed || result.CurrentSignerTrust() == nil {
+			} else if err != nil {
+				t.Fatal(err)
+			} else if result == nil || report.Indication() != xades.Passed || result.CurrentSignerTrust() == nil {
 				t.Fatal("reliable explicit policy rejected", report.SubIndication(), err)
 			}
 		})
@@ -761,7 +732,9 @@ func TestHistoricalEffectivePSSParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{historicalLongCRL(t, chain)}}}
-	if result, report, err := v.Validate(t.Context(), signed, xmldsig.Signatures(signed)[0], leaf.Raw, testcert.Now(), input); err != nil || result == nil || report.Indication() != xades.Passed {
+	if result, report, err := v.Validate(t.Context(), signed, xmldsig.Signatures(signed)[0], leaf.Raw, testcert.Now(), input); err != nil {
+		t.Fatal(err)
+	} else if result == nil || report.Indication() != xades.Passed {
 		t.Fatal("effective PSS profile", report.SubIndication(), err)
 	}
 	config.SignerPKI.CryptoConstraints = []pki.CryptoConstraint{{Hash: crypto.SHA512, ReliableUntil: testcert.Now()}}
@@ -769,6 +742,8 @@ func TestHistoricalEffectivePSSParameters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if result, report, err := v.Validate(t.Context(), signed, xmldsig.Signatures(signed)[0], leaf.Raw, testcert.Now(), input); err == nil || result != nil || report.SubIndication() != "CRYPTO_CONSTRAINTS_FAILURE_NO_POE" {
 		t.Fatal("PSS parameters silently used default hash", report.SubIndication(), err)
 	}
@@ -888,6 +863,8 @@ func TestWithTimeNoUntrustedRecovery(t *testing.T) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
 			r, report, e := v.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now(), evidence)
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if r != nil || e == nil || report.Indication() != status || want != nil && !errors.Is(e, want) {
 				t.Fatal(r, report.Indication(), e)
 			}
@@ -967,20 +944,11 @@ func TestWithTimeNoUntrustedRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r, report, e := v.ValidateEnveloped(ctx, d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), good); r != nil || !errors.Is(e, context.Canceled) || report.Indication() == xades.Passed {
 		t.Fatal(e)
 	}
-}
-
-func mustXML(t testing.TB, d *document.Document) []byte {
-	t.Helper()
-
-	raw, e := d.XML(t.Context())
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return raw
 }
 
 func TestWithTimeAccuracyAndEarliestProof(t *testing.T) {
@@ -991,6 +959,8 @@ func TestWithTimeAccuracyAndEarliestProof(t *testing.T) {
 	evidence := xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{datedCRL(t, c, gen, 1)}}, TSA: timeOptions(t, c).Evidence}
 
 	v := timeValidator(t, c)
+	// Verification reports retain diagnostics on failure.
+	//noinspection GoDfaErrorMayBeNotNil
 	if r, report, e := v.ValidateEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, testcert.Now(), evidence); r != nil || !errors.Is(e, xades.ErrLevel) || report.Indication() != xades.Indeterminate || !report.ProofTime().Equal(gen.Add(accuracy)) {
 		t.Fatal("accuracy ignored", e)
 	}
@@ -1013,51 +983,6 @@ func TestWithTimeAccuracyAndEarliestProof(t *testing.T) {
 	if _, e := xades.NewWithTimeValidator(xades.WithTimeConfig{}); e == nil {
 		t.Fatal("unchecked configuration")
 	}
-}
-
-func datedCRL(t testing.TB, c testcert.Chain, at time.Time, number int64, entries ...x509.RevocationListEntry) []byte {
-	t.Helper()
-
-	b, e := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(number), ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour), RevokedCertificateEntries: entries}, c.Root, c.RootKey)
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return b
-}
-
-func timeValidator(t testing.TB, c testcert.Chain) *xades.WithTimeValidator {
-	t.Helper()
-	o := timeOptions(t, c)
-
-	v, e := xades.NewWithTimeValidator(xades.WithTimeConfig{SignerPKI: pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL}, TSA: o.TSA})
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return v
-}
-
-func timedPastDocument(t *testing.T, c testcert.Chain, gen time.Time, accuracy *time.Duration) *document.Document {
-	t.Helper()
-	base := basicDocument(t, c)
-
-	d, _, e := xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, datedTSA{c, gen, accuracy}, xades.AddTimestampOptions{Validation: timeOptions(t, c), Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
-	if e != nil {
-		t.Fatal(e)
-	}
-
-	return d
-}
-
-func expiredChain(t testing.TB) testcert.Chain {
-	t.Helper()
-	c := testcert.New(t)
-	leaf := *c.Leaf
-	leaf.NotAfter = testcert.Now().Add(-time.Hour)
-	c.Leaf = testcert.Issue(t, &leaf, c.Root, &c.LeafKey.PublicKey, c.RootKey)
-
-	return c
 }
 
 func TestWithTimeRelativeDistributionPointCertificate(t *testing.T) {
@@ -1083,55 +1008,6 @@ func TestWithTimeRelativeDistributionPointCertificate(t *testing.T) {
 	if err != nil || result == nil || report.Indication() != xades.Passed || !bytes.Equal(result.Basic().CertificateDER(), relative) {
 		t.Fatal("with-time private certificate reparsing lost valid original DER", report, err)
 	}
-}
-
-func withTimeCRLIssuerEncoding(t *testing.T, raw []byte, c testcert.Chain, commonName string, version1 bool) []byte {
-	t.Helper()
-	value, err := der.Read(raw, len(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	outer, err := der.Sequence(value, 3, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := der.Sequence(outer[0], 3, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	issuerIndex := 1
-	if body[0].Tag == asn1.TagInteger {
-		issuerIndex++
-	}
-	name, err := asn1.Marshal(pkix.RDNSequence{{{Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: commonName}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	parts := make([][]byte, 0, len(body))
-	for i, field := range body {
-		if version1 && (i == 0 && issuerIndex == 2 || field.Class == 2 && field.Tag == 0) {
-			continue
-		}
-		if i == issuerIndex {
-			parts = append(parts, name)
-		} else {
-			parts = append(parts, field.FullBytes)
-		}
-	}
-	tbs := der.Seq(parts...)
-	algorithm, err := signature.Algorithm(outer[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	signed, err := signature.Sign(t.Context(), c.RootKey, algorithm, tbs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bits, err := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return der.Seq(tbs, outer[1].FullBytes, bits)
 }
 
 func TestWithTimeV1CRLEvidence(t *testing.T) {
@@ -1225,6 +1101,8 @@ func TestWithTimeAdvancedCRLInputScope(t *testing.T) {
 			doc := timedPastDocument(t, c, proof, nil)
 			v := timeValidator(t, c)
 			result, report, e := v.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now(), evidence)
+			// Verification reports retain diagnostics on failure.
+			//noinspection GoDfaErrorMayBeNotNil
 			if result != nil || !errors.Is(e, xades.ErrProfile) || report.Indication() != xades.Indeterminate {
 				t.Fatal("broader current PKI input silently enabled historical recovery", result, report, e)
 			}
@@ -1253,13 +1131,13 @@ func TestWithTimeDirectCRLFreshestAdvertisementPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := timedPastDocument(t, c, proof, nil)
-	evidence := xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{raw}}, TSA: timeOptions(t, c).Evidence}
+	e := xades.ValidationEvidence{Signer: pki.Evidence{CRLs: [][]byte{raw}}, TSA: timeOptions(t, c).Evidence}
 	for _, disable := range []bool{false, true} {
 		validator, err := xades.NewWithTimeValidator(xades.WithTimeConfig{SignerPKI: pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL, CRL: pki.CRLOptions{DisableDeltaCRLs: disable}}, TSA: timeOptions(t, c).TSA})
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, report, err := validator.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now(), evidence)
+		result, report, err := validator.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], c.Leaf.Raw, testcert.Now(), e)
 		if disable {
 			if err != nil || result == nil || report.Indication() != xades.Passed {
 				t.Fatal("unused advertisement changed the direct complete input scope", report, err)
@@ -1295,10 +1173,424 @@ func BenchmarkHistoricalValidation(b *testing.B) {
 					if err != nil || result == nil || report.Indication() != xades.Passed {
 						b.Fatal("historical archive rejected", err)
 					}
-				} else if err == nil || result != nil || report.SubIndication() != "OUT_OF_BOUNDS_NO_POE" {
-					b.Fatal("missing proof accepted", err)
+				} else {
+					// Verification reports retain diagnostics on failure.
+					// noinspection GoDfaErrorMayBeNotNil
+					if err == nil || result != nil || report.SubIndication() != "OUT_OF_BOUNDS_NO_POE" {
+						b.Fatal("missing proof accepted", err)
+					}
 				}
 			}
 		})
 	}
+}
+
+func historicalEmbeddedCRL(t testing.TB, doc *document.Document) []byte {
+	t.Helper()
+	stack := []document.Element{doc.Root()}
+	for len(stack) > 0 {
+		element := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if element.Name() == (document.Name{Space: xades.Namespace, Local: "EncapsulatedCRLValue"}) {
+			raw, err := base64.StdEncoding.DecodeString(element.Text())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}
+		stack = append(stack, element.Children()...)
+	}
+	t.Fatal("missing embedded CRL")
+	return nil
+}
+
+func historicalArchivePair(t testing.TB, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
+	t.Helper()
+	return historicalArchivePairWithArchiveKey(t, nil, digest...)
+}
+
+func historicalArchivePairWithArchiveKey(t testing.TB, archiveKey crypto.Signer, digest ...string) (testcert.Chain, *document.Document, *document.Document, *timestamp.Verifier) {
+	t.Helper()
+	chain := testcert.New(t)
+	if archiveKey == nil {
+		archiveKey = chain.TSAKey
+	}
+	newTSA := *chain.TSA
+	newTSA.SerialNumber = big.NewInt(103)
+	newTSA.NotAfter = testcert.Now().Add(8 * 24 * time.Hour)
+	eku, err := asn1.Marshal([]asn1.ObjectIdentifier{{1, 3, 6, 1, 5, 5, 7, 3, 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newTSA.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: eku}}
+	newTSA = *testcert.Issue(t, &newTSA, chain.Root, archiveKey.Public(), chain.RootKey)
+	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, Certificates: [][]byte{newTSA.Raw}, AllowedPolicies: []asn1.ObjectIdentifier{tsaPolicy()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := document.Parse(t.Context(), []byte(`<r ID="data" xmlns:unused="urn:archive-context"><amount>123</amount></r>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	basic, _, err := xades.SignBasicEnveloped(t.Context(), input, chain.LeafKey, chain.Leaf.Raw, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: testcert.Now()})
+	if len(digest) != 0 {
+		basic, _, err = xades.SignBaseline(t.Context(), input, input.Root(), chain.LeafKey, chain.Leaf.Raw, xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#data", DigestMethod: digest[0], Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}, {Algorithm: c14n.Exclusive}}}}}, Properties: xades.BaselineProperties{SigningTime: testcert.Now()}, Validation: xades.BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}}})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := pki.Evidence{CRLs: [][]byte{historicalLongCRL(t, chain)}}
+	stamped, _, err := xades.AddSignatureTimestamp(t.Context(), basic, xmldsig.Signatures(basic)[0], chain.Leaf.Raw, &archiveTransport{key: chain.TSAKey, cert: chain.TSA.Raw, root: chain.Root.Raw, now: testcert.Now().Add(-time.Second)}, xades.AddTimestampOptions{Validation: xades.TimedOptions{TSA: tsa, At: testcert.Now(), Evidence: proof}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := xades.NewValidator(xades.ValidatorConfig{SignerPKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, TSA: tsa, MinimumLevel: xades.LevelLT})
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, _, err := closed.EmbedValidationMaterial(t.Context(), stamped, xmldsig.Signatures(stamped)[0], chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: proof, TSA: proof})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, _, err := closed.AddArchiveTimestamp(t.Context(), material, xmldsig.Signatures(material)[0], chain.Leaf.Raw, testcert.Now().Add(30*time.Minute), &archiveTransport{key: archiveKey, cert: newTSA.Raw, root: chain.Root.Raw, now: testcert.Now().Add(30 * time.Minute)}, xades.AddArchiveOptions{Canonicalization: c14n.Canonical11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return chain, archived, material, tsa
+}
+
+func mustXML(t testing.TB, d *document.Document) []byte {
+	t.Helper()
+
+	raw, e := d.XML(t.Context())
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return raw
+}
+
+func datedCRL(t testing.TB, c testcert.Chain, at time.Time, number int64, entries ...x509.RevocationListEntry) []byte {
+	t.Helper()
+
+	b, e := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(number), ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour), RevokedCertificateEntries: entries}, c.Root, c.RootKey)
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return b
+}
+
+func timeValidator(t testing.TB, c testcert.Chain) *xades.WithTimeValidator {
+	t.Helper()
+	o := timeOptions(t, c)
+
+	v, e := xades.NewWithTimeValidator(xades.WithTimeConfig{SignerPKI: pki.Config{Roots: [][]byte{c.Root.Raw}, Revocation: pki.RequireCRL}, TSA: o.TSA})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return v
+}
+
+func timedPastDocument(t *testing.T, c testcert.Chain, gen time.Time, accuracy *time.Duration) *document.Document {
+	t.Helper()
+	base := basicDocument(t, c)
+
+	d, _, e := xades.AddSignatureTimestamp(t.Context(), base, xmldsig.Signatures(base)[0], c.Leaf.Raw, datedTSA{c, gen, accuracy}, xades.AddTimestampOptions{Validation: timeOptions(t, c), Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	return d
+}
+
+func expiredChain(t testing.TB) testcert.Chain {
+	t.Helper()
+	c := testcert.New(t)
+	leaf := *c.Leaf
+	leaf.NotAfter = testcert.Now().Add(-time.Hour)
+	c.Leaf = testcert.Issue(t, &leaf, c.Root, &c.LeafKey.PublicKey, c.RootKey)
+
+	return c
+}
+
+func withTimeCRLIssuerEncoding(t *testing.T, raw []byte, c testcert.Chain, commonName string, version1 bool) []byte {
+	t.Helper()
+	value, err := der.Read(raw, len(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := der.Sequence(value, 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := der.Sequence(outer[0], 3, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuerIndex := 1
+	if body[0].Tag == asn1.TagInteger {
+		issuerIndex++
+	}
+	name, err := asn1.Marshal(pkix.RDNSequence{{{Type: asn1.ObjectIdentifier{2, 5, 4, 3}, Value: commonName}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := make([][]byte, 0, len(body))
+	for i, field := range body {
+		if version1 && (i == 0 && issuerIndex == 2 || field.Class == 2 && field.Tag == 0) {
+			continue
+		}
+		if i == issuerIndex {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, field.FullBytes)
+		}
+	}
+	tbs := der.Seq(parts...)
+	algorithm, err := signature.Algorithm(outer[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signature.Sign(t.Context(), c.RootKey, algorithm, tbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits, err := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der.Seq(tbs, outer[1].FullBytes, bits)
+}
+
+func TestHistoricalRejectsUnsupportedUnsignedDataProperties(t *testing.T) {
+	chain := testcert.New(t)
+	basic := basicDocument(t, chain)
+	options := timeOptions(t, chain)
+	timed, _, err := xades.AddSignatureTimestamp(t.Context(), basic, xmldsig.Signatures(basic)[0], chain.Leaf.Raw, &localTSA{chain: chain}, xades.AddTimestampOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zero := time.Duration(0)
+	validator, err := xades.NewHistoricalValidator(xades.HistoricalConfig{SignerPKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}}, TSA: options.TSA, MissingTSAAccuracy: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		doc       *document.Document
+		container string
+	}{
+		{"basic control", basic, ""},
+		{"timestamp control", timed, ""},
+		{"unsupported signature property", basic, "UnsignedSignatureProperties"},
+		{"unsupported data property alone", basic, "UnsignedDataObjectProperties"},
+		{"unsupported data property after timestamp", timed, "UnsignedDataObjectProperties"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := mustXML(t, tc.doc)
+			doc := tc.doc
+			if tc.container != "" {
+				doc = changeUnsignedXML(t, doc, func(root *tree.Node) {
+					unsigned := baselineTestNode(root, xades.Namespace, "UnsignedProperties")
+					if unsigned == nil {
+						unsigned = baselineTestAppend(baselineTestNode(root, xades.Namespace, "QualifyingProperties"), xades.Namespace, "UnsignedProperties", "xades")
+					}
+
+					container := baselineTestAppend(unsigned, xades.Namespace, tc.container, "xades")
+					property := baselineTestAppend(container, xades.Namespace, "UnsignedDataObjectProperty", "xades")
+					property.Children = []*tree.Node{{Kind: tree.TextNode, Data: "unsupported domain evidence", Parent: property}}
+				})
+			}
+
+			verifyOnlyXML(t, doc, chain)
+			selected := xmldsig.Signatures(doc)[0]
+			if result, err := xades.VerifyBaseline(t.Context(), doc, selected, chain.Leaf.Raw, xades.BaselineVerifyOptions{}); err != nil || result == nil {
+				t.Fatal("baseline must retain unverified unsigned containers", err)
+			}
+
+			result, report, err := validator.Validate(t.Context(), doc, selected, chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{Signer: options.Evidence, TSA: options.Evidence})
+			if tc.container == "" {
+				if err != nil {
+					t.Fatal(err)
+				} else if result == nil || report.Indication() != xades.Passed {
+					t.Fatal("valid historical control", report.SubIndication(), err)
+				}
+			} else {
+				// Verification reports retain diagnostics on failure.
+				// noinspection GoDfaErrorMayBeNotNil
+				if result != nil || !errors.Is(err, xades.ErrProfile) || report.Indication() != xades.Indeterminate || report.SubIndication() != "FORMAT_FAILURE" || !errors.Is(report.Cause(), xades.ErrProfile) {
+					t.Fatal("unsupported historical unsigned property accepted", result != nil, report.Indication(), report.SubIndication(), err)
+				}
+			}
+
+			if !bytes.Equal(before, mustXML(t, tc.doc)) {
+				t.Fatal("validation changed source document")
+			}
+		})
+	}
+}
+
+func TestClosedTimestampRejectsMixedContainerText(t *testing.T) {
+	chain := testcert.New(t)
+	options := timeOptions(t, chain)
+	basic := basicDocument(t, chain)
+	timed, _, err := xades.AddSignatureTimestamp(t.Context(), basic, xmldsig.Signatures(basic)[0], chain.Leaf.Raw, &localTSA{chain: chain}, xades.AddTimestampOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := xades.NewValidator(xades.ValidatorConfig{SignerPKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}, TSA: options.TSA, MinimumLevel: xades.LevelBT})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withTime := timeValidator(t, chain)
+	before := mustXML(t, timed)
+
+	for _, local := range []string{"UnsignedSignatureProperties", "SignatureTimeStamp"} {
+		for _, mixed := range []bool{false, true} {
+			name := local + "/XML whitespace and comments"
+			if mixed {
+				name = local + "/non-whitespace text"
+			}
+
+			t.Run(name, func(t *testing.T) {
+				doc := changeUnsignedXML(t, timed, func(root *tree.Node) {
+					container := baselineTestNode(root, xades.Namespace, local)
+					appendContainerText(container, mixed)
+				})
+				verifyOnlyXML(t, doc, chain)
+				selected := xmldsig.Signatures(doc)[0]
+				e := xades.ValidationEvidence{Signer: options.Evidence, TSA: options.Evidence}
+				result, err := xades.VerifyTimedEnveloped(t.Context(), doc, selected, chain.Leaf.Raw, options)
+				trusted, trustErr := current.ValidateEnveloped(t.Context(), doc, selected, chain.Leaf.Raw, testcert.Now(), e)
+				past, report, pastErr := withTime.ValidateEnveloped(t.Context(), doc, selected, chain.Leaf.Raw, testcert.Now(), e)
+				if mixed {
+					// Verification reports retain diagnostics on failure.
+					//noinspection GoDfaErrorMayBeNotNil
+					if result != nil || trusted != nil || past != nil || !errors.Is(err, xades.ErrProfile) || !errors.Is(trustErr, xades.ErrProfile) || !errors.Is(pastErr, xades.ErrProfile) || report.Indication() != xades.Indeterminate {
+						t.Fatal("mixed timestamp text accepted", result != nil, trusted != nil, past != nil, err, trustErr, pastErr)
+					}
+
+					server := &localTSA{chain: chain}
+					if out, augmented, err := xades.AddSignatureTimestamp(t.Context(), doc, selected, chain.Leaf.Raw, server, xades.AddTimestampOptions{Validation: options}); out != nil || augmented != nil || !errors.Is(err, xades.ErrProfile) || server.calls != 0 {
+						t.Fatal("invalid existing container reached TSA", server.calls, err)
+					}
+				} else if result == nil || trusted == nil || past == nil || err != nil || trustErr != nil || pastErr != nil || report.Indication() != xades.Passed {
+					t.Fatal("XML whitespace/comments/PI rejected", err, trustErr, pastErr)
+				}
+			})
+		}
+	}
+
+	if !bytes.Equal(before, mustXML(t, timed)) {
+		t.Fatal("timestamp validation changed source document")
+	}
+}
+
+func TestClosedArchiveRejectsMixedContainerText(t *testing.T) {
+	chain, lt, _, validator := preparedLT(t)
+	server := &archiveTransport{key: chain.TSAKey, cert: chain.TSA.Raw, root: chain.Root.Raw, now: testcert.Now()}
+	archived, _, err := validator.AddArchiveTimestamp(t.Context(), lt, xmldsig.Signatures(lt)[0], chain.Leaf.Raw, testcert.Now(), server, xades.AddArchiveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mixed := range []bool{false, true} {
+		name := "XML whitespace and comments"
+		if mixed {
+			name = "non-whitespace text"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			doc := changeUnsignedXML(t, archived, func(root *tree.Node) {
+				appendContainerText(baselineTestNode(root, xades.Namespace141, "ArchiveTimeStamp"), mixed)
+			})
+			verifyOnlyXML(t, doc, chain)
+			result, err := validator.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{})
+			if mixed {
+				if result != nil || !errors.Is(err, xades.ErrProfile) {
+					t.Fatal("mixed archive text accepted", result != nil, err)
+				}
+			} else if result == nil || err != nil || result.Level() != xades.LevelLTA {
+				t.Fatal("XML whitespace/comments/PI rejected", err)
+			}
+		})
+	}
+}
+
+func TestClosedCRLValuesRejectsMixedContainerText(t *testing.T) {
+	chain, doc, _, validator := preparedLT(t)
+	checkRevocationGroupContainerText(t, doc, chain, validator, "CRLValues")
+}
+
+func checkRevocationGroupContainerText(t *testing.T, original *document.Document, chain testcert.Chain, validator *xades.Validator, local string) {
+	t.Helper()
+
+	before := mustXML(t, original)
+
+	for _, mixed := range []bool{false, true} {
+		name := local + "/XML whitespace and comments"
+		if mixed {
+			name = local + "/non-whitespace text"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			doc := changeUnsignedXML(t, original, func(root *tree.Node) {
+				appendContainerText(baselineTestNode(root, xades.Namespace, local), mixed)
+			})
+			verifyOnlyXML(t, doc, chain)
+			result, err := validator.ValidateEnveloped(t.Context(), doc, xmldsig.Signatures(doc)[0], chain.Leaf.Raw, testcert.Now(), xades.ValidationEvidence{})
+			if mixed {
+				if result != nil || !errors.Is(err, xades.ErrProfile) {
+					t.Fatal("mixed revocation group text accepted", result != nil, err)
+				}
+			} else if result == nil || err != nil || result.Level() != xades.LevelLT {
+				t.Fatal("XML whitespace/comments/PI rejected", err)
+			}
+		})
+	}
+
+	if !bytes.Equal(before, mustXML(t, original)) {
+		t.Fatal("validation changed source document")
+	}
+}
+
+func changeUnsignedXML(t *testing.T, source *document.Document, change func(*tree.Node)) *document.Document {
+	t.Helper()
+
+	draft, err := tree.Clone(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	change(tree.Root(draft))
+
+	raw, err := draft.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := document.Parse(t.Context(), raw, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return doc
+}
+
+func appendContainerText(container *tree.Node, mixed bool) {
+	value := " \t\r\n"
+	if mixed {
+		value = "unsupported text"
+	}
+
+	container.Children = append(container.Children,
+		&tree.Node{Kind: tree.TextNode, Data: value, Parent: container},
+		&tree.Node{Kind: tree.CommentNode, Data: "permitted comment", Parent: container},
+		&tree.Node{Kind: tree.PINode, Name: document.Name{Local: "allowed"}, Data: "instruction", Parent: container})
 }

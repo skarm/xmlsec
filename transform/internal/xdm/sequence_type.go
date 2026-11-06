@@ -27,6 +27,9 @@ type NameTest struct {
 	// Local is the local name, or * for a wildcard.
 	Local string
 	URI   string // set for URIQualifiedNames (Q{uri}local)
+	// URIQualified preserves an explicit Q{} namespace even when URI is empty.
+	// A nonempty URI remains explicit for callers constructing NameTest values.
+	URIQualified bool
 }
 
 func (NameTest) nodeTest() {}

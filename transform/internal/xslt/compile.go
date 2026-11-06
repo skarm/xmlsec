@@ -18,6 +18,17 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// A single leading underscore marks an XSLT 3.0 shadow attribute; doubled underscores and namespace declarations remain excluded by the existing lexical guard.
+const (
+	shadowAttributePrefix = "_"
+)
+
+// Modern XSLT shadow-attribute local names are distinct from their evaluated target attributes; support and namespace checks remain unchanged.
+const (
+	shadowAttrName    = "_name"
+	shadowAttrVersion = "_version"
+)
+
 // Compiler configures XSLT compilation with a processor profile, static parameters,
 // module resolvers and XML parsing policy. Fluent methods return updated configuration
 // copies; Compile creates separate mutable compilation state.
@@ -233,16 +244,18 @@ func compile(ctx context.Context, doc *xdm.Document, cfg *compileConfig) (*Style
 	}
 
 	s, err := compilePrepared(ctx, prepared, cfg)
-	if s != nil {
-		s.sourceDoc = doc
-		for uri, module := range s.moduleDocs {
-			if module == prepared {
-				s.moduleDocs[uri] = doc
-			}
+	if err != nil {
+		return nil, err
+	}
+
+	s.sourceDoc = doc
+	for uri, module := range s.moduleDocs {
+		if module == prepared {
+			s.moduleDocs[uri] = doc
 		}
 	}
 
-	return s, err
+	return s, nil
 }
 
 func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig) (*Stylesheet, error) {
@@ -260,7 +273,7 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 	}
 
 	localName := root.LocalName()
-	if localName != nameStylesheet && localName != fnNameTransform && localName != namePackage {
+	if localName != nameStylesheet && localName != lexicon.XSLTElementTransform && localName != namePackage {
 		return nil, staticError(errCodeXTSE0010, "root element must be xsl:stylesheet, xsl:transform, or xsl:package, got %s", root.Name())
 	}
 
@@ -293,7 +306,7 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 
 	// Namespace and base URI are available to root shadow expressions. Other
 	// root attributes are interpreted only after their shadows have replaced them.
-	if xmlBase, present := root.GetAttributeNS("base", lexicon.NamespaceXML); present {
+	if xmlBase, present := root.GetAttributeNS(lexicon.AttrBase, lexicon.NamespaceXML); present {
 		c.baseURI = resolveRootXMLBase(c.baseURI, xmlBase)
 	}
 
@@ -473,7 +486,7 @@ func (c *compiler) resolveAsType(_ context.Context, asAttr string) string {
 		return asAttr
 	}
 
-	candidate := "xs:" + typePart
+	candidate := lexicon.PrefixXS + ":" + typePart
 	if xdm.IsKnownXSDType(candidate) {
 		suffix := asAttr[len(typePart):]
 		return candidate + suffix
@@ -683,7 +696,7 @@ func (c *compiler) resolveShadowAttributes(ctx context.Context, elem *xdm.Elemen
 
 		// Remove the shadow attribute and set the real one.
 		// SetAttribute stores verbatim: avt values are plain text that may contain &.
-		elem.RemoveAttribute("_" + realName)
+		elem.RemoveAttribute(shadowAttributePrefix + realName)
 		_ = elem.SetAttribute(realName, val)
 	}
 
@@ -693,7 +706,7 @@ func (c *compiler) resolveShadowAttributes(ctx context.Context, elem *xdm.Elemen
 // resolveSingleShadowAttribute resolves just one shadow attribute (_name) on
 // an element, leaving all other shadow attributes intact.
 func (c *compiler) resolveSingleShadowAttribute(ctx context.Context, elem *xdm.Element, name string) error {
-	shadowName := "_" + name
+	shadowName := shadowAttributePrefix + name
 
 	avtStr, hasShadow := elem.GetAttribute(shadowName)
 	if !hasShadow {
@@ -718,14 +731,13 @@ func (c *compiler) resolveSingleShadowAttribute(ctx context.Context, elem *xdm.E
 	return nil
 }
 
-// compileXPath compiles an XPath expression with the given namespace bindings.
 // staticEvaluator returns an Evaluator suitable for evaluating static
 // XPath expressions at compile time (static="yes" params/variables). It
 // provides fn:transform and other XSLT static functions so that compile-time
 // evaluation can invoke dynamic transforms (used by use-when patterns).
 func (c *compiler) staticEvaluator(ctx context.Context) xpath.Evaluator {
 	fns := c.useWhenFunctions()
-	fns[fnNameTransform] = &xsltFunc{min: 1, max: 1, fn: c.staticFnTransform, name: fnNameTransform, signature: xpath.HostBuiltin(31, fnNameTransform)}
+	fns[fnNameTransform] = &xsltFunc{min: 1, max: 1, fn: c.staticFnTransform, name: fnNameTransform, signature: xpath.HostBuiltin(xpathProfile31, fnNameTransform)}
 
 	eval := c.useWhenEvaluator(ctx).Functions(fns, staticFunctionsNS(fns))
 	if c.parseOptions != nil {
@@ -828,7 +840,7 @@ func (c *compiler) useWhenEvaluator(_ context.Context) xpath.Evaluator {
 	}
 	// XSLT 2.0 use-when has no available documents (section 3.12).
 	// The 3.0 static context may access explicitly resolved resources.
-	if c.resolver != nil && c.stylesheet.processorLanguage() >= 30 {
+	if c.resolver != nil && c.stylesheet.processorLanguage() >= processorXSLT30 {
 		eval = eval.URIResolver(resourceURIResolver{c.resolver})
 	}
 	// Honor the compiler's per-resource read cap on compile-time doc() /
@@ -884,7 +896,12 @@ func (c *compiler) expressionNamespaces(ns map[string]string) (map[string]string
 	return c.xpathNamespaces(ns), ns[""]
 }
 
+// compileXPath compiles an XPath expression with the supplied namespace bindings.
 func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expression, error) {
+	const (
+		errCodeXTSE3075 = "XTSE3075"
+	)
+
 	version := c.stylesheet.xpathVersion()
 	if err := xpath.Charge(c.invocation, len(ns)); err != nil {
 		return nil, err
@@ -910,7 +927,7 @@ func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expre
 	for _, name := range refs.FreeVariables {
 		if xpath.VariableKey(name, bound) == xdm.ClarkName(lexicon.NamespaceXSLT, nameOriginal) {
 			if c.originalVariableVisibility == visAbstract {
-				return nil, staticError("XTSE3075", "abstract variable has no xsl:original value")
+				return nil, staticError(errCodeXTSE3075, "abstract variable has no xsl:original value")
 			}
 
 			if c.originalVariableVisibility == "" {
@@ -930,7 +947,7 @@ func (c *compiler) compileXPath(expr string, ns map[string]string) (*xpath.Expre
 		c.markCompatExpr(compiled)
 	}
 
-	if c.stylesheet.processorLanguage() >= 20 || !c.backwardsCompatible() && !c.forwardsCompatible(c.effectiveVersion) {
+	if c.stylesheet.processorLanguage() >= processorXSLT20 || !c.backwardsCompatible() && !c.forwardsCompatible(c.effectiveVersion) {
 		if err := compiled.Validate(bound); err != nil {
 			return nil, err
 		}
@@ -952,7 +969,7 @@ func (c *compiler) xpathCompilationError(expr string, version int, err error) (*
 		return nil, failure
 	}
 
-	if c.stylesheet.processorLanguage() == 10 && c.forwardsCompatible(c.effectiveVersion) {
+	if c.stylesheet.processorLanguage() == processorXSLT10 && c.forwardsCompatible(c.effectiveVersion) {
 		return xpath.DeferredExpression(err, version), nil
 	}
 
@@ -970,13 +987,13 @@ func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) erro
 
 		c.stylesheet.packageVersion = getAttr(root, namePackageVersion)
 		if _, present := root.GetAttribute(namePackageVersion); !present {
-			c.stylesheet.packageVersion = "1"
+			c.stylesheet.packageVersion = defaultPackageVersion
 		}
 
 		c.stylesheet.isPackage = true
 		c.stylesheet.declaredModes = true // default for xsl:package
 
-		if dm := getAttr(root, "declared-modes"); dm != "" {
+		if dm := getAttr(root, nameDeclaredModes); dm != "" {
 			if v, ok := parseXSDBool(dm); ok {
 				c.stylesheet.declaredModes = v
 			}
@@ -984,7 +1001,7 @@ func (c *compiler) readPackageMetadata(root *xdm.Element, localName string) erro
 	} else {
 		// package-version is only allowed on xsl:package, not xsl:stylesheet/xsl:transform.
 		// In forwards-compatible mode (version > 3.0), unknown attributes are silently ignored.
-		ver := getAttr(root, lexicon.SerializationVersion)
+		ver := getAttr(root, xslAttrVersion)
 		if _, present := root.GetAttribute(namePackageVersion); present && !isForwardsCompatible(ver) {
 			return staticError(errCodeXTSE0090,
 				"attribute package-version is not allowed on xsl:%s", localName)
@@ -1030,7 +1047,7 @@ func (c *compiler) configureRootContext(ctx context.Context, root *xdm.Element) 
 	// Read xpath-default-namespace from stylesheet root. Presence (even an
 	// empty value) governs unprefixed pattern names; absence leaves the
 	// inherited/default behavior untouched.
-	if xdn, ok := root.GetAttribute(nameXpathDefaultNamespace); ok {
+	if xdn, ok := root.GetAttribute(nameXPathDefaultNamespace); ok {
 		c.xpathDefaultNS = xdn
 		c.hasXPathDefaultNS = true
 	}
@@ -1116,14 +1133,14 @@ func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, local
 	// which governs whether backwards-compatible processing applies — reflects the
 	// computed value (e.g. _version="{system-property('xsl:version')}" yields 3.0,
 	// disabling BC even when version="1.0" is also present).
-	if _, hasShadow := root.GetAttribute("_version"); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, root, lexicon.SerializationVersion); err != nil {
+	if _, hasShadow := root.GetAttribute(shadowAttrVersion); hasShadow {
+		if err := c.resolveSingleShadowAttribute(ctx, root, xslAttrVersion); err != nil {
 			return err
 		}
 	}
 	// Read version — required on xsl:stylesheet and xsl:transform (XTSE0010).
 	// Allow _version shadow attribute (resolved above) to satisfy the check.
-	c.stylesheet.version = getAttr(root, lexicon.SerializationVersion)
+	c.stylesheet.version = getAttr(root, xslAttrVersion)
 	if err := compilePreparedVersion(c, root, localName); err != nil {
 		return err
 	}
@@ -1131,7 +1148,7 @@ func (c *compiler) readRootVersion(ctx context.Context, root *xdm.Element, local
 	c.effectiveVersion = c.stylesheet.version
 
 	// Validate attributes on root element now that effectiveVersion is known.
-	if err := c.validateXSLTAttrs(ctx, root, attributeNames(lexicon.SerializationVersion, "id", nameDefaultMode, nameDefaultValidation, nameInputTypeAnnotations, nameDefaultCollation, xslAttrUseWhen, xslAttrName, namePackageVersion, "declared-modes")); err != nil {
+	if err := c.validateXSLTAttrs(ctx, root, attributeNames(xslAttrVersion, lexicon.AttrID, nameDefaultMode, nameDefaultValidation, nameInputTypeAnnotations, nameDefaultCollation, xslAttrUseWhen, xslAttrName, namePackageVersion, nameDeclaredModes)); err != nil {
 		return err
 	}
 
@@ -1346,7 +1363,7 @@ func (c *compiler) staticFunctionAvailable(ctx context.Context, uri, name string
 }
 
 func (c *compiler) hostFunctionAvailable(uri, name string, arity int) bool {
-	if c.stylesheet.processorLanguage() >= 20 && c.backwardsCompatible() && uri != xpath.NSFn {
+	if c.stylesheet.processorLanguage() >= processorXSLT20 && c.backwardsCompatible() && uri != xpath.NSFn {
 		return true // Every unavailable foreign name/arity has the BC error binding.
 	}
 
@@ -1360,7 +1377,7 @@ func (c *compiler) hostFunctionAvailable(uri, name string, arity int) bool {
 	}
 
 	return uri == lexicon.NamespaceFn && xsltFunctionAcceptsVersionArity(c.stylesheet.processorLanguage(), name, arity) &&
-		(c.stylesheet.processorLanguage() >= 30 || !xslt30Function(name))
+		(c.stylesheet.processorLanguage() >= processorXSLT30 || !xslt30Function(name))
 }
 
 func (c *compiler) finalizeCompiledStylesheet() {
@@ -1434,14 +1451,14 @@ func elementXSLTVersionAttribute(elem *xdm.Element) (string, bool) {
 			return "", false // These select serialization, not the XSLT language.
 		}
 
-		return elem.GetAttribute(lexicon.SerializationVersion)
+		return elem.GetAttribute(xslAttrVersion)
 	}
 
-	return elem.GetAttributeNS(lexicon.SerializationVersion, lexicon.NamespaceXSLT)
+	return elem.GetAttributeNS(xslAttrVersion, lexicon.NamespaceXSLT)
 }
 
 func isShadowAttributeName(name string) bool {
-	return len(name) > 1 && name[0] == '_' && name[1] != '_' && name[1:] != "xmlns"
+	return len(name) > 1 && name[0] == '_' && name[1] != '_' && name[1:] != lexicon.PrefixXMLNS
 }
 
 func staticFunctionsNS(fns map[string]xpath.Function) map[xpath.QualifiedName]xpath.Function {
@@ -1456,7 +1473,7 @@ func staticFunctionsNS(fns map[string]xpath.Function) map[xpath.QualifiedName]xp
 // isForwardsCompatible returns true if the version string indicates
 // forwards-compatible mode (version > 3.0).
 func isForwardsCompatible(ver string) bool {
-	comparison, valid := compareLanguageVersion(ver, 3)
+	comparison, valid := compareLanguageVersion(ver, xsltMajorVersion3)
 	return valid && comparison > 0
 }
 
@@ -1491,7 +1508,7 @@ func resolveRootXMLBase(baseURI, xmlBase string) string {
 // isXSDecimal returns true if s is a valid xs:decimal lexical form:
 // optional sign, digits, optional dot followed by digits. No exponent.
 func isXSDecimal(s string) bool {
-	s = strings.Trim(s, " \t\r\n")
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 	if s == "" {
 		return false
 	}
@@ -1523,8 +1540,8 @@ func isXSDecimal(s string) bool {
 }
 
 func compilePreparedVersion(c *compiler, root *xdm.Element, localName string) error {
-	if _, present := root.GetAttribute(lexicon.SerializationVersion); !present {
-		if _, hasShadow := root.GetAttribute("_version"); !hasShadow {
+	if _, present := root.GetAttribute(xslAttrVersion); !present {
+		if _, hasShadow := root.GetAttribute(shadowAttrVersion); !hasShadow {
 			return staticError(errCodeXTSE0010, "xsl:%s requires a version attribute", localName)
 		}
 
@@ -1539,7 +1556,7 @@ func compilePreparedVersion(c *compiler, root *xdm.Element, localName string) er
 }
 
 func isReservedNamespace(uri string) bool {
-	return reservedNamespaceForProcessor(uri, 30)
+	return reservedNamespaceForProcessor(uri, processorXSLT30)
 }
 
 func reservedNamespaceForProcessor(uri string, processor int) bool {
@@ -1549,7 +1566,7 @@ func reservedNamespaceForProcessor(uri string, processor int) bool {
 		return true
 	case lexicon.NamespaceMath, lexicon.NamespaceMap, lexicon.NamespaceArray,
 		lexicon.NamespaceErr, lexicon.NamespaceXMLNS:
-		return processor >= 30
+		return processor >= processorXSLT30
 	}
 
 	return false
@@ -1748,10 +1765,10 @@ func getAttr(elem *xdm.Element, name string) string {
 // parseXSDBool parses an xs:boolean value ("yes"/"no", lexicon.ValueTrue/lexicon.ValueFalse, "1"/"0")
 // with whitespace trimming per the XSD specification.
 func parseXSDBool(s string) (bool, bool) {
-	switch strings.Trim(s, " \t\r\n") {
-	case lexicon.ValueYes, lexicon.ValueTrue, "1":
+	switch strings.Trim(s, lexicon.XMLWhitespace) {
+	case lexicon.ValueYes, lexicon.ValueTrue, booleanDigitTrue:
 		return true, true
-	case lexicon.ValueNo, lexicon.ValueFalse, "0":
+	case lexicon.ValueNo, lexicon.ValueFalse, booleanDigitFalse:
 		return false, true
 	default:
 		return false, false
@@ -1770,7 +1787,7 @@ func xsdBoolTrue(s string) bool {
 // compatibility mode. Per XSLT 3.0 §3.10 this is any effective version below 2.0
 // (an effective version in [2.0, 3.0) behaves identically to 3.0).
 func isBackwardsCompatible(ver string) bool {
-	comparison, valid := compareLanguageVersion(ver, 2)
+	comparison, valid := compareLanguageVersion(ver, xsltMajorVersion2)
 	return valid && comparison < 0
 }
 
@@ -1838,9 +1855,9 @@ func hasNonEmptyContent(elem *xdm.Element) bool {
 func parseDOEAttr(v string) (bool, error) {
 	v = strings.TrimSpace(v)
 	switch v {
-	case lexicon.ValueYes, lexicon.ValueTrue, "1":
+	case lexicon.ValueYes, lexicon.ValueTrue, booleanDigitTrue:
 		return true, nil
-	case lexicon.ValueNo, lexicon.ValueFalse, "0":
+	case lexicon.ValueNo, lexicon.ValueFalse, booleanDigitFalse:
 		return false, nil
 	default:
 		return false, staticError(lexicon.ErrSEPM0016,

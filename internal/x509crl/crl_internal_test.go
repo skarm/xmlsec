@@ -38,7 +38,15 @@ func TestPKIXTimeFormsAndCenturyBoundary(t *testing.T) {
 		{asn1.TagUTF8String, "500101000000Z", 0, false},
 	} {
 		got, err := parseTime(asn1.RawValue{Tag: tc.tag, Bytes: []byte(tc.input), FullBytes: der.Wrap(0, tc.tag, false, []byte(tc.input))})
-		if (err == nil) != tc.valid || tc.valid && (got.Year() != tc.year || got.Location() != time.UTC) {
+		if err != nil {
+			if tc.valid {
+				t.Fatalf("%d/%s: %v", tc.tag, tc.input, err)
+			}
+
+			continue
+		}
+
+		if !tc.valid || got.Year() != tc.year || got.Location() != time.UTC {
 			t.Fatalf("%d/%s: %v, %v", tc.tag, tc.input, got, err)
 		}
 	}

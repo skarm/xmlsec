@@ -7,8 +7,8 @@
 // [NewServiceProvider] snapshots [Config] and requires application-owned metadata, signing,
 // request-state and replay adapters. [ServiceProvider.Begin] selects trusted IdP
 // and ACS endpoints, creates a signed AuthnRequest and stores its pending state.
-// [Outbound] exposes the destination and binding-specific Redirect query or POST
-// form for the application to send.
+// [Outbound] exposes the destination, Redirect query, POST writers, artifact
+// issuance or PAOS challenge for the application to send.
 //
 // The application supplies an unpredictable browser/session secret in
 // [BeginOptions.BrowserBinding] and presents the same secret when consuming the
@@ -25,5 +25,10 @@
 // Metadata resolvers and stores must honor context. In-memory state and replay
 // stores support one process; multiple service instances need shared storage with
 // atomic consumption. The package implements the documented solicited profile,
-// not unsolicited login, logout or a general SAML server.
+// not unsolicited login or a general SAML server. Begin also supports Artifact
+// and bearer or X.509 holder-of-key ECP/PAOS. ConsumeArtifact and ConsumePAOS
+// retain the same browser, metadata, assertion and replay checks. ConsumeECP
+// additionally requires proof bound to the exact HoK SOAP snapshot.
+// Logout and identifier management use
+// github.com/skarm/xmlsec/saml/session with the application's session store.
 package sp

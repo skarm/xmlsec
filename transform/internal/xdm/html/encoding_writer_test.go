@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
+
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 type limitedEncodingWriter struct {
@@ -89,5 +92,91 @@ func TestMarkupNameValidationAndStickyFailure(t *testing.T) {
 	d.writeString(&output, "forbidden")
 	if !errors.Is(d.err, first) || output.Len() != 0 {
 		t.Fatal("sticky first error was replaced or output continued", d.err, output.String())
+	}
+}
+
+func TestMappedMalformedUTF8SourceBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, source, form, want, attributeWant string
+		mapping                                 map[rune]string
+	}{
+		{"one malformed byte", "\xff", "NFC", "x", "x", map[rune]string{'\uFFFD': "x"}},
+		{"two malformed bytes", "\xff\xfe", "NFC", "xx", "xx", map[rune]string{'\uFFFD': "x"}},
+		{"malformed middle", "A\xffB", "NFC", "AxB", "AxB", map[rune]string{'\uFFFD': "x"}},
+		{"encoded replacement", "\uFFFD", "NFC", "x", "x", map[rune]string{'\uFFFD': "x"}},
+		{"without map", "\xff", "NFC", "\xff", "\xff", nil},
+		{"unrelated map", "\xff", "NFC", "\xff", "\xff", map[rune]string{'Q': "y"}},
+		{"without normalization", "\xff", "none", "x", "x", map[rune]string{'\uFFFD': "x"}},
+		{"valid composition", "A\u030A", "NFC", "Å", "&Aring;", map[rune]string{'\uFFFD': "x"}},
+	} {
+		for _, attribute := range []bool{false, true} {
+			route := "text"
+			if attribute {
+				route = "attribute"
+			}
+
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				t.Parallel()
+
+				defer func() {
+					if p := recover(); p != nil {
+						t.Errorf("serialization must not panic for a raw Go string: %v", p)
+					}
+				}()
+
+				doc := xdm.NewDefaultDocument()
+				var node xdm.Node = doc.CreateText(tc.source)
+				want := tc.want
+				if attribute {
+					element, err := doc.CreateElement("r")
+					if err != nil {
+						t.Fatal(err)
+					}
+
+					if err := element.SetAttribute("a", tc.source); err != nil {
+						t.Fatal(err)
+					}
+
+					node, want = element, `<r a="`+tc.attributeWant+`"></r>`
+				}
+
+				var output bytes.Buffer
+
+				err := NewWriter().Format(false).CharacterMap(tc.mapping).Normalization(tc.form).WriteTo(&output, node)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if output.String() != want {
+					t.Fatalf("got %q, want %q", output.String(), want)
+				}
+			})
+		}
+	}
+}
+
+func TestMappedMalformedUTF8PreservesCallbackOrderAndError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("mapped segment callback failed")
+	dumper := NewWriter().CharacterMap(map[rune]string{'\uFFFD': "x"}).Normalization("NFC").dumper()
+	var segments []string
+
+	err := dumper.normalizedContent("A\xffB", func(segment string, mapped bool) error {
+		segments = append(segments, segment)
+		if mapped {
+			return sentinel
+		}
+
+		return nil
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("got %v, want callback error", err)
+	}
+
+	if !reflect.DeepEqual(segments, []string{"A", "x"}) {
+		t.Fatalf("got callback segments %q, want [A x]", segments)
 	}
 }

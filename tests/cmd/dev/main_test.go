@@ -484,172 +484,6 @@ func TestConformanceCatalogPaths(t *testing.T) {
 	}
 }
 
-func conformanceFixture(t *testing.T, root string) []byte {
-	t.Helper()
-	writeFixture(t, root, "fixture/api.go", "package fixture\nfunc Apply() {}\n")
-	writeFixture(t, root, "fixture/doc.go", "// Package fixture supplies registry test data.\npackage fixture\n")
-	writeFixture(t, root, "fixture_test.go", "package fixture_test\nimport tst \"testing\"\nfunc TestPresent(t *tst.T) {}\n")
-
-	return []byte(`{
-		"schema_version":4,"reviewed_on":"2026-10-22","scope":"Test fixture","stage":"experimental","completeness":"Partial normative inventory",
-		"documents":[{"id":"standard","title":"Standard","edition":"Published edition","source":"https://example.test/standard","errata":{"sources":[],"review":"reviewed","reviewed_on":"2026-10-22","items":[],"notes":"No published corrections in this fixture."}}],
-		"profiles":[{"id":"profile","title":"Selected profile","role":"verifier","modes":["verify"],"claim":"restricted","inventory":"partial","documents":["standard"],"scope_ids":["supported"],"package_docs":["fixture/doc.go"],"gap":"Inventory remains partial.","closure":"Map all applicable clauses.","matrix":[{"document":"standard","modes":["verify"],"requirements":["norm"],"unmapped_clauses":["3.3: additional verifier rules"],"reason":"Selected verifier duties.","closure":"Assess section 3.3."}]}],
-		"requirements":[{"id":"supported","title":"Supported capability","status":"implemented","tests":["fixture_test.go"]},{"id":"unimplemented","title":"Open capability","status":"unimplemented","tests":[]}],
-		"normative_requirements":[{
-			"id":"norm","statement":"Validate the input.","norm":{"document":"standard","clause":"3.2","source":"https://example.test/standard#verify","level":"MUST","errata":[]},
-			"applies":{"profile":"profile","role":"verifier","mode":"verify","status":"applicable","reason":"Required for the selected verifier role."},
-			"implementation":{"status":"implemented","apis":["fixture.Apply"],"code":["fixture/api.go"]},
-			"tests":{"status":"covered","reason":"Exact local fixture cases.","positive":[{"file":"fixture_test.go","name":"TestPresent"}],"negative":[{"file":"fixture_test.go","name":"TestPresent"}]},
-			"interop":{"status":"pending","tests":[],"fixtures":[],"reason":"Independent fixture pending."},
-			"policy":{"default":{"status":"enabled","reason":"Within the default profile."},"compatibility":{"status":"not-applicable","reason":"No separate compatibility mode."}},
-			"gap":"Independent evidence pending.","closure":"Add an independent positive/negative pair."
-		}]
-	}`)
-}
-
-func writeFixture(t *testing.T, root, name, text string) {
-	t.Helper()
-
-	path := filepath.Join(root, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// Proof events come from configured go test -json runs. Requiring a matching
-// source and register digest prevents a successful old run from closing new work.
-type languageProofRun struct {
-	SourceSHA256   string               `json:"source_sha256"`
-	RegisterSHA256 string               `json:"register_sha256"`
-	Events         []languageProofEvent `json:"events"`
-	index          map[string]languageProofStatus
-}
-
-func (r *languageProofRun) passed(check conformanceTest) error {
-	if r.index == nil {
-		r.index = make(map[string]languageProofStatus)
-		for _, event := range r.Events {
-			if event.Package != "github.com/skarm/xmlsec" && !strings.HasPrefix(event.Package, "github.com/skarm/xmlsec/") {
-				continue
-			}
-			directory := strings.TrimPrefix(event.Package, "github.com/skarm/xmlsec/")
-			if event.Package == "github.com/skarm/xmlsec" {
-				directory = "."
-			}
-			key := directory + "\x00" + event.Test
-			switch event.Action {
-			case "pass":
-				state := r.index[key]
-				state.passed = true
-				r.index[key] = state
-			case "output":
-				// An ancestor cannot borrow an unrelated descendant's oracle or vector.
-				state := r.index[key]
-				state.recordOutput(event.Output)
-				r.index[key] = state
-			case "skip", "fail":
-				// A group with any omitted or failing descendant cannot be cited as passed.
-				for name := event.Test; name != ""; {
-					key = directory + "\x00" + name
-					state := r.index[key]
-					state.invalid = event.Action + " at " + event.Test
-					r.index[key] = state
-					index := strings.LastIndex(name, "/")
-					if index < 0 {
-						break
-					}
-					name = name[:index]
-				}
-			}
-		}
-	}
-	name := check.Name + "/" + check.Case
-	key := filepath.ToSlash(filepath.Dir(check.File)) + "\x00" + name
-	state := r.index[key]
-	if state.invalid != "" {
-		return fmt.Errorf("%s has %s", name, state.invalid)
-	}
-	if !state.passed {
-		return fmt.Errorf("no successful execution of %s in %s", name, check.File)
-	}
-	return nil
-}
-
-func (r *languageProofRun) independent(proof normativeProof) error {
-	if err := r.passed(proof.Check); err != nil {
-		return err
-	}
-	key := filepath.ToSlash(filepath.Dir(proof.Check.File)) + "\x00" + proof.Check.Name + "/" + proof.Check.Case
-	state := r.index[key]
-	if proof.Oracle == "published-vector" || proof.Oracle == "published-inventory" {
-		if proof.Expected == nil {
-			return fmt.Errorf("%s/%s has no published fixture value", proof.Check.Name, proof.Check.Case)
-		}
-		if _, exists := state.vectors[*proof.Expected]; !exists {
-			return fmt.Errorf("%s/%s does not verify published fixture value %q", proof.Check.Name, proof.Check.Case, *proof.Expected)
-		}
-		return nil
-	}
-	if _, exists := state.oracles[proof.Oracle]; !exists {
-		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
-	}
-	if _, exists := state.diagnostics[proof.Oracle]; exists {
-		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
-	}
-	return nil
-}
-
-type languageProofStatus struct {
-	passed      bool
-	invalid     string
-	oracles     map[string]struct{}
-	diagnostics map[string]struct{}
-	vectors     map[string]struct{}
-}
-
-func (s *languageProofStatus) recordOutput(output string) {
-	for _, marker := range []string{"P3_ORACLE ", "P3_DIAGNOSTIC ", "P3_VECTOR "} {
-		_, tail, found := strings.Cut(output, marker)
-		if !found {
-			continue
-		}
-		if marker == "P3_VECTOR " {
-			var expected string
-			if err := json.Unmarshal([]byte(strings.TrimSpace(tail)), &expected); err == nil {
-				if s.vectors == nil {
-					s.vectors = make(map[string]struct{})
-				}
-				s.vectors[expected] = struct{}{}
-			}
-			continue
-		}
-		fields := strings.Fields(tail)
-		if len(fields) == 0 {
-			continue
-		}
-		if marker == "P3_ORACLE " {
-			if s.oracles == nil {
-				s.oracles = make(map[string]struct{})
-			}
-			s.oracles[fields[0]] = struct{}{}
-		} else {
-			if s.diagnostics == nil {
-				s.diagnostics = make(map[string]struct{})
-			}
-			s.diagnostics[fields[0]] = struct{}{}
-		}
-	}
-}
-
-func languageProofPassed(events []languageProofEvent, check conformanceTest) error {
-	run := languageProofRun{Events: events}
-	return run.passed(check)
-}
-
 func TestLanguageProofEvents(t *testing.T) {
 	wantTrue := "true"
 	check := conformanceTest{File: "transform/xpath_test.go", Name: "TestXPath", Case: "numeric/overflow"}
@@ -704,46 +538,6 @@ func TestLanguageProofEvents(t *testing.T) {
 			}
 		})
 	}
-}
-
-func languageEvidenceInputs(t *testing.T) (string, conformanceRegister, languageProofRun) {
-	t.Helper()
-	ledgerPath := residualRequired(t, "XMLSEC_P3_TEST_EVENTS")
-	root, err := repositoryRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(root, "docs", "conformance.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var register conformanceRegister
-	if err := json.Unmarshal(raw, &register); err != nil {
-		t.Fatal(err)
-	}
-	_, problems, err := checkConformanceRegister(root, raw)
-	if err := errors.Join(append(problems, err)...); err != nil {
-		t.Fatal(err)
-	}
-	var artifact languageProofArtifact
-	if err := readLanguageProofFile(ledgerPath, &artifact); err != nil {
-		t.Fatal(err)
-	}
-	digest, err := suiteSourceDigest(t.Context(), root)
-	stamp := languageProofStamp{SourceSHA256: digest, RegisterSHA256: fmt.Sprintf("%x", sha256.Sum256(raw))}
-	events, artifactErr := artifact.validate(stamp)
-	if err != nil || artifactErr != nil {
-		t.Fatal("proof events do not belong to completed runs of the current sources and register", err, artifactErr)
-	}
-	run := languageProofRun{SourceSHA256: stamp.SourceSHA256, RegisterSHA256: stamp.RegisterSHA256, Events: events}
-	t.Cleanup(func() {
-		current, err := suiteSourceDigest(context.WithoutCancel(t.Context()), root)
-		currentRegister, readErr := os.ReadFile(filepath.Join(root, "docs", "conformance.json"))
-		if err != nil || readErr != nil || current != digest || run.RegisterSHA256 != fmt.Sprintf("%x", sha256.Sum256(currentRegister)) {
-			t.Error("sources or register changed during evidence verification", err, readErr)
-		}
-	})
-	return root, register, run
 }
 
 func TestLanguageProofArtifacts(t *testing.T) {
@@ -977,20 +771,6 @@ func TestResidualFailureConditions(t *testing.T) {
 			t.Fatal("deadline and typed implementation limits must not depend on timing", code)
 		}
 	}
-}
-
-// File confinement uses physical roots, including when /tmp or the explicit
-// checkout directory is a symlink on the calling platform.
-func languageProofDirectory(t *testing.T, variable string) string {
-	t.Helper()
-	directory, err := filepath.EvalSymlinks(residualRequired(t, variable))
-	if err == nil {
-		directory, err = filepath.Abs(directory)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return directory
 }
 
 func TestLanguageNormativeEvidence(t *testing.T) {
@@ -1229,49 +1009,6 @@ func TestLanguageResidualCoverage(t *testing.T) {
 	}
 }
 
-func residualFailureMatches(evidence residualEvidence, profile string, item suiteOutcome) bool {
-	if evidence.Disposition == "fixed" || item.Kind == "panic" {
-		return false
-	}
-	return slices.ContainsFunc(evidence.Failures, func(condition residualFailureCondition) bool {
-		return condition.Profile == profile && condition.Kind == item.Kind && condition.Cause == item.FailureCause && condition.Signature == item.FailureSignature && slices.Contains(condition.ErrorCodes, item.ErrorCode)
-	})
-}
-
-func languageProofSetting[T comparable](value any, want T) bool {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
-	var actual T
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(&actual) == nil && actual == want
-}
-
-func languageCatalogInventory(t *testing.T, directory string, pin suitePin) map[string]struct{} {
-	t.Helper()
-	catalog, _, err := readSuiteNode(directory, directory, pin.Catalog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inventory := make(map[string]struct{})
-	for _, entry := range catalog.children("test-set") {
-		set, _, err := readSuiteReferencedNode(directory, directory, entry)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, node := range set.children("test-case") {
-			key := entry.attr("file") + "/" + node.attr("name")
-			if _, exists := inventory[key]; exists {
-				t.Fatal("duplicate original catalog identity", key)
-			}
-			inventory[key] = struct{}{}
-		}
-	}
-	return inventory
-}
-
 // Appendix D is a documentation duty: another processor need not choose the
 // same host defaults. This checklist transcribes its eight REC 2.0 items and
 // fourteen REC 3.0/3.1 items; it does not compare incompatible host APIs.
@@ -1336,4 +1073,267 @@ func TestXPathPublishedHostChoiceInventory(t *testing.T) {
 			})
 		}
 	}
+}
+
+func conformanceFixture(t *testing.T, root string) []byte {
+	t.Helper()
+	writeFixture(t, root, "fixture/api.go", "package fixture\nfunc Apply() {}\n")
+	writeFixture(t, root, "fixture/doc.go", "// Package fixture supplies registry test data.\npackage fixture\n")
+	writeFixture(t, root, "fixture_test.go", "package fixture_test\nimport tst \"testing\"\nfunc TestPresent(t *tst.T) {}\n")
+
+	return []byte(`{
+		"schema_version":4,"reviewed_on":"2026-10-22","scope":"Test fixture","stage":"experimental","completeness":"Partial normative inventory",
+		"documents":[{"id":"standard","title":"Standard","edition":"Published edition","source":"https://example.test/standard","errata":{"sources":[],"review":"reviewed","reviewed_on":"2026-10-22","items":[],"notes":"No published corrections in this fixture."}}],
+		"profiles":[{"id":"profile","title":"Selected profile","role":"verifier","modes":["verify"],"claim":"restricted","inventory":"partial","documents":["standard"],"scope_ids":["supported"],"package_docs":["fixture/doc.go"],"gap":"Inventory remains partial.","closure":"Map all applicable clauses.","matrix":[{"document":"standard","modes":["verify"],"requirements":["norm"],"unmapped_clauses":["3.3: additional verifier rules"],"reason":"Selected verifier duties.","closure":"Assess section 3.3."}]}],
+		"requirements":[{"id":"supported","title":"Supported capability","status":"implemented","tests":["fixture_test.go"]},{"id":"unimplemented","title":"Open capability","status":"unimplemented","tests":[]}],
+		"normative_requirements":[{
+			"id":"norm","statement":"Validate the input.","norm":{"document":"standard","clause":"3.2","source":"https://example.test/standard#verify","level":"MUST","errata":[]},
+			"applies":{"profile":"profile","role":"verifier","mode":"verify","status":"applicable","reason":"Required for the selected verifier role."},
+			"implementation":{"status":"implemented","apis":["fixture.Apply"],"code":["fixture/api.go"]},
+			"tests":{"status":"covered","reason":"Exact local fixture cases.","positive":[{"file":"fixture_test.go","name":"TestPresent"}],"negative":[{"file":"fixture_test.go","name":"TestPresent"}]},
+			"interop":{"status":"pending","tests":[],"fixtures":[],"reason":"Independent fixture pending."},
+			"policy":{"default":{"status":"enabled","reason":"Within the default profile."},"compatibility":{"status":"not-applicable","reason":"No separate compatibility mode."}},
+			"gap":"Independent evidence pending.","closure":"Add an independent positive/negative pair."
+		}]
+	}`)
+}
+
+func writeFixture(t *testing.T, root, name, text string) {
+	t.Helper()
+
+	path := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Proof events come from configured go test -json runs. Requiring a matching
+// source and register digest prevents a successful old run from closing new work.
+type languageProofRun struct {
+	SourceSHA256   string               `json:"source_sha256"`
+	RegisterSHA256 string               `json:"register_sha256"`
+	Events         []languageProofEvent `json:"events"`
+	index          map[string]languageProofStatus
+}
+
+func (r *languageProofRun) passed(check conformanceTest) error {
+	if r.index == nil {
+		r.index = make(map[string]languageProofStatus)
+		for _, event := range r.Events {
+			if event.Package != "github.com/skarm/xmlsec" && !strings.HasPrefix(event.Package, "github.com/skarm/xmlsec/") {
+				continue
+			}
+			directory := strings.TrimPrefix(event.Package, "github.com/skarm/xmlsec/")
+			if event.Package == "github.com/skarm/xmlsec" {
+				directory = "."
+			}
+			key := directory + "\x00" + event.Test
+			switch event.Action {
+			case "pass":
+				state := r.index[key]
+				state.passed = true
+				r.index[key] = state
+			case "output":
+				// An ancestor cannot borrow an unrelated descendant's oracle or vector.
+				state := r.index[key]
+				state.recordOutput(event.Output)
+				r.index[key] = state
+			case "skip", "fail":
+				// A group with any omitted or failing descendant cannot be cited as passed.
+				for name := event.Test; name != ""; {
+					key = directory + "\x00" + name
+					state := r.index[key]
+					state.invalid = event.Action + " at " + event.Test
+					r.index[key] = state
+					index := strings.LastIndex(name, "/")
+					if index < 0 {
+						break
+					}
+					name = name[:index]
+				}
+			}
+		}
+	}
+	name := check.Name + "/" + check.Case
+	key := filepath.ToSlash(filepath.Dir(check.File)) + "\x00" + name
+	state := r.index[key]
+	if state.invalid != "" {
+		return fmt.Errorf("%s has %s", name, state.invalid)
+	}
+	if !state.passed {
+		return fmt.Errorf("no successful execution of %s in %s", name, check.File)
+	}
+	return nil
+}
+
+func (r *languageProofRun) independent(proof normativeProof) error {
+	if err := r.passed(proof.Check); err != nil {
+		return err
+	}
+	key := filepath.ToSlash(filepath.Dir(proof.Check.File)) + "\x00" + proof.Check.Name + "/" + proof.Check.Case
+	state := r.index[key]
+	if proof.Oracle == "published-vector" || proof.Oracle == "published-inventory" {
+		if proof.Expected == nil {
+			return fmt.Errorf("%s/%s has no published fixture value", proof.Check.Name, proof.Check.Case)
+		}
+		if _, exists := state.vectors[*proof.Expected]; !exists {
+			return fmt.Errorf("%s/%s does not verify published fixture value %q", proof.Check.Name, proof.Check.Case, *proof.Expected)
+		}
+		return nil
+	}
+	if _, exists := state.oracles[proof.Oracle]; !exists {
+		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
+	}
+	if _, exists := state.diagnostics[proof.Oracle]; exists {
+		return fmt.Errorf("%s/%s has no exact %s agreement; diagnostics cannot close independent evidence", proof.Check.Name, proof.Check.Case, proof.Oracle)
+	}
+	return nil
+}
+
+type languageProofStatus struct {
+	passed      bool
+	invalid     string
+	oracles     map[string]struct{}
+	diagnostics map[string]struct{}
+	vectors     map[string]struct{}
+}
+
+func (s *languageProofStatus) recordOutput(output string) {
+	for _, marker := range []string{"P3_ORACLE ", "P3_DIAGNOSTIC ", "P3_VECTOR "} {
+		_, tail, found := strings.Cut(output, marker)
+		if !found {
+			continue
+		}
+		if marker == "P3_VECTOR " {
+			var expected string
+			if err := json.Unmarshal([]byte(strings.TrimSpace(tail)), &expected); err == nil {
+				if s.vectors == nil {
+					s.vectors = make(map[string]struct{})
+				}
+				s.vectors[expected] = struct{}{}
+			}
+			continue
+		}
+		fields := strings.Fields(tail)
+		if len(fields) == 0 {
+			continue
+		}
+		if marker == "P3_ORACLE " {
+			if s.oracles == nil {
+				s.oracles = make(map[string]struct{})
+			}
+			s.oracles[fields[0]] = struct{}{}
+		} else {
+			if s.diagnostics == nil {
+				s.diagnostics = make(map[string]struct{})
+			}
+			s.diagnostics[fields[0]] = struct{}{}
+		}
+	}
+}
+
+func languageProofPassed(events []languageProofEvent, check conformanceTest) error {
+	run := languageProofRun{Events: events}
+	return run.passed(check)
+}
+
+func languageEvidenceInputs(t *testing.T) (string, conformanceRegister, languageProofRun) {
+	t.Helper()
+	ledgerPath := residualRequired(t, "XMLSEC_P3_TEST_EVENTS")
+	root, err := repositoryRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "docs", "conformance.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var register conformanceRegister
+	if err := json.Unmarshal(raw, &register); err != nil {
+		t.Fatal(err)
+	}
+	_, problems, err := checkConformanceRegister(root, raw)
+	if err := errors.Join(append(problems, err)...); err != nil {
+		t.Fatal(err)
+	}
+	var artifact languageProofArtifact
+	if err := readLanguageProofFile(ledgerPath, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := suiteSourceDigest(t.Context(), root)
+	stamp := languageProofStamp{SourceSHA256: digest, RegisterSHA256: fmt.Sprintf("%x", sha256.Sum256(raw))}
+	events, artifactErr := artifact.validate(stamp)
+	if err != nil || artifactErr != nil {
+		t.Fatal("proof events do not belong to completed runs of the current sources and register", err, artifactErr)
+	}
+	run := languageProofRun{SourceSHA256: stamp.SourceSHA256, RegisterSHA256: stamp.RegisterSHA256, Events: events}
+	t.Cleanup(func() {
+		current, err := suiteSourceDigest(context.WithoutCancel(t.Context()), root)
+		currentRegister, readErr := os.ReadFile(filepath.Join(root, "docs", "conformance.json"))
+		if err != nil || readErr != nil || current != digest || run.RegisterSHA256 != fmt.Sprintf("%x", sha256.Sum256(currentRegister)) {
+			t.Error("sources or register changed during evidence verification", err, readErr)
+		}
+	})
+	return root, register, run
+}
+
+// File confinement uses physical roots, including when /tmp or the explicit
+// checkout directory is a symlink on the calling platform.
+func languageProofDirectory(t *testing.T, variable string) string {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(residualRequired(t, variable))
+	if err == nil {
+		directory, err = filepath.Abs(directory)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
+func residualFailureMatches(evidence residualEvidence, profile string, item suiteOutcome) bool {
+	if evidence.Disposition == "fixed" || item.Kind == "panic" {
+		return false
+	}
+	return slices.ContainsFunc(evidence.Failures, func(condition residualFailureCondition) bool {
+		return condition.Profile == profile && condition.Kind == item.Kind && condition.Cause == item.FailureCause && condition.Signature == item.FailureSignature && slices.Contains(condition.ErrorCodes, item.ErrorCode)
+	})
+}
+
+func languageProofSetting[T comparable](value any, want T) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var actual T
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(&actual) == nil && actual == want
+}
+
+func languageCatalogInventory(t *testing.T, directory string, pin suitePin) map[string]struct{} {
+	t.Helper()
+	catalog, _, err := readSuiteNode(directory, directory, pin.Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := make(map[string]struct{})
+	for _, entry := range catalog.children("test-set") {
+		set, _, err := readSuiteReferencedNode(directory, directory, entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, node := range set.children("test-case") {
+			key := entry.attr("file") + "/" + node.attr("name")
+			if _, exists := inventory[key]; exists {
+				t.Fatal("duplicate original catalog identity", key)
+			}
+			inventory[key] = struct{}{}
+		}
+	}
+	return inventory
 }

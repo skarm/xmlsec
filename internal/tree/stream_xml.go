@@ -106,7 +106,12 @@ func (d *Document) WriteXML(ctx context.Context, dst io.Writer, maxBytes int) (i
 		return 0, fmt.Errorf("%w: XML output configuration", ErrMalformed)
 	}
 
-	return WriteXMLFragment(ctx, dst, d.children, maxBytes)
+	nodes, err := serializationChildren(d)
+	if err != nil {
+		return 0, err
+	}
+
+	return WriteXMLFragment(ctx, dst, nodes, maxBytes)
 }
 
 type xmlStream struct {
@@ -170,7 +175,7 @@ func (w *xmlStream) node(n *Node) {
 			return
 		}
 
-		w.text("<!--")
+		w.text(dtdCommentOpen)
 		w.text(n.Data)
 		w.text("-->")
 	case PINode:
@@ -183,7 +188,7 @@ func (w *xmlStream) node(n *Node) {
 			return
 		}
 
-		w.text("<?")
+		w.text(dtdPIOpen)
 		w.text(n.Name.Local)
 
 		if n.Data != "" {
@@ -561,9 +566,9 @@ func (w *xmlStream) applySpace(n *Node) bool {
 	for _, attribute := range n.Attrs {
 		if attribute.Name == (Name{Space: XMLNamespace, Local: xmlSpaceName}) {
 			switch attribute.Value {
-			case "preserve":
+			case lexicon.SpacePreserve:
 				w.spacePreserve = true
-			case "default":
+			case lexicon.SpaceDefault:
 				w.spacePreserve = false
 			}
 		}
@@ -628,10 +633,10 @@ func (w *xmlStream) closeEmptyElement(name Name) bool {
 func (w *xmlStream) sibling(n *Node, doe *bool, cdata bool) {
 	if w.options.DOEMarkers && n.Kind == PINode && n.Name.Space == "" {
 		switch n.Name.Local {
-		case "disable-output-escaping":
+		case lexicon.DisableOutputEscapingPITarget:
 			*doe = true
 			return
-		case "enable-output-escaping":
+		case lexicon.EnableOutputEscapingPITarget:
 			*doe = false
 			return
 		}

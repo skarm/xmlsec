@@ -12,9 +12,39 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/internal/x509name"
+)
+
+// SigningCertificate and SigningCertificateV2 contain required certificate IDs
+// and optional policies; binding and trust paths validate this same envelope.
+const (
+	signingCertificateMinimumFields = 1
+	signingCertificateMaximumFields = 2
+)
+
+const (
+	maximumAlgorithmIdentifierBytes = 8192
+	// Bounds DER for CMS attribute values and their aggregate encoding, in bytes.
+	maximumAttributeBytes  = 1 << 20
+	maximumAttributeValues = 64
+	maximumIssuerNames     = 32
+	// Caps certificate references in a CMS signing-certificate attribute.
+	maximumSigningCertificateIDs = 32
+	maximumSigningPolicies       = 32
+	maximumSigningTimeBytes      = 32
+	maximumUTCTimeYear           = 2049
+	minimumUTCTimeYear           = 1950
+)
+
+// Context-specific tags in distinct CMS attribute schemas. An unsigned-attribute
+// section and an algorithm-protection signature field happen to both use [1].
+const (
+	signedAttributesTag             = 0
+	unsignedAttributesTag           = 1
+	algorithmProtectionSignatureTag = 1
 )
 
 // Attribute contains an attribute type OID and complete DER-encoded values.
@@ -30,7 +60,7 @@ type Attribute struct {
 // CertificateBindingAttribute encodes ESSCertIDv2 using default SHA-256 and an
 // issuerSerial identifying the exact certificate (RFC 5035 / RFC 5816).
 func CertificateBindingAttribute(b []byte) (Attribute, error) {
-	if len(b) > 1<<20 {
+	if len(b) > maximumCertificateBytes {
 		return Attribute{}, ErrPolicy
 	}
 
@@ -41,7 +71,7 @@ func CertificateBindingAttribute(b []byte) (Attribute, error) {
 
 	sum, _ := signature.Sum(crypto.SHA256, cert.Raw)
 	serial, _ := asn1.Marshal(cert.SerialNumber)
-	issuer := der.Seq(der.Seq(der.Ctx(4, cert.RawIssuer)), serial)
+	issuer := der.Seq(der.Seq(der.Ctx(lexicon.GeneralNameDirectory, cert.RawIssuer)), serial)
 	id := der.Seq(der.Octets(sum), issuer)
 
 	return Attribute{
@@ -83,17 +113,17 @@ func verifyESS(ctx context.Context, attrs []Attribute, cert *x509.Certificate, l
 }
 
 func verifyESSAttribute(ctx context.Context, raw []byte, cert *x509.Certificate, v2 bool) error {
-	v, err := der.Read(raw, 1<<20)
+	v, err := der.Read(raw, maximumAttributeBytes)
 	if err != nil {
 		return ErrSyntax
 	}
 
-	top, err := der.Sequence(v, 1, 2)
+	top, err := der.Sequence(v, signingCertificateMinimumFields, signingCertificateMaximumFields)
 	if err != nil {
 		return ErrSyntax
 	}
 
-	ids, err := der.Sequence(top[0], 1, 32)
+	ids, err := der.Sequence(top[0], 1, maximumSigningCertificateIDs)
 	if err != nil {
 		return ErrSyntax
 	}
@@ -104,9 +134,62 @@ func verifyESSAttribute(ctx context.Context, raw []byte, cert *x509.Certificate,
 		}
 	}
 
-	if len(top) == 2 {
-		if _, err := der.Sequence(top[1], 1, 32); err != nil {
+	if len(top) == signingCertificateMaximumFields {
+		if err := validateESSPolicies(ctx, top[1]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// RFC 5035 policies are advisory and do not select the verifier's trust policy.
+// Their PolicyInformation and PolicyQualifierInfo containers still require the
+// declared ASN.1 structure. Qualifier meanings remain application-owned.
+func validateESSPolicies(ctx context.Context, value asn1.RawValue) error {
+	// PolicyInformation has an OID and optional qualifiers. A qualifier
+	// itself contains its type OID and one encoded value.
+	const (
+		policyInformationMinimumFields = 1
+		policyInformationMaximumFields = 2
+		policyQualifierFields          = 2
+	)
+
+	policies, err := der.Sequence(value, 1, maximumSigningPolicies)
+	if err != nil {
+		return ErrSyntax
+	}
+
+	for _, policy := range policies {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		fields, err := der.Sequence(policy, policyInformationMinimumFields, policyInformationMaximumFields)
+		if err != nil || !der.Is(fields[0], asn1.ClassUniversal, asn1.TagOID, false) {
 			return ErrSyntax
+		}
+
+		if len(fields) == policyInformationMinimumFields {
+			continue
+		}
+
+		qualifiers := fields[1]
+		if !der.Is(qualifiers, asn1.ClassUniversal, asn1.TagSequence, true) || len(qualifiers.Bytes) == 0 {
+			return ErrSyntax
+		}
+
+		// The enclosing ESS value has passed der.Read, including the shared
+		// node budget. Iterate without materializing another qualifier slice.
+		for qualifier := range der.ValidatedChildren(qualifiers) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			parts, err := der.Sequence(qualifier, policyQualifierFields, policyQualifierFields)
+			if err != nil || !der.Is(parts[0], asn1.ClassUniversal, asn1.TagOID, false) {
+				return ErrSyntax
+			}
 		}
 	}
 
@@ -114,7 +197,13 @@ func verifyESSAttribute(ctx context.Context, raw []byte, cert *x509.Certificate,
 }
 
 func verifyESSCertID(ctx context.Context, v asn1.RawValue, cert *x509.Certificate, v2, signer bool) error {
-	fields, err := der.Sequence(v, 1, 3)
+	// ESSCertIDv2 has a required hash plus optional hashAlgorithm and issuerSerial.
+	const (
+		minimumESSCertIDFields = 1
+		maximumESSCertIDFields = 3
+	)
+
+	fields, err := der.Sequence(v, minimumESSCertIDFields, maximumESSCertIDFields)
 	if err != nil {
 		return ErrSyntax
 	}
@@ -160,7 +249,7 @@ func parseESSCertHash(fields []asn1.RawValue, v2 bool) (crypto.Hash, []byte, int
 	if v2 {
 		h = crypto.SHA256
 
-		if der.Is(fields[0], 0, asn1.TagSequence, true) {
+		if der.Is(fields[0], asn1.ClassUniversal, asn1.TagSequence, true) {
 			algorithm, err := signature.Algorithm(fields[0])
 			if err != nil {
 				return 0, nil, 0, ErrSyntax
@@ -192,12 +281,14 @@ func parseESSCertHash(fields []asn1.RawValue, v2 bool) (crypto.Hash, []byte, int
 }
 
 func parseESSIssuer(v asn1.RawValue) ([]asn1.RawValue, *big.Int, error) {
-	issuer, err := der.Sequence(v, 2, 2)
+	const issuerSerialFields = 2 // GeneralNames and certificate serial number
+
+	issuer, err := der.Sequence(v, issuerSerialFields, issuerSerialFields)
 	if err != nil {
 		return nil, nil, ErrSyntax
 	}
 
-	names, err := der.Sequence(issuer[0], 1, 32)
+	names, err := der.Sequence(issuer[0], 1, maximumIssuerNames)
 	if err != nil {
 		return nil, nil, ErrSyntax
 	}
@@ -213,11 +304,11 @@ func parseESSIssuer(v asn1.RawValue) ([]asn1.RawValue, *big.Int, error) {
 func verifyESSIssuer(ctx context.Context, names []asn1.RawValue, serial *big.Int, cert *x509.Certificate) error {
 	// RFC5035 section4: a public-key certificate's issuerSerial contains only
 	// its issuer's directoryName, not a matching name among unrelated aliases.
-	if len(names) != 1 || !der.Is(names[0], 2, 4, true) {
+	if len(names) != 1 || !der.Is(names[0], asn1.ClassContextSpecific, lexicon.GeneralNameDirectory, true) {
 		return ErrCertificate
 	}
 
-	directory, err := der.Explicit(names[0], 4)
+	directory, err := der.Explicit(names[0], lexicon.GeneralNameDirectory)
 	if err != nil {
 		return ErrSyntax
 	}
@@ -235,6 +326,9 @@ func verifyESSIssuer(ctx context.Context, names []asn1.RawValue, serial *big.Int
 }
 
 func verifyProtection(attrs []Attribute, alg pkix.AlgorithmIdentifier, h crypto.Hash) error {
+	// The supported algorithm-protection form binds digest and signature algorithms.
+	const algorithmProtectionFields = 2
+
 	raw, ok, e := attributeValue(attrs, oidAlgorithmProtect())
 	if e != nil {
 		return e
@@ -244,12 +338,12 @@ func verifyProtection(attrs []Attribute, alg pkix.AlgorithmIdentifier, h crypto.
 		return nil
 	}
 
-	v, e := der.Read(raw, 8192)
+	v, e := der.Read(raw, maximumAlgorithmIdentifierBytes)
 	if e != nil {
 		return ErrSyntax
 	}
 
-	f, e := der.Sequence(v, 2, 2)
+	f, e := der.Sequence(v, algorithmProtectionFields, algorithmProtectionFields)
 	if e != nil {
 		return ErrSyntax
 	}
@@ -264,11 +358,11 @@ func verifyProtection(attrs []Attribute, alg pkix.AlgorithmIdentifier, h crypto.
 		return ErrSignature
 	}
 
-	if !der.Is(f[1], 2, 1, true) {
+	if !der.Is(f[1], asn1.ClassContextSpecific, algorithmProtectionSignatureTag, true) {
 		return ErrSyntax
 	}
 
-	s := asn1.RawValue{Class: 0, Tag: asn1.TagSequence, IsCompound: true, Bytes: f[1].Bytes}
+	s := asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: f[1].Bytes}
 
 	sa, e := signature.Algorithm(s)
 	if e != nil {
@@ -314,7 +408,9 @@ func cloneAttributes(attrs []Attribute) []Attribute {
 }
 
 func parseAttributes(v asn1.RawValue, tag, maximum int) ([]Attribute, error) {
-	f, e := der.SetFields(v, 2, tag, maximum)
+	const attributeFields = 2 // attribute type OID and SET OF values
+
+	f, e := der.SetFields(v, asn1.ClassContextSpecific, tag, maximum)
 	if e != nil || len(f) == 0 {
 		return nil, ErrSyntax
 	}
@@ -323,7 +419,7 @@ func parseAttributes(v asn1.RawValue, tag, maximum int) ([]Attribute, error) {
 	seen := map[string]struct{}{}
 
 	for _, field := range f {
-		a, e := der.Sequence(field, 2, 2)
+		a, e := der.Sequence(field, attributeFields, attributeFields)
 		if e != nil {
 			return nil, ErrSyntax
 		}
@@ -341,7 +437,7 @@ func parseAttributes(v asn1.RawValue, tag, maximum int) ([]Attribute, error) {
 
 		seen[key] = struct{}{}
 
-		vals, e := der.SetFields(a[1], 0, asn1.TagSet, 64)
+		vals, e := der.SetFields(a[1], asn1.ClassUniversal, asn1.TagSet, maximumAttributeValues)
 		if e != nil || len(vals) == 0 {
 			return nil, ErrSyntax
 		}
@@ -351,7 +447,7 @@ func parseAttributes(v asn1.RawValue, tag, maximum int) ([]Attribute, error) {
 			x.ValuesDER = append(x.ValuesDER, v.FullBytes)
 		}
 
-		if tag == 0 {
+		if tag == signedAttributesTag {
 			if err := validateSigningTime(x); err != nil {
 				return nil, ErrSyntax
 			}
@@ -378,7 +474,7 @@ func attributeValue(attrs []Attribute, oid asn1.ObjectIdentifier) ([]byte, bool,
 }
 
 func encodeAttributes(attrs []Attribute, maximum int) ([]byte, error) {
-	if len(attrs) < 2 || len(attrs) > maximum {
+	if len(attrs) < minimumAttributes || len(attrs) > maximum {
 		return nil, ErrPolicy
 	}
 
@@ -390,7 +486,7 @@ func encodeAttributes(attrs []Attribute, maximum int) ([]byte, error) {
 
 	for _, x := range attrs {
 		key := x.OID.String()
-		if _, exists := seen[key]; exists || len(x.ValuesDER) < 1 || len(x.ValuesDER) > 64 || !attributePlacement(x.OID, 0) {
+		if _, exists := seen[key]; exists || len(x.ValuesDER) < 1 || len(x.ValuesDER) > maximumAttributeValues || !attributePlacement(x.OID, signedAttributesTag) {
 			return nil, ErrPolicy
 		}
 
@@ -407,11 +503,11 @@ func encodeAttributes(attrs []Attribute, maximum int) ([]byte, error) {
 
 		for _, b := range x.ValuesDER {
 			total += len(b)
-			if total > 1<<20 {
+			if total > maximumAttributeBytes {
 				return nil, ErrPolicy
 			}
 
-			if _, e := der.Read(b, 1<<20); e != nil {
+			if _, e := der.Read(b, maximumAttributeBytes); e != nil {
 				return nil, fmt.Errorf("%w: attribute value: %w", ErrPolicy, e)
 			}
 		}
@@ -426,7 +522,7 @@ func encodeAttributes(attrs []Attribute, maximum int) ([]byte, error) {
 // 11.1--11.4, RFC 6211 section 2, and RFC 5035 section 3 / RFC 2634 section 5.
 // Unknown attributes retain the caller's responsibility for their semantics.
 func attributePlacement(oid asn1.ObjectIdentifier, tag int) bool {
-	if tag == 0 {
+	if tag == signedAttributesTag {
 		return !oid.Equal(oidCountersignature())
 	}
 
@@ -446,7 +542,7 @@ func validateSigningTime(attr Attribute) error {
 		return ErrSyntax
 	}
 
-	v, err := der.Read(attr.ValuesDER[0], 32)
+	v, err := der.Read(attr.ValuesDER[0], maximumSigningTimeBytes)
 	if err != nil {
 		return ErrSyntax
 	}
@@ -459,14 +555,14 @@ func validateSigningTime(attr Attribute) error {
 	var text string
 
 	switch {
-	case der.Is(v, 0, asn1.TagUTCTime, false):
-		text = instant.UTC().Format("060102150405Z")
-	case der.Is(v, 0, asn1.TagGeneralizedTime, false):
-		if instant.Year() >= 1950 && instant.Year() <= 2049 || instant.Year() < 1 {
+	case der.Is(v, asn1.ClassUniversal, asn1.TagUTCTime, false):
+		text = instant.UTC().Format(lexicon.ASN1UTCTimeLayout)
+	case der.Is(v, asn1.ClassUniversal, asn1.TagGeneralizedTime, false):
+		if instant.Year() >= minimumUTCTimeYear && instant.Year() <= maximumUTCTimeYear || instant.Year() < 1 {
 			return ErrSyntax
 		}
 
-		text = instant.UTC().Format("20060102150405Z")
+		text = instant.UTC().Format(lexicon.ASN1GeneralizedTimeLayout)
 	default:
 		return ErrSyntax
 	}

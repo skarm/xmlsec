@@ -12,8 +12,23 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath/number"
+)
+
+// Percent/per-mille multiply the value before decimal-picture rounding.
+// Infinity selectors are math.IsInf conventions. Picture splitting retains a
+// third part so invalid extra separators reach the existing picture validator.
+const (
+	formatPercentMultiplier    = 100
+	formatPerMilleMultiplier   = 1000
+	formatPositiveInfinitySign = 1
+	formatNegativeInfinitySign = -1
+	numberPictureSplitLimit    = 3
+	numberPositivePictureCount = 1
+	numberNegativePictureIndex = 1
+	floatExponentMarkers       = "eE"
 )
 
 // DecimalFormat aliases the shared decimal-picture symbol and formatting
@@ -34,13 +49,13 @@ func DecimalZeroDigit(character rune) bool {
 
 	for _, block := range unicode.Nd.R16 {
 		if character >= rune(block.Lo) && character <= rune(block.Hi) {
-			return (character-rune(block.Lo))%10 == 0
+			return (character-rune(block.Lo))%formatterDecimalDigitCount == 0
 		}
 	}
 
 	for _, block := range unicode.Nd.R32 {
 		if character >= rune(block.Lo) && character <= rune(block.Hi) { // #nosec G115 -- Standard Unicode Nd tables contain code points at most utf8.MaxRune.
-			return (character-rune(block.Lo))%10 == 0 // #nosec G115 -- Standard Unicode Nd tables contain code points at most utf8.MaxRune.
+			return (character-rune(block.Lo))%formatterDecimalDigitCount == 0 // #nosec G115 -- Standard Unicode Nd tables contain code points at most utf8.MaxRune.
 		}
 	}
 
@@ -56,7 +71,7 @@ func defaultDecimalFormat(ctx context.Context) number.DecimalFormat {
 }
 
 func resolveDecimalFormat(ctx context.Context, name string) (number.DecimalFormat, error) {
-	name = strings.Trim(name, " \t\r\n")
+	name = strings.Trim(name, lexicon.XMLWhitespace)
 	if name == "" {
 		return defaultDecimalFormat(ctx), nil
 	}
@@ -108,7 +123,7 @@ func resolveDecimalFormatName(ctx context.Context, name string) (QualifiedName, 
 }
 
 func boundedFormatNumber(ctx context.Context, value xdm.AtomicValue, picture string, df number.DecimalFormat) (string, error) {
-	if ec := getFnContext(ctx); ec != nil && ec.version != 0 && ec.version < 31 {
+	if ec := getFnContext(ctx); ec != nil && ec.version != xpathVersionDefault && ec.version < xpathVersion31 {
 		df.ExponentDisabled = true
 	}
 
@@ -135,8 +150,8 @@ func formatNumber(a xdm.AtomicValue, picture string, df number.DecimalFormat) (s
 	f := a.ToFloat64()
 
 	isNaN := math.IsNaN(f)
-	isPosInf := math.IsInf(f, 1)
-	isNegInf := math.IsInf(f, -1)
+	isPosInf := math.IsInf(f, formatPositiveInfinitySign)
+	isNegInf := math.IsInf(f, formatNegativeInfinitySign)
 	negative := f < 0 || (f == 0 && math.Signbit(f))
 
 	var precise *big.Rat
@@ -147,8 +162,13 @@ func formatNumber(a xdm.AtomicValue, picture string, df number.DecimalFormat) (s
 		} else {
 			precise = new(big.Rat).SetInt(a.BigInt())
 		}
+
+		isNaN, isPosInf, isNegInf = false, false, false
+		negative = precise.Sign() < 0
 	} else if a.TypeName == xdm.TypeDecimal {
 		precise = new(big.Rat).Set(a.BigRat())
+		isNaN, isPosInf, isNegInf = false, false, false
+		negative = precise.Sign() < 0
 	} else if (a.TypeName == xdm.TypeDouble || a.TypeName == xdm.TypeFloat) && !isNaN && !isPosInf && !isNegInf {
 		if s, err := atomicToString(a); err == nil {
 			precise = parseCanonicalFloatRat(s)
@@ -181,16 +201,16 @@ func scaledFloatPrecise(typeName string, f float64, picture string, negative boo
 	}
 
 	scaled := f
-	divisor := int64(100)
+	divisor := int64(formatPercentMultiplier)
 
 	if pp.IsPercent {
-		scaled *= 100
+		scaled *= formatPercentMultiplier
 	} else {
-		scaled *= 1000
-		divisor = 1000
+		scaled *= formatPerMilleMultiplier
+		divisor = formatPerMilleMultiplier
 	}
 
-	if math.IsNaN(scaled) || math.IsInf(scaled, 0) {
+	if math.IsNaN(scaled) || math.IsInf(scaled, eitherInfinitySign) {
 		return nil
 	}
 
@@ -208,16 +228,16 @@ func scaledFloatPrecise(typeName string, f float64, picture string, negative boo
 }
 
 func selectedNumberPicture(picture string, negative bool, df number.DecimalFormat) string {
-	parts := strings.SplitN(picture, string(df.PatternSeparator), 3)
-	if negative && len(parts) > 1 {
-		return parts[1]
+	parts := strings.SplitN(picture, string(df.PatternSeparator), numberPictureSplitLimit)
+	if negative && len(parts) > numberPositivePictureCount {
+		return parts[numberNegativePictureIndex]
 	}
 
 	return parts[0]
 }
 
 func parseCanonicalFloatRat(s string) *big.Rat {
-	if idx := strings.IndexAny(s, "eE"); idx >= 0 {
+	if idx := strings.IndexAny(s, floatExponentMarkers); idx >= 0 {
 		mantissa := parseCanonicalFloatRat(s[:idx])
 		if mantissa == nil {
 			return nil
@@ -228,7 +248,7 @@ func parseCanonicalFloatRat(s string) *big.Rat {
 			return nil
 		}
 
-		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(absInt(exp))), nil)
+		scale := new(big.Int).Exp(big.NewInt(numericDecimalRadix), big.NewInt(int64(absInt(exp))), nil)
 		if exp >= 0 {
 			return mantissa.Mul(mantissa, new(big.Rat).SetInt(scale))
 		}

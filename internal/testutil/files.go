@@ -7,12 +7,16 @@ import (
 	"testing"
 )
 
+const (
+	fixtureFileMode = 0o600
+)
+
 // WriteFile writes a fixture into an existing directory and returns its path.
 func WriteFile(t testing.TB, dir, name string, contents []byte) string {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, contents, 0o600); err != nil {
+	if err := os.WriteFile(path, contents, fixtureFileMode); err != nil {
 		t.Fatal(err)
 	}
 

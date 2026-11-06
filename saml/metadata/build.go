@@ -18,6 +18,11 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+// Suggested prefix used by metadata construction. Parsing accepts other prefixes and checks the metadata namespace instead.
+const (
+	prefixMetadata = "md"
+)
+
 // KeyDescriptor advertises a DER certificate for signing, encryption or both uses.
 type KeyDescriptor struct {
 	// Use is signing, encryption or empty for both uses.
@@ -48,8 +53,8 @@ type RoleDescriptor struct {
 	WantAssertionsSigned bool
 }
 
-// EntityDescriptor supplies an entity identifier, expiration and optional SP and IdP
-// roles.
+// EntityDescriptor supplies an entity identifier, expiration and optional SSO
+// provider and authority roles.
 type EntityDescriptor struct {
 	// ID is the entity descriptor XML ID. Empty generates an unpredictable ID.
 	ID string
@@ -63,6 +68,12 @@ type EntityDescriptor struct {
 	SP *RoleDescriptor
 	// IDP supplies the identity provider role. Nil omits that role.
 	IDP *RoleDescriptor
+	// AuthnAuthority supplies an authentication-authority role.
+	AuthnAuthority *RoleDescriptor
+	// AttributeAuthority supplies an attribute-authority role.
+	AttributeAuthority *RoleDescriptor
+	// PDP supplies an authorization-decision authority role.
+	PDP *RoleDescriptor
 }
 
 // Build builds a supported metadata document with explicit validity. The returned document
@@ -93,10 +104,10 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 		return nil, ErrMetadata
 	}
 
-	root := md("EntityDescriptor")
-	root.NS = []tree.Namespace{{Prefix: "md", URI: Namespace}, {Prefix: "ds", URI: xmlutil.DS}}
-	xmlutil.Set(root, "ID", id)
-	xmlutil.Set(root, "entityID", s.EntityID)
+	root := md(xmlNameEntityDescriptor)
+	root.NS = []tree.Namespace{{Prefix: prefixMetadata, URI: Namespace}, {Prefix: lexicon.PrefixDSig, URI: xmlutil.DS}}
+	xmlutil.Set(root, lexicon.SAMLAttrID, id)
+	xmlutil.Set(root, xmlNameEntityID, s.EntityID)
 	xmlutil.Set(root, nameValidUntil, profile.Time(s.ValidUntil))
 
 	if returned1Value, matchedBranch := buildCacheDuration(&s, root); matchedBranch {
@@ -159,7 +170,7 @@ func Sign(ctx context.Context, d *document.Document, key crypto.Signer, certific
 	return signed, nil
 }
 
-func md(local string) *tree.Node { return xmlutil.Node("md", Namespace, local) }
+func md(local string) *tree.Node { return xmlutil.Node(prefixMetadata, Namespace, local) }
 
 func buildOrder(order []string, r *struct {
 	kind RoleType
@@ -180,18 +191,19 @@ func buildOrder(order []string, r *struct {
 		used[kind] = struct{}{}
 		for _, ep := range r.spec.Endpoints[kind] {
 			n2 := md(kind)
-			xmlutil.Set(n2, "Binding", ep.Binding)
-			xmlutil.Set(n2, "Location", ep.Location)
+			xmlutil.Set(n2, xmlNameBinding, ep.Binding)
+			xmlutil.Set(n2, xmlNameLocation, ep.Location)
+			endpointExtensions(n2, ep)
 
 			if ep.ResponseLocation != "" {
-				xmlutil.Set(n2, "ResponseLocation", ep.ResponseLocation)
+				xmlutil.Set(n2, xmlNameResponseLocation, ep.ResponseLocation)
 			}
 
 			if kind == AssertionConsumerService || kind == ArtifactResolutionService {
-				xmlutil.Set(n2, "index", strconv.Itoa(int(ep.Index)))
+				xmlutil.Set(n2, xmlNameIndex, strconv.Itoa(int(ep.Index)))
 
 				if ep.DefaultSet || ep.Default {
-					xmlutil.Set(n2, "isDefault", strconv.FormatBool(ep.Default))
+					xmlutil.Set(n2, xmlNameIsDefault, strconv.FormatBool(ep.Default))
 				}
 			}
 
@@ -201,7 +213,7 @@ func buildOrder(order []string, r *struct {
 }
 
 func buildIsZero(ctx context.Context, at *time.Time, s *EntityDescriptor) (returned1 error, matched bool) {
-	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After(*at) || s.SP == nil && s.IDP == nil || !profile.URI(s.EntityID) {
+	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After(*at) || s.SP == nil && s.IDP == nil && s.AuthnAuthority == nil && s.AttributeAuthority == nil && s.PDP == nil || !profile.URI(s.EntityID) {
 		return ErrMetadata, true
 	}
 
@@ -209,17 +221,23 @@ func buildIsZero(ctx context.Context, at *time.Time, s *EntityDescriptor) (retur
 }
 
 func buildCacheDuration(s *EntityDescriptor, root *tree.Node) (returned1Value error, matchedBranch bool) {
+	const (
+		decimalRadix         = 10
+		maximumCacheDuration = 365 * 24 * time.Hour
+		nanosecondsPerSecond = int64(time.Second)
+	)
+
 	if s.CacheDuration != 0 {
-		if s.CacheDuration <= 0 || s.CacheDuration > 365*24*time.Hour {
+		if s.CacheDuration <= 0 || s.CacheDuration > maximumCacheDuration {
 			return ErrMetadata, true
 		}
 
 		secs := s.CacheDuration / time.Second
 		frac := s.CacheDuration % time.Second
 
-		value := strconv.FormatInt(int64(secs), 10)
+		value := strconv.FormatInt(int64(secs), decimalRadix)
 		if frac != 0 {
-			value += "." + strings.TrimRight(strconv.FormatInt(int64(frac)+1e9, 10)[1:], "0")
+			value += "." + strings.TrimRight(strconv.FormatInt(int64(frac)+nanosecondsPerSecond, decimalRadix)[1:], "0")
 		}
 
 		xmlutil.Set(root, nameCacheDuration, "PT"+value+"S")
@@ -232,31 +250,36 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 	for _, r := range []struct {
 		kind RoleType
 		spec *RoleDescriptor
-	}{{IdentityProvider, s.IDP}, {ServiceProvider, s.SP}} {
+	}{{IdentityProvider, s.IDP}, {ServiceProvider, s.SP}, {AuthenticationAuthority, s.AuthnAuthority}, {AttributeAuthority, s.AttributeAuthority}, {PolicyDecisionPoint, s.PDP}} {
 		if r.spec == nil {
 			continue
 		}
 
-		if len(r.spec.Keys) > maxKeys {
+		if len(r.spec.Keys) > maxKeys || validateEndpointExtensionValues(r.spec.Endpoints) != nil {
+			return ErrMetadata, true
+		}
+
+		if isAuthorityRole(r.kind) && (r.spec.AuthnRequestsSigned || r.spec.WantAuthnRequestsSigned || r.spec.WantAssertionsSigned) {
 			return ErrMetadata, true
 		}
 
 		n := md(string(r.kind))
-		xmlutil.Set(n, "protocolSupportEnumeration", Protocol)
+		xmlutil.Set(n, xmlNameProtocolSupportEnumeration, Protocol)
 
 		if !r.spec.ValidUntil.IsZero() {
 			xmlutil.Set(n, nameValidUntil, profile.Time(r.spec.ValidUntil))
 		}
 
-		if r.kind == IdentityProvider {
-			xmlutil.Set(n, "WantAuthnRequestsSigned", strconv.FormatBool(r.spec.WantAuthnRequestsSigned))
-		} else {
-			xmlutil.Set(n, "AuthnRequestsSigned", strconv.FormatBool(r.spec.AuthnRequestsSigned))
-			xmlutil.Set(n, "WantAssertionsSigned", strconv.FormatBool(r.spec.WantAssertionsSigned))
+		switch r.kind {
+		case IdentityProvider:
+			xmlutil.Set(n, xmlNameWantAuthnRequestsSigned, strconv.FormatBool(r.spec.WantAuthnRequestsSigned))
+		case ServiceProvider:
+			xmlutil.Set(n, xmlNameAuthnRequestsSigned, strconv.FormatBool(r.spec.AuthnRequestsSigned))
+			xmlutil.Set(n, xmlNameWantAssertionsSigned, strconv.FormatBool(r.spec.WantAssertionsSigned))
 		}
 
 		for _, k := range r.spec.Keys {
-			if len(k.CertificateDER) > 32<<10 {
+			if len(k.CertificateDER) > maximumCertificateBytes {
 				return ErrMetadata, true
 			}
 
@@ -265,14 +288,14 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 				return err, true
 			}
 
-			kd := md("KeyDescriptor")
+			kd := md(xmlNameKeyDescriptor)
 			if k.Use != "" {
-				xmlutil.Set(kd, "use", k.Use)
+				xmlutil.Set(kd, lexicon.AttrUse, k.Use)
 			}
 
-			ki := xmlutil.Node("ds", xmlutil.DS, lexicon.DSigElementKeyInfo)
-			xd := xmlutil.Node("ds", xmlutil.DS, lexicon.DSigElementX509Data)
-			xc := xmlutil.Node("ds", xmlutil.DS, lexicon.DSigElementX509Certificate)
+			ki := xmlutil.Node(lexicon.PrefixDSig, xmlutil.DS, lexicon.DSigElementKeyInfo)
+			xd := xmlutil.Node(lexicon.PrefixDSig, xmlutil.DS, lexicon.DSigElementX509Data)
+			xc := xmlutil.Node(lexicon.PrefixDSig, xmlutil.DS, lexicon.DSigElementX509Certificate)
 			xmlutil.Text(xc, encoded)
 			xmlutil.Add(xd, xc)
 			xmlutil.Add(ki, xd)
@@ -280,12 +303,7 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 			xmlutil.Add(n, kd)
 		}
 
-		order := []string{ArtifactResolutionService, SingleLogoutService, ManageNameIDService, nameNameIDFormat}
-		if r.kind == IdentityProvider {
-			order = append(order, SingleSignOnService, NameIDMappingService)
-		} else {
-			order = append(order, AssertionConsumerService)
-		}
+		order := roleEndpointOrder(r.kind)
 
 		used := map[string]struct{}{}
 

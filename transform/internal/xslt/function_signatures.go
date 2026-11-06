@@ -96,6 +96,14 @@ func (f *legacyTextFunction) FuncParamTypesForArity(arity int) []xdm.SequenceTyp
 }
 
 func (f *legacyTextFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const (
+		errCodeFOUT1170 = "FOUT1170"
+		errCodeFOUT1190 = "FOUT1190"
+		errCodeFOUT1200 = "FOUT1200"
+		errCodeXTDE1190 = "XTDE1190"
+		errCodeXTDE1200 = "XTDE1200"
+	)
+
 	if f.name == fnNameUnparsedTextAvailable && len(args) == 2 && xdm.SequenceLen(args[1]) == 0 {
 		args = args[:1]
 	}
@@ -109,15 +117,15 @@ func (f *legacyTextFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm
 		code := ""
 
 		switch detail.Code {
-		case "FOUT1170":
-			code = "XTDE1170"
-		case "FOUT1190":
-			code = "XTDE1190"
+		case errCodeFOUT1170:
+			code = errCodeXTDE1170
+		case errCodeFOUT1190:
+			code = errCodeXTDE1190
 			if errors.Is(err, unparsedtext.ErrImplicitUTF8) {
-				code = "XTDE1200"
+				code = errCodeXTDE1200
 			}
-		case "FOUT1200":
-			code = "XTDE1200"
+		case errCodeFOUT1200:
+			code = errCodeXTDE1200
 		}
 
 		if code != "" {
@@ -129,7 +137,7 @@ func (f *legacyTextFunction) Call(ctx context.Context, args []xdm.Sequence) (xdm
 }
 
 func newLegacyTextFunction(name string) xpath.Function {
-	return &legacyTextFunction{TypedFunctionByArity: xpath.HostBuiltin(20, name), name: name}
+	return &legacyTextFunction{TypedFunctionByArity: xpath.HostBuiltin(xpathProfile20, name), name: name}
 }
 
 type functionTypeKey struct {

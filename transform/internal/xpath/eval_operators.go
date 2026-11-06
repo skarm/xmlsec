@@ -12,6 +12,24 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// XPath focus positions are one-based; a location path evaluated from a single
+// node has focus size one. Nonpositive sequence limits retain the existing
+// disabled-limit convention, separate from work and recursion limits.
+const (
+	focusPositionOrigin   = 1
+	singletonFocusSize    = 1
+	disabledSequenceLimit = 0
+)
+
+// Range operands accept at most one atom. Legacy compatibility keeps the first
+// atom instead. Concat indices identify the two arguments for type diagnostics.
+const (
+	singleRangeOperand        = 1
+	xpath10RangeRetainedAtoms = 1
+	concatLeftArgumentIndex   = 0
+	concatRightArgumentIndex  = 1
+)
+
 func evalBinaryExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e BinaryExpr) (xdm.Sequence, error) {
 	switch e.Op {
 	case TokenOr:
@@ -98,12 +116,12 @@ func evalConcatExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 		return nil, err
 	}
 
-	ls, err := concatToString(ctx, ec, left, 0)
+	ls, err := concatToString(ctx, ec, left, concatLeftArgumentIndex)
 	if err != nil {
 		return nil, err
 	}
 
-	rs, err := concatToString(ctx, ec, right, 1)
+	rs, err := concatToString(ctx, ec, right, concatRightArgumentIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +150,7 @@ func concatToString(ctx context.Context, ec *evalContext, seq xdm.Sequence, inde
 // concatenate per-item sub-sequences and could otherwise materialize unbounded
 // output regardless of maxNodes.
 func appendBounded(dst xdm.ItemSlice, src []xdm.Item, maxNodes int) (xdm.ItemSlice, error) {
-	if maxNodes > 0 && len(dst)+len(src) > maxNodes {
+	if maxNodes > disabledSequenceLimit && len(dst)+len(src) > maxNodes {
 		return nil, ErrNodeSetLimit
 	}
 
@@ -155,7 +173,7 @@ func appendBoundedSeq(ctx context.Context, ec *evalContext, dst xdm.ItemSlice, s
 			return nil, err
 		}
 
-		if maxNodes > 0 && len(dst)+1 > maxNodes {
+		if maxNodes > disabledSequenceLimit && len(dst)+1 > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 
@@ -178,7 +196,7 @@ func appendBoundedClonedSeq(ctx context.Context, ec *evalContext, dst xdm.ItemSl
 			return nil, err
 		}
 
-		if maxNodes > 0 && len(dst)+1 > maxNodes {
+		if maxNodes > disabledSequenceLimit && len(dst)+1 > maxNodes {
 			return nil, ErrNodeSetLimit
 		}
 
@@ -202,9 +220,9 @@ func evalSimpleMapExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContex
 	for item := range xdm.SequenceItems(left) {
 		var frame evalContextFrame
 		if ni, ok := item.(xdm.NodeItem); ok {
-			frame = ec.pushNodeContext(ni.Node, i+1, size)
+			frame = ec.pushNodeContext(ni.Node, i+focusPositionOrigin, size)
 		} else {
-			frame = ec.pushContextItem(item, i+1, size)
+			frame = ec.pushContextItem(item, i+focusPositionOrigin, size)
 		}
 
 		r, err := evalFn(ctx, ec, e.Right)
@@ -235,7 +253,7 @@ func simpleMapNodes(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	var result xdm.ItemSlice
 
 	for i, n := range nodes {
-		frame := ec.pushNodeContext(n, i+1, len(nodes))
+		frame := ec.pushNodeContext(n, i+focusPositionOrigin, len(nodes))
 		r, err := evalFn(ctx, ec, e.Right)
 		ec.restoreContext(frame)
 
@@ -280,11 +298,11 @@ func evalRangeExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 	// XPath 1.0 compatibility mode: a range bound keeps only its first atom rather
 	// than raising a cardinality error.
 	if ec.xpath10CompatMode() {
-		sAtoms = sAtoms[:1]
-		eAtoms = eAtoms[:1]
+		sAtoms = sAtoms[:xpath10RangeRetainedAtoms]
+		eAtoms = eAtoms[:xpath10RangeRetainedAtoms]
 	}
 
-	if len(sAtoms) > 1 || len(eAtoms) > 1 {
+	if len(sAtoms) > singleRangeOperand || len(eAtoms) > singleRangeOperand {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "to operator operands must each be xs:integer? (at most one item)"}
 	}
 
@@ -341,6 +359,12 @@ func evalRangeExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e
 
 	cur := new(big.Int).Set(start)
 	for cur.Cmp(end) <= 0 {
+		// The int64 range is a lazy descriptor; this fallback actually allocates
+		// every magnitude, even when its caller consumes only count().
+		if err := ChargeNumber(ctx, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: cur}); err != nil {
+			return nil, err
+		}
+
 		result = append(result, xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: new(big.Int).Set(cur)})
 		cur.Add(cur, big.NewInt(1))
 	}
@@ -448,7 +472,7 @@ func evalFilterExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 		return nil, err
 	}
 
-	if ec.version == 10 {
+	if ec.version == xpathVersion10 {
 		if err := xpath10NodeSet(base); err != nil {
 			return nil, err
 		}
@@ -493,9 +517,9 @@ func applySequencePredicate(evalFn exprEvaluator, ctx context.Context, ec *evalC
 	for item := range xdm.SequenceItems(seq) {
 		var frame evalContextFrame
 		if ni, ok := item.(xdm.NodeItem); ok {
-			frame = ec.pushNodeContext(ni.Node, i+1, size)
+			frame = ec.pushNodeContext(ni.Node, i+focusPositionOrigin, size)
 		} else {
-			frame = ec.pushContextItem(item, i+1, size)
+			frame = ec.pushContextItem(item, i+focusPositionOrigin, size)
 		}
 
 		r, err := evalFn(ctx, ec, pred)
@@ -505,7 +529,7 @@ func applySequencePredicate(evalFn exprEvaluator, ctx context.Context, ec *evalC
 			return nil, err
 		}
 
-		b, err := predicateTrue(r, i+1)
+		b, err := predicateTrue(r, i+focusPositionOrigin)
 		if err != nil {
 			return nil, err
 		}
@@ -537,7 +561,7 @@ func evalPathExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 
 	result := make([]xdm.Node, 0, len(baseNodes))
 	for _, n := range baseNodes {
-		frame := ec.pushNodeContext(n, 1, 1)
+		frame := ec.pushNodeContext(n, focusPositionOrigin, singletonFocusSize)
 		subResult, err := evalLocationPath(evalFn, ctx, ec, e.Path)
 		ec.restoreContext(frame)
 
@@ -548,16 +572,8 @@ func evalPathExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e 
 		subNodes, _ := xdm.NodesFrom(subResult)
 		result = append(result, subNodes...)
 	}
-	// Per XPath 3.1 §3.3.5: E1/E2 returns nodes in document order.
-	// However, when the filter is an ordering function (reverse, sort),
-	// preserve the explicit ordering and only deduplicate.
-	var deduped []xdm.Node
-	if filterPreservesOrder(ctx, ec, e.Filter) {
-		deduped, err = xdm.DeduplicateNodesPreserveOrder(result, ec.maxNodes)
-	} else {
-		deduped, err = xdm.DeduplicateNodes(result, ec.docOrder, ec.maxNodes)
-	}
-
+	// Node results of E1/E2 are in document order, regardless of E1's order.
+	deduped, err := xdm.DeduplicateNodes(result, ec.docOrder, ec.maxNodes)
 	if err != nil {
 		return nil, err
 	}
@@ -594,12 +610,11 @@ func evalVMPathExpr(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 }
 
 // vmPathStepNodes evaluates the location path e.Path from every node of
-// baseNodes and returns the results merged in document order, or in the
-// order of baseNodes when e.OrderFilter is fn:reverse or fn:sort.
+// baseNodes and returns the results merged in document order.
 func vmPathStepNodes(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e vmPathExpr, baseNodes []xdm.Node) ([]xdm.Node, error) {
 	result := make([]xdm.Node, 0, len(baseNodes))
 	for _, n := range baseNodes {
-		frame := ec.pushNodeContext(n, 1, 1)
+		frame := ec.pushNodeContext(n, focusPositionOrigin, singletonFocusSize)
 		subNodes, err := evalVMLocationPathNodes(evalFn, ctx, ec, *e.Path)
 		ec.restoreContext(frame)
 
@@ -610,38 +625,7 @@ func vmPathStepNodes(evalFn exprEvaluator, ctx context.Context, ec *evalContext,
 		result = append(result, subNodes...)
 	}
 
-	if filterPreservesOrder(ctx, ec, e.OrderFilter) {
-		return xdm.DeduplicateNodesPreserveOrder(result, ec.maxNodes)
-	}
-
 	return xdm.DeduplicateNodes(result, ec.docOrder, ec.maxNodes)
-}
-
-// filterPreservesOrder returns true if the filter expression is a call to the
-// built-in fn:reverse or fn:sort, which explicitly control sequence order. In
-// these cases, a subsequent path step (/@attr) should preserve the caller's
-// ordering, re-sorting into no document order.
-//
-// The decision is made against the runtime function resolver so that a rebound
-// "fn" prefix or a user function overriding the built-in is not mistaken for
-// the order-controlling built-in. (Do not use the lexical streamability helper
-// StreamFnLocalName here — that is a static spelling check, not a binding.)
-func filterPreservesOrder(ctx context.Context, ec *evalContext, e Expr) bool {
-	fc, ok := e.(FunctionCall)
-	if !ok {
-		return false
-	}
-
-	r, err := resolveFunctionInfo(ctx, ec, fc.Prefix, fc.Name, len(fc.Args))
-	if err != nil {
-		return false
-	}
-
-	if !r.isBuiltin || r.uri != NSFn {
-		return false
-	}
-
-	return r.name == nameReverse || r.name == nameSort
 }
 
 // evalPathStepExpr evaluates E1/E2 where E2 is a non-axis expression.
@@ -674,7 +658,7 @@ func pathStepFromNodes(evalFn exprEvaluator, ctx context.Context, ec *evalContex
 	hasNonNodes := false
 
 	for i, n := range baseNodes {
-		frame := ec.pushNodeContext(n, i+1, len(baseNodes))
+		frame := ec.pushNodeContext(n, i+focusPositionOrigin, len(baseNodes))
 		r, err := evalFn(ctx, ec, e.Right)
 		ec.restoreContext(frame)
 
@@ -712,13 +696,7 @@ func pathStepFromNodes(evalFn exprEvaluator, ctx context.Context, ec *evalContex
 	}
 
 	if hasNodes {
-		var err error
-		if filterPreservesOrder(ctx, ec, e.Left) {
-			allNodes, err = xdm.DeduplicateNodesPreserveOrder(allNodes, ec.maxNodes)
-		} else {
-			allNodes, err = xdm.DeduplicateNodes(allNodes, ec.docOrder, ec.maxNodes)
-		}
-
+		allNodes, err := xdm.DeduplicateNodes(allNodes, ec.docOrder, ec.maxNodes)
 		if err != nil {
 			return nil, err
 		}

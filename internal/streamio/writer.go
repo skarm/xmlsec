@@ -6,15 +6,25 @@ import (
 	"io"
 )
 
+const (
+	minimumWriteBufferBytes = 512
+)
+
 // Writer counts successful bytes and rejects writes exceeding an explicit limit.
 // It never closes the caller-owned destination.
 type Writer struct {
-	Context    context.Context
-	Target     io.Writer
-	Limit      int64
-	Written    int64
+	// Context supplies cancellation and must be non-nil.
+	Context context.Context
+	// Target is the caller-owned destination; this wrapper never closes it.
+	Target io.Writer
+	// Limit is the maximum number of bytes permitted in the output.
+	Limit int64
+	// Written counts bytes successfully accepted by Target.
+	Written int64
+	// LimitError is returned before a write would exceed Limit.
 	LimitError error
-	buffer     []byte
+	// buffer is reusable scratch storage for bounded string writes.
+	buffer []byte
 }
 
 // Write checks cancellation, bounds and the io.Writer short-write contract.
@@ -42,6 +52,8 @@ func (w *Writer) Write(p []byte) (int, error) {
 
 // WriteString forwards bounded chunks without allocating a whole byte copy.
 func (w *Writer) WriteString(s string) (int, error) {
+	const bufferGrowthFactor = 2
+
 	total := 0
 
 	for len(s) > 0 {
@@ -49,7 +61,7 @@ func (w *Writer) WriteString(s string) (int, error) {
 			return total, err
 		}
 
-		chunk := s[:min(len(s), 32*1024)]
+		chunk := s[:min(len(s), copyChunkBytes)]
 		if int64(len(chunk)) > w.Limit-w.Written {
 			return total, w.LimitError
 		}
@@ -64,7 +76,7 @@ func (w *Writer) WriteString(s string) (int, error) {
 			if len(w.buffer) < len(chunk) {
 				// Most canonical fragments are short. Grow geometrically to retain the
 				// 32 KiB ceiling without allocating it for every small signature digest.
-				size := min(32*1024, max(512, len(chunk), 2*len(w.buffer)))
+				size := min(copyChunkBytes, max(minimumWriteBufferBytes, len(chunk), bufferGrowthFactor*len(w.buffer)))
 				w.buffer = make([]byte, size)
 			}
 

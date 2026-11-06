@@ -142,7 +142,7 @@ func TestContentAuthenticatedXMLAndLimits(t *testing.T) {
 			before := xmlBytes(t, encrypted)
 
 			result, handle, err := xmlenc.DecryptContentWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{})
-			if result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(before, xmlBytes(t, encrypted)) {
+			if result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(before, xmlBytes(t, encrypted)) {
 				t.Fatal("invalid content leaked a result or mutated source", err)
 			}
 		})
@@ -168,7 +168,7 @@ func TestContentAuthenticatedXMLAndLimits(t *testing.T) {
 			encrypted := authenticatedContent(t, []byte(`<p:v a="1" b="2"><p:c/></p:v><p:v/>`), prefix, suffix)
 
 			result, handle, err := xmlenc.DecryptContentWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: limits}})
-			if result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatal("plaintext limit bypassed", err)
 			}
 		})
@@ -184,7 +184,7 @@ func TestContentSelectionAndSuperEncryption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if result, handle, err := xmlenc.EncryptContentWithKeyWrap(ctx, inner, cipherElement, kek, xmlenc.KeyWrapOptions{}); result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) {
+	if result, handle, err := xmlenc.EncryptContentWithKeyWrap(ctx, inner, cipherElement, kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
 		t.Fatal("partial super-encryption accepted", err)
 	}
 
@@ -216,7 +216,7 @@ func TestContentSelectionAndSuperEncryption(t *testing.T) {
 	sameXML(t, source, full)
 
 	for _, foreign := range []document.Element{source.Root(), {}} {
-		if result, handle, err := xmlenc.DecryptContentWithKeyWrap(ctx, outer, foreign, kek, xmlenc.KeyWrapOptions{}); result != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) {
+		if result, handle, err := xmlenc.DecryptContentWithKeyWrap(ctx, outer, foreign, kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("foreign/empty handle accepted", err)
 		}
 	}
@@ -255,7 +255,7 @@ func FuzzContentPlaintext(f *testing.F) {
 		}
 
 		if err != nil {
-			if result != nil || parent.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if result != nil || parent != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatal("failure exposed a result", err)
 			}
 
@@ -269,27 +269,6 @@ func FuzzContentPlaintext(f *testing.F) {
 
 		sameXML(t, want, result)
 	})
-}
-
-// Correctly authenticated bytes force XML processing, independently of tags.
-func authenticatedContent(t testing.TB, raw []byte, prefix, suffix string) *document.Document {
-	t.Helper()
-
-	encrypted, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), raw, make([]byte, 32), xmlenc.KeyWrapOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wire := bytes.Replace(xmlBytes(t, encrypted), []byte("<xenc:EncryptedData "), []byte(`<xenc:EncryptedData Type="`+xmlenc.ContentType+`" `), 1)
-
-	wrapped := io.MultiReader(strings.NewReader(prefix), bytes.NewReader(wire), strings.NewReader(suffix))
-
-	doc, err := document.ParseReader(t.Context(), wrapped, document.DefaultLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return doc
 }
 
 func TestECDHContent(t *testing.T) {
@@ -318,10 +297,31 @@ func TestECDHContent(t *testing.T) {
 				if !bytes.Equal(before, xmlBytes(t, source)) {
 					t.Fatal("source mutated")
 				}
-				if out, handle, err := xmlenc.DecryptContentWithECDH(t.Context(), encrypted, encrypted.Root(), recipient, xmlenc.ECDHOptions{}); out != nil || handle.Valid() || err == nil {
+				if out, handle, err := xmlenc.DecryptContentWithECDH(t.Context(), encrypted, encrypted.Root(), recipient, xmlenc.ECDHOptions{}); out != nil || handle != (document.Element{}) || err == nil {
 					t.Fatal(out, handle, err)
 				}
 			})
 		}
 	}
+}
+
+// Correctly authenticated bytes force XML processing, independently of tags.
+func authenticatedContent(t testing.TB, raw []byte, prefix, suffix string) *document.Document {
+	t.Helper()
+
+	encrypted, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), raw, make([]byte, 32), xmlenc.KeyWrapOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wire := bytes.Replace(xmlBytes(t, encrypted), []byte("<xenc:EncryptedData "), []byte(`<xenc:EncryptedData Type="`+xmlenc.ContentType+`" `), 1)
+
+	wrapped := io.MultiReader(strings.NewReader(prefix), bytes.NewReader(wire), strings.NewReader(suffix))
+
+	doc, err := document.ParseReader(t.Context(), wrapped, document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return doc
 }

@@ -17,6 +17,14 @@ import (
 	"github.com/skarm/xmlsec/transform"
 )
 
+const (
+	streamTimeout      = time.Minute
+	maximumRecordBytes = 1 << 20
+	maximumInputBytes  = 64 << 20
+	maximumRecords     = 10_000
+	maximumOutputBytes = 64 << 20
+)
+
 func main() {
 	stdin := flag.Bool("stdin", false, "read a <feed> from stdin instead of the demonstration input")
 
@@ -34,7 +42,7 @@ func main() {
 }
 
 func run(ctx context.Context, input io.Reader, output io.Writer) error {
-	engine, err := transform.NewEngine(transform.Config{Limits: transform.Limits{Timeout: time.Minute}})
+	engine, err := transform.NewEngine(transform.Config{Limits: transform.Limits{Timeout: streamTimeout}})
 	if err != nil {
 		return err
 	}
@@ -47,17 +55,17 @@ func run(ctx context.Context, input io.Reader, output io.Writer) error {
 	}
 
 	recordLimits := document.DefaultLimits()
-	recordLimits.MaxBytes = 1 << 20
+	recordLimits.MaxBytes = maximumRecordBytes
 
 	_, err = sheet.WriteRecords(ctx, output, input, transform.StreamOptions{
 		Records: document.RecordOptions{
 			Path:          []document.Name{{Local: "feed"}, {Local: "item"}},
 			Limits:        recordLimits,
-			MaxInputBytes: 64 << 20,
-			MaxRecords:    10_000,
+			MaxInputBytes: maximumInputBytes,
+			MaxRecords:    maximumRecords,
 		},
 		Separator:      "\n",
-		MaxOutputBytes: 64 << 20,
+		MaxOutputBytes: maximumOutputBytes,
 	})
 
 	return err

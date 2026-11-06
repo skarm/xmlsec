@@ -13,6 +13,12 @@ import (
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
 )
 
+// Default HTML/XHTML Content-Type emission: the media type and charset delimiter describe serialized bytes, not XML parser permissions.
+const (
+	contentTypeCharsetParameter = "; charset="
+	defaultHTMLMediaType        = "text/html"
+)
+
 func serializeHTML(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
 	writer := htmlResultWriter(outDef).DOEMarkers(true).CharacterMap(charMap)
 	return serializeHTMLChildren(w, doc, writer, outDef)
@@ -84,14 +90,14 @@ func serializeOwnedXHTML(w io.Writer, owned *xdm.Document, definition *OutputDef
 	if definition.IncludeContentType == nil || *definition.IncludeContentType {
 		media, encoding := definition.MediaType, definition.Encoding
 		if media == "" {
-			media = "text/html"
+			media = defaultHTMLMediaType
 		}
 
 		if encoding == "" {
 			encoding = lexicon.EncodingUTF8U
 		}
 
-		contentType = media + "; charset=" + encoding
+		contentType = media + contentTypeCharsetParameter + encoding
 	}
 
 	if err := htmlpkg.PrepareXHTML(context.Background(), owned, html5, contentType); err != nil {

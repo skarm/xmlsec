@@ -16,6 +16,28 @@ const nameRequest = "request"
 
 const uriUrnSpUrnIdp = "urn:sp:urn:idp"
 
+func TestLargeAtomicBatch(t *testing.T) {
+	now := time.Now()
+	m, err := replay.NewMemoryStore(replay.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]replay.Entry, 65)
+	for i := range entries {
+		entries[i] = replay.Entry{Scope: "query", ID: strconv.Itoa(i), ExpiresAt: now.Add(time.Minute)}
+	}
+	if err = m.Consume(t.Context(), entries, now); err != nil || m.Len() != len(entries) {
+		t.Fatalf("large response batch: %v", err)
+	}
+	entries[0].ID = "unconsumed"
+	if err = m.Consume(t.Context(), entries, now); !errors.Is(err, replay.ErrReplay) || m.Len() != len(entries) {
+		t.Fatalf("batch partially committed: %v", err)
+	}
+	if err = m.Consume(t.Context(), entries[:1], now); err != nil {
+		t.Fatalf("failed batch consumed new ID: %v", err)
+	}
+}
+
 func TestAtomicConsume(t *testing.T) {
 	m, e := replay.NewMemoryStore(replay.Config{})
 	if e != nil {
@@ -131,7 +153,9 @@ func TestReplayMassExpiryPreservesLiveScopes(t *testing.T) {
 	expired.ExpiresAt = later.Add(time.Minute)
 	otherScope := entries[count-1]
 	otherScope.Scope = "assertion"
-	if err := m.Consume(t.Context(), []replay.Entry{expired, otherScope}, later); err != nil || m.Len() != count/4+2 {
+	if err := m.Consume(t.Context(), []replay.Entry{expired, otherScope}, later); err != nil {
+		t.Fatal(err)
+	} else if m.Len() != count/4+2 {
 		t.Fatal("expired capacity or independent scope unavailable", err, m.Len())
 	}
 	if err := m.Consume(t.Context(), entries[count-1:], later); !errors.Is(err, replay.ErrReplay) {
@@ -141,7 +165,9 @@ func TestReplayMassExpiryPreservesLiveScopes(t *testing.T) {
 		t.Fatal("expired input accepted", err)
 	}
 	expired.ExpiresAt = expired.ExpiresAt.Add(time.Minute)
-	if err := m.Consume(t.Context(), []replay.Entry{expired}, later.Add(time.Minute)); err != nil || m.Len() != 1 {
+	if err := m.Consume(t.Context(), []replay.Entry{expired}, later.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	} else if m.Len() != 1 {
 		t.Fatal("store did not recover after all entries expired", err, m.Len())
 	}
 }

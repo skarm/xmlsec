@@ -21,6 +21,43 @@ import (
 )
 
 const (
+	// Default byte cap for one decoded key, certificate or CRL; builders use the same default profile.
+	defaultMaxBlobBytes = 1 << 20
+	// Default candidate-count cap used by KeyInfo parsing and by the builder profile.
+	defaultMaxCandidates = 32
+	// Default bound on element visits, including repeated reference visits.
+	defaultMaxElements = 256
+	// Default maximum RSA modulus size, in bits; minimum key strength is a separate trust policy.
+	defaultMaxRSABits = 8192
+	// Default aggregate byte budget for decoded blobs and text in one KeyInfo operation.
+	defaultMaxTotalBytes = 4 << 20
+)
+
+const (
+	// Zero fields select these reference, external-resource and transform defaults.
+	// Byte budgets cover the complete operation; node counts include repeated visits.
+	defaultMaxDepth             = 8
+	defaultMaxExternalBytes     = 4 << 20
+	defaultMaxExternalResources = 8
+	defaultMaxTransformBytes    = 32 << 20
+	defaultMaxTransformNodes    = 2_000_000
+	// Explicit settings cannot exceed these hard ceilings. RSA sizes are in bits;
+	// blob/total/external/transform sizes are bytes, and the remaining caps are counts.
+	maximumBlobBytes         = 8 << 20
+	maximumCandidates        = 256
+	maximumDepth             = 32
+	maximumElements          = 4096
+	maximumExternalBytes     = 64 << 20
+	maximumExternalResources = 64
+	maximumRSABits           = 16384
+	maximumTotalBytes        = 64 << 20
+	maximumTransformBytes    = 64 << 20
+	maximumTransformNodes    = 16_000_000
+	// Structural parser floor, independently of the application's key-strength policy.
+	minimumRSABits = 512
+)
+
+const (
 	// Namespace is the XMLDSig 1.0 namespace URI.
 	Namespace = lexicon.NamespaceDSig
 	// Namespace11 is the XMLDSig 1.1 namespace URI.
@@ -147,11 +184,16 @@ type Options struct {
 // Its accessors copy mutable key objects, DER and certificate data. Concurrent
 // policy callbacks can read the same Candidate safely.
 type Candidate struct {
-	spki        []byte
+	// spki owns the parsed key's SubjectPublicKeyInfo DER.
+	spki []byte
+	// certificate optionally retains the exact untrusted certificate DER.
 	certificate []byte
-	source      document.Element
-	resource    string
-	kind        document.Name
+	// source identifies the immutable XML element describing this key.
+	source document.Element
+	// resource is the external URI, or empty for local key data.
+	resource string
+	// kind is the expanded name of the key representation.
+	kind document.Name
 }
 
 // Valid returns whether this value is initialized.
@@ -206,18 +248,42 @@ func (c Candidate) FingerprintSHA256() string {
 	return hex.EncodeToString(h[:])
 }
 
+// IssuerSerial pairs an unverified X.509 issuer distinguished name with a decimal
+// certificate serial number.
+type IssuerSerial struct {
+	// Issuer is the issuer distinguished name in XMLDSig/RFC 4514 spelling.
+	Issuer string
+	// Serial is the certificate serial number in nonnegative decimal notation.
+	Serial string
+}
+
+// CertificateDigest pairs unverified digest bytes with a digest algorithm URI.
+type CertificateDigest struct {
+	// Algorithm is the digest method URI.
+	Algorithm string
+	// Value contains the raw digest bytes, without Base64 encoding.
+	Value []byte
+}
+
 // X509Group retains certificates and selectors from one X509Data element.
 // Names and distinguished-name spellings are untrusted hints. The parser does not
 // normalize or compare those strings to establish trust. Application policy must
 // resolve selectors and validate certificate relationships.
 type X509Group struct {
-	source   document.Element
-	certs    [][]byte
-	crls     [][]byte
-	issuers  []IssuerSerial
+	// source identifies the immutable X509Data element.
+	source document.Element
+	// certs retains untrusted certificate DER encodings.
+	certs [][]byte
+	// crls retains untrusted CRL DER encodings.
+	crls [][]byte
+	// issuers retains issuer-and-serial certificate selectors.
+	issuers []IssuerSerial
+	// subjects retains subject-name certificate selectors.
 	subjects []string
-	skis     [][]byte
-	digests  []CertificateDigest
+	// skis retains subject key identifier selectors.
+	skis [][]byte
+	// digests retains certificate digest selectors.
+	digests []CertificateDigest
 }
 
 // Source returns the immutable XML source handle.
@@ -248,39 +314,17 @@ func (g X509Group) CertificateDigests() []CertificateDigest {
 	return out
 }
 
-func cloneBlobs(a [][]byte) [][]byte {
-	out := make([][]byte, len(a))
-	for i, b := range a {
-		out[i] = bytes.Clone(b)
-	}
-
-	return out
-}
-
-// IssuerSerial pairs an unverified X.509 issuer distinguished name with a decimal
-// certificate serial number.
-type IssuerSerial struct {
-	// Issuer is the issuer distinguished name in XMLDSig/RFC 4514 spelling.
-	Issuer string
-	// Serial is the certificate serial number in nonnegative decimal notation.
-	Serial string
-}
-
-// CertificateDigest pairs unverified digest bytes with a digest algorithm URI.
-type CertificateDigest struct {
-	// Algorithm is the digest method URI.
-	Algorithm string
-	// Value contains the raw digest bytes, without Base64 encoding.
-	Value []byte
-}
-
 // Result contains untrusted decoded key hints. A successful parse provides neither
 // a validity flag nor a trust decision. Parse returns no partial Result on error.
 type Result struct {
+	// candidates contains parsed key descriptions without granting trust.
 	candidates []Candidate
-	names      []string
-	groups     []X509Group
-	external   []string
+	// names retains KeyName values for application policy.
+	names []string
+	// groups preserves the grouping of related X509Data values.
+	groups []X509Group
+	// external records external resource URIs used during parsing.
+	external []string
 }
 
 // Candidates returns an owned slice of immutable untrusted key candidates.
@@ -336,22 +380,31 @@ func (r *Result) CheckKeyDeclarations(selected int) error {
 	return nil
 }
 
+func cloneBlobs(a [][]byte) [][]byte {
+	out := make([][]byte, len(a))
+	for i, b := range a {
+		out[i] = bytes.Clone(b)
+	}
+
+	return out
+}
+
 func normalizeLimits(l Limits) (Limits, error) {
 	fields := []struct {
 		p   *int
 		def int
 		cap int
 	}{
-		{&l.MaxDepth, 8, 32},
-		{&l.MaxElements, 256, 4096},
-		{&l.MaxCandidates, 32, 256},
-		{&l.MaxBlobBytes, 1 << 20, 8 << 20},
-		{&l.MaxTotalBytes, 4 << 20, 64 << 20},
-		{&l.MaxExternalResources, 8, 64},
-		{&l.MaxExternalBytes, 4 << 20, 64 << 20},
-		{&l.MaxTransformBytes, 32 << 20, 64 << 20},
-		{&l.MaxTransformNodes, 2_000_000, 16_000_000},
-		{&l.MaxRSABits, 8192, 16384},
+		{&l.MaxDepth, defaultMaxDepth, maximumDepth},
+		{&l.MaxElements, defaultMaxElements, maximumElements},
+		{&l.MaxCandidates, defaultMaxCandidates, maximumCandidates},
+		{&l.MaxBlobBytes, defaultMaxBlobBytes, maximumBlobBytes},
+		{&l.MaxTotalBytes, defaultMaxTotalBytes, maximumTotalBytes},
+		{&l.MaxExternalResources, defaultMaxExternalResources, maximumExternalResources},
+		{&l.MaxExternalBytes, defaultMaxExternalBytes, maximumExternalBytes},
+		{&l.MaxTransformBytes, defaultMaxTransformBytes, maximumTransformBytes},
+		{&l.MaxTransformNodes, defaultMaxTransformNodes, maximumTransformNodes},
+		{&l.MaxRSABits, defaultMaxRSABits, maximumRSABits},
 	}
 	for _, f := range fields {
 		if *f.p == 0 {
@@ -363,7 +416,7 @@ func normalizeLimits(l Limits) (Limits, error) {
 		}
 	}
 
-	if l.MaxRSABits < 512 {
+	if l.MaxRSABits < minimumRSABits {
 		return l, fmt.Errorf("%w: MaxRSABits must be >=512", ErrPolicy)
 	}
 

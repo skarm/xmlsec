@@ -12,10 +12,25 @@ import (
 
 	"crypto/des" // #nosec G502 -- Explicit legacy XMLENC key-wrap policy.
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+)
+
+const (
+	maximumGeneratedGraphBytes = 128 << 10
+	maximumGeneratedReferences = 64
+	maximumGraphMetadataBytes  = 1024
+	maximumIDBytes             = 1024
+	maximumRecipientNameBytes  = 1024
+	// Container for encryption metadata preserved with the protected value. Compare the expected XML
+	// Encryption namespace when matching it.
+	nameEncryptionProperties = "EncryptionProperties"
+	// Logical reference to an explicitly configured master key. Compare the expected XML Encryption
+	// namespace when matching it.
+	nameMasterKeyName = "MasterKeyName"
+	// Suggested prefix for generated XML Encryption 1.1 elements; identity comes from Namespace11.
+	prefixXEnc11 = "xenc11"
 )
 
 // KeyGraphReference identifies data or an encrypted or derived key that uses a
@@ -53,6 +68,24 @@ type EncryptedKeyOptions struct {
 	Properties *document.Document
 }
 
+// DerivedKeyOptions supplies ConcatKDF metadata and key relationships. MasterKeyName
+// identifies the master by an exact application label. Building this metadata does
+// not resolve, derive, store or publish secret material.
+type DerivedKeyOptions struct {
+	// Parameters supplies the explicit ConcatKDF context to encode.
+	Parameters ConcatKDFParameters
+	// ID supplies an optional XML Id for the DerivedKey element.
+	ID string
+	// Recipient supplies an optional recipient label without establishing identity.
+	Recipient string
+	// DerivedKeyName is the label assigned to the derived key.
+	DerivedKeyName string
+	// MasterKeyName identifies the application-selected master key by its exact label.
+	MasterKeyName string
+	// References lists the data and key objects that use the derived key.
+	References []KeyGraphReference
+}
+
 // EncryptKey wraps rawKey into standalone EncryptedKey. The recipient supplies
 // exactly one RSA PublicKey or symmetric Secret; Decrypter is never accepted.
 // Raw keys are 16/24/32 bytes. TripleDES wrap accepts only a 24-byte TripleDES
@@ -66,17 +99,17 @@ func EncryptKey(ctx context.Context, rawKey []byte, recipient KeyGraphKey, optio
 		return nil, err
 	}
 
-	if !sessionKeySize(len(rawKey)) || recipient.Algorithm == "" || options.Algorithm != recipient.Algorithm || recipient.Decrypter != nil || len(recipient.Name) > 1024 || !utf8.ValidString(recipient.Name) {
+	if !sessionKeySize(len(rawKey)) || recipient.Algorithm == "" || options.Algorithm != recipient.Algorithm || recipient.Decrypter != nil || len(recipient.Name) > maximumRecipientNameBytes || !utf8.ValidString(recipient.Name) {
 		return nil, ErrPolicy
 	}
 
-	root := encryptedElement("EncryptedKey")
+	root := encryptedElement(nameEncryptedKey)
 	if err := graphGeneratedMetadata(root, options.ID, options.Recipient); err != nil {
 		return nil, err
 	}
 
-	method := encryptedElement("EncryptionMethod")
-	setAttribute(method, "Algorithm", options.Algorithm)
+	method := encryptedElement(nameEncryptionMethod)
+	setAttribute(method, lexicon.SecurityAttrAlgorithm, options.Algorithm)
 	appendChild(root, method)
 
 	wrapped, info, err := graphGenerateKey(ctx, recipient, rawKey, options, method)
@@ -92,8 +125,8 @@ func EncryptKey(ctx context.Context, rawKey []byte, recipient KeyGraphKey, optio
 	if info != nil {
 		appendChild(root, info)
 	} else if recipient.Name != "" {
-		info := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyInfo)
-		name := newElement(SignatureNamespace, "ds", lexicon.DSigElementKeyName)
+		info := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
+		name := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: recipient.Name})
 		appendChild(info, name)
 		appendChild(root, info)
@@ -107,7 +140,7 @@ func EncryptKey(ctx context.Context, rawKey []byte, recipient KeyGraphKey, optio
 	appendChild(root, data)
 
 	if options.Properties != nil {
-		if options.Properties.Root().Name() != elementName(Namespace, "EncryptionProperties") || checkGraphProperties(options.Properties.Root()) != nil {
+		if options.Properties.Root().Name() != elementName(Namespace, nameEncryptionProperties) || checkGraphProperties(options.Properties.Root()) != nil {
 			return nil, ErrFormat
 		}
 
@@ -118,14 +151,58 @@ func EncryptKey(ctx context.Context, rawKey []byte, recipient KeyGraphKey, optio
 		return nil, err
 	}
 
-	if len(options.CarriedKeyName) > 1024 || !utf8.ValidString(options.CarriedKeyName) {
+	if len(options.CarriedKeyName) > maximumKeyNameBytes || !utf8.ValidString(options.CarriedKeyName) {
 		return nil, ErrPolicy
 	}
 
 	if options.CarriedKeyName != "" {
-		name := encryptedElement("CarriedKeyName")
+		name := encryptedElement(nameCarriedKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: options.CarriedKeyName})
 		appendChild(root, name)
+	}
+
+	return graphGeneratedDocument(ctx, root)
+}
+
+// BuildDerivedKey produces a standalone XMLENC1.1 DerivedKey with ConcatKDF.
+func BuildDerivedKey(ctx context.Context, options DerivedKeyOptions) (*document.Document, error) {
+	if ctx == nil {
+		return nil, ErrPolicy
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	root := newElement(Namespace11, prefixXEnc11, nameDerivedKey)
+	if err := graphGeneratedMetadata(root, options.ID, options.Recipient); err != nil {
+		return nil, err
+	}
+
+	method, err := encodeConcatKDFParameters(ctx, options.Parameters)
+	if err != nil {
+		return nil, err
+	}
+
+	appendChild(root, method)
+
+	if err := graphAppendReferences(root, options.References); err != nil {
+		return nil, err
+	}
+
+	for _, item := range []struct {
+		name  string
+		value string
+	}{{nameDerivedKeyName, options.DerivedKeyName}, {nameMasterKeyName, options.MasterKeyName}} {
+		if len(item.value) > maximumGraphMetadataBytes || !utf8.ValidString(item.value) {
+			return nil, ErrPolicy
+		}
+
+		if item.value != "" {
+			name := newElement(Namespace11, prefixXEnc11, item.name)
+			appendChild(name, &tree.Node{Kind: tree.TextNode, Data: item.value})
+			appendChild(root, name)
+		}
 	}
 
 	return graphGeneratedDocument(ctx, root)
@@ -188,7 +265,7 @@ func graphWrapMaterial(recipient KeyGraphKey, rawKey []byte, options EncryptedKe
 		encodeOAEP(method, parameters)
 		wrapped, err = rsa.EncryptOAEPWithOptions(rand.Reader, recipient.PublicKey, rawKey, &rsa.OAEPOptions{Hash: parameters.Hash, MGFHash: parameters.MGFHash, Label: parameters.Label})
 	case options.Algorithm == TripleDESKeyWrap:
-		if recipient.PublicKey != nil || options.OAEP != nil || !options.AllowLegacy || fips140.Enabled() || len(recipient.Secret) != 24 || len(rawKey) != 24 {
+		if recipient.PublicKey != nil || options.OAEP != nil || !options.AllowLegacy || fips140.Enabled() || len(recipient.Secret) != tripleDESKeyBytes || len(rawKey) != tripleDESKeyBytes {
 			return nil, ErrPolicy
 		}
 
@@ -214,86 +291,24 @@ func graphWrapMaterial(recipient KeyGraphKey, rawKey []byte, options EncryptedKe
 	return wrapped, err
 }
 
-// DerivedKeyOptions supplies ConcatKDF metadata and key relationships. MasterKeyName
-// identifies the master by an exact application label. Building this metadata does
-// not resolve, derive, store or publish secret material.
-type DerivedKeyOptions struct {
-	// Parameters supplies the explicit ConcatKDF context to encode.
-	Parameters ConcatKDFParameters
-	// ID supplies an optional XML Id for the DerivedKey element.
-	ID string
-	// Recipient supplies an optional recipient label without establishing identity.
-	Recipient string
-	// DerivedKeyName is the label assigned to the derived key.
-	DerivedKeyName string
-	// MasterKeyName identifies the application-selected master key by its exact label.
-	MasterKeyName string
-	// References lists the data and key objects that use the derived key.
-	References []KeyGraphReference
-}
-
-// BuildDerivedKey produces a standalone XMLENC1.1 DerivedKey with ConcatKDF.
-func BuildDerivedKey(ctx context.Context, options DerivedKeyOptions) (*document.Document, error) {
-	if ctx == nil {
-		return nil, ErrPolicy
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	root := newElement(Namespace11, "xenc11", "DerivedKey")
-	if err := graphGeneratedMetadata(root, options.ID, options.Recipient); err != nil {
-		return nil, err
-	}
-
-	method, err := encodeConcatKDFParameters(ctx, options.Parameters)
-	if err != nil {
-		return nil, err
-	}
-
-	appendChild(root, method)
-
-	if err := graphAppendReferences(root, options.References); err != nil {
-		return nil, err
-	}
-
-	for _, item := range []struct {
-		name  string
-		value string
-	}{{"DerivedKeyName", options.DerivedKeyName}, {"MasterKeyName", options.MasterKeyName}} {
-		if len(item.value) > 1024 || !utf8.ValidString(item.value) {
-			return nil, ErrPolicy
-		}
-
-		if item.value != "" {
-			name := newElement(Namespace11, "xenc11", item.name)
-			appendChild(name, &tree.Node{Kind: tree.TextNode, Data: item.value})
-			appendChild(root, name)
-		}
-	}
-
-	return graphGeneratedDocument(ctx, root)
-}
-
 func graphGeneratedMetadata(root *tree.Node, id, recipient string) error {
-	if len(id) > 1024 || id != "" && !tree.NCName(id) || len(recipient) > 1024 || !utf8.ValidString(recipient) {
+	if len(id) > maximumIDBytes || id != "" && !tree.NCName(id) || len(recipient) > maximumRecipientNameBytes || !utf8.ValidString(recipient) {
 		return ErrPolicy
 	}
 
 	if id != "" {
-		setAttribute(root, "Id", id)
+		setAttribute(root, lexicon.SecurityAttrID, id)
 	}
 
 	if recipient != "" {
-		setAttribute(root, "Recipient", recipient)
+		setAttribute(root, attrRecipient, recipient)
 	}
 
 	return nil
 }
 
 func graphAppendReferences(root *tree.Node, references []KeyGraphReference) error {
-	if len(references) > 64 {
+	if len(references) > maximumGeneratedReferences {
 		return ErrPolicy
 	}
 
@@ -301,20 +316,20 @@ func graphAppendReferences(root *tree.Node, references []KeyGraphReference) erro
 		return nil
 	}
 
-	list := encryptedElement("ReferenceList")
+	list := encryptedElement(nameReferenceList)
 
 	for _, ref := range references {
 		if !validGraphReference(ref.URI) {
 			return ErrPolicy
 		}
 
-		name := "DataReference"
+		name := nameDataReference
 		if ref.Key {
-			name = "KeyReference"
+			name = nameKeyReference
 		}
 
 		child := encryptedElement(name)
-		setAttribute(child, "URI", ref.URI)
+		setAttribute(child, lexicon.SecurityAttrURI, ref.URI)
 		appendChild(list, child)
 	}
 
@@ -328,9 +343,9 @@ func graphGeneratedDocument(ctx context.Context, root *tree.Node) (*document.Doc
 		return nil, ErrPolicy
 	}
 
-	root.NS = []tree.Namespace{{Prefix: "xenc", URI: Namespace}, {Prefix: "xenc11", URI: Namespace11}, {Prefix: "ds", URI: SignatureNamespace}}
+	root.NS = []tree.Namespace{{Prefix: prefixXEnc, URI: Namespace}, {Prefix: prefixXEnc11, URI: Namespace11}, {Prefix: lexicon.PrefixDSig, URI: SignatureNamespace}}
 	limits := document.DefaultLimits()
-	limits.MaxBytes = 128 << 10
+	limits.MaxBytes = maximumGeneratedGraphBytes
 
 	return tree.ParseProduced(ctx, func(dst io.Writer) error {
 		_, err := tree.WriteXMLFragment(ctx, dst, []*tree.Node{root}, limits.MaxBytes)

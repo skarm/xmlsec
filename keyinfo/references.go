@@ -19,6 +19,18 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
+const (
+	// Allows bounded encoded input relative to the decoded blob cap during retrieval processing.
+	encodedBlobSizeFactor = 2
+	maxAllowedURIs        = 1024
+	// Caps XML depth when retrieved octets are parsed, independently of reference depth.
+	maxRetrievedXMLDepth = 64
+	// Bounds KeyInfo resource and base URI spellings, in bytes, before resolution.
+	maxURIBytes = 8192
+	// Converts the element budget into the parser/node-visit allowance for retrieval results.
+	retrievalXMLNodesPerElement = 8
+)
+
 type resourceBlob struct {
 	data   []byte
 	base64 bool
@@ -30,7 +42,7 @@ func (p *parser) configureExternal() error {
 	}
 
 	e := p.options.External
-	if nilcheck.IsNil(e.Resolver) || len(e.AllowedURIs) == 0 || len(e.AllowedURIs) > 1024 {
+	if nilcheck.IsNil(e.Resolver) || len(e.AllowedURIs) == 0 || len(e.AllowedURIs) > maxAllowedURIs {
 		return fmt.Errorf("%w: external resolver/allowlist", ErrPolicy)
 	}
 	// Copy configuration before invoking any caller callback.
@@ -46,7 +58,7 @@ func (p *parser) configureExternal() error {
 		return fmt.Errorf("%w: external BaseURI: %w", ErrPolicy, err)
 	}
 
-	if len(copied.BaseURI) > 8192 || (p.baseURI != nil && p.baseURI.User != nil) {
+	if len(copied.BaseURI) > maxURIBytes || (p.baseURI != nil && p.baseURI.User != nil) {
 		return fmt.Errorf("%w: external BaseURI", ErrPolicy)
 	}
 
@@ -66,11 +78,17 @@ func (p *parser) configureExternal() error {
 }
 
 func (p *parser) resourceURI(s *scope, n *tree.Node, uri string) (string, error) {
-	if len(uri) > 8192 {
+	if len(uri) > maxURIBytes {
 		return "", ErrLimit
 	}
 
 	if !externalURI(uri) {
+		// Validate local fragments during the same preflight as external URI
+		// policy, before an earlier sibling can invoke an application resolver.
+		if _, _, err := s.resolver.Target(p.ctx, uri); err != nil {
+			return "", fmt.Errorf("%w: %w", ErrInput, err)
+		}
+
 		return uri, nil
 	}
 
@@ -91,12 +109,12 @@ func (p *parser) resourceURI(s *scope, n *tree.Node, uri string) (string, error)
 }
 
 func (p *parser) keyInfoReferenceURI(s *scope, n *tree.Node) (string, error) {
-	children, err := structure(n, Namespace11, nameKeyInfoReference, "Id", "URI")
+	children, err := structure(n, Namespace11, nameKeyInfoReference, lexicon.SecurityAttrID, lexicon.SecurityAttrURI)
 	if err != nil {
 		return "", err
 	}
 
-	uri, present := attr(n, "URI")
+	uri, present := attr(n, lexicon.SecurityAttrURI)
 	if len(children) != 0 || !present {
 		return "", fmt.Errorf("%w: KeyInfoReference URI/structure", ErrInput)
 	}
@@ -121,7 +139,7 @@ func (p *parser) consumeResource(uri string, consume func(io.Reader) error) erro
 
 	reader, err := p.options.External.Resolver.Resolve(p.ctx, uri)
 	if err != nil {
-		if !nilcheck.IsNil(reader) {
+		if reader != nil && !nilcheck.IsNil(reader) {
 			err = errors.Join(err, reader.Close())
 		}
 
@@ -134,7 +152,7 @@ func (p *parser) consumeResource(uri string, consume func(io.Reader) error) erro
 
 	remaining := p.limits.MaxExternalBytes - p.externalBytes
 
-	maximum := min(p.limits.MaxBlobBytes*2, remaining)
+	maximum := min(p.limits.MaxBlobBytes*encodedBlobSizeFactor, remaining)
 	if p.options.RetrievalProcessing != nil {
 		maximum = min(maximum, p.options.RetrievalProcessing.MaxInputBytes)
 	}
@@ -201,11 +219,11 @@ func (p *parser) readCertificate(uri string, decode bool) ([]byte, error) {
 }
 
 func (p *parser) certificateTransforms() reference.Options {
-	return reference.Options{AllowedTransforms: []string{reference.Base64}, MaxTransforms: 1, MaxInputBytes: p.limits.MaxBlobBytes * 2, MaxOutputBytes: p.limits.MaxBlobBytes, MaxProducedBytes: p.limits.MaxBlobBytes, MaxNodeVisits: p.limits.MaxElements * 8}
+	return reference.Options{AllowedTransforms: []string{reference.Base64}, MaxTransforms: 1, MaxInputBytes: p.limits.MaxBlobBytes * encodedBlobSizeFactor, MaxOutputBytes: p.limits.MaxBlobBytes, MaxProducedBytes: p.limits.MaxBlobBytes, MaxNodeVisits: p.limits.MaxElements * retrievalXMLNodesPerElement}
 }
 
 func (p *parser) resolveXML(s *scope, uri string) (*tree.Node, *scope, error) {
-	if len(uri) > 8192 {
+	if len(uri) > maxURIBytes {
 		return nil, nil, ErrLimit
 	}
 
@@ -249,9 +267,9 @@ func (p *parser) resolveXML(s *scope, uri string) (*tree.Node, *scope, error) {
 	}
 
 	limits := document.DefaultLimits()
-	limits.MaxBytes = min(limits.MaxBytes, p.limits.MaxBlobBytes*2)
-	limits.MaxNodes = min(limits.MaxNodes, p.limits.MaxElements*8)
-	limits.MaxDepth = min(limits.MaxDepth, 64)
+	limits.MaxBytes = min(limits.MaxBytes, p.limits.MaxBlobBytes*encodedBlobSizeFactor)
+	limits.MaxNodes = min(limits.MaxNodes, p.limits.MaxElements*retrievalXMLNodesPerElement)
+	limits.MaxDepth = min(limits.MaxDepth, maxRetrievedXMLDepth)
 
 	var d *document.Document
 
@@ -369,7 +387,7 @@ func (p *parser) retrieveRawCertificate(s *scope, n *tree.Node, uri string, dept
 }
 
 func validExternalURI(uri string) bool {
-	if len(uri) > 8192 || uriref.Validate(uri) != nil {
+	if len(uri) > maxURIBytes || uriref.Validate(uri) != nil {
 		return false
 	}
 
@@ -379,7 +397,7 @@ func validExternalURI(uri string) bool {
 }
 
 func validKeyURI(uri string) bool {
-	if len(uri) > 8192 || uriref.Validate(uri) != nil {
+	if len(uri) > maxURIBytes || uriref.Validate(uri) != nil {
 		return false
 	}
 
@@ -405,12 +423,12 @@ func retrievalTransform(c []*tree.Node, typ string) (bool, error) {
 			return false, fmt.Errorf("%w: RetrievalMethod transform chain", ErrUnsupported)
 		}
 
-		body, err := structure(tc[0], Namespace, lexicon.DSigElementTransform, "Algorithm")
+		body, err := structure(tc[0], Namespace, lexicon.DSigElementTransform, lexicon.SecurityAttrAlgorithm)
 		if err != nil {
 			return false, err
 		}
 
-		a, _ := attr(tc[0], "Algorithm")
+		a, _ := attr(tc[0], lexicon.SecurityAttrAlgorithm)
 		if len(body) != 0 || a != reference.Base64 || typ != RawX509Certificate {
 			return false, fmt.Errorf("%w: only Base64 rawX509Certificate retrieval supported", ErrUnsupported)
 		}

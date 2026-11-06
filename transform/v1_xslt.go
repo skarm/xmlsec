@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -16,14 +15,21 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xslt"
 )
 
+// The XMLDSig XSLT 1.0 syntax preflight has separate source/expression byte caps. Its language-version and namespace-attribute names are distinct from XML declarations and serialization settings.
+const (
+	maximumV1StylesheetBytes     = 1 << 20
+	maximumV1XPathBytes          = 16 << 10
+	stylesheetVersionAttribute   = "version"
+	stylesheetNamespaceAttribute = "namespace"
+	v1StylesheetLanguageVersion  = "1.0"
+)
+
 func compileV1Stylesheet(e *Engine, source []byte) (*xslt.Stylesheet, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), max(e.limits.Timeout, 3*time.Second))
+	ctx, cancel := e.approvedCompilationContext()
 	defer cancel()
 
-	ctx = xpath.WithBudget(ctx, e.limits.MaxOperations, e.limits.MaxNodes, e.limits.MaxOutputBytes, e.limits.MaxDepth)
-
 	limits := document.DefaultLimits()
-	limits.MaxBytes = 1 << 20
+	limits.MaxBytes = maximumV1StylesheetBytes
 
 	d, err := document.Parse(ctx, source, limits)
 	if err != nil {
@@ -68,7 +74,7 @@ func checkStylesheetElement(ctx context.Context, e document.Element) error {
 	name := e.Name()
 
 	attrs, known := xslt.XSLT10ElementAttributes(name.Local)
-	if name.Space == lexicon.NamespaceXSLT && (name.Local == "include" || name.Local == "import") {
+	if name.Space == lexicon.NamespaceXSLT && (name.Local == lexicon.XSLTElementInclude || name.Local == lexicon.XSLTElementImport) {
 		return fmt.Errorf("%w: XMLDSig stylesheet resources are disabled", reference.ErrUnsupported)
 	}
 
@@ -138,13 +144,13 @@ func containsWord(words, word string) bool {
 
 func isStylesheetAVT(element, attribute string) bool {
 	switch element {
-	case "element", "attribute":
-		return attribute == "name" || attribute == "namespace"
-	case "processing-instruction":
-		return attribute == "name"
-	case "sort":
+	case lexicon.XSLTElementElement, lexicon.XSLTElementAttribute:
+		return attribute == lexicon.AttrName || attribute == stylesheetNamespaceAttribute
+	case lexicon.XSLTElementProcessingInstruction:
+		return attribute == lexicon.AttrName
+	case lexicon.XSLTElementSort:
 		return containsWord("lang data-type order case-order", attribute)
-	case "number":
+	case lexicon.XSLTElementNumber:
 		return containsWord("format lang letter-value grouping-separator grouping-size", attribute)
 	}
 
@@ -152,7 +158,7 @@ func isStylesheetAVT(element, attribute string) bool {
 }
 
 func checkStylesheetXPath(ctx context.Context, code string, ns map[string]string) error {
-	if len(code) > 16<<10 {
+	if len(code) > maximumV1XPathBytes {
 		return reference.ErrLimit
 	}
 
@@ -268,7 +274,7 @@ func v1Error(err error) error {
 }
 
 func staticStylesheetXPath(ctx context.Context, x reference.XPathExpression) error {
-	expr, err := xpath.NewCompiler().Context(ctx).Language(10, x.Namespaces).Compile(x.Expression)
+	expr, err := xpath.NewCompiler().Context(ctx).Language(int(XPath10), x.Namespaces).Compile(x.Expression)
 	if err != nil {
 		return executionError(err)
 	}
@@ -292,7 +298,7 @@ func checkStylesheetProfileAttribute(a tree.Attribute, name tree.Name) error {
 		return nil
 	}
 
-	if a.Name.Local == "version" && (name.Local == "stylesheet" || name.Local == "transform" || a.Name.Space == lexicon.NamespaceXSLT) && a.Value != "1.0" {
+	if a.Name.Local == stylesheetVersionAttribute && (name.Local == lexicon.XSLTElementStylesheet || name.Local == lexicon.XSLTElementTransform || a.Name.Space == lexicon.NamespaceXSLT) && a.Value != v1StylesheetLanguageVersion {
 		return fmt.Errorf("%w: XSLT 1.0 required", reference.ErrUnsupported)
 	}
 

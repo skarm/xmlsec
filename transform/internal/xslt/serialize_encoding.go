@@ -20,6 +20,12 @@ import (
 
 // encodedOutput keeps encoder state across chunks and never closes dst.
 func encodedOutput(ctx context.Context, dst io.Writer, definition *OutputDef) (io.Writer, func() error, error) {
+	const (
+		outputEncodingASCII   = "ascii"
+		outputEncodingUTF16BE = "utf-16be"
+		outputEncodingUTF16LE = "utf-16le"
+	)
+
 	name := strings.ToLower(definition.Encoding)
 
 	var (
@@ -30,24 +36,24 @@ func encodedOutput(ctx context.Context, dst io.Writer, definition *OutputDef) (i
 	switch name {
 	case "", lexicon.EncodingUTF8, lexicon.EncodingUTF8Alt:
 		if definition.ByteOrderMark {
-			bom = []byte{0xef, 0xbb, 0xbf}
+			bom = []byte(lexicon.BOMUTF8)
 		}
-	case lexicon.EncodingUTF16, nameUtf16:
+	case lexicon.EncodingUTF16, nameUTF16:
 		encoder = textunicode.UTF16(textunicode.BigEndian, textunicode.IgnoreBOM).NewEncoder()
-		bom = []byte{0xfe, 0xff}
-	case "utf-16be":
+		bom = []byte(lexicon.BOMUTF16BE)
+	case outputEncodingUTF16BE:
 		encoder = textunicode.UTF16(textunicode.BigEndian, textunicode.IgnoreBOM).NewEncoder()
 
 		if definition.ByteOrderMark {
-			bom = []byte{0xfe, 0xff}
+			bom = []byte(lexicon.BOMUTF16BE)
 		}
-	case "utf-16le":
+	case outputEncodingUTF16LE:
 		encoder = textunicode.UTF16(textunicode.LittleEndian, textunicode.IgnoreBOM).NewEncoder()
 
 		if definition.ByteOrderMark {
-			bom = []byte{0xff, 0xfe}
+			bom = []byte(lexicon.BOMUTF16LE)
 		}
-	case "ascii", "us-ascii":
+	case outputEncodingASCII, encodingASCII:
 		encoder = &encoding.Encoder{Transformer: asciiEncoder{}}
 		definition.canEncode = func(r rune) bool { return r < utf8.RuneSelf }
 	default:
@@ -81,7 +87,7 @@ type asciiEncoder struct{ texttransform.NopResetter }
 func (asciiEncoder) Transform(dst, src []byte, _ bool) (int, int, error) {
 	for i, c := range src {
 		if c >= utf8.RuneSelf {
-			return i, i, dynamicError("SERE0008", "character cannot be represented in ASCII")
+			return i, i, dynamicError(lexicon.ErrSERE0008, "character cannot be represented in ASCII")
 		}
 
 		if i == len(dst) {

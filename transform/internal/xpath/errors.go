@@ -11,7 +11,15 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Standard dynamic/static error codes are stored without an err namespace prefix.
+// Existing common lexicon definitions retain their exact wire values.
+// Static-context errors keep their existing standard code spellings.
 const (
+	errCodeXPTY0117 = "XPTY0117"
+	errCodeXQDY0137 = "XQDY0137"
+	errCodeXQST0039 = "XQST0039"
+	errCodeXQST0052 = "XQST0052"
+	errCodeXQST0070 = "XQST0070"
 	errCodeXPST0051 = "XPST0051" // unknown atomic or union type
 	errCodeXPDY0050 = "XPDY0050"
 	errCodeXPST0080 = "XPST0080"
@@ -19,6 +27,7 @@ const (
 	errCodeFOAR0001 = "FOAR0001"
 	errCodeFOAR0002 = "FOAR0002"
 	errCodeFOAP0001 = "FOAP0001"
+	errCodeFOCA0005 = "FOCA0005" // NaN is not permitted by the operation.
 	errCodeFOCA0002 = "FOCA0002"
 	errCodeFOCH0002 = "FOCH0002"
 	errCodeFOCH0003 = "FOCH0003"
@@ -28,6 +37,7 @@ const (
 	errCodeFODC0006 = "FODC0006"
 	errCodeFODT0001 = "FODT0001"
 	errCodeFODT0002 = "FODT0002"
+	errCodeFODT0003 = "FODT0003"
 	errCodeFODF1280 = "FODF1280"
 	errCodeFODF1310 = "FODF1310"
 	errCodeFOFD1340 = "FOFD1340"
@@ -36,13 +46,14 @@ const (
 	errCodeFONS0004 = "FONS0004"
 	errCodeFORG0001 = "FORG0001"
 	errCodeFORG0006 = "FORG0006"
+	errCodeFORG0008 = "FORG0008"
 	errCodeFOER0000 = "FOER0000"
 	errCodeFORX0001 = "FORX0001"
 	errCodeFORX0003 = "FORX0003"
 	errCodeFORX0004 = "FORX0004"
 	errCodeFOTY0014 = "FOTY0014"
 	errCodeFOJS0001 = "FOJS0001"
-	errCodeFOJS0003 = "FOJS0003"
+	errCodeFOJS0003 = lexicon.ErrFOJS0003
 	errCodeFOJS0004 = "FOJS0004"
 	errCodeFOJS0005 = "FOJS0005"
 	errCodeFOJS0006 = "FOJS0006"
@@ -94,7 +105,7 @@ func UndefinedVariableError(name string, version int) error {
 }
 
 func languageError(cause error, code string, version int) error {
-	if version == 10 {
+	if version == xpathVersion10 {
 		return cause
 	}
 
@@ -104,7 +115,7 @@ func languageError(cause error, code string, version int) error {
 // syntaxError preserves parser sentinels and adds the standard error code for
 // XPath 2.0 and later. XPath 1.0 has no standard error-code vocabulary.
 func syntaxError(err error, version int) error {
-	if version == 10 || err == nil {
+	if version == xpathVersion10 || err == nil {
 		return err
 	}
 

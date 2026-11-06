@@ -8,8 +8,21 @@ import (
 	"fmt"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
+)
+
+const (
+	stageDependency           = "dependency"
+	stageGraph                = "graph"
+	stageManifest             = "manifest"
+	defaultManifestCount      = 64
+	defaultManifestDepth      = 8
+	defaultManifestReferences = 256
+	maximumManifestCount      = 256
+	maximumManifestDepth      = 32
+	maximumManifestReferences = 1024
 )
 
 // ManifestType identifies a Reference to a ds:Manifest.
@@ -139,18 +152,18 @@ func normalizeManifestPolicy(p ManifestPolicy) (ManifestPolicy, error) {
 	}
 
 	if p.MaxDepth == 0 {
-		p.MaxDepth = 8
+		p.MaxDepth = defaultManifestDepth
 	}
 
 	if p.MaxManifests == 0 {
-		p.MaxManifests = 64
+		p.MaxManifests = defaultManifestCount
 	}
 
 	if p.MaxReferences == 0 {
-		p.MaxReferences = 256
+		p.MaxReferences = defaultManifestReferences
 	}
 
-	if p.MaxDepth < 1 || p.MaxDepth > 32 || p.MaxManifests < 1 || p.MaxManifests > 256 || p.MaxReferences < 1 || p.MaxReferences > 1024 {
+	if p.MaxDepth < 1 || p.MaxDepth > maximumManifestDepth || p.MaxManifests < 1 || p.MaxManifests > maximumManifestCount || p.MaxReferences < 1 || p.MaxReferences > maximumManifestReferences {
 		return p, fmt.Errorf("%w: Manifest limits", ErrPolicy)
 	}
 
@@ -195,7 +208,7 @@ type manifestScope struct {
 
 type manifestResourceKey struct {
 	uri    string
-	output [32]byte
+	output [sha256.Size]byte
 }
 
 type manifestGraph struct {
@@ -279,7 +292,7 @@ func (b *manifestGraphBuilder) buildReference(ref coreReference, owner *manifest
 	}
 
 	if len(b.graph.tasks) >= b.graph.policy.MaxReferences {
-		return nil, t.wrap("graph", fmt.Errorf("%w: total Reference count", ErrPolicy))
+		return nil, t.wrap(stageGraph, fmt.Errorf("%w: total Reference count", ErrPolicy))
 	}
 
 	b.graph.tasks = append(b.graph.tasks, t)
@@ -297,11 +310,11 @@ func (b *manifestGraphBuilder) buildReference(ref coreReference, owner *manifest
 
 	if t.external && ref.typeURI == ManifestType {
 		if !b.graph.policy.AllowExternal {
-			return nil, t.wrap("graph", fmt.Errorf("%w: external Manifest traversal is not enabled", ErrPolicy))
+			return nil, t.wrap(stageGraph, fmt.Errorf("%w: external Manifest traversal is not enabled", ErrPolicy))
 		}
 
 		if !externalManifestProvenance(ref.transforms) && !b.graph.policy.AllowTransformed {
-			return nil, t.wrap("graph", fmt.Errorf("%w: external Manifest edge must preserve the complete XML source", ErrPolicy))
+			return nil, t.wrap(stageGraph, fmt.Errorf("%w: external Manifest edge must preserve the complete XML source", ErrPolicy))
 		}
 
 		return t, nil // discover contents only after the incoming digest is authenticated
@@ -309,7 +322,7 @@ func (b *manifestGraphBuilder) buildReference(ref coreReference, owner *manifest
 
 	if transformedManifestEdge(t) {
 		if !b.graph.policy.AllowTransformed {
-			return nil, t.wrap("graph", fmt.Errorf("%w: transformed Manifest traversal is not enabled", ErrPolicy))
+			return nil, t.wrap(stageGraph, fmt.Errorf("%w: transformed Manifest traversal is not enabled", ErrPolicy))
 		}
 
 		return t, nil
@@ -317,7 +330,7 @@ func (b *manifestGraphBuilder) buildReference(ref coreReference, owner *manifest
 
 	traverse, err := manifestEdgeTarget(t)
 	if err != nil {
-		return nil, t.wrap("graph", err)
+		return nil, t.wrap(stageGraph, err)
 	}
 
 	if traverse {
@@ -332,16 +345,16 @@ func (b *manifestGraphBuilder) buildReference(ref coreReference, owner *manifest
 func (b *manifestGraphBuilder) attachManifest(t *coreTask, depth int) error {
 	g := b.graph
 	if depth > g.policy.MaxDepth {
-		return t.wrap("graph", fmt.Errorf("%w: Manifest depth", ErrPolicy))
+		return t.wrap(stageGraph, fmt.Errorf("%w: Manifest depth", ErrPolicy))
 	}
 
 	if _, exists := g.active[t.target]; exists {
-		return t.wrap("graph", fmt.Errorf("%w: cyclic Manifest graph", ErrReference))
+		return t.wrap(stageGraph, fmt.Errorf("%w: cyclic Manifest graph", ErrReference))
 	}
 
 	if m, ok := g.byNode[t.target]; ok {
 		if depth+m.height-1 > g.policy.MaxDepth {
-			return t.wrap("graph", fmt.Errorf("%w: shared Manifest depth", ErrPolicy))
+			return t.wrap(stageGraph, fmt.Errorf("%w: shared Manifest depth", ErrPolicy))
 		}
 
 		t.child = m
@@ -351,7 +364,7 @@ func (b *manifestGraphBuilder) attachManifest(t *coreTask, depth int) error {
 
 	children, err := b.registerManifest(t)
 	if err != nil {
-		return t.wrap("graph", err)
+		return t.wrap(stageGraph, err)
 	}
 
 	if err := b.buildManifestReferences(t.child, children, depth); err != nil {
@@ -369,7 +382,7 @@ func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, erro
 		return nil, fmt.Errorf("%w: Manifest count", ErrPolicy)
 	}
 
-	children, err := structure(t.target, "Manifest", "Id")
+	children, err := structure(t.target, nameManifest, lexicon.SecurityAttrID)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +391,7 @@ func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, erro
 		return nil, fmt.Errorf("%w: Manifest Reference count", ErrPolicy)
 	}
 
-	id, _ := getAttr(t.target, document.Name{Local: "Id"})
+	id, _ := getAttr(t.target, document.Name{Local: lexicon.SecurityAttrID})
 	m := &manifestPlan{node: t.target, id: id, index: len(g.manifests), height: 1, scope: t.scope}
 	t.child = m
 	g.byNode[t.target] = m
@@ -387,7 +400,7 @@ func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, erro
 	mr := ManifestReport{Index: m.index, ID: id, ResourceURI: m.scope.uri, Transformed: m.scope.transformed, Status: NotChecked}
 
 	for i, n := range children {
-		uri, _ := getAttr(n, document.Name{Local: "URI"})
+		uri, _ := getAttr(n, document.Name{Local: lexicon.SecurityAttrURI})
 		mr.References = append(mr.References, ReferenceReport{Index: i, URI: uri, Status: NotChecked})
 	}
 
@@ -400,12 +413,12 @@ func (b *manifestGraphBuilder) buildManifestReferences(m *manifestPlan, children
 	for i, n := range children {
 		r, err := parseCoreReference(b.ctx, n, b.plan.policy, b.plan.processing, b.template)
 		if err != nil {
-			return (&coreTask{ref: r, owner: m, index: i}).wrap("structure", err)
+			return (&coreTask{ref: r, owner: m, index: i}).wrap(stageStructure, err)
 		}
 
 		if m.scope.uri != "" {
 			if err := reference.PrepareTransforms(b.ctx, r.transforms, b.plan.processing); err != nil {
-				return (&coreTask{ref: r, owner: m, index: i}).wrap("preflight", processingError(err))
+				return (&coreTask{ref: r, owner: m, index: i}).wrap(stagePreflight, processingError(err))
 			}
 		}
 
@@ -433,7 +446,7 @@ func manifestEdgeTarget(t *coreTask) (bool, error) {
 		return false, nil
 	}
 
-	isManifest := isDS(t.target, "Manifest")
+	isManifest := isDS(t.target, nameManifest)
 	if t.ref.typeURI == ManifestType && !isManifest {
 		return false, fmt.Errorf("%w: Manifest Type does not target ds:Manifest", ErrStructure)
 	}
@@ -484,7 +497,7 @@ func transformedManifestEdge(t *coreTask) bool {
 		return !externalManifestProvenance(t.ref.transforms)
 	}
 
-	return !isDS(t.target, "Manifest") || !manifestProvenance(t.ref.transforms)
+	return !isDS(t.target, nameManifest) || !manifestProvenance(t.ref.transforms)
 }
 
 // Generation validates complete discovered graphs before asking a private signer
@@ -567,7 +580,7 @@ func (d *digestDependencyTraversal) visit(t *coreTask) error {
 	}
 
 	if d.states[t] == 1 {
-		return t.wrap("dependency", fmt.Errorf("%w: cyclic digest dependency", ErrPolicy))
+		return t.wrap(stageDependency, fmt.Errorf("%w: cyclic digest dependency", ErrPolicy))
 	}
 
 	if d.states[t] == 2 {
@@ -590,7 +603,7 @@ func (d *digestDependencyTraversal) visit(t *coreTask) error {
 func (d *digestDependencyTraversal) visitDependencies(t *coreTask) error {
 	excludes := excludesContaining(t.ref.transforms)
 	if within(d.plan.sv, t.target) && !excludes {
-		return t.wrap("dependency", fmt.Errorf("%w: reference depends on SignatureValue", ErrPolicy))
+		return t.wrap(stageDependency, fmt.Errorf("%w: reference depends on SignatureValue", ErrPolicy))
 	}
 
 	for _, other := range d.tasks {
@@ -657,20 +670,20 @@ func (v *manifestVerifier) checkReferenceAt(t *coreTask, depth int) error {
 	if t.external && t.ref.typeURI == ManifestType && v.plan.graph.policy.AllowExternal && !transformedManifestEdge(t) {
 		if scope := v.plan.graph.externalScopes[manifestResourceKey{uri: t.resourceURI}]; scope != nil {
 			if _, active := v.active[v.plan.graph.byNode[tree.Root(scope.doc)]]; active {
-				return v.fail(t, "graph", fmt.Errorf("%w: cyclic external Manifest graph", ErrReference))
+				return v.fail(t, stageGraph, fmt.Errorf("%w: cyclic external Manifest graph", ErrReference))
 			}
 		}
 	}
 
 	processed, rr, err := processCoreTask(v.ctx, v.doc, v.plan, v.budget, t)
 	if err != nil {
-		return v.fail(t, "process", err)
+		return v.fail(t, stageProcess, err)
 	}
 
 	rrpt.Steps = processed.Steps()
 
 	if subtle.ConstantTimeCompare(rr.digest, t.ref.digest) != 1 {
-		return v.fail(t, "digest", ErrDigest)
+		return v.fail(t, stageDigest, ErrDigest)
 	}
 
 	rrpt.Status = Valid
@@ -689,7 +702,7 @@ func (v *manifestVerifier) checkReferenceAt(t *coreTask, depth int) error {
 				return err
 			}
 
-			return &ManifestReferenceError{Manifest: -1, ID: t.ref.uri, Reference: &ReferenceError{Index: t.index, URI: t.ref.uri, Stage: "manifest", Err: err}}
+			return &ManifestReferenceError{Manifest: -1, ID: t.ref.uri, Reference: &ReferenceError{Index: t.index, URI: t.ref.uri, Stage: stageManifest, Err: err}}
 		}
 	}
 
@@ -698,7 +711,7 @@ func (v *manifestVerifier) checkReferenceAt(t *coreTask, depth int) error {
 	}
 
 	if !t.external && !transformedManifestEdge(t) && !rr.CoversElement(tree.Wrap(t.child.scope.doc, t.child.node)) {
-		return v.fail(t, "coverage", fmt.Errorf("%w: Manifest source not fully covered", ErrPolicy))
+		return v.fail(t, stageCoverage, fmt.Errorf("%w: Manifest source not fully covered", ErrPolicy))
 	}
 
 	return v.checkManifest(t.child, depth)
@@ -794,7 +807,7 @@ func (v *manifestVerifier) attachExternalManifest(t *coreTask, rr ReferenceResul
 			return fmt.Errorf("%w: external Manifest XML: %w", ErrReference, err)
 		}
 
-		if !isDS(tree.Root(doc), "Manifest") {
+		if !isDS(tree.Root(doc), nameManifest) {
 			return fmt.Errorf("%w: external root must be ds:Manifest", ErrStructure)
 		}
 

@@ -1,4 +1,4 @@
-// Package metadata builds, authenticates and reads bounded SAML 2.0 SP and IdP
+// Package metadata builds, authenticates and reads bounded SAML 2.0 provider and authority
 // metadata. Its snapshots supply authorized keys, endpoints and role requirements
 // to the protocol and orchestration packages.
 //
@@ -30,6 +30,13 @@
 // [Resolver] supplies already-authenticated or explicitly trusted entities to SP/IdP
 // flows. A network implementation must authenticate, bound and cache its input and
 // honor cancellation. Entity IDs and endpoint URIs do not trigger retrieval in
-// this package. Artifact and SOAP constants identify metadata bindings; they do
-// not enable those protocols.
+// this package. Artifact/SOAP, SLO, NameID and PAOS declarations are used by the
+// corresponding protocol, artifact, session and ECP packages. Authentication,
+// attribute and authorization authorities also publish query and assertion-ID/URI
+// services used by saml/authority; parsing metadata
+// alone does not start a protocol exchange.
+// HoK endpoints retain the profile discriminator in [Endpoint.Binding] and the
+// actual transport in [Endpoint.ProtocolBinding]. [Role.HoKACS] selects only
+// explicit HoK advertisements. SupportedChannelBindings is the authenticated
+// endpoint extension list, not evidence of a verified transport channel.
 package metadata

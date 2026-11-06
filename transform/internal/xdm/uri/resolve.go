@@ -14,6 +14,15 @@ import (
 	"github.com/skarm/xmlsec/internal/xmlchar"
 )
 
+// IRI resource escaping percent-encodes bytes at or below space and above ASCII tilde.
+const (
+	iriEscapedASCIIEnd   = 0x20
+	iriUnescapedASCIIEnd = 0x7E
+)
+
+// These excluded ASCII punctuation bytes are percent-encoded in resource references.
+const iriExcludedPunctuation = "\"<>{}|\\^`"
+
 // ResolveSchemaURI resolves a schema-location reference ref against a base
 // (the FULL location of the schema that contains the reference) and returns
 // the canonical name to hand to the configured loader.
@@ -95,7 +104,7 @@ func EscapeResourceReference(reference string) string {
 
 	for index := 0; index < len(reference); index++ {
 		value := reference[index]
-		if value > 0x7e || value <= 0x20 || strings.ContainsRune("\"<>{}|\\^`", rune(value)) {
+		if value > iriUnescapedASCIIEnd || value <= iriEscapedASCIIEnd || strings.ContainsRune(iriExcludedPunctuation, rune(value)) {
 			if encoded.Len() == 0 {
 				encoded.Grow(len(reference))
 				encoded.WriteString(reference[:index])

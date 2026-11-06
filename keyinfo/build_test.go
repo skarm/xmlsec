@@ -36,6 +36,48 @@ const (
 	uriUnknown     = "urn:unknown"
 )
 
+func TestBuildRejectsMalformedFragmentURI(t *testing.T) {
+	for _, uri := range []string{"#%", "#%0", "#%zz", "#target key", "#target#key", `#target\key`} {
+		for _, representation := range []string{"KeyInfoReference", "RetrievalMethod"} {
+			t.Run(representation+"/"+uri, func(t *testing.T) {
+				template := keyinfo.Template{KeyInfoReferences: []string{uri}}
+				if representation == "RetrievalMethod" {
+					template = keyinfo.Template{RetrievalMethods: []keyinfo.RetrievalMethod{{URI: uri}}}
+				}
+
+				if doc, err := keyinfo.Build(t.Context(), template); doc != nil || !errors.Is(err, keyinfo.ErrInput) {
+					t.Fatal("malformed fragment was built", doc, err)
+				}
+			})
+		}
+	}
+}
+
+func TestBuildAndParseFragmentURIProfiles(t *testing.T) {
+	for _, uri := range []string{"#target", "#%74arget", "#xpointer(id('target'))", `#xpointer(id("target"))`, "#xpointer%28id%28%27target%27%29%29"} {
+		for _, representation := range []string{"KeyInfoReference", "RetrievalMethod"} {
+			t.Run(representation+"/"+uri, func(t *testing.T) {
+				template := keyinfo.Template{KeyInfoReferences: []string{uri}}
+				if representation == "RetrievalMethod" {
+					template = keyinfo.Template{RetrievalMethods: []keyinfo.RetrievalMethod{{URI: uri}}}
+				}
+
+				info, err := keyinfo.Build(t.Context(), template)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				target := `<ds:KeyInfo xmlns:ds="` + ns + `" Id="target"><ds:KeyName>local</ds:KeyName></ds:KeyInfo>`
+				doc := parseXML(t, `<root>`+asXML(t, info)+target+`</root>`)
+				result, err := keyinfo.Parse(t.Context(), doc, doc.Root().Children()[0], keyinfo.Options{})
+				if err != nil || len(result.KeyNames()) != 1 || result.KeyNames()[0] != "local" || len(result.ExternalURIs()) != 0 {
+					t.Fatal("local URI profile changed", result, err)
+				}
+			})
+		}
+	}
+}
+
 func TestBuildX509DataIndependentFixtures(t *testing.T) {
 	data := make([][]byte, 0, 3)
 

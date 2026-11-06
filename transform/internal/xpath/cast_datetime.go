@@ -16,6 +16,70 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Calendar lexical limits are separate from arithmetic movement limits. The
+// year ceiling protects time.Time construction; timezone offsets are six bytes
+// and XML Schema allows at most fourteen hours, with zero minutes at that bound.
+const (
+	minimumYearDigits       = 4
+	maxCastCalendarYear     = 999_999_999
+	minimumCalendarMonth    = 1
+	maximumCalendarMonth    = 12
+	minimumCalendarDay      = 1
+	maximumClockHour        = 23
+	maximumClockMinute      = 59
+	maximumClockSecond      = 59
+	maximumTimezoneHours    = 14
+	timezoneOffsetBytes     = 6
+	utcTimezoneLexical      = "Z"
+	midnightRolloverDays    = 1
+	leapDayOfMonth          = 29
+	goParseReferenceYear    = "2006"
+	leapDayMonthDay         = "-02-29"
+	leapDayParseReplacement = "-02-28"
+	endOfDayClock           = "24:00:00"
+	startOfDayClock         = "00:00:00"
+	endOfDayDateTimeClock   = "T24:00:00"
+	startOfDayDateTimeClock = "T00:00:00"
+)
+
+// Go parsing layouts and canonical Gregorian printf layouts keep their exact
+// reference digits and padding. Their order at each call site is significant.
+const (
+	gregorianDayFormat            = "---%02d%s"
+	gregorianMonthFormat          = "--%02d%s"
+	gregorianMonthDayFormat       = "--%02d-%02d%s"
+	gregorianYearFormat           = "%s%s"
+	gregorianYearMonthFormat      = "%s-%02d%s"
+	timezoneOffsetFormat          = "%c%02d:%02d"
+	xsdDateZoneLayout             = "2006-01-02Z07:00"
+	xsdDateLayout                 = "2006-01-02"
+	xsdDateTimeFractionZoneLayout = "2006-01-02T15:04:05.999999999Z07:00"
+	xsdDateTimeZoneLayout         = "2006-01-02T15:04:05Z07:00"
+	xsdDateTimeFractionLayout     = "2006-01-02T15:04:05.999999999"
+	xsdDateTimeLayout             = "2006-01-02T15:04:05"
+	xsdTimeFractionZoneLayout     = "15:04:05.999999999Z07:00"
+	xsdTimeZoneLayout             = "15:04:05Z07:00"
+	xsdTimeFractionLayout         = "15:04:05.999999999"
+	xsdTimeLayout                 = "15:04:05"
+)
+
+// Component ranks enforce XML Schema duration ordering, independently of unit
+// conversion. Legacy float mirrors round to microseconds; exact rationals do not.
+const (
+	durationMonthParseBits      = 64 // ParseInt month magnitudes, not IEEE storage
+	durationYearOrder           = 1
+	durationMonthOrder          = 2
+	durationDayOrder            = 3
+	durationHourOrder           = 4
+	durationMinuteOrder         = 5
+	durationSecondOrder         = 6
+	microsecondsPerSecond       = 1e6
+	durationMicrosecondFormat   = "%06d"
+	signedInt64DecimalBytes     = 20 // includes a possible minus sign
+	zeroYearMonthDurationSuffix = "0M"
+	zeroDayTimeDurationSuffix   = "T0S"
+)
+
 // errDurationMonthsRange reports a duration outside the supported month range.
 // Lexical validation finishes before a cast raises FODT0002.
 var errDurationMonthsRange = errors.New("duration month count out of int range")
@@ -44,15 +108,15 @@ func castToGType(v xdm.AtomicValue, targetType string) (xdm.AtomicValue, error) 
 func formatGregorianPartial(t time.Time, targetType string) string {
 	switch targetType {
 	case xdm.TypeGDay:
-		return fmt.Sprintf("---%02d%s", t.Day(), formatXSDTimezone(t))
+		return fmt.Sprintf(gregorianDayFormat, t.Day(), formatXSDTimezone(t))
 	case xdm.TypeGMonth:
-		return fmt.Sprintf("--%02d%s", t.Month(), formatXSDTimezone(t))
+		return fmt.Sprintf(gregorianMonthFormat, t.Month(), formatXSDTimezone(t))
 	case xdm.TypeGMonthDay:
-		return fmt.Sprintf("--%02d-%02d%s", t.Month(), t.Day(), formatXSDTimezone(t))
+		return fmt.Sprintf(gregorianMonthDayFormat, t.Month(), t.Day(), formatXSDTimezone(t))
 	case xdm.TypeGYear:
-		return fmt.Sprintf("%s%s", formatXSDYear(t.Year()), formatXSDTimezone(t))
+		return fmt.Sprintf(gregorianYearFormat, formatXSDYear(t.Year()), formatXSDTimezone(t))
 	default:
-		return fmt.Sprintf("%s-%02d%s", formatXSDYear(t.Year()), t.Month(), formatXSDTimezone(t))
+		return fmt.Sprintf(gregorianYearMonthFormat, formatXSDYear(t.Year()), t.Month(), formatXSDTimezone(t))
 	}
 }
 
@@ -63,7 +127,7 @@ func formatXSDTimezone(t time.Time) string {
 
 	_, offset := t.Zone()
 	if offset == 0 {
-		return "Z"
+		return utcTimezoneLexical
 	}
 
 	sign := '+'
@@ -72,10 +136,10 @@ func formatXSDTimezone(t time.Time) string {
 		offset = -offset
 	}
 
-	h := offset / 3600
-	m := (offset % 3600) / 60
+	h := offset / calendarSecondsPerHour
+	m := (offset % calendarSecondsPerHour) / calendarSecondsPerMinute
 
-	return fmt.Sprintf("%c%02d:%02d", sign, h, m)
+	return fmt.Sprintf(timezoneOffsetFormat, sign, h, m)
 }
 
 // splitXSDYear splits an XSD date/dateTime string into the year (as int) and
@@ -98,23 +162,23 @@ func splitXSDYear(s string) (int, string, error) {
 	}
 
 	digits := i - start
-	if digits < 4 {
+	if digits < minimumYearDigits {
 		return 0, "", fmt.Errorf("year must have at least 4 digits")
 	}
 	// Per XSD: years with more than 4 digits must not have leading zeros
-	if digits > 4 && s[start] == '0' {
+	if digits > minimumYearDigits && s[start] == '0' {
 		return 0, "", fmt.Errorf("year with leading zeros is not valid")
 	}
 
 	yearStr := s[start:i]
 
 	year, err := strconv.Atoi(yearStr)
-	if err != nil || year > 999_999_999 {
+	if err != nil || year > maxCastCalendarYear {
 		// Retain the Gregorian leap-year cycle so callers can distinguish a
 		// malformed date from a valid value outside the supported year range.
 		year = 0
 		for _, digit := range yearStr {
-			year = (year*10 + int(digit-'0')) % 400
+			year = (year*numericDecimalRadix + int(digit-'0')) % gregorianCycleYears
 		}
 
 		if neg {
@@ -154,7 +218,7 @@ func buildTimeFromParts(year int, rest string, layouts []string, original string
 	// Alternative approach: if the actual year is a leap year, temporarily
 	// parse as Jan 1 to get the timezone, then construct manually.
 
-	synthetic := "2006" + rest
+	synthetic := goParseReferenceYear + rest
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, synthetic); err == nil {
 			t = time.Date(year, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
@@ -166,13 +230,13 @@ func buildTimeFromParts(year int, rest string, layouts []string, original string
 
 	// Retry with a leap-year workaround for Feb 29: parse a modified string
 	// with day=28, then adjust the day back to the original value.
-	if strings.HasPrefix(rest, "-02-29") {
-		modRest := "-02-28" + rest[6:]
+	if strings.HasPrefix(rest, leapDayMonthDay) {
+		modRest := leapDayParseReplacement + rest[len(leapDayMonthDay):]
 
-		synthetic = "2006" + modRest
+		synthetic = goParseReferenceYear + modRest
 		for _, layout := range layouts {
 			if t, err := time.Parse(layout, synthetic); err == nil {
-				t = time.Date(year, t.Month(), 29, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+				t = time.Date(year, t.Month(), leapDayOfMonth, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 				t = ensureExplicitTZ(t, original)
 
 				return t, true
@@ -218,8 +282,8 @@ func parseXSDDate(s string) (time.Time, error) {
 	}
 
 	layouts := []string{
-		"2006-01-02Z07:00",
-		"2006-01-02",
+		xsdDateZoneLayout,
+		xsdDateLayout,
 	}
 	if t, ok := buildTimeFromParts(year, rest, layouts, s); ok {
 		if err := validateDateComponents(int(t.Month()), t.Day(), year); err != nil {
@@ -261,10 +325,10 @@ func parseXSDDateTime(s string) (time.Time, error) {
 	}
 
 	layouts := []string{
-		"2006-01-02T15:04:05.999999999Z07:00",
-		"2006-01-02T15:04:05Z07:00",
-		"2006-01-02T15:04:05.999999999",
-		"2006-01-02T15:04:05",
+		xsdDateTimeFractionZoneLayout,
+		xsdDateTimeZoneLayout,
+		xsdDateTimeFractionLayout,
+		xsdDateTimeLayout,
 	}
 	if t, ok := buildTimeFromParts(year, rest, layouts, s); ok {
 		if err := validateDateComponents(int(t.Month()), t.Day(), year); err != nil {
@@ -278,10 +342,10 @@ func parseXSDDateTime(s string) (time.Time, error) {
 		}
 
 		if isMidnight24 {
-			t = t.AddDate(0, 0, 1) // advance to next day
+			t = t.AddDate(0, 0, midnightRolloverDays) // advance to next day
 		}
 
-		if overflow || t.Year() > 999_999_999 || t.Year() < -999_999_999 {
+		if overflow || t.Year() > maxCastCalendarYear || t.Year() < -maxCastCalendarYear {
 			return time.Time{}, &xdm.Error{Code: errCodeFODT0001, Message: errCalendarYearRange.Error()}
 		}
 
@@ -304,10 +368,10 @@ func parseXSDTime(s string) (time.Time, error) {
 	}
 
 	for _, layout := range []string{
-		"15:04:05.999999999Z07:00",
-		"15:04:05Z07:00",
-		"15:04:05.999999999",
-		"15:04:05",
+		xsdTimeFractionZoneLayout,
+		xsdTimeZoneLayout,
+		xsdTimeFractionLayout,
+		xsdTimeLayout,
 	} {
 		if t, err := time.Parse(layout, target); err == nil {
 			if !isMidnight24 {
@@ -328,7 +392,7 @@ func parseXSDTime(s string) (time.Time, error) {
 // a midnight-24 value. The caller must advance the date by one day.
 // 24:00:00.nnn is valid only when the fractional part is all zeros.
 func normalizeMidnight24DateTime(s string) (string, bool) {
-	before, rest, found := strings.Cut(s, "T24:00:00")
+	before, rest, found := strings.Cut(s, endOfDayDateTimeClock)
 	if !found {
 		return s, false
 	}
@@ -350,18 +414,18 @@ func normalizeMidnight24DateTime(s string) (string, bool) {
 		rest = rest[i:]
 	}
 
-	return before + "T00:00:00" + rest, true
+	return before + startOfDayDateTimeClock + rest, true
 }
 
 // normalizeMidnight24Time checks if a time string starts with 24:00:00 and
 // replaces it with 00:00:00. For xs:time, 24:00:00 equals 00:00:00 (no date rollover).
 // 24:00:00.nnn is valid only when the fractional part is all zeros.
 func normalizeMidnight24Time(s string) (string, bool) {
-	if !strings.HasPrefix(s, "24:00:00") {
+	if !strings.HasPrefix(s, endOfDayClock) {
 		return s, false
 	}
 
-	rest := s[len("24:00:00"):]
+	rest := s[len(endOfDayClock):]
 	if len(rest) > 0 && rest[0] == '.' {
 		i := 1
 		for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
@@ -379,7 +443,7 @@ func normalizeMidnight24Time(s string) (string, bool) {
 		rest = rest[i:]
 	}
 
-	return "00:00:00" + rest, true
+	return startOfDayClock + rest, true
 }
 
 func ensureExplicitTZ(t time.Time, s string) time.Time {
@@ -404,8 +468,8 @@ func hasExplicitTimezone(s string) bool {
 		return true
 	}
 
-	if len(s) >= 6 {
-		tail := s[len(s)-6:]
+	if len(s) >= timezoneOffsetBytes {
+		tail := s[len(s)-timezoneOffsetBytes:]
 		if (tail[0] == '+' || tail[0] == '-') &&
 			tail[1] >= '0' && tail[1] <= '9' &&
 			tail[2] >= '0' && tail[2] <= '9' &&
@@ -422,12 +486,12 @@ func hasExplicitTimezone(s string) bool {
 // validateDateComponents checks that month and day are in valid ranges.
 // XSD 1.1: year 0000 is valid.
 func validateDateComponents(month, day, year int) error {
-	if month < 1 || month > 12 {
+	if month < minimumCalendarMonth || month > maximumCalendarMonth {
 		return fmt.Errorf("month %d out of range 1-12", month)
 	}
 
 	maxDay := daysInMonth(year, month)
-	if day < 1 || day > maxDay {
+	if day < minimumCalendarDay || day > maxDay {
 		return fmt.Errorf("day %d out of range for month %d (max %d)", day, month, maxDay)
 	}
 
@@ -437,15 +501,15 @@ func validateDateComponents(month, day, year int) error {
 // validateTimeComponents checks that hours, minutes, seconds are in valid ranges.
 // Note: hour 24 is handled separately (normalizeMidnight24*) before this is called.
 func validateTimeComponents(hour, minute, second, nanosecond int) error {
-	if hour < 0 || hour > 23 {
+	if hour < 0 || hour > maximumClockHour {
 		return fmt.Errorf("hour %d out of range 0-23", hour)
 	}
 
-	if minute < 0 || minute > 59 {
+	if minute < 0 || minute > maximumClockMinute {
 		return fmt.Errorf("minute %d out of range 0-59", minute)
 	}
 
-	if second < 0 || second > 59 {
+	if second < 0 || second > maximumClockSecond {
 		return fmt.Errorf("second %d out of range 0-59", second)
 	}
 
@@ -465,24 +529,24 @@ func validateTimezoneInString(s string) error {
 		return nil // Z is always valid
 	}
 
-	if len(s) < 6 {
+	if len(s) < timezoneOffsetBytes {
 		return nil // no timezone present
 	}
 
-	tail := s[len(s)-6:]
+	tail := s[len(s)-timezoneOffsetBytes:]
 	if (tail[0] != '+' && tail[0] != '-') ||
 		tail[3] != ':' {
 		return nil // no timezone suffix
 	}
 
-	hh := (int(tail[1]-'0') * 10) + int(tail[2]-'0')
+	hh := (int(tail[1]-'0') * numericDecimalRadix) + int(tail[2]-'0')
 
-	mm := (int(tail[4]-'0') * 10) + int(tail[5]-'0')
-	if hh > 14 || (hh == 14 && mm != 0) {
+	mm := (int(tail[4]-'0') * numericDecimalRadix) + int(tail[5]-'0')
+	if hh > maximumTimezoneHours || (hh == maximumTimezoneHours && mm != 0) {
 		return fmt.Errorf("timezone offset %s out of range (-14:00 to +14:00)", tail)
 	}
 
-	if mm > 59 {
+	if mm > maximumClockMinute {
 		return fmt.Errorf("timezone offset minutes %d out of range 0-59", mm)
 	}
 
@@ -636,23 +700,23 @@ func (parser *durationParser) addDateComponent(component durationComponent) erro
 
 	switch component.designator {
 	case 'Y':
-		return parser.addMonthComponent(component, 1, 12)
+		return parser.addMonthComponent(component, durationYearOrder, calendarMonthsPerYear)
 	case 'M':
-		return parser.addMonthComponent(component, 2, 1)
+		return parser.addMonthComponent(component, durationMonthOrder, 1)
 	case 'D':
-		if err := parser.advanceOrder(3); err != nil {
+		if err := parser.advanceOrder(durationDayOrder); err != nil {
 			return err
 		}
 
 		// Day counts can exceed int64; retain their exact value in seconds.
-		days, ok := new(big.Int).SetString(component.number, 10)
+		days, ok := new(big.Int).SetString(component.number, numericDecimalRadix)
 		if !ok {
 			return fmt.Errorf("invalid duration number: %q", component.number)
 		}
 
 		dayFloat, _ := new(big.Float).SetInt(days).Float64()
-		parser.value.Seconds += dayFloat * 86400
-		parser.addSeconds(new(big.Rat).SetInt(days), 86400)
+		parser.value.Seconds += dayFloat * calendarSecondsPerDay
+		parser.addSeconds(new(big.Rat).SetInt(days), calendarSecondsPerDay)
 
 		return nil
 	default:
@@ -665,7 +729,7 @@ func (parser *durationParser) addMonthComponent(component durationComponent, ord
 		return err
 	}
 
-	n, err := strconv.ParseInt(component.number, 10, 64)
+	n, err := strconv.ParseInt(component.number, numericDecimalRadix, durationMonthParseBits)
 	if errors.Is(err, strconv.ErrRange) {
 		parser.monthsOverflow = true
 		return nil
@@ -703,7 +767,7 @@ func (parser *durationParser) addTimeComponent(component durationComponent) erro
 
 	// An overflowing float mirror may saturate to infinity; the exact
 	// rational remains valid and must not be rejected on that account.
-	f, err := strconv.ParseFloat(component.number, 64)
+	f, err := strconv.ParseFloat(component.number, doubleFloatBits)
 	if err != nil && !errors.Is(err, strconv.ErrRange) {
 		return fmt.Errorf("invalid duration number: %q", component.number)
 	}
@@ -772,11 +836,11 @@ func addCheckedMonths(a, b int64) (int64, bool) {
 func durationTimeComponent(designator byte) (int, int64) {
 	switch designator {
 	case 'H':
-		return 4, 3600
+		return durationHourOrder, calendarSecondsPerHour
 	case 'M':
-		return 5, 60
+		return durationMinuteOrder, calendarSecondsPerMinute
 	case 'S':
-		return 6, 1
+		return durationSecondOrder, 1
 	default:
 		return 0, 0
 	}
@@ -807,11 +871,12 @@ func exactFractionDigits(frac *big.Rat) string {
 	// long division. FloatString would ROUND, which can carry into the integer
 	// part (e.g. 0.999... → 1.0) and corrupt the formatted duration; truncation
 	// never carries, so the integer part stays 0 and no stray "." is emitted.
+	// Forty decimal digits cap only non-terminating duration fractions.
 	const maxDigits = 40
 
 	num := new(big.Int).Set(frac.Num())
 	den := frac.Denom()
-	ten := big.NewInt(10)
+	ten := big.NewInt(numericDecimalRadix)
 
 	var b strings.Builder
 
@@ -850,9 +915,9 @@ func formatDuration(d xdm.Duration, typeName string) string {
 
 	if b.Len() == 1 || (d.Negative && b.Len() == 2) {
 		if typeName == xdm.TypeYearMonthDuration {
-			b.WriteString("0M")
+			b.WriteString(zeroYearMonthDurationSuffix)
 		} else {
-			b.WriteString("T0S")
+			b.WriteString(zeroDayTimeDurationSuffix)
 		}
 	}
 
@@ -865,12 +930,12 @@ func writeDurationMonths(b *strings.Builder, d xdm.Duration) {
 		months = -months
 	}
 
-	if years := months / 12; years != 0 {
+	if years := months / calendarMonthsPerYear; years != 0 {
 		writeDurationInteger(b, int64(years))
 		b.WriteByte('Y')
 	}
 
-	if remainder := months % 12; remainder != 0 {
+	if remainder := months % calendarMonthsPerYear; remainder != 0 {
 		writeDurationInteger(b, int64(remainder))
 		b.WriteByte('M')
 	}
@@ -906,11 +971,11 @@ func legacyDurationSecondParts(d xdm.Duration) (*big.Int, int64, *big.Rat) {
 
 	whole := int64(seconds)
 	fraction := seconds - float64(whole)
-	micro := int64(math.Round(fraction * 1e6))
+	micro := int64(math.Round(fraction * microsecondsPerSecond))
 
-	if micro >= 1e6 {
+	if micro >= microsecondsPerSecond {
 		whole++
-		micro -= 1e6
+		micro -= microsecondsPerSecond
 	}
 
 	if micro < 0 {
@@ -928,11 +993,11 @@ func writeDurationDayTime(b *strings.Builder, totalSeconds *big.Int, micro int64
 	// The day count may exceed int64; all sub-day parts remain bounded.
 	days := new(big.Int)
 	remainder := new(big.Int)
-	days.QuoRem(totalSeconds, big.NewInt(86400), remainder)
-	hours := remainder.Int64() / 3600
-	subHour := remainder.Int64() - hours*3600
-	minutes := subHour / 60
-	seconds := subHour - minutes*60
+	days.QuoRem(totalSeconds, big.NewInt(calendarSecondsPerDay), remainder)
+	hours := remainder.Int64() / calendarSecondsPerHour
+	subHour := remainder.Int64() - hours*calendarSecondsPerHour
+	minutes := subHour / calendarSecondsPerMinute
+	seconds := subHour - minutes*calendarSecondsPerMinute
 
 	hasFraction := micro != 0 || (fraction != nil && fraction.Sign() != 0)
 	hasSeconds := seconds != 0 || hasFraction
@@ -973,7 +1038,7 @@ func writeDurationSeconds(b *strings.Builder, whole, micro int64, fraction *big.
 			b.WriteString(digits)
 		}
 	} else if micro != 0 {
-		digits := strings.TrimRight(fmt.Sprintf("%06d", micro), "0")
+		digits := strings.TrimRight(fmt.Sprintf(durationMicrosecondFormat, micro), "0")
 
 		b.WriteByte('.')
 		b.WriteString(digits)
@@ -983,6 +1048,6 @@ func writeDurationSeconds(b *strings.Builder, whole, micro int64, fraction *big.
 }
 
 func writeDurationInteger(b *strings.Builder, value int64) {
-	var digits [20]byte
-	b.Write(strconv.AppendInt(digits[:0], value, 10))
+	var digits [signedInt64DecimalBytes]byte
+	b.Write(strconv.AppendInt(digits[:0], value, numericDecimalRadix))
 }

@@ -17,6 +17,35 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
+// Constructor numeric subtype boundaries are independent of scalar atom
+// cardinality. Token capacity is an initial item allocation hint; token work
+// counts one logical operation per validated string, with all limits unchanged.
+const (
+	unsignedConstructorMinimum      = 0
+	nonnegativeConstructorMinimum   = 0
+	nonpositiveConstructorMaximum   = 0
+	positiveConstructorMinimum      = 1
+	negativeConstructorMaximum      = -1
+	constructorAtomCardinality      = 1
+	initialConstructorTokenCapacity = 8
+	constructorTokenWork            = 1
+)
+
+// ASCII Gregorian lexical field offsets count bytes in ---DD/--MM/--MM-DD.
+// Year four is a leap-year reference, not the minimum year lexical digit count.
+const (
+	constructorMaximumDay        = 31
+	gregorianLeapReferenceYear   = 4
+	constructorMaximumYearDigits = 9
+	gregorianDayFieldStart       = 3
+	gregorianDayFieldEnd         = 5
+	gregorianMonthFieldStart     = 2
+	gregorianMonthFieldEnd       = 4
+	gregorianMonthDayFieldStart  = 5
+	gregorianMonthDayFieldEnd    = 7
+	gregorianYearMonthFieldEnd   = 3 // delimiter byte plus two month digits
+)
+
 func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 	// Base XSD types — delegate to CastAtomic
 	for _, entry := range []struct {
@@ -24,30 +53,30 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		targetType string
 	}{
 		{lexicon.TypeString, xdm.TypeString},
-		{fnNameBoolean, xdm.TypeBoolean},
+		{lexicon.TypeBoolean, xdm.TypeBoolean},
 		{lexicon.TypeDecimal, xdm.TypeDecimal},
-		{"double", xdm.TypeDouble},
-		{"float", xdm.TypeFloat},
-		{"integer", xdm.TypeInteger},
+		{lexicon.TypeDouble, xdm.TypeDouble},
+		{lexicon.TypeFloat, xdm.TypeFloat},
+		{lexicon.TypeInteger, xdm.TypeInteger},
 		{lexicon.TypeDate, xdm.TypeDate},
 		{lexicon.TypeDateTime, xdm.TypeDateTime},
 		{lexicon.TypeTime, xdm.TypeTime},
 		{lexicon.TypeDuration, xdm.TypeDuration},
 		{lexicon.TypeDayTimeDuration, xdm.TypeDayTimeDuration},
 		{lexicon.TypeYearMonthDuration, xdm.TypeYearMonthDuration},
-		{"anyURI", xdm.TypeAnyURI},
+		{lexicon.TypeAnyURI, xdm.TypeAnyURI},
 		{lexicon.TypeBase64Binary, xdm.TypeBase64Binary},
 		{lexicon.TypeHexBinary, xdm.TypeHexBinary},
 		{lexicon.TypeUntypedAtomic, xdm.TypeUntypedAtomic},
 	} {
 		if requestedName == entry.name {
-			return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(entry.targetType)}, true
+			return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSConstructor(entry.targetType)}, true
 		}
 	}
 
 	// xs:QName constructor needs namespace context to resolve prefixes
 	if requestedName == lexicon.TypeQName {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSQNameConstructor()}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSQNameConstructor()}, true
 	}
 
 	// Derived integer types — cast to integer, then validate range
@@ -57,38 +86,38 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		min      int64
 		max      int64
 	}{
-		{"long", xdm.TypeLong, math.MinInt64, math.MaxInt64},
-		{"int", xdm.TypeInt, -2147483648, 2147483647},
-		{"short", xdm.TypeShort, -32768, 32767},
-		{"byte", xdm.TypeByte, -128, 127},
-		{"unsignedInt", xdm.TypeUnsignedInt, 0, 4294967295},
-		{"unsignedShort", xdm.TypeUnsignedShort, 0, 65535},
-		{"unsignedByte", xdm.TypeUnsignedByte, 0, 255},
+		{lexicon.TypeLong, xdm.TypeLong, math.MinInt64, math.MaxInt64},
+		{lexicon.TypeInt, xdm.TypeInt, math.MinInt32, math.MaxInt32},
+		{lexicon.TypeShort, xdm.TypeShort, math.MinInt16, math.MaxInt16},
+		{lexicon.TypeByte, xdm.TypeByte, math.MinInt8, math.MaxInt8},
+		{lexicon.TypeUnsignedInt, xdm.TypeUnsignedInt, unsignedConstructorMinimum, math.MaxUint32},
+		{lexicon.TypeUnsignedShort, xdm.TypeUnsignedShort, unsignedConstructorMinimum, math.MaxUint16},
+		{lexicon.TypeUnsignedByte, xdm.TypeUnsignedByte, unsignedConstructorMinimum, math.MaxUint8},
 	} {
 		if requestedName == entry.name {
-			return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSIntegerRange(entry.typeName, entry.min, entry.max)}, true
+			return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSIntegerRange(entry.typeName, entry.min, entry.max)}, true
 		}
 	}
 	// Unbounded integer subtypes need big.Int constructor (no fixed max/min)
-	if requestedName == "nonNegativeInteger" {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSIntegerRangeBig(xdm.TypeNonNegativeInteger, big.NewInt(0), nil)}, true
+	if requestedName == lexicon.TypeNonNegativeInteger {
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSIntegerRangeBig(xdm.TypeNonNegativeInteger, big.NewInt(nonnegativeConstructorMinimum), nil)}, true
 	}
 
-	if requestedName == "nonPositiveInteger" {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSIntegerRangeBig(xdm.TypeNonPositiveInteger, nil, big.NewInt(0))}, true
+	if requestedName == lexicon.TypeNonPositiveInteger {
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSIntegerRangeBig(xdm.TypeNonPositiveInteger, nil, big.NewInt(nonpositiveConstructorMaximum))}, true
 	}
 
-	if requestedName == "positiveInteger" {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSIntegerRangeBig(xdm.TypePositiveInteger, big.NewInt(1), nil)}, true
+	if requestedName == lexicon.TypePositiveInteger {
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSIntegerRangeBig(xdm.TypePositiveInteger, big.NewInt(positiveConstructorMinimum), nil)}, true
 	}
 
-	if requestedName == "negativeInteger" {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSIntegerRangeBig(xdm.TypeNegativeInteger, nil, big.NewInt(-1))}, true
+	if requestedName == lexicon.TypeNegativeInteger {
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSIntegerRangeBig(xdm.TypeNegativeInteger, nil, big.NewInt(negativeConstructorMaximum))}, true
 	}
 
 	// xs:unsignedLong needs big.Int max since MaxUint64 exceeds int64
-	if requestedName == "unsignedLong" {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSIntegerRangeBig(xdm.TypeUnsignedLong, big.NewInt(0), new(big.Int).SetUint64(math.MaxUint64))}, true
+	if requestedName == lexicon.TypeUnsignedLong {
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSIntegerRangeBig(xdm.TypeUnsignedLong, big.NewInt(unsignedConstructorMinimum), new(big.Int).SetUint64(math.MaxUint64))}, true
 	}
 
 	// Derived string types — cast to string, validate, store with derived type name
@@ -97,32 +126,32 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		typeName string
 		re       lexicalCheck // nil = no validation, just string cast
 	}{
-		{"normalizedString", xdm.TypeNormalizedString, nil},
-		{"token", xdm.TypeToken, nil},
-		{"language", xdm.TypeLanguage, reLang},
+		{lexicon.TypeNormalizedString, xdm.TypeNormalizedString, nil},
+		{lexicon.TypeToken, xdm.TypeToken, nil},
+		{lexicon.TypeLanguage, xdm.TypeLanguage, reLang},
 		{lexicon.TypeName, xdm.TypeName, reName},
-		{"NCName", xdm.TypeNCName, reNCName},
+		{lexicon.TypeNCName, xdm.TypeNCName, reNCName},
 		{lexicon.TypeNMToken, xdm.TypeNMTOKEN, reNMTOKEN},
 		{lexicon.TypeENTITY, xdm.TypeENTITY, reNCName},
-		{"ID", xdm.TypeID, reNCName},
-		{"IDREF", xdm.TypeIDREF, reNCName},
+		{lexicon.TypeID, xdm.TypeID, reNCName},
+		{lexicon.TypeIDREF, xdm.TypeIDREF, reNCName},
 	} {
 		if requestedName == entry.name {
-			return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSStringRestriction(entry.typeName, entry.re)}, true
+			return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSStringRestriction(entry.typeName, entry.re)}, true
 		}
 	}
 
 	// List types — split by whitespace, produce sequence of item type values
 	if requestedName == lexicon.TypeNMTokens {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSTokenList(xdm.TypeNMTOKENS, xdm.TypeNMTOKEN, reNMTOKEN)}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSTokenList(xdm.TypeNMTOKENS, xdm.TypeNMTOKEN, reNMTOKEN)}, true
 	}
 
 	if requestedName == lexicon.TypeIDREFS {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSTokenList(xdm.TypeIDREFS, xdm.TypeIDREF, reNCName)}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSTokenList(xdm.TypeIDREFS, xdm.TypeIDREF, reNCName)}, true
 	}
 
 	if requestedName == lexicon.TypeENTITIES {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSTokenList(xdm.TypeENTITIES, xdm.TypeENTITY, reNCName)}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSTokenList(xdm.TypeENTITIES, xdm.TypeENTITY, reNCName)}, true
 	}
 
 	// Gregorian date part types. CastAtomic/CastFromString perform the
@@ -138,24 +167,24 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		{lexicon.TypeGYearMonth, xdm.TypeGYearMonth},
 	} {
 		if requestedName == entry.name {
-			return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(entry.typeName)}, true
+			return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSConstructor(entry.typeName)}, true
 		}
 	}
 
 	// xs:dateTimeStamp — dateTime with required timezone. CastAtomic enforces
 	// the mandatory-timezone rule, so the generic constructor suffices.
 	if requestedName == lexicon.TypeDateTimeStamp {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(xdm.TypeDateTimeStamp)}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSConstructor(xdm.TypeDateTimeStamp)}, true
 	}
 
 	// xs:error — always raises an error (used for type checking tests)
 	if requestedName == lexicon.TypeError {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: fnXSError}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: fnXSError}, true
 	}
 
 	// xs:numeric preserves numeric members and otherwise selects xs:double.
 	if requestedName == lexicon.TypeNumeric {
-		return &builtinFunc{name: requestedName, min: 1, max: 1, fn: makeXSConstructor(xdm.TypeNumeric)}, true
+		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSConstructor(xdm.TypeNumeric)}, true
 	}
 
 	return nil, false
@@ -312,7 +341,7 @@ func makeXSTokenList(listType, itemType string, tokenRe lexicalCheck) func(conte
 
 		ec := getFnContext(ctx)
 		limit := NodeLimit(ctx, fnMaxNodes(ec))
-		result := make(xdm.ItemSlice, 0, min(limit, 8))
+		result := make(xdm.ItemSlice, 0, min(limit, initialConstructorTokenCapacity))
 
 		for token := range strings.FieldsFuncSeq(s, xmlchar.IsSpace) {
 			if len(result) >= limit {
@@ -320,10 +349,10 @@ func makeXSTokenList(listType, itemType string, tokenRe lexicalCheck) func(conte
 			}
 
 			if ec != nil {
-				if err := ec.countOps(ctx, 1); err != nil {
+				if err := ec.countOps(ctx, constructorTokenWork); err != nil {
 					return nil, err
 				}
-			} else if err := Charge(ctx, 1); err != nil {
+			} else if err := Charge(ctx, constructorTokenWork); err != nil {
 				return nil, err
 			}
 
@@ -344,7 +373,7 @@ func isBuiltinListType(target string) bool {
 
 // Builtin list casts and constructors use one bounded token/member builder.
 func castToBuiltinList(ctx context.Context, ec *evalContext, value xdm.AtomicValue, target string) (xdm.Sequence, error) {
-	constructor, _ := lookupConstructor(strings.TrimPrefix(target, "xs:"))
+	constructor, _ := lookupConstructor(strings.TrimPrefix(target, lexicon.PrefixXS+":"))
 
 	if ec != nil {
 		ctx = withFnContext(ctx, ec)
@@ -384,22 +413,22 @@ func validateGregorianValue(typeName, s string) bool {
 	case xdm.TypeGDay:
 		// ---DD format: day must be 01-31
 		day := extractGDayValue(s)
-		return day >= 1 && day <= 31
+		return day >= minimumCalendarDay && day <= constructorMaximumDay
 	case xdm.TypeGMonth:
 		// --MM format: month must be 01-12
 		month := extractGMonthValue(s)
-		return month >= 1 && month <= 12
+		return month >= minimumCalendarMonth && month <= maximumCalendarMonth
 	case xdm.TypeGMonthDay:
 		// --MM-DD format: month 01-12, day valid for month
 		month, day := extractGMonthDayValues(s)
-		if month < 1 || month > 12 {
+		if month < minimumCalendarMonth || month > maximumCalendarMonth {
 			return false
 		}
 		// Use a leap year for gMonthDay since no year is specified;
 		// February allows up to 29 because gMonthDay must accommodate leap years.
-		maxDay := daysInMonth(4, month) // year 4 is a leap year
+		maxDay := daysInMonth(gregorianLeapReferenceYear, month) // year 4 is a leap year
 
-		return day >= 1 && day <= maxDay
+		return day >= minimumCalendarDay && day <= maxDay
 	case xdm.TypeGYear:
 		// XSD 1.1: year 0000 is valid
 		y := extractYearDigits(s)
@@ -415,7 +444,7 @@ func validateGregorianValue(typeName, s string) bool {
 
 		month := extractGYearMonthMonth(s)
 
-		return month >= 1 && month <= 12
+		return month >= minimumCalendarMonth && month <= maximumCalendarMonth
 	}
 
 	return true
@@ -424,11 +453,11 @@ func validateGregorianValue(typeName, s string) bool {
 // extractGDayValue extracts the day from a ---DD[tz] string.
 func extractGDayValue(s string) int {
 	// format: ---DD...
-	if len(s) < 5 {
+	if len(s) < gregorianDayFieldEnd {
 		return 0
 	}
 
-	d, err := strconv.Atoi(s[3:5])
+	d, err := strconv.Atoi(s[gregorianDayFieldStart:gregorianDayFieldEnd])
 	if err != nil {
 		return 0
 	}
@@ -439,11 +468,11 @@ func extractGDayValue(s string) int {
 // extractGMonthValue extracts the month from a --MM[tz] string.
 func extractGMonthValue(s string) int {
 	// format: --MM...
-	if len(s) < 4 {
+	if len(s) < gregorianMonthFieldEnd {
 		return 0
 	}
 
-	m, err := strconv.Atoi(s[2:4])
+	m, err := strconv.Atoi(s[gregorianMonthFieldStart:gregorianMonthFieldEnd])
 	if err != nil {
 		return 0
 	}
@@ -454,16 +483,16 @@ func extractGMonthValue(s string) int {
 // extractGMonthDayValues extracts month and day from a --MM-DD[tz] string.
 func extractGMonthDayValues(s string) (int, int) {
 	// format: --MM-DD...
-	if len(s) < 7 {
+	if len(s) < gregorianMonthDayFieldEnd {
 		return 0, 0
 	}
 
-	m, err := strconv.Atoi(s[2:4])
+	m, err := strconv.Atoi(s[gregorianMonthFieldStart:gregorianMonthFieldEnd])
 	if err != nil {
 		return 0, 0
 	}
 
-	d, err := strconv.Atoi(s[5:7])
+	d, err := strconv.Atoi(s[gregorianMonthDayFieldStart:gregorianMonthDayFieldEnd])
 	if err != nil {
 		return 0, 0
 	}
@@ -486,11 +515,11 @@ func extractGYearMonthMonth(s string) int {
 		return 0
 	}
 	// work[i] == '-', month starts at i+1
-	if i+3 > len(work) {
+	if i+gregorianYearMonthFieldEnd > len(work) {
 		return 0
 	}
 
-	m, err := strconv.Atoi(work[i+1 : i+3])
+	m, err := strconv.Atoi(work[i+1 : i+gregorianYearMonthFieldEnd])
 	if err != nil {
 		return 0
 	}
@@ -510,11 +539,11 @@ func extractYearDigits(s string) string {
 }
 
 func hasValidGregorianYearDigits(y string) bool {
-	if len(y) < 4 || len(y) > 9 {
+	if len(y) < minimumYearDigits || len(y) > constructorMaximumYearDigits {
 		return false
 	}
 
-	return len(y) == 4 || y[0] != '0'
+	return len(y) == minimumYearDigits || y[0] != '0'
 }
 
 func atomizeConstructorArg(seq xdm.Sequence, typeName string) (xdm.AtomicValue, bool, error) {
@@ -533,7 +562,7 @@ func atomizeConstructorArg(seq xdm.Sequence, typeName string) (xdm.AtomicValue, 
 
 	err := atomizeStream(seq, func(av xdm.AtomicValue) (bool, error) {
 		count++
-		if count == 1 {
+		if count == constructorAtomCardinality {
 			first = av
 		}
 
@@ -547,7 +576,7 @@ func atomizeConstructorArg(seq xdm.Sequence, typeName string) (xdm.AtomicValue, 
 		return xdm.AtomicValue{}, true, nil
 	}
 
-	if count > 1 {
+	if count > constructorAtomCardinality {
 		return xdm.AtomicValue{}, false, &xdm.Error{
 			Code:    lexicon.ErrXPTY0004,
 			Message: fmt.Sprintf("%s constructor requires a singleton argument", typeName),

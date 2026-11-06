@@ -8,6 +8,13 @@ import (
 )
 
 const (
+	ftpDefaultPort   = "21"
+	httpDefaultPort  = "80"
+	httpsDefaultPort = "443"
+	ldapDefaultPort  = "389"
+)
+
+const (
 	crlSchemeFTP  = "ftp"
 	crlSchemeLDAP = "ldap"
 )
@@ -50,13 +57,13 @@ func crlURIKey(raw string) string {
 
 		switch scheme {
 		case lexicon.SchemeHTTP:
-			port = "80"
+			port = httpDefaultPort
 		case lexicon.SchemeHTTPS:
-			port = "443"
+			port = httpsDefaultPort
 		case crlSchemeFTP:
-			port = "21"
+			port = ftpDefaultPort
 		case crlSchemeLDAP:
-			port = "389"
+			port = ldapDefaultPort
 		}
 
 		if port != "" {
@@ -84,7 +91,13 @@ func crlURIKey(raw string) string {
 }
 
 func normalizeCRLPercent(value string) string {
-	const hex = "0123456789ABCDEF"
+	// Percent escapes encode a byte as two hexadecimal nibbles.
+	const (
+		hex          = "0123456789ABCDEF"
+		hexDigitMask = 15
+		hexRadix     = 16
+		hexDigitBits = 4
+	)
 
 	out := make([]byte, 0, len(value))
 	for index := 0; index < len(value); index++ {
@@ -99,11 +112,11 @@ func normalizeCRLPercent(value string) string {
 			continue
 		}
 
-		c := byte(a&15)*16 + byte(b&15)
+		c := byte(a&hexDigitMask)*hexRadix + byte(b&hexDigitMask)
 		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-._~", rune(c)) {
 			out = append(out, c)
 		} else {
-			out = append(out, '%', hex[c>>4], hex[c&15])
+			out = append(out, '%', hex[c>>hexDigitBits], hex[c&hexDigitMask])
 		}
 
 		index += 2
@@ -113,13 +126,15 @@ func normalizeCRLPercent(value string) string {
 }
 
 func crlHex(value byte) int {
+	const firstHexLetterValue = 10 // a/A starts immediately after decimal digits
+
 	switch {
 	case value >= '0' && value <= '9':
 		return int(value - '0')
 	case value >= 'a' && value <= 'f':
-		return int(value - 'a' + 10)
+		return int(value - 'a' + firstHexLetterValue)
 	case value >= 'A' && value <= 'F':
-		return int(value - 'A' + 10)
+		return int(value - 'A' + firstHexLetterValue)
 	}
 
 	return -1

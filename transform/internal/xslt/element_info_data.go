@@ -128,8 +128,7 @@ func lookupConstructorElementInfo(name string) (xsltElementInfo, bool) {
 			minVersion: lexicon.XSLTVersion20, context: elementInstruction, implemented: true,
 		}, true
 	case lexicon.XSLTElementMap,
-		lexicon.XSLTElementMapEntry,
-		lexicon.XSLTElementArray:
+		lexicon.XSLTElementMapEntry:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion30, context: elementInstruction, implemented: true,
 		}, true

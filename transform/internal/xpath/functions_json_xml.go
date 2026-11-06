@@ -18,12 +18,24 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// These attributes belong to the F&O JSON XML representation independently
+// of similarly spelled names in other XML vocabularies.
+const (
+	jsonXMLAttributeKey        = "key"
+	jsonXMLAttributeEscaped    = "escaped"
+	jsonXMLAttributeEscapedKey = "escaped-key"
+)
+
+// Scalar XML representations permit comments and PIs while rejecting element
+// children; both string and numeric/boolean scalar readers use this mode.
+const jsonScalarCommentsAllowed = true
+
 func lookupFunctionsJSONXML(name string) (*builtinFunc, bool) {
 	switch name {
-	case "json-to-xml":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnJSONToXML}, true
-	case "xml-to-json":
-		return &builtinFunc{name: name, min: 1, max: 2, fn: fnXMLToJSON}, true
+	case fnNameJSONToXML:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnJSONToXML}, true
+	case fnNameXMLToJSON:
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityTwo, fn: fnXMLToJSON}, true
 	}
 
 	return nil, false
@@ -51,14 +63,12 @@ func fnJSONToXML(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, &xdm.Error{Code: errCodeFOJS0004, Message: "json-to-xml: schema validation and typed data are unavailable"}
 	}
 
-	s = strings.TrimPrefix(s, "\uFEFF")
+	s = strings.TrimPrefix(s, lexicon.BOMUTF8)
 
-	s, invalidEsc, err := preprocessJSONStringLiterals(s)
+	s, err = preprocessJSONStringLiterals(s)
 	if err != nil {
 		return nil, err
 	}
-
-	opts.invalidEsc = invalidEsc
 
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.UseNumber()
@@ -132,19 +142,28 @@ func installJSONToXMLAnnotations(ec *evalContext, annotations map[xdm.Node]strin
 // whose target namespace is the fn namespace. The boolean element is typed
 // directly as xs:boolean; the others use the named complex/simple types.
 func jsonToXMLTypeAnnotation(name string) string {
+	// Type local names from the JSON XML representation schema.
+	const (
+		jsonSchemaMapType    = "mapType"
+		jsonSchemaArrayType  = "arrayType"
+		jsonSchemaStringType = "stringType"
+		jsonSchemaNumberType = "numberType"
+		jsonSchemaNullType   = "nullType"
+	)
+
 	switch name {
 	case jsonKindMap:
-		return xdm.QAnnotation(NSFn, "mapType")
+		return xdm.QAnnotation(NSFn, jsonSchemaMapType)
 	case jsonKindArray:
-		return xdm.QAnnotation(NSFn, "arrayType")
-	case lexicon.TypeString:
-		return xdm.QAnnotation(NSFn, "stringType")
-	case lexicon.TypeNumber:
-		return xdm.QAnnotation(NSFn, "numberType")
-	case lexicon.TypeBoolean:
+		return xdm.QAnnotation(NSFn, jsonSchemaArrayType)
+	case jsonKindString:
+		return xdm.QAnnotation(NSFn, jsonSchemaStringType)
+	case jsonKindNumber:
+		return xdm.QAnnotation(NSFn, jsonSchemaNumberType)
+	case jsonKindBoolean:
 		return xdm.TypeBoolean
 	case jsonKindNull:
-		return xdm.QAnnotation(NSFn, "nullType")
+		return xdm.QAnnotation(NSFn, jsonSchemaNullType)
 	default:
 		return ""
 	}
@@ -170,15 +189,15 @@ func jsonToXMLItemName(item xdm.Item) string {
 	case xdm.ArrayItem:
 		return jsonKindArray
 	case xdm.JSONNumber:
-		return lexicon.TypeNumber
+		return jsonKindNumber
 	case xdm.AtomicValue:
 		switch value.TypeName {
 		case xdm.TypeString:
-			return lexicon.TypeString
+			return jsonKindString
 		case xdm.TypeBoolean:
-			return lexicon.TypeBoolean
+			return jsonKindBoolean
 		default:
-			return lexicon.TypeNumber
+			return jsonKindNumber
 		}
 	default:
 		return jsonKindNull
@@ -235,10 +254,10 @@ func buildJSONToXMLMapEntries(value xdm.MapItem, doc *xdm.Document, opts jsonOpt
 		}
 
 		keyText := key.StringVal()
-		_ = child.SetAttribute("key", keyText)
+		_ = child.SetAttribute(jsonXMLAttributeKey, keyText)
 		// Escaped-key is present only when escape=true and a backslash occurs.
 		if opts.escape && strings.Contains(keyText, "\\") {
-			_ = child.SetAttribute("escaped-key", lexicon.ValueTrue)
+			_ = child.SetAttribute(jsonXMLAttributeEscapedKey, lexicon.ValueTrue)
 		}
 
 		if err := elem.AddChild(child); err != nil {
@@ -254,17 +273,17 @@ func appendJSONToXMLAtomic(elem *xdm.Element, value xdm.AtomicValue, opts jsonOp
 	case xdm.TypeString:
 		// Escaped strings carry this attribute only when a backslash occurs.
 		if opts.escape && strings.Contains(value.StringVal(), "\\") {
-			_ = elem.SetAttribute("escaped", lexicon.ValueTrue)
+			_ = elem.SetAttribute(jsonXMLAttributeEscaped, lexicon.ValueTrue)
 		}
 
-		return appendJSONToXMLText(elem, value.StringVal(), lexicon.TypeString)
+		return appendJSONToXMLText(elem, value.StringVal(), jsonKindString)
 	case xdm.TypeBoolean:
 		text := lexicon.ValueFalse
 		if value.BooleanVal() {
 			text = lexicon.ValueTrue
 		}
 
-		return appendJSONToXMLText(elem, text, lexicon.TypeBoolean)
+		return appendJSONToXMLText(elem, text, jsonKindBoolean)
 	default:
 		text, err := atomicToString(value)
 		if err != nil {
@@ -292,12 +311,18 @@ func jsonSequenceToItem(seq xdm.Sequence) xdm.Item {
 }
 
 func parseJSONToXMLOptions(ctx context.Context, args []xdm.Sequence) (jsonOptions, error) {
-	opts := jsonOptions{duplicates: nameRetain, retainNumberLexical: true}
-	if len(args) <= 1 || xdm.SequenceLen(args[1]) == 0 {
+	// XML mapping alone exposes validation and retains numeric source spelling.
+	const (
+		jsonOptionValidate      = "validate"
+		retainJSONNumberLexical = true
+	)
+
+	opts := jsonOptions{duplicates: nameRetain, retainNumberLexical: retainJSONNumberLexical}
+	if len(args) <= jsonOptionsArgumentThreshold || xdm.SequenceLen(args[1]) == 0 {
 		return opts, nil
 	}
 
-	if xdm.SequenceLen(args[1]) != 1 {
+	if xdm.SequenceLen(args[1]) != jsonOptionsMapCardinality {
 		return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "json-to-xml options must be a single map"}
 	}
 
@@ -308,17 +333,17 @@ func parseJSONToXMLOptions(ctx context.Context, args []xdm.Sequence) (jsonOption
 
 	var err error
 
-	opts.liberal, err = parseJSONBooleanOption(ctx, options, "liberal")
+	opts.liberal, err = parseJSONBooleanOption(ctx, options, jsonOptionLiberal)
 	if err != nil {
 		return opts, err
 	}
 
-	opts.validate, err = parseJSONBooleanOption(ctx, options, "validate")
+	opts.validate, err = parseJSONBooleanOption(ctx, options, jsonOptionValidate)
 	if err != nil {
 		return opts, err
 	}
 
-	opts.escape, err = parseJSONBooleanOption(ctx, options, "escape")
+	opts.escape, err = parseJSONBooleanOption(ctx, options, jsonOptionEscape)
 	if err != nil {
 		return opts, err
 	}
@@ -393,11 +418,13 @@ type xmlJSONMeta struct {
 }
 
 func fnXMLToJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	const jsonXMLInputCardinality = 1 // nonempty input is a single node
+
 	if xdm.SequenceLen(args[0]) == 0 {
 		return nil, nil
 	}
 
-	if xdm.SequenceLen(args[0]) != 1 {
+	if xdm.SequenceLen(args[0]) != jsonXMLInputCardinality {
 		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "xml-to-json expects zero or one node"}
 	}
 
@@ -426,11 +453,11 @@ func fnXMLToJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 
 func parseXMLToJSONOptions(ctx context.Context, args []xdm.Sequence) (xmlToJSONOptions, error) {
 	var opts xmlToJSONOptions
-	if len(args) <= 1 {
+	if len(args) <= jsonOptionsArgumentThreshold {
 		return opts, nil
 	}
 
-	if xdm.SequenceLen(args[1]) != 1 {
+	if xdm.SequenceLen(args[1]) != jsonOptionsMapCardinality {
 		return opts, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "xml-to-json options must be a single map"}
 	}
 
@@ -441,12 +468,14 @@ func parseXMLToJSONOptions(ctx context.Context, args []xdm.Sequence) (xmlToJSONO
 
 	var err error
 
-	opts.indent, err = parseJSONBooleanOption(ctx, m, "indent")
+	opts.indent, err = parseJSONBooleanOption(ctx, m, lexicon.SerializationIndent)
 
 	return opts, err
 }
 
 func xmlToJSONRootElement(node xdm.Node) (*xdm.Element, error) {
+	const jsonXMLDocumentRootCount = 1 // one document element child
+
 	switch n := node.(type) {
 	case *xdm.Document:
 		root := n.DocumentElement()
@@ -465,7 +494,7 @@ func xmlToJSONRootElement(node xdm.Node) (*xdm.Element, error) {
 			}
 		}
 
-		if elemCount != 1 {
+		if elemCount != jsonXMLDocumentRootCount {
 			return nil, &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: document must have exactly one element child"}
 		}
 
@@ -497,17 +526,17 @@ func serializeJSONXMLContent(elem *xdm.Element, meta xmlJSONMeta, opts xmlToJSON
 		return serializeJSONXMLMap(elem, opts, depth)
 	case jsonKindArray:
 		return serializeJSONXMLArray(elem, opts, depth)
-	case lexicon.TypeString:
+	case jsonKindString:
 		return serializeJSONXMLString(elem, meta.escaped)
-	case lexicon.TypeNumber:
-		content, err := scalarElementText(elem, true)
+	case jsonKindNumber:
+		content, err := scalarElementText(elem, jsonScalarCommentsAllowed)
 		if err != nil {
 			return "", err
 		}
 
 		return canonicalizeXMLJSONNumber(content)
-	case fnNameBoolean:
-		content, err := scalarElementText(elem, true)
+	case jsonKindBoolean:
+		content, err := scalarElementText(elem, jsonScalarCommentsAllowed)
 		if err != nil {
 			return "", err
 		}
@@ -525,7 +554,9 @@ func serializeJSONXMLContent(elem *xdm.Element, meta xmlJSONMeta, opts xmlToJSON
 }
 
 func serializeJSONXMLMap(elem *xdm.Element, opts xmlToJSONOptions, depth int) (string, error) {
-	children, err := jsonElementChildren(elem, true)
+	const jsonMapUsesMapRules = true // select the parent-kind validation mode
+
+	children, err := jsonElementChildren(elem, jsonMapUsesMapRules)
 	if err != nil {
 		return "", err
 	}
@@ -555,7 +586,9 @@ func serializeJSONXMLMap(elem *xdm.Element, opts xmlToJSONOptions, depth int) (s
 }
 
 func serializeJSONXMLArray(elem *xdm.Element, opts xmlToJSONOptions, depth int) (string, error) {
-	children, err := jsonElementChildren(elem, false)
+	const jsonArrayUsesMapRules = false // array children do not use map rules
+
+	children, err := jsonElementChildren(elem, jsonArrayUsesMapRules)
 	if err != nil {
 		return "", err
 	}
@@ -574,7 +607,7 @@ func serializeJSONXMLArray(elem *xdm.Element, opts xmlToJSONOptions, depth int) 
 }
 
 func serializeJSONXMLString(elem *xdm.Element, escaped bool) (string, error) {
-	content, err := scalarElementText(elem, true)
+	content, err := scalarElementText(elem, jsonScalarCommentsAllowed)
 	if err != nil {
 		return "", err
 	}
@@ -599,7 +632,7 @@ func parseXMLJSONMeta(elem *xdm.Element, position xmlJSONPosition) (xmlJSONMeta,
 	meta := xmlJSONMeta{kind: elem.LocalName()}
 
 	switch meta.kind {
-	case jsonKindMap, jsonKindArray, lexicon.TypeString, lexicon.TypeNumber, fnNameBoolean, jsonKindNull:
+	case jsonKindMap, jsonKindArray, jsonKindString, jsonKindNumber, jsonKindBoolean, jsonKindNull:
 	default:
 		return xmlJSONMeta{}, &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid element %q", meta.kind)}
 	}
@@ -631,7 +664,7 @@ func parseXMLJSONAttribute(meta *xmlJSONMeta, attr *xdm.Attribute, position xmlJ
 	switch attr.URI() {
 	case "":
 		switch attr.LocalName() {
-		case "key":
+		case jsonXMLAttributeKey:
 			if position == xmlJSONArrayMember {
 				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: array child cannot have a key attribute"}
 			}
@@ -642,8 +675,8 @@ func parseXMLJSONAttribute(meta *xmlJSONMeta, attr *xdm.Attribute, position xmlJ
 
 			meta.hasKey = true
 			meta.keyActual = attr.Value()
-		case "escaped":
-			if meta.kind != lexicon.TypeString {
+		case jsonXMLAttributeEscaped:
+			if meta.kind != jsonKindString {
 				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: escaped is permitted only on a string element"}
 			}
 
@@ -653,7 +686,7 @@ func parseXMLJSONAttribute(meta *xmlJSONMeta, attr *xdm.Attribute, position xmlJ
 			}
 
 			meta.escaped = v
-		case "escaped-key":
+		case jsonXMLAttributeEscapedKey:
 			if position == xmlJSONArrayMember {
 				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: array child cannot have an escaped-key attribute"}
 			}
@@ -688,7 +721,7 @@ func jsonElementChildren(elem *xdm.Element, insideMap bool) ([]*xdm.Element, err
 		case *xdm.Element:
 			children = append(children, v)
 		case *xdm.Text, *xdm.CDATASection:
-			if strings.Trim(xdm.CharacterData(child), " \t\r\n") != "" {
+			if strings.Trim(xdm.CharacterData(child), lexicon.XMLWhitespace) != "" {
 				kind := jsonKindArray
 				if insideMap {
 					kind = jsonKindMap
@@ -745,10 +778,10 @@ func validateNullElement(elem *xdm.Element) error {
 }
 
 func parseXMLJSONBooleanAttr(s string) (bool, error) {
-	switch strings.Trim(s, " \t\r\n") {
-	case lexicon.ValueTrue, "1":
+	switch strings.Trim(s, lexicon.XMLWhitespace) {
+	case lexicon.ValueTrue, booleanTrueDigit:
 		return true, nil
-	case lexicon.ValueFalse, "0":
+	case lexicon.ValueFalse, booleanFalseDigit:
 		return false, nil
 	default:
 		return false, &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid boolean attribute value %q", s)}
@@ -756,10 +789,10 @@ func parseXMLJSONBooleanAttr(s string) (bool, error) {
 }
 
 func canonicalizeXMLJSONBoolean(s string) (string, error) {
-	switch strings.Trim(s, " \t\r\n") {
-	case lexicon.ValueTrue, "1":
+	switch strings.Trim(s, lexicon.XMLWhitespace) {
+	case lexicon.ValueTrue, booleanTrueDigit:
 		return lexicon.ValueTrue, nil
-	case lexicon.ValueFalse, "0":
+	case lexicon.ValueFalse, booleanFalseDigit:
 		return lexicon.ValueFalse, nil
 	default:
 		return "", &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid boolean value %q", s)}
@@ -767,69 +800,23 @@ func canonicalizeXMLJSONBoolean(s string) (string, error) {
 }
 
 func canonicalizeXMLJSONNumber(s string) (string, error) {
-	norm := strings.Trim(s, " \t\r\n")
+	const jsonNonFiniteNaNSpelling = "nan" // exact existing case-insensitive spelling
+
+	norm := strings.Trim(s, lexicon.XMLWhitespace)
 	if norm == "" {
 		return "", &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: invalid number value"}
 	}
 
-	if strings.EqualFold(norm, "nan") || strings.Contains(strings.ToUpper(norm), "INF") {
+	if strings.EqualFold(norm, jsonNonFiniteNaNSpelling) || strings.Contains(strings.ToUpper(norm), lexicon.FloatINF) {
 		return "", &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid number value %q", s)}
 	}
 
-	norm = preprocessXMLJSONNumber(norm)
-
 	av, err := CastFromString(norm, xdm.TypeDouble)
-	if err != nil || math.IsInf(av.DoubleVal(), 0) || math.IsNaN(av.DoubleVal()) {
+	if err != nil || math.IsInf(av.DoubleVal(), eitherInfinitySign) || math.IsNaN(av.DoubleVal()) {
 		return "", &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: invalid number value %q", s)}
 	}
 
 	return formatXPathDouble(av.DoubleVal()), nil
-}
-
-func preprocessXMLJSONNumber(s string) string {
-	sign := ""
-	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") {
-		sign = s[:1]
-		s = s[1:]
-	}
-
-	exp := ""
-	if idx := strings.IndexAny(s, "eE"); idx >= 0 {
-		exp = s[idx:]
-		s = s[:idx]
-	}
-
-	if strings.HasPrefix(s, ".") {
-		s = "0" + s
-	}
-
-	s = strings.TrimSuffix(s, ".")
-	if s == "" {
-		s = "0"
-	}
-
-	intPart := s
-	fracPart := ""
-
-	if before, after, ok := strings.Cut(s, "."); ok {
-		intPart = before
-		fracPart = after
-	}
-
-	if intPart == "" {
-		intPart = "0"
-	}
-
-	intPart = strings.TrimLeft(intPart, "0")
-	if intPart == "" {
-		intPart = "0"
-	}
-
-	if fracPart != "" {
-		return sign + intPart + "." + fracPart + exp
-	}
-
-	return sign + intPart + exp
 }
 
 func validateEscapedJSONContent(s string) (string, string, error) {
@@ -858,42 +845,42 @@ func validateEscapedJSONContent(s string) (string, string, error) {
 			out.WriteString(`\"`)
 			decoded.WriteByte('"')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case '\\':
 			out.WriteString(`\\`)
 			decoded.WriteByte('\\')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case '/':
 			out.WriteString(`\/`)
 			decoded.WriteByte('/')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case 'b':
 			out.WriteString(`\b`)
 			decoded.WriteByte('\b')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case 'f':
 			out.WriteString(`\f`)
 			decoded.WriteByte('\f')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case 'n':
 			out.WriteString(`\n`)
 			decoded.WriteByte('\n')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case 'r':
 			out.WriteString(`\r`)
 			decoded.WriteByte('\r')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case 't':
 			out.WriteString(`\t`)
 			decoded.WriteByte('\t')
 
-			i += 2
+			i += jsonShortEscapeBytes
 		case 'u':
 			encoded, actual, consumed, err := parseEscapedUnicodeSequence(s[i:])
 			if err != nil {
@@ -913,40 +900,40 @@ func validateEscapedJSONContent(s string) (string, string, error) {
 }
 
 func parseEscapedUnicodeSequence(s string) (string, string, int, error) {
-	if len(s) < 6 {
+	if len(s) < jsonCodeUnitEscapeBytes {
 		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: incomplete \\u escape"}
 	}
 
-	if s[0] != '\\' || s[1] != 'u' || !isHexQuad(s[2:6]) {
+	if s[0] != '\\' || s[1] != 'u' || !isHexQuad(s[jsonCodeUnitEscapePrefixBytes:jsonCodeUnitEscapeBytes]) {
 		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid \\u escape"}
 	}
 
-	cp, _ := parseJSONHexEscape(s[2:6])
-	encoded := s[:6]
+	cp, _ := parseJSONHexEscape(s[jsonCodeUnitEscapePrefixBytes:jsonCodeUnitEscapeBytes])
+	encoded := s[:jsonCodeUnitEscapeBytes]
 
 	switch {
-	case cp >= 0xD800 && cp <= 0xDBFF:
-		if len(s) < 12 || s[6] != '\\' || s[7] != 'u' || !isHexQuad(s[8:12]) {
+	case cp >= jsonHighSurrogateFirst && cp <= jsonHighSurrogateLast:
+		if len(s) < jsonSurrogatePairEscapeBytes || s[jsonCodeUnitEscapeBytes] != '\\' || s[jsonLowSurrogateMarkerOffset] != 'u' || !isHexQuad(s[jsonLowSurrogateHexStart:jsonSurrogatePairEscapeBytes]) {
 			return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid surrogate pair"}
 		}
 
-		cp2, _ := parseJSONHexEscape(s[8:12])
-		if cp2 < 0xDC00 || cp2 > 0xDFFF {
+		cp2, _ := parseJSONHexEscape(s[jsonLowSurrogateHexStart:jsonSurrogatePairEscapeBytes])
+		if cp2 < jsonLowSurrogateFirst || cp2 > jsonLowSurrogateLast {
 			return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid surrogate pair"}
 		}
 
-		r := rune(((cp - 0xD800) << 10) + (cp2 - 0xDC00) + 0x10000)
+		r := rune(((cp - jsonHighSurrogateFirst) << jsonSurrogatePayloadBits) + (cp2 - jsonLowSurrogateFirst) + jsonSupplementaryPlaneFirst)
 
-		return encoded + s[6:12], string(r), 12, nil
-	case cp >= 0xDC00 && cp <= 0xDFFF:
+		return encoded + s[jsonCodeUnitEscapeBytes:jsonSurrogatePairEscapeBytes], string(r), jsonSurrogatePairEscapeBytes, nil
+	case cp >= jsonLowSurrogateFirst && cp <= jsonLowSurrogateLast:
 		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid low surrogate"}
 	default:
-		return encoded, string(rune(cp)), 6, nil // #nosec G115 -- cp comes from exactly four validated hexadecimal digits.
+		return encoded, string(rune(cp)), jsonCodeUnitEscapeBytes, nil // #nosec G115 -- cp comes from exactly four validated hexadecimal digits.
 	}
 }
 
 func isHexQuad(s string) bool {
-	if len(s) != 4 {
+	if len(s) != jsonCodeUnitHexDigits {
 		return false
 	}
 
@@ -973,14 +960,16 @@ func encodeJSONStringContent(s string) string {
 }
 
 func formatJSONComposite(open, closeBracket string, parts []string, depth int, indent bool) string {
+	const jsonIndentUnit = "  " // two spaces per nesting level
+
 	if !indent || len(parts) == 0 {
 		return open + strings.Join(parts, ",") + closeBracket
 	}
 
 	var b strings.Builder
 
-	childIndent := strings.Repeat("  ", depth+1)
-	parentIndent := strings.Repeat("  ", depth)
+	childIndent := strings.Repeat(jsonIndentUnit, depth+1)
+	parentIndent := strings.Repeat(jsonIndentUnit, depth)
 
 	b.WriteString(open)
 	b.WriteByte('\n')
@@ -1002,8 +991,10 @@ func formatJSONComposite(open, closeBracket string, parts []string, depth int, i
 }
 
 func valueSeparator(indent bool) string {
+	const jsonIndentedValueSeparator = " " // one space after an indented member colon
+
 	if indent {
-		return " "
+		return jsonIndentedValueSeparator
 	}
 
 	return ""

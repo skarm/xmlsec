@@ -164,7 +164,7 @@ func TestECDHDocumentAndElement(t *testing.T) {
 			if !bytes.Equal(before, xmlBytes(t, source)) {
 				t.Fatal("borrowed source mutated")
 			}
-			if out, handle, err := xmlenc.EncryptElementWithECDH(t.Context(), restored, selected, recipient.PublicKey(), xmlenc.ECDHOptions{}); out != nil || handle.Valid() || !errors.Is(err, xmlenc.ErrFormat) {
+			if out, handle, err := xmlenc.EncryptElementWithECDH(t.Context(), restored, selected, recipient.PublicKey(), xmlenc.ECDHOptions{}); out != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
 				t.Fatal(out, handle, err)
 			}
 			nfd := parse(t, []byte("<r>e\u0301</r>"))

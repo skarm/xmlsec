@@ -206,11 +206,9 @@ func (v *vm) pathExprExists(ctx context.Context, ec *evalContext, e vmPathExpr) 
 		return len(nodes) > 0, nil
 	}
 	// vmPathStepNodes merges the result with DeduplicateNodes, which
-	// registers its document when it holds more than one node, unless E1 is a
-	// call to fn:reverse or fn:sort.
-	resultRegisters := !filterPreservesOrder(ctx, ec, e.OrderFilter)
+	// registers its document when it holds more than one node.
 	frame := ec.pushNodeContext(baseNodes[0], 1, 1)
-	found, err := pathExists(v.evalExpr, ctx, ec, *e.Path, resultRegisters)
+	found, err := pathExists(v.evalExpr, ctx, ec, *e.Path, true)
 	ec.restoreContext(frame)
 
 	return found, err
@@ -560,7 +558,7 @@ func callNodeListFunction(ctx context.Context, ec *evalContext, r resolvedFuncti
 
 	switch r.name {
 	case fnNameCount:
-		if ec.version == 10 {
+		if ec.version == xpathVersion10 {
 			return xpath10Double(float64(len(nodes))), true
 		}
 

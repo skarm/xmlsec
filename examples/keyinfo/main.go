@@ -17,6 +17,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -92,7 +93,7 @@ func run() error {
 
 	result, err := xmldsig.VerifySignatureWithKeyInfo(ctx, received, signatures[0], xmldsig.KeyInfoVerifyOptions{
 		Signature: xmldsig.SignatureOptions{RequiredElements: []document.Element{payload}, ExpectedURIs: []string{"#payload"}},
-		KeyInfo:   keyinfo.Options{AllowedKeyData: []document.Name{{Space: keyinfo.Namespace11, Local: "ECKeyValue"}}},
+		KeyInfo:   keyinfo.Options{AllowedKeyData: []document.Name{{Space: keyinfo.Namespace11, Local: lexicon.DSigElementECKeyValue}}},
 		SelectTrustedKey: func(ctx context.Context, untrusted *keyinfo.Result) (int, error) {
 			if err := ctx.Err(); err != nil {
 				return -1, err

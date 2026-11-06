@@ -16,6 +16,11 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
+// The explicit URI/path allowlist is bounded before its entries are opened.
+const (
+	cliMaxResourceEntries = 64
+)
+
 // This file is a TRUSTED local manifest, not a resource list from a signature.
 // Paths are resolved relative to the manifest's directory; network is never used.
 type resourceEntry struct {
@@ -58,7 +63,7 @@ func loadResourcesContext(ctx context.Context, path string) ([]resourceEntry, xm
 		return nil, nil, fmt.Errorf("resource manifest: %w", err)
 	}
 
-	if len(entries) == 0 || len(entries) > 64 {
+	if len(entries) == 0 || len(entries) > cliMaxResourceEntries {
 		return nil, nil, errors.New("resource manifest requires 1..64 entries")
 	}
 
@@ -104,12 +109,12 @@ func loadResourcesContext(ctx context.Context, path string) ([]resourceEntry, xm
 			return nil, err
 		}
 
-		stat, err = f.Stat()
-		if err != nil {
-			return nil, errors.Join(err, f.Close())
+		openedStat, statErr := f.Stat()
+		if statErr != nil {
+			return nil, errors.Join(statErr, f.Close())
 		}
 
-		if !stat.Mode().IsRegular() {
+		if !openedStat.Mode().IsRegular() {
 			return nil, errors.Join(errors.New("resource must be a regular file"), f.Close())
 		}
 
@@ -134,9 +139,9 @@ func runDetached(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	manifest := fs.String("resources", "", "trusted local JSON resource manifest")
 	keyPath := fs.String("key", "", "private key file (sign) or externally trusted public key/certificate PEM/DER (verify)")
 	output := fs.String("out", "-", "output path; - writes stdout")
-	canonical := fs.String(nameC14n, c14n.Exclusive, "SignedInfo C14N URI; verification permits exactly this method")
-	resourceLimit := fs.Int("max-resource-bytes", 8<<20, "maximum bytes per external resource")
-	totalLimit := fs.Int("max-total-resource-bytes", 32<<20, "maximum source bytes per operation")
+	canonical := fs.String(nameC14N, c14n.Exclusive, "SignedInfo C14N URI; verification permits exactly this method")
+	resourceLimit := fs.Int("max-resource-bytes", cliDefaultResourceBytes, "maximum bytes per external resource")
+	totalLimit := fs.Int("max-total-resource-bytes", cliDefaultTotalResourceBytes, "maximum source bytes per operation")
 	allowedTransforms := fs.String("allowed-transforms", "", "comma-separated permitted reference transform URIs; empty uses implemented defaults")
 
 	var input, method, inclusive string
@@ -172,7 +177,7 @@ func runDetached(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	}
 
 	limits := xmldsig.ResourceLimits{MaxResourceBytes: *resourceLimit, MaxTotalResourceBytes: *totalLimit}
-	if limits.MaxResourceBytes < 1 || limits.MaxResourceBytes > 64<<20 || limits.MaxTotalResourceBytes < 1 || limits.MaxTotalResourceBytes > 64<<20 {
+	if limits.MaxResourceBytes < 1 || limits.MaxResourceBytes > cliMaxBytes || limits.MaxTotalResourceBytes < 1 || limits.MaxTotalResourceBytes > cliMaxBytes {
 		return usageError("resource byte limits must be 1..67108864")
 	}
 

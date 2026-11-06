@@ -99,8 +99,16 @@ func testIndependentEvidenceCase(t *testing.T, base string, tc evidenceFixture) 
 			if e != nil || r == nil {
 				t.Fatalf("%v %+v", e, rep)
 			}
-		} else if e == nil || r != nil || string(rep.Status) != tc.Status {
-			t.Fatalf("%v %+v", e, rep)
+		} else {
+			if e == nil || r != nil {
+				t.Fatalf("%v %+v", e, rep)
+			}
+
+			// VerifyOCSP returns diagnostic status even when verification fails.
+			//noinspection GoDfaErrorMayBeNotNil
+			if string(rep.Status) != tc.Status {
+				t.Fatalf("%v %+v", e, rep)
+			}
 		}
 	case "timestamp", "xades", "archive":
 		checkTimedEvidence(t, tc, read, at)

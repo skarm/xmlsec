@@ -15,6 +15,21 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+type assertionsKey struct{}
+
+type dynamicEvaluationDisabledKey struct{}
+
+// WithDynamicEvaluationDisabled selects a static feature restriction inherited
+// by nested compilation. It cannot enable evaluation in a disabled outer scope.
+func WithDynamicEvaluationDisabled(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dynamicEvaluationDisabledKey{}, true)
+}
+
+// WithAssertions selects the invocation's external XSLT assertion policy.
+func WithAssertions(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, assertionsKey{}, enabled)
+}
+
 type analyzeStringSource struct {
 	text     string
 	version2 bool
@@ -22,6 +37,12 @@ type analyzeStringSource struct {
 }
 
 func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStringInst) error {
+	const unboundedRegexMatches = -1
+
+	const (
+		errCodeFORX0001 = "FORX0001"
+	)
+
 	input, err := ec.analyzeStringInput(ctx, inst)
 	if err != nil {
 		return err
@@ -65,7 +86,7 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 
 		// Map XPath regex errors to XSLT error codes
 		var detail *xdm.Error
-		if errors.As(err, &detail) && detail.Code == "FORX0001" {
+		if errors.As(err, &detail) && detail.Code == errCodeFORX0001 {
 			return dynamicErrorCause(errCodeXTDE1145, err, "xsl:analyze-string invalid flags: %v", err)
 		}
 
@@ -96,7 +117,7 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 	// caps how many they will surface; the default cap is far above any
 	// legitimate match count. The shared pattern engine checks cancellation
 	// and operation/storage limits throughout both streaming passes.
-	maxMatches := -1
+	maxMatches := unboundedRegexMatches
 	if limit := resolveResourceLimit(ec.resourceLimit()); limit >= 0 {
 		maxMatches = max(clampInt64ToInt(limit), 1)
 	}
@@ -106,7 +127,7 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 	// to surface that one extra match; passing maxMatches+1 lets the callback see
 	// it. A non-positive maxMatches (unbounded cap) and an int overflow both fall
 	// back to -1 (no enumeration limit).
-	findLimit := -1
+	findLimit := unboundedRegexMatches
 
 	if maxMatches >= 0 {
 		if n := maxMatches + 1; n > 0 {
@@ -136,7 +157,7 @@ func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStri
 
 	// The select expression must produce a single xs:string value.
 	// A sequence of more than one item, or a non-string item, is XPTY0004.
-	isV2 := ec.stylesheet.processorLanguage() < 30
+	isV2 := ec.stylesheet.processorLanguage() < processorXSLT30
 	if seq == nil || xdm.SequenceLen(seq) == 0 {
 		if isV2 {
 			// XSLT 2.0: empty sequence is XPTY0004
@@ -369,20 +390,24 @@ func (ec *execContext) registerConditionalOutput(ctx context.Context, selectExpr
 
 // execMap combines a sequence of maps using the shared duplicate-key rules.
 func (ec *execContext) execMap(ctx context.Context, inst *mapInst) error {
-	maps, err := ec.evaluateBodyAsSequence(ctx, inst.Body)
+	const (
+		errCodeXTTE3375 = "XTTE3375"
+	)
+
+	sequence, err := ec.evaluateBodyAsSequence(ctx, inst.Body)
 	if err != nil {
 		return err
 	}
 
-	builder := xdm.NewMapBuilder(xdm.MergeReject, xdm.SequenceLen(maps))
-	for item := range xdm.SequenceItems(maps) {
+	builder := xdm.NewMapBuilder(xdm.MergeReject, xdm.SequenceLen(sequence))
+	for item := range xdm.SequenceItems(sequence) {
 		if err := xpath.Charge(ctx, 1); err != nil {
 			return err
 		}
 
 		m, ok := item.(xdm.MapItem)
 		if !ok {
-			return dynamicError("XTTE3375", "xsl:map body produced non-map item %T", item)
+			return dynamicError(errCodeXTTE3375, "xsl:map body produced non-map item %T", item)
 		}
 
 		if err := m.ForEachView(func(key xdm.AtomicValue, value xdm.Sequence) error {
@@ -414,7 +439,7 @@ func (ec *execContext) execMapEntry(ctx context.Context, inst *mapEntryInst) err
 		return err
 	}
 
-	key, err := ec.convertSequenceType(ctx, keyResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{http://www.w3.org/2001/XMLSchema}anyAtomicType"}})
+	key, err := ec.convertSequenceType(ctx, keyResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeAnyAtomicType}})
 	if err != nil {
 		return err
 	}
@@ -497,7 +522,7 @@ func (ec *execContext) execEvaluate(ctx context.Context, inst *evaluateInst) err
 		return err
 	}
 
-	dynExpr, compileErr := xpath.NewCompiler().Context(ctx).Language(31, nsBindings).Compile(xpathStr)
+	dynExpr, compileErr := xpath.NewCompiler().Context(ctx).Language(xpathProfile31, nsBindings).Compile(xpathStr)
 	if compileErr != nil {
 		if failure := preserveControlFailure(ctx, compileErr); failure != nil {
 			return failure
@@ -589,7 +614,7 @@ func (ec *execContext) evaluateXPathSource(ctx context.Context, inst *evaluateIn
 		return "", err
 	}
 
-	value, err := ec.convertSequenceType(ctx, xpathResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{http://www.w3.org/2001/XMLSchema}string"}})
+	value, err := ec.convertSequenceType(ctx, xpathResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeString}})
 	if err != nil {
 		return "", err
 	}
@@ -785,7 +810,7 @@ func (ec *execContext) dynamicXPathEvaluator(vars map[string]xdm.Sequence, nsBin
 	eval := xpath.NewEvaluator(xpath.EvalBorrowing).
 		Variables(vars).
 		Functions(evalFns, ec.xsltEvaluateFunctionsNS())
-	if ec.stylesheet.processorLanguage() >= 30 {
+	if ec.stylesheet.processorLanguage() >= processorXSLT30 {
 		eval = eval.ResourceReads(ec)
 	}
 
@@ -916,6 +941,10 @@ func countAnalyzeStringSegments(ctx context.Context, re *xpath.Regex, input stri
 // xs:untypedAtomic, or a schema-defined simple type derived from xs:string (whose
 // BaseType is xs:string, so its string-backed value substitutes for xs:string).
 func analyzeStringSelectTypeOK(av xdm.AtomicValue) bool {
+	if xdm.IsStringDerived(av.TypeName) {
+		return true
+	}
+
 	switch av.TypeName {
 	case xdm.TypeString, xdm.TypeUntypedAtomic, xdm.TypeAnyURI:
 		return true
@@ -965,11 +994,15 @@ const (
 // conditionalItemEmpty keeps the distinct definitions in sections 8.4.1 and
 // 8.4.2 while sharing bounded recursive array flattening and atomic conversion.
 func conditionalItemEmpty(ctx context.Context, item xdm.Item, rule conditionalEmptiness, depth int) (bool, error) {
+	const (
+		conditionalArrayDepthFallback = 128
+	)
+
 	if err := xpath.Charge(ctx, 1); err != nil {
 		return false, err
 	}
 
-	if depth > xpath.DepthLimit(ctx, 128) {
+	if depth > xpath.DepthLimit(ctx, conditionalArrayDepthFallback) {
 		return false, xpath.ErrBudget
 	}
 
@@ -1019,21 +1052,6 @@ func conditionalArrayEmpty(ctx context.Context, array xdm.ArrayItem, rule condit
 	}
 
 	return true, nil
-}
-
-type assertionsKey struct{}
-
-type dynamicEvaluationDisabledKey struct{}
-
-// WithDynamicEvaluationDisabled selects a static feature restriction inherited
-// by nested compilation. It cannot enable evaluation in a disabled outer scope.
-func WithDynamicEvaluationDisabled(ctx context.Context) context.Context {
-	return context.WithValue(ctx, dynamicEvaluationDisabledKey{}, true)
-}
-
-// WithAssertions selects the invocation's external XSLT assertion policy.
-func WithAssertions(ctx context.Context, enabled bool) context.Context {
-	return context.WithValue(ctx, assertionsKey{}, enabled)
 }
 
 func dynamicEvaluationDisabled(ctx context.Context) bool {

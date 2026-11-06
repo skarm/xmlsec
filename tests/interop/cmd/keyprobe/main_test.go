@@ -51,7 +51,9 @@ func TestKeyFingerprintAndExportCertificateOrder(t *testing.T) {
 	key := write("key.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private}))
 	password := []byte("unit fixture password")
 	encrypted, err := process(t.Context(), task{Mode: "marshal-pkcs8", Key: key, Password: password})
-	if err != nil || len(encrypted.Data) == 0 {
+	if err != nil {
+		t.Fatal(err)
+	} else if len(encrypted.Data) == 0 {
 		t.Fatalf("encrypted key output: %q %v", encrypted.Data, err)
 	}
 	var envelope struct {
@@ -73,11 +75,15 @@ func TestKeyFingerprintAndExportCertificateOrder(t *testing.T) {
 		t.Fatalf("key import fingerprint: %+v %v", imported, err)
 	}
 	rejected, err := process(t.Context(), task{Mode: "parse-pkcs8", Input: protected, Password: []byte("wrong password")})
+	// Failure assertions inspect the probe's diagnostic payload.
+	//noinspection GoDfaErrorMayBeNotNil
 	if err == nil || rejected.Fingerprint != "" || len(rejected.Data) != 0 {
 		t.Fatal("wrong password released key metadata")
 	}
 	for _, request := range []task{{Mode: "unknown", Key: key}, {Mode: "marshal-pkcs8", Key: key, Hash: 224, Password: password}, {Mode: "parse-pkcs8", Input: invalid}, {Mode: "parse-pkcs12", Input: invalid}} {
 		output, err := process(t.Context(), request)
+		// Failure assertions inspect the probe's diagnostic payload.
+		//noinspection GoDfaErrorMayBeNotNil
 		if err == nil || len(output.Data) != 0 || output.Fingerprint != "" {
 			t.Fatalf("invalid key request produced success: %+v %v", request, err)
 		}

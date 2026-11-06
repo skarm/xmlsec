@@ -10,6 +10,16 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Fusion checks a single context separately. Descendant-or-self includes its
+// one starting node. Ordered results above one node register their document and
+// clamp capacity; these cardinalities have independent algorithmic roles.
+const (
+	singleFusionContext       = 1
+	descendantSelfNodeCount   = 1
+	singleOrderedNodeResult   = 1
+	measureDescendantSubtrees = true
+)
+
 // Fuse descendant-or-self::node() plus a child/attribute step into a
 // preorder walk, producing document order without a whole-document order index.
 // Predicates still see each parent's candidate list, so position() and last()
@@ -56,7 +66,7 @@ func fusesDescendantContexts(nodes []xdm.Node) bool {
 		return false
 	}
 
-	if len(nodes) == 1 {
+	if len(nodes) == singleFusionContext {
 		return xdm.OrderedFrom(nodes[0])
 	}
 
@@ -217,7 +227,7 @@ func appendDescendantMatches(ctx context.Context, ec *evalContext, out []xdm.Nod
 		return nil, 0, 0, err
 	}
 
-	visited := 1
+	visited := descendantSelfNodeCount
 	candidates := 0
 
 	if step.Axis == AxisAttribute {
@@ -336,7 +346,7 @@ func descendantStepWithPredicates(evalFn exprEvaluator, ctx context.Context, ec 
 // charge nothing, so the second step's charges can wait until the walk ends.
 func descendantStepQuietPredicates(evalFn exprEvaluator, ctx context.Context, ec *evalContext, contexts []xdm.Node, step vmLocationStep) ([]xdm.Node, error) {
 	total := 0
-	w := descendantWalker{step: step, counting: true}
+	w := descendantWalker{step: step, counting: measureDescendantSubtrees}
 
 	for i := 0; i < len(contexts); {
 		c := contexts[i]
@@ -346,7 +356,7 @@ func descendantStepQuietPredicates(evalFn exprEvaluator, ctx context.Context, ec
 			return nil, err
 		}
 
-		if ec.maxNodes < 1 {
+		if ec.maxNodes < descendantSelfNodeCount {
 			return nil, xdm.ErrNodeSetLimit
 		}
 
@@ -586,7 +596,7 @@ func startDescendantWalk(ctx context.Context, ec *evalContext, c xdm.Node) ([]xd
 		return nil, err
 	}
 
-	if ec.maxNodes < 1 {
+	if ec.maxNodes < descendantSelfNodeCount {
 		return nil, xdm.ErrNodeSetLimit
 	}
 
@@ -606,7 +616,7 @@ func countDescendantOrSelf(ctx context.Context, ec *evalContext, c xdm.Node, siz
 		return 0, err
 	}
 
-	visited := 1
+	visited := descendantSelfNodeCount
 
 	for len(stack) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -739,7 +749,7 @@ func finishDescendantOrSelfStep(ec *evalContext, c xdm.Node, total int) error {
 		return xdm.ErrNodeSetLimit
 	}
 
-	if total > 1 {
+	if total > singleOrderedNodeResult {
 		ec.docOrder.ReserveDocument(c)
 	}
 
@@ -751,7 +761,7 @@ func finishDescendantOrSelfStep(ec *evalContext, c xdm.Node, total int) error {
 // than maxNodes nodes fails, and the capacity of a longer-than-one result is
 // clamped.
 func clampDescendantResult(ec *evalContext, out []xdm.Node) ([]xdm.Node, error) {
-	if len(out) <= 1 {
+	if len(out) <= singleOrderedNodeResult {
 		return out, nil
 	}
 

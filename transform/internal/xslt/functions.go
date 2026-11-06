@@ -21,6 +21,32 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+// XPath function local names used by XSLT expression/pattern handling, distinct from identically spelled XML attributes.
+const (
+	fnNameFormatDate     = "format-date"
+	fnNameFormatDateTime = "format-dateTime"
+	fnNameFormatTime     = "format-time"
+	fnNameFunctionLookup = "function-lookup"
+	fnNameUnparsedText   = "unparsed-text"
+)
+
+// Exact diagnostic identifiers shared by these XSLT checks; naming a code does not change its selected error path or message.
+const (
+	errCodeFODF1280 = "FODF1280"
+	errCodeFODF1310 = "FODF1310"
+	errCodeFOFD1340 = "FOFD1340"
+	errCodeFOFD1350 = "FOFD1350"
+	errCodeXTDE1280 = "XTDE1280"
+	errCodeXTDE1310 = "XTDE1310"
+	errCodeXTDE1340 = "XTDE1340"
+	errCodeXTDE1350 = "XTDE1350"
+)
+
+// XPath function local names used by XSLT expression/pattern handling, distinct from identically spelled XML attributes.
+const (
+	fnNameID = "id"
+)
+
 // XSLT/XPath function names referenced from multiple sites. Kept as constants
 // alongside lookupXSLTFunctionArity (the single source of truth for arities) so the
 // repeated literals stay consistent across the package.
@@ -50,7 +76,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 	ec.cachedFns = map[string]xpath.Function{
 		fnNameCurrent:                 &xsltFunc{min: 0, max: 0, fn: ec.fnCurrent, noDynRef: true, dynRefError: errCodeXTDE1360},
 		fnNameDocument:                &xsltFunc{min: 1, max: 2, fn: ec.fnDocument},
-		nameKey2:                      &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
+		keyLocalName:                  &keyFunction{ec: ec, scope: ec.effectiveStylesheet()},
 		lexicon.FnGenerateID:          xpath.HostBuiltin(ec.stylesheet.xpathVersion(), lexicon.FnGenerateID),
 		funcSystemProperty:            newIntrospectionFunc(funcSystemProperty, ec.fnSystemProperty),
 		nameUnparsedEntityURI:         &xsltFunc{min: 1, max: 2, fn: ec.fnUnparsedEntityURI},
@@ -70,19 +96,19 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		nameStreamAvailable:           &xsltFunc{min: 1, max: 1, fn: ec.fnStreamAvailable},
 		fnNameCurrentOutputURI:        &xsltFunc{min: 0, max: 0, fn: ec.fnCurrentOutputURI},
 	}
-	if ec.stylesheet.processorLanguage() <= 20 {
-		for _, name := range []string{lexicon.FnFormatNumber, "format-date", "format-dateTime", "format-time"} {
+	if ec.stylesheet.processorLanguage() <= processorXSLT20 {
+		for _, name := range []string{lexicon.FnFormatNumber, fnNameFormatDate, fnNameFormatDateTime, fnNameFormatTime} {
 			ec.cachedFns[name] = newLegacyFormatFunction(ec.stylesheet.xpathVersion(), name)
 		}
 	}
 
-	if ec.stylesheet.processorLanguage() == 20 {
-		for _, name := range []string{"unparsed-text", fnNameUnparsedTextAvailable} {
+	if ec.stylesheet.processorLanguage() == processorXSLT20 {
+		for _, name := range []string{fnNameUnparsedText, fnNameUnparsedTextAvailable} {
 			ec.cachedFns[name] = newLegacyTextFunction(name)
 		}
 	}
 
-	if ec.stylesheet.processorLanguage() == 10 {
+	if ec.stylesheet.processorLanguage() == processorXSLT10 {
 		for name, fn := range ec.cachedFns {
 			if _, ok := lookupXSLT10FunctionArity(name); ok {
 				ec.cachedFns[name] = function10{name, fn}
@@ -92,7 +118,7 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 		}
 	}
 
-	if ec.stylesheet.processorLanguage() == 20 {
+	if ec.stylesheet.processorLanguage() == processorXSLT20 {
 		for name := range ec.cachedFns {
 			if xslt30Function(name) {
 				delete(ec.cachedFns, name)
@@ -111,7 +137,13 @@ func (ec *execContext) xsltFunctions() map[string]xpath.Function {
 
 func (ec *execContext) prepareHostFunction(name string, function *xsltFunc) {
 	function.name = name
-	if ec.stylesheet.processorLanguage() < 30 && (name == nameUnparsedEntityURI || name == nameUnparsedEntityPublicID) {
+	switch name {
+	case nameDoc, fnNameDocument, fnNameTransform, nameStreamAvailable:
+		function.resourceOwner = ec
+		function.resourceScope = ec.effectiveStylesheet()
+	}
+
+	if ec.stylesheet.processorLanguage() < processorXSLT30 && (name == nameUnparsedEntityURI || name == nameUnparsedEntityPublicID) {
 		function.max = 1
 	}
 
@@ -510,7 +542,7 @@ func (ec *execContext) retrieveDocumentReader(ctx context.Context, uri string) (
 
 	reader, err := openDocumentVia(ctx, uri, ec.transformConfig.uriResolver)
 	if err != nil {
-		if !nilcheck.IsNil(reader) {
+		if reader != nil && !nilcheck.IsNil(reader) {
 			err = errors.Join(err, reader.Close())
 		}
 
@@ -620,7 +652,7 @@ func (f *legacyFormatFunction) Call(ctx context.Context, args []xdm.Sequence) (x
 		}
 
 		if !xmlchar.IsValidQName(name) {
-			return nil, dynamicError("XTDE1280", "invalid decimal format QName %q", name)
+			return nil, dynamicError(errCodeXTDE1280, "invalid decimal format QName %q", name)
 		}
 	}
 
@@ -633,14 +665,14 @@ func (f *legacyFormatFunction) Call(ctx context.Context, args []xdm.Sequence) (x
 		code := ""
 
 		switch detail.Code {
-		case "FODF1280":
-			code = "XTDE1280"
-		case "FODF1310":
-			code = "XTDE1310"
-		case "FOFD1340":
-			code = "XTDE1340"
-		case "FOFD1350":
-			code = "XTDE1350"
+		case errCodeFODF1280:
+			code = errCodeXTDE1280
+		case errCodeFODF1310:
+			code = errCodeXTDE1310
+		case errCodeFOFD1340:
+			code = errCodeXTDE1340
+		case errCodeFOFD1350:
+			code = errCodeXTDE1350
 		}
 
 		if code != "" {
@@ -795,7 +827,7 @@ func lookupXSLTFunctionArity(key string) ([2]int, bool) {
 		return [2]int{1, 2}, true
 	case nameDoc, funcSystemProperty, fnNameElementAvailable, fnNameTypeAvailable, nameAccumulatorBefore, nameAccumulatorAfter, nameRegexGroup, fnNameTransform, nameStreamAvailable:
 		return [2]int{1, 1}, true
-	case nameKey2:
+	case keyLocalName:
 		return [2]int{2, 3}, true
 	}
 
@@ -805,7 +837,7 @@ func lookupXSLTFunctionArity(key string) ([2]int, bool) {
 }
 
 func xsltFunctionAcceptsVersionArity(version int, name string, arity int) bool {
-	if version < 30 && (name == nameUnparsedEntityURI || name == nameUnparsedEntityPublicID) && arity > 1 {
+	if version < processorXSLT30 && (name == nameUnparsedEntityURI || name == nameUnparsedEntityPublicID) && arity > 1 {
 		return false
 	}
 
@@ -824,13 +856,15 @@ func xsltFunctionAcceptsArity(name string, arity int) bool {
 }
 
 type xsltFunc struct {
-	name        string
-	min         int
-	max         int
-	fn          func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
-	noDynRef    bool   // true if the function must not be called via dynamic function reference
-	dynRefError string // error code to raise on dynamic call
-	signature   xpath.TypedFunctionByArity
+	name          string
+	min           int
+	max           int
+	fn            func(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
+	noDynRef      bool   // true if the function must not be called via dynamic function reference
+	dynRefError   string // error code to raise on dynamic call
+	signature     xpath.TypedFunctionByArity
+	resourceOwner *execContext
+	resourceScope *Stylesheet
 }
 
 func (f *xsltFunc) FuncParamTypesForArity(arity int) []xdm.SequenceType {
@@ -854,7 +888,41 @@ func (f *xsltFunc) MinArity() int { return f.min }
 func (f *xsltFunc) MaxArity() int { return f.max }
 
 func (f *xsltFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+	if f.resourceOwner != nil {
+		ec, err := functionExecution(ctx, f.resourceOwner)
+		if err != nil {
+			return nil, err
+		}
+
+		ctx = withExecContext(ctx, ec)
+		defer ec.pushPackage(f.resourceScope)()
+
+		switch f.name {
+		case nameDoc:
+			return ec.fnDoc(ctx, args)
+		case fnNameDocument:
+			return ec.fnDocument(ctx, args)
+		case fnNameTransform:
+			return ec.fnTransform(ctx, args)
+		case nameStreamAvailable:
+			return ec.fnStreamAvailable(ctx, args)
+		}
+	}
+
 	return f.fn(ctx, args)
+}
+
+// BindFunctionReference captures lexical state while XPath retains the static
+// context of this reference. Runtime resources and caches come from its caller.
+func (f *xsltFunc) BindFunctionReference() xpath.Function {
+	if f.resourceOwner == nil {
+		return f
+	}
+
+	bound := *f
+	bound.resourceOwner = f.resourceOwner.captureFunctionContext()
+
+	return &bound
 }
 
 // NoDynamicRef returns true if this function should not be available
@@ -871,6 +939,10 @@ type introspectionFunc struct {
 	result xdm.SequenceType
 }
 
+// BindFunctionReference keeps this wrapper's specific type metadata. Its
+// introspection closure already retains the static context it describes.
+func (f *introspectionFunc) BindFunctionReference() xpath.Function { return f }
+
 func (f *introspectionFunc) FuncParamTypesForArity(arity int) []xdm.SequenceType {
 	return f.params[:arity]
 }
@@ -882,34 +954,23 @@ func newIntrospectionFunc(name string, call func(context.Context, []xdm.Sequence
 		return xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + local}}
 	}
 
-	params := []xdm.SequenceType{atomic("string")}
+	params := []xdm.SequenceType{atomic(lexicon.TypeString)}
 	if name == fnNameFunctionAvailable {
-		params = append(params, atomic("integer"))
+		params = append(params, atomic(lexicon.TypeInteger))
 	}
 
-	result := atomic("boolean")
+	result := atomic(lexicon.TypeBoolean)
 	if name == funcSystemProperty {
-		result = atomic("string")
+		result = atomic(lexicon.TypeString)
 	}
 
 	return &introspectionFunc{xsltFunc: &xsltFunc{min: 1, max: len(params), fn: call}, params: params, result: result}
 }
 
-// regexGroupFunc implements xpath.Function and DynamicRefSnapshotProvider
-// for regex-group(). Dynamic references clear the captured-substring context.
-// resolveAgainstBaseURI resolves a relative URI against an effective base URI.
-// The base URI may be a file path (e.g., /a/b/style.xsl) or a directory-like
-// path from xml:base processing (e.g., /a/b). For file paths (containing a
-// dot-extension in the last segment), the directory part is extracted via
-// filepath.Dir. For directory-like paths, the path is used directly.
-//
-// Absoluteness is decided with [uripath.URIScheme] (RFC 3986), not filepath.IsAbs
-// or a "://" substring check: an absolute-URI reference may carry a scheme with
-// no "//" authority (e.g. "urn:shared", "file:/docs/d.xml") and must be returned
-// unchanged, while a relative reference against a URI base must keep the base
-// scheme/authority. Only when both base and ref are local filesystem paths is
-// filepath.Join used. Resolution of the URI cases is delegated to the shared
-// canonical [uripath.ResolveSchemaURI] helper.
+// resolveAgainstBaseURI resolves URI references with uripath.ResolveSchemaURI.
+// If both arguments are local paths, it joins them with portable slash semantics,
+// treating a base whose last segment contains a dot as a file. Absolute references
+// remain unchanged; a failed URI resolution returns the original reference.
 func resolveAgainstBaseURI(uri string, baseURI string) string {
 	if uri == "" || baseURI == "" {
 		return uri

@@ -30,7 +30,7 @@ func (p *parser) configureKeyData() error {
 			document.Name{Space: Namespace11, Local: nameECKeyValue},
 			document.Name{Space: Namespace11, Local: nameDEREncodedKeyValue},
 			document.Name{Space: Namespace, Local: nameX509Data},
-			document.Name{Space: Namespace, Local: "RetrievalMethod"},
+			document.Name{Space: Namespace, Local: lexicon.DSigElementRetrievalMethod},
 			document.Name{Space: Namespace11, Local: nameKeyInfoReference}:
 			if _, exists := p.keyData[name]; exists {
 				return fmt.Errorf("%w: duplicate AllowedKeyData", ErrPolicy)

@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// Static analysis charges one logical operation for each visited AST node.
+const analysisNodeWork = 1
+
 // FunctionReference identifies a statically named function and its argument count.
 type FunctionReference struct {
 	// Name is the resolved namespace URI and local function name.
@@ -71,7 +74,7 @@ func (a *expressionAnalyzer) visit(expr Expr) bool {
 		return false
 	}
 
-	if a.err = Charge(a.ctx, 1); a.err != nil {
+	if a.err = Charge(a.ctx, analysisNodeWork); a.err != nil {
 		return false
 	}
 
@@ -126,7 +129,7 @@ func (a *expressionAnalyzer) predicates(predicates []Expr) {
 				return false
 			}
 
-			if a.err = Charge(a.ctx, 1); a.err != nil {
+			if a.err = Charge(a.ctx, analysisNodeWork); a.err != nil {
 				return false
 			}
 

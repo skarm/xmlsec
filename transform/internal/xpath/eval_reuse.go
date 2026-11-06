@@ -12,6 +12,14 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
+// Single-item results borrow one reusable slot until the next evaluation.
+// StringValue separates multiple items with a single space, preserving its
+// established display conversion independently of serialization parameters.
+const (
+	singleReuseResultItem    = 1
+	reuseResultItemSeparator = ' '
+)
+
 // EvalState holds pre-allocated evaluation state that can be reused
 // across multiple EvaluateReuse calls on the same Expression.
 // Not safe for concurrent use.
@@ -22,7 +30,7 @@ import (
 type EvalState struct {
 	// ec retains mutable evaluation context and scratch storage between calls.
 	ec      evalContext
-	oneItem [1]xdm.Item // reusable backing for single-item results
+	oneItem [singleReuseResultItem]xdm.Item // reusable backing for single-item results
 	// nodes is the reusable backing of a result that is a node list.
 	nodes resultNodes
 
@@ -39,6 +47,8 @@ type EvalState struct {
 	baseNamespaces map[string]string
 	// baseXMLNamespace restores the host XML default namespace for unbound expressions.
 	baseXMLNamespace string
+	// baseDefaultCollation restores the evaluator collation between expressions.
+	baseDefaultCollation string
 
 	// explicitTime is true when the Evaluator had an explicitly configured
 	// CurrentTime. When false, EvaluateReuse refreshes the clock per call so
@@ -86,13 +96,18 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 	ec.version = e.version
 	ec.defaultXMLNamespace = state.baseXMLNamespace
 
+	ec.defaultCollation = state.baseDefaultCollation
+	if e.staticCollation != "" {
+		ec.defaultCollation = e.staticCollation
+	}
+
 	ec.namespaces = state.baseNamespaces
 	if e.staticNamespaces != nil {
 		ec.namespaces = e.staticNamespaces
 		ec.defaultXMLNamespace = e.defaultXMLNamespace
 	}
 
-	ec.xpath10Compat = state.baseCompat || e.version == 10
+	ec.xpath10Compat = state.baseCompat || e.version == xpathVersion10
 	applyBudget(ctx, ec)
 
 	// Start from the base focus seeded by NewEvalState/SetContextItem so a
@@ -141,7 +156,7 @@ func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node x
 		return Result{seq: xdm.ItemSlice(state.oneItem[:])}, nil
 	}
 
-	if err := e.prefixPlan.Validate(ec.namespaces, e.staticNamespaces != nil || ec.strictPrefixes || e.version == 10, ec.schemaDeclarations, ec.version); err != nil {
+	if err := e.prefixPlan.Validate(ec.namespaces, e.staticNamespaces != nil || ec.strictPrefixes || e.version == xpathVersion10, ec.schemaDeclarations, ec.version); err != nil {
 		return Result{}, err
 	}
 
@@ -167,7 +182,7 @@ func (r Result) StringValue() string {
 		switch len(rn.nodes) {
 		case 0:
 			return ""
-		case 1:
+		case singleReuseResultItem:
 			return xdm.StringValue(rn.nodes[0])
 		}
 	}
@@ -177,7 +192,7 @@ func (r Result) StringValue() string {
 		return ""
 	}
 
-	if xdm.SequenceLen(seq) == 1 {
+	if xdm.SequenceLen(seq) == singleReuseResultItem {
 		switch v := seq.Get(0).(type) {
 		case xdm.NodeItem:
 			return xdm.StringValue(v.Node)
@@ -192,7 +207,7 @@ func (r Result) StringValue() string {
 	i := 0
 	for item := range xdm.SequenceItems(seq) {
 		if i > 0 {
-			sb.WriteByte(' ')
+			sb.WriteByte(reuseResultItemSeparator)
 		}
 
 		av, err := AtomizeItem(item)
@@ -233,6 +248,7 @@ func (e Evaluator) NewEvalState(node xdm.Node) *EvalState {
 	s.baseCompat = s.ec.xpath10Compat
 	s.baseNamespaces = s.ec.namespaces
 	s.baseXMLNamespace = s.ec.defaultXMLNamespace
+	s.baseDefaultCollation = s.ec.defaultCollation
 	s.baseNode = s.ec.node
 	s.baseContextItem = s.ec.contextItem
 

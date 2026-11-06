@@ -11,10 +11,27 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
-// maxInt is the largest value an int can hold, used to saturate the node-set
-// limit when offsetting it past the nodes already in the destination slice
-// would overflow.
+// maxInt is the largest host int. Axis accumulation saturates at this bound
+// when adding existing nodes would overflow; serialization uses the same bound
+// as its representable output-byte ceiling.
 const maxInt = int(^uint(0) >> 1)
+
+// XPath axis names are the lexical vocabulary mapped to the AxisType enum.
+const (
+	axisNameChild            = "child"
+	axisNameDescendant       = "descendant"
+	axisNameParent           = "parent"
+	axisNameAncestor         = "ancestor"
+	axisNameFollowingSibling = "following-sibling"
+	axisNamePrecedingSibling = "preceding-sibling"
+	axisNameFollowing        = "following"
+	axisNamePreceding        = "preceding"
+	axisNameAttribute        = "attribute"
+	axisNameNamespace        = "namespace"
+	axisNameSelf             = "self"
+	axisNameDescendantOrSelf = "descendant-or-self"
+	axisNameAncestorOrSelf   = "ancestor-or-self"
+)
 
 // AxisType identifies one of the 13 XPath axes.
 type AxisType int
@@ -278,10 +295,9 @@ func NamespacePrefixesInScope(ctx context.Context, ancestors []Node) (map[string
 	return inScope, nil
 }
 
-// CollectNamespaceNodes builds the namespace node list for an element, adding
-// the xml prefix first and then ancestor-declared prefixes in document order.
-// For each prefix, the innermost (closest ancestor) declaration provides the
-// URI, but the output order follows document order (outermost first).
+// CollectNamespaceNodes builds the namespace node list for an element in stable
+// document order, consistent with the cache and direct comparisons. For each
+// prefix, the innermost (closest ancestor) declaration provides the URI.
 // It checks ctx for cancellation in both passes (outer and inner loops) so a
 // long namespace::* traversal can be aborted promptly.
 func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[string]struct{}, elem *Element) ([]Node, error) {
@@ -295,12 +311,11 @@ func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[st
 
 	var result []Node
 
-	xmlNS := NewNamespace("xml", lexicon.NamespaceXML)
+	xmlNS := NewNamespace(lexicon.PrefixXML, lexicon.NamespaceXML)
 	result = append(result, NewNamespaceNodeWrapper(xmlNS, elem))
 
-	// Second pass: output in document order (outermost to innermost), but
-	// use the innermost URI for each prefix.
-	emitted := map[string]struct{}{"xml": {}}
+	// Second pass: collect each active prefix once, using its innermost URI.
+	emitted := map[string]struct{}{lexicon.PrefixXML: {}}
 
 	for _, v := range slices.Backward(ancestors) {
 		if err := ctx.Err(); err != nil {
@@ -333,37 +348,41 @@ func CollectNamespaceNodes(ctx context.Context, ancestors []Node, inScope map[st
 		}
 	}
 
+	slices.SortFunc(result, func(a, b Node) int {
+		return compareNamespacePrefixes(a.Name(), b.Name())
+	})
+
 	return result, nil
 }
 
 func lookupAxisName(key AxisType) (string, bool) {
 	switch key {
 	case AxisChild:
-		return "child", true
+		return axisNameChild, true
 	case AxisDescendant:
-		return "descendant", true
+		return axisNameDescendant, true
 	case AxisParent:
-		return "parent", true
+		return axisNameParent, true
 	case AxisAncestor:
-		return "ancestor", true
+		return axisNameAncestor, true
 	case AxisFollowingSibling:
-		return "following-sibling", true
+		return axisNameFollowingSibling, true
 	case AxisPrecedingSibling:
-		return "preceding-sibling", true
+		return axisNamePrecedingSibling, true
 	case AxisFollowing:
-		return "following", true
+		return axisNameFollowing, true
 	case AxisPreceding:
-		return "preceding", true
+		return axisNamePreceding, true
 	case AxisAttribute:
-		return "attribute", true
+		return axisNameAttribute, true
 	case AxisNamespace:
-		return "namespace", true
+		return axisNameNamespace, true
 	case AxisSelf:
-		return "self", true
+		return axisNameSelf, true
 	case AxisDescendantOrSelf:
-		return "descendant-or-self", true
+		return axisNameDescendantOrSelf, true
 	case AxisAncestorOrSelf:
-		return "ancestor-or-self", true
+		return axisNameAncestorOrSelf, true
 	}
 
 	var zero string
