@@ -270,7 +270,7 @@ func runSuites(ctx context.Context, root string, args []string, out, stderr io.W
 }
 
 func suiteSourceDigest(ctx context.Context, root string) (string, error) {
-	listing, err := suiteGit(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go", "go.mod", "go.sum", "build/w3c-suites.json")
+	listing, err := suiteGit(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go", "go.mod", "go.sum", "build/w3c-suites.json", "transform/testdata/SaxonWorker.java")
 	if err != nil {
 		return "", err
 	}

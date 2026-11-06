@@ -2345,8 +2345,8 @@ func TestCompareSaxonDeclarationDiagnostics(t *testing.T) {
 		expression := `transform(map{'stylesheet-text':'` + strings.ReplaceAll(source, "'", "''") + `','initial-template':QName('', 'start')})`
 		_, err := saxonQuery(t, ctx, binary, classpath, expression)
 
-		var diagnostic *exec.ExitError
-		if !errors.As(err, &diagnostic) || !strings.Contains(string(diagnostic.Stderr), code) {
+		stderr, failed := saxonFailureStderr(err)
+		if !failed || !strings.Contains(string(stderr), code) {
 			t.Fatal(name, err)
 		}
 	}
@@ -4424,19 +4424,19 @@ func compareSaxonConfiguredExpression(t *testing.T, ctx context.Context, e *tran
 
 	output, err := saxonQuery(t, ctx, binary, classpath, oracle, options...)
 	if diagnostic, separate := strings.CutPrefix(expected, "diagnostic:"); separate {
-		var failure *exec.ExitError
-		if !errors.As(err, &failure) || !strings.Contains(string(failure.Stderr), diagnostic) {
+		stderr, failed := saxonFailureStderr(err)
+		if !failed || !strings.Contains(string(stderr), diagnostic) {
 			t.Fatalf("independent diagnostic: %q, %v; want %q", output, err, diagnostic)
 		}
 		return
 	}
 	if target, crash := strings.CutPrefix(expected, "crash:"); crash {
-		var failure *exec.ExitError
-		if !errors.As(err, &failure) {
+		stderr, failed := saxonFailureStderr(err)
+		if !failed {
 			t.Fatalf("expected pinned Saxon crash diagnostic: %q, %v", output, err)
 		}
 
-		diagnostic := string(failure.Stderr)
+		diagnostic := string(stderr)
 		if !strings.Contains(diagnostic, "java.lang.ClassCastException") || !strings.Contains(diagnostic, target) {
 			t.Fatal("unexpected independent engine failure", diagnostic)
 		}
@@ -4451,9 +4451,8 @@ func compareSaxonConfiguredExpression(t *testing.T, ctx context.Context, e *tran
 	}
 
 	if err != nil || string(output) != expected {
-		var failure *exec.ExitError
-		if errors.As(err, &failure) {
-			t.Log(string(failure.Stderr))
+		if stderr, failed := saxonFailureStderr(err); failed {
+			t.Log(string(stderr))
 		}
 
 		t.Fatalf("Saxon %s: %q, %v; want %q", expression, output, err, expected)
@@ -4510,6 +4509,8 @@ func saxonRuntime(t *testing.T) (string, string) {
 		t.Fatal("configured Saxon requires java", err)
 	}
 
+	prepareSaxonWorkers(t, binary, classpath)
+
 	return classpath, binary
 }
 
@@ -4523,10 +4524,10 @@ func saxonQuery(t *testing.T, ctx context.Context, binary, classpath, source str
 	}
 
 	arguments := make([]string, 0, 5+len(options))
-	arguments = append(arguments, "-cp", classpath, "net.sf.saxon.Query", "-q:"+queryPath, "!method=text")
+	arguments = append(arguments, "-q:"+queryPath, "!method=text")
 	arguments = append(arguments, options...)
 
-	return exec.CommandContext(ctx, binary, arguments...).Output()
+	return saxonOutput(t, ctx, binary, classpath, "Query", arguments...)
 }
 
 func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engine, binary, classpath, body, want string, oracleWant ...string) {
@@ -4569,9 +4570,8 @@ func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engi
 	}
 
 	if got != expected {
-		var diagnostic *exec.ExitError
-		if errors.As(err, &diagnostic) {
-			t.Fatalf("Saxon %s: %q, %s; want %q", body, output, diagnostic.Stderr, expected)
+		if stderr, failed := saxonFailureStderr(err); failed {
+			t.Fatalf("Saxon %s: %q, %s; want %q", body, output, stderr, expected)
 		}
 
 		t.Fatalf("Saxon %s: %q, %v; want %q", body, output, err, expected)
@@ -4581,12 +4581,12 @@ func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engi
 
 // Static type errors may be diagnosed before XQuery try/catch can run.
 func saxonDiagnosticCode(err error) string {
-	var diagnostic *exec.ExitError
-	if !errors.As(err, &diagnostic) {
+	stderr, failed := saxonFailureStderr(err)
+	if !failed {
 		return ""
 	}
 
-	for _, line := range strings.Split(string(diagnostic.Stderr), "\n") {
+	for _, line := range strings.Split(string(stderr), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 0 {
 			code := strings.TrimSuffix(fields[0], ":")
@@ -4635,11 +4635,10 @@ func serializationURIOracle(t *testing.T, binary, classpath, source string) stri
 	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err := exec.CommandContext(t.Context(), binary, "-cp", classpath, "net.sf.saxon.Transform", "-xsl:"+file, "-it:start").Output()
+	output, err := saxonOutput(t, t.Context(), binary, classpath, "Transform", "-xsl:"+file, "-it:start")
 	if err != nil {
-		var failure *exec.ExitError
-		if errors.As(err, &failure) {
-			t.Fatalf("independent URI table: %s: %v", failure.Stderr, err)
+		if stderr, failed := saxonFailureStderr(err); failed {
+			t.Fatalf("independent URI table: %s: %v", stderr, err)
 		}
 		t.Fatal(err)
 	}

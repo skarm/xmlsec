@@ -55,7 +55,10 @@ The [image](../build/interop.Dockerfile) supplies native tools, Saxon, released
 Shibboleth/Jetty, OpenAM/Tomcat, Google GSA and DSS runtimes, and published schemas/vectors. The build step
 downloads the [pinned inputs](../build/interop-inputs.txt) with retries and verifies
 SHA-256 on the host and again inside Docker. Override `INTEROP_INPUT_CACHE` to
-reuse a prepared cache. System package versions follow Debian repositories.
+reuse a prepared cache. CI restores these downloads by the hash of
+`build/interop-inputs.txt`, verifies their checksums, and saves the verified cache
+before starting the tests. A dependency update can reuse unchanged archives from
+the preceding cache. System package versions follow Debian repositories.
 
 Runtime networking is disabled except for the container's loopback. The full
 recipe runs race tests, generates local historical fixtures, starts official DSS
@@ -65,8 +68,15 @@ Transform comparisons use two workers in the image (`XMLSEC_INTEROP_SHARDS`,
 1–8). Each worker takes the next comparison when free and runs it in an isolated
 Go process with a 45-minute limit. Independent cases in the largest tables run
 in parallel, bounded by `XMLSEC_INTEROP_PARALLEL` (1–8, two in the image).
-Together these settings allow at most four comparison JVMs at once in the image.
-Both settings default to one on a prepared host.
+Together these settings allow at most four active comparison JVMs at once in the
+image. Saxon 12.10 query and serialization helpers reuse a bounded pool of JVMs
+within each comparison. Every request loads isolated Saxon classes and creates a
+fresh CLI processor, configuration and document pool, including fresh static
+serializer tables; output bytes and failure diagnostics are still checked for
+every case. Saxon 9.4 and the specialized compiler invocations retain their
+separate processes. Set `XMLSEC_SAXON_PROCESS=1` to use separate processes for all
+Saxon requests when comparing behavior or timing. Both parallelism settings
+default to one on a prepared host.
 
 For a prepared host:
 

@@ -2,6 +2,7 @@ name: check
 
 on:
   push:
+    branches: [master]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -82,5 +83,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore pinned interop inputs
+        id: interop-inputs
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: /tmp/xmlsec-interop-inputs
+          key: ${{ runner.os }}-interop-inputs-v1-${{ hashFiles('build/interop-inputs.txt') }}
+          restore-keys: ${{ runner.os }}-interop-inputs-v1-
+      - name: Prepare and verify pinned interop inputs
+        run: sh build/prepare-interop.sh /tmp/xmlsec-interop-inputs
+      - name: Save verified interop inputs
+        if: steps.interop-inputs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: /tmp/xmlsec-interop-inputs
+          key: ${{ steps.interop-inputs.outputs.cache-primary-key }}
       - name: Run required external checks and Shibboleth/OpenAM/GSA SOAP servers
         run: make interop-docker

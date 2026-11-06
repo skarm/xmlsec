@@ -1,9 +1,37 @@
 package main
 
 import (
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestInteropOracleSourceIdentity(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.CommandContext(t.Context(), "git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatal(string(output), err)
+	}
+	writeFixture(t, root, "go.mod", "module example.test/oracle\n")
+	writeFixture(t, root, "transform/testdata/SaxonWorker.java", "class SaxonWorker {}\n")
+	before, err := suiteSourceDigest(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, "transform/testdata/SaxonWorker.java", "class SaxonWorker { int changed; }\n")
+	after, err := suiteSourceDigest(t.Context(), root)
+	if err != nil || before == after {
+		t.Fatal("oracle change retained the old proof source identity", before, after, err)
+	}
+	writeFixture(t, root, "oracle-output.log", "disposable run output")
+	current, err := suiteSourceDigest(t.Context(), root)
+	if err != nil || current != after {
+		t.Fatal("disposable logs changed the proof source identity", after, current, err)
+	}
+}
 
 func TestInteropCompletionGate(t *testing.T) {
 	start := `{"Action":"start","Package":"p"}` + "\n"
