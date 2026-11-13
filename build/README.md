@@ -6,8 +6,11 @@ The interoperability targets require Bash as well as a POSIX shell.
 [interop.Dockerfile](interop.Dockerfile) supplies optional native test engines.
 The Docker build context is the module root. `make interop-docker` first prepares
 the checksum-pinned downloads listed in [interop-inputs.txt](interop-inputs.txt)
-and passes their cache as the `interop-downloads` named build context. Override
-`INTEROP_INPUT_CACHE` to reuse another cache directory. Tests run offline.
+and [interop-transform-inputs.txt](interop-transform-inputs.txt), then passes
+their cache as the `interop-downloads` named build context. Override
+`INTEROP_INPUT_CACHE` to reuse another cache directory. Set
+`INTEROP_DOCKER_TARGET=transforms` or `native` to build and run just that group.
+Tests run offline.
 
 [interop.sh](interop.sh) runs both external suites. In the CI image,
 `XMLSEC_REQUIRE_INTEROP=1` rejects skipped, failed or incomplete test streams.

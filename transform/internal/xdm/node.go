@@ -1341,6 +1341,9 @@ func NodeGetBase(doc *Document, n Node) string {
 	base := ""
 	if doc != nil {
 		base = doc.URL()
+		if base == "" {
+			base = tree.BaseURI(doc.native)
+		}
 	}
 
 	for _, p := range slices.Backward(chain) {

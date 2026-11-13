@@ -160,8 +160,8 @@ func (r *Result) WriteSecondary(ctx context.Context, uri string, dst io.Writer) 
 }
 
 // Document converts a single document or element result to a complete XML
-// snapshot. An element is copied with its in-scope namespaces; unrelated nodes
-// in its owner document are excluded. No XML is serialized or reparsed.
+// snapshot. An element is copied with its in-scope namespaces and base URI;
+// unrelated nodes in its owner document are excluded. No XML is serialized or reparsed.
 func (r *Result) Document(ctx context.Context) (*Document, error) {
 	if r == nil || r.engine == nil {
 		return nil, wrap("result document", ErrInput)
@@ -185,7 +185,7 @@ func (r *Result) Document(ctx context.Context) (*Document, error) {
 
 	doc := node.Document()
 	if element, ok := node.native.(*xdm.Element); ok {
-		native, err := xdm.ElementDocument(ctx, element)
+		native, err := xdm.ElementDocument(ctx, element, true)
 		if err != nil {
 			return nil, wrap("result document", err)
 		}

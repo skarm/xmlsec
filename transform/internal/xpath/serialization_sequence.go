@@ -215,7 +215,7 @@ func NormalizeSerialization(ctx context.Context, seq xdm.Sequence, separator *st
 			}
 
 			if element, ok := item.Node.(*xdm.Element); ok {
-				subtree, copyErr := xdm.ElementDocument(ctx, element)
+				subtree, copyErr := xdm.ElementDocument(ctx, element, false)
 				if copyErr != nil {
 					return nil, copyErr
 				}

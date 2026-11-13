@@ -143,6 +143,20 @@ func TestReaderRetainsErrorsDeliveredWithData(t *testing.T) {
 	}
 }
 
+func TestReaderRetainsOverflow(t *testing.T) {
+	source := strings.NewReader("abcd")
+	reader := &streamio.Reader{Context: t.Context(), Source: source, Limit: 2, LimitError: io.ErrShortBuffer}
+	var buffer [2]byte
+	if n, err := reader.Read(buffer[:]); n != 2 || err != nil || string(buffer[:]) != "ab" {
+		t.Fatalf("initial read = %d, %v, %q", n, err, buffer)
+	}
+	for range 3 {
+		if n, err := reader.Read(buffer[:]); n != 0 || !errors.Is(err, io.ErrShortBuffer) || source.Len() != 1 {
+			t.Fatalf("read after limit = %d, %v, remaining source = %d", n, err, source.Len())
+		}
+	}
+}
+
 func TestReaderWriteTo(t *testing.T) {
 	for _, size := range []int{0, 1, 4095, 4096, 4097, 32768, 65537} {
 		text := strings.Repeat("x", size)

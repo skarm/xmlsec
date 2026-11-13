@@ -1,5 +1,11 @@
 package tree
 
+// BaseURI returns the retrieval base recorded for the document entity.
+func BaseURI(d *Document) string { return d.baseURI }
+
+// SetBaseURI records the retrieval base on an unpublished document.
+func SetBaseURI(d *Document, base string) { d.baseURI = base }
+
 // NodeBase returns the retained retrieval base for a private node, or empty when none is
 // recorded.
 func NodeBase(d *Document, node *Node) string { return d.nodeBases[node] }

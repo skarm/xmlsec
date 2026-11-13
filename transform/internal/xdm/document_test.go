@@ -96,6 +96,7 @@ func TestElementDocumentPreservesContextAndOwnership(t *testing.T) {
 	for _, tc := range []struct{ name, source string }{
 		{"inherited prefix", `<parent xmlns:p="urn:qname"><child type="p:T"><nested/></child></parent>`},
 		{"XML context and default reset", `<parent xmlns="urn:outer" xmlns:p="urn:qname"><child xmlns="" xml:id="own" xml:lang="ru" xml:space="preserve" xml:base="../base/" type="p:T"><nested/></child></parent>`},
+		{"inherited XML base", `<parent xml:base="assets/"><child xml:base="images/"><nested/></child></parent>`},
 		{"shadowed prefix", `<parent xmlns="urn:outer" xmlns:p="urn:old"><p:child xmlns:p="urn:new" type="p:T"><nested xmlns=""/></p:child></parent>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,13 +116,16 @@ func assertElementDocumentCopy(t *testing.T, input string) {
 
 	selected := source.DocumentElement().FirstChild().(*xdm.Element)
 
-	extracted, err := xdm.ElementDocument(t.Context(), selected)
+	extracted, err := xdm.ElementDocument(t.Context(), selected, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if extracted.URL() != source.URL() || extracted.DocumentElement().Reference().Document() == selected.Reference().Document() {
 		t.Fatal("extraction lost the document URI or shared source ownership")
+	}
+	if got, want := xdm.NodeGetBase(extracted, extracted.DocumentElement()), xdm.NodeGetBase(source, selected); got != want {
+		t.Fatalf("extracted element base URI = %q, want %q", got, want)
 	}
 
 	if !strings.Contains(input, `xmlns=""`) {
@@ -165,7 +169,7 @@ func assertElementDocumentCopy(t *testing.T, input string) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if result, err := xdm.ElementDocument(ctx, selected); result != nil || !errors.Is(err, context.Canceled) {
+	if result, err := xdm.ElementDocument(ctx, selected, true); result != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("canceled extraction published a document", err)
 	}
 }

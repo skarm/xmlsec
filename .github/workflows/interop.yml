@@ -1,0 +1,88 @@
+name: interoperability
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  approve:
+    name: Approve interoperability tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    environment:
+      name: interop
+      deployment: false
+    steps:
+      - run: echo "Interoperability tests approved"
+  interop-tests:
+    needs: approve
+    if: success() || (github.event_name == 'workflow_dispatch' && needs.approve.result == 'skipped')
+    name: interop (${{ matrix.name }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: transforms 1 of 2
+            target: transforms
+            cache: interop-transform-inputs-v1
+            manifest: build/interop-transform-inputs.txt
+            parts: 2
+            part: 1
+          - name: transforms 2 of 2
+            target: transforms
+            cache: interop-transform-inputs-v1
+            manifest: build/interop-transform-inputs.txt
+            parts: 2
+            part: 2
+          - name: native engines and services
+            target: native
+            cache: interop-inputs-v1
+            manifest: build/interop-inputs.txt
+            parts: 1
+            part: 1
+    env:
+      INTEROP_DOCKER_TARGET: ${{ matrix.target }}
+      XMLSEC_INTEROP_TRANSFORM_PARTS: ${{ matrix.parts }}
+      XMLSEC_INTEROP_TRANSFORM_PART: ${{ matrix.part }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore pinned interop inputs
+        id: interop-inputs
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: /tmp/xmlsec-interop-inputs
+          key: ${{ runner.os }}-${{ matrix.cache }}-${{ hashFiles(matrix.manifest) }}
+          restore-keys: ${{ runner.os }}-${{ matrix.cache }}-
+      - name: Prepare and verify pinned interop inputs
+        run: sh build/prepare-interop.sh /tmp/xmlsec-interop-inputs "$INTEROP_DOCKER_TARGET"
+      - name: Save verified interop inputs
+        if: steps.interop-inputs.outputs.cache-hit != 'true' && (matrix.target == 'native' || matrix.part == 1)
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: /tmp/xmlsec-interop-inputs
+          key: ${{ steps.interop-inputs.outputs.cache-primary-key }}
+      - name: Run external checks
+        run: make interop-docker
+  interop:
+    name: ${{ github.event_name == 'pull_request' && 'interop' || 'interop (manual)' }}
+    runs-on: ubuntu-26.04
+    needs: interop-tests
+    if: ${{ always() }}
+    steps:
+      - name: Require every interoperability job to pass
+        env:
+          INTEROP_RESULT: ${{ needs.interop-tests.result }}
+        run: test "$INTEROP_RESULT" = success

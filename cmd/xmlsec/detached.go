@@ -156,8 +156,8 @@ func runDetached(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return err
 	}
 
-	if err := validateDetachedArgs(fs, *manifest, *keyPath); err != nil {
-		return err
+	if *manifest == "" || *manifest == "-" || *keyPath == "" {
+		return usageError("-resources file and -key are required")
 	}
 
 	ctx, cancel, err := exec.start(ctx)
@@ -237,18 +237,6 @@ func verifyDetachedCLI(ctx context.Context, stdin io.Reader, stdout io.Writer, i
 	}
 
 	return writeOutputContext(ctx, output, stdout, raw)
-}
-
-func validateDetachedArgs(fs *flag.FlagSet, manifest, keyPath string) error {
-	if fs.NArg() != 0 {
-		return errors.New("unexpected positional arguments")
-	}
-
-	if manifest == "" || manifest == "-" || keyPath == "" {
-		return errors.New("-resources file and -key are required")
-	}
-
-	return nil
 }
 
 func detachedVerificationReport(result *xmldsig.DetachedResult) ([]byte, error) {

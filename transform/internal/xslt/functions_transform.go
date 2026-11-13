@@ -1325,7 +1325,7 @@ func stylesheetNodeCompileDocument(ctx context.Context, n xdm.Node, owner *xdm.D
 		return owner, nil
 	}
 
-	return xdm.ElementDocument(ctx, elem)
+	return xdm.ElementDocument(ctx, elem, false)
 }
 
 // resolveRelativeURI resolves a reference against a base URI.

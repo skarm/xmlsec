@@ -592,6 +592,70 @@ func TestXSLTDefaultNamespaceInheritance(t *testing.T) {
 	}
 }
 
+func TestImportedDocumentBaseURI(t *testing.T) {
+	const base = "https://example.test/input/document.xml"
+	const source = `<?before data?><r xml:base="assets/"><item/></r><?after data?>`
+	e := engine(t, transform.Config{})
+	program := query(t, e, `string-join((base-uri(/), empty(document-uri(/)), /processing-instruction() ! base-uri(.), base-uri(/r/item)), '|')`, transform.XPath31)
+	for _, profile := range []document.ParseProfile{document.SecurityProfile, document.DTDProfile} {
+		options := document.ParseOptions{Profile: profile, BaseURI: base}
+		for _, parse := range []func() (*document.Document, error){
+			func() (*document.Document, error) { return options.Parse(t.Context(), []byte(source)) },
+			func() (*document.Document, error) { return options.ParseText(t.Context(), source) },
+		} {
+			snapshot, err := parse()
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err := e.Import(t.Context(), snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := program.Evaluate(t.Context(), doc, transform.XPathContext{})
+			want := base + "|true|" + strings.Repeat(base+"|", 2) + "https://example.test/input/assets/"
+			if err != nil || text(t, got) != want {
+				t.Fatalf("profile %d: got %v, error %v, want %q", profile, got, err, want)
+			}
+		}
+	}
+}
+
+func TestXSLTResultElementDocumentBaseURI(t *testing.T) {
+	const base = "https://example.test/input/document.xml"
+	const source = `<r xml:base="assets/"><item xml:base="images/"/></r>`
+	e := engine(t, transform.Config{})
+	snapshot, err := (document.ParseOptions{BaseURI: base}).ParseText(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := e.Import(t.Context(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := stylesheet(t, e, sheet(version30, `<xsl:template match="/"><xsl:sequence select="/r/item"/></xsl:template>`))
+	program := query(t, e, `string(base-uri(/*))`, transform.XPath31)
+	for _, test := range []struct {
+		mode transform.ResultMode
+		want string
+	}{
+		{transform.ResultRaw, "https://example.test/input/assets/images/"},
+		{transform.ResultDocument, "https://example.test/output/images/"},
+	} {
+		result, err := compiled.Execute(t.Context(), input, transform.XSLTContext{ResultMode: test.mode, BaseOutputURI: "https://example.test/output/result.xml"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := result.Document(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := program.Evaluate(t.Context(), doc, transform.XPathContext{})
+		if err != nil || text(t, got) != test.want {
+			t.Fatalf("mode %d: got %v, error %v, want %q", test.mode, got, err, test.want)
+		}
+	}
+}
+
 func TestXMLBaseURIReferences(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, base := range []string{"https://example.test/modules/main.xml", "file:///modules/main.xml", "file:///C:/modules/main.xml"} {

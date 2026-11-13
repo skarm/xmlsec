@@ -39,9 +39,12 @@ func PublishNode(n Node) {
 }
 
 // ElementDocument copies one element into an independent document, including
-// namespace bindings inherited from ancestors outside the selected subtree.
-func ElementDocument(ctx context.Context, element *Element) (*Document, error) {
+// inherited namespaces. When preserveBase is false, copied nodes derive their
+// bases from their new ancestors when attached during result normalization.
+func ElementDocument(ctx context.Context, element *Element, preserveBase bool) (*Document, error) {
 	draft := tree.FromNodes([]*tree.Node{tree.ExtractSubtree(element.raw)}, tree.DefaultLimits())
+	source := element.OwnerDocument()
+	tree.SetBaseURI(draft, tree.BaseURI(source.native))
 
 	cloned, err := tree.Clone(ctx, draft)
 	if err != nil {
@@ -53,7 +56,19 @@ func ElementDocument(ctx context.Context, element *Element) (*Document, error) {
 		return nil, err
 	}
 
-	doc.SetURL(element.OwnerDocument().URL())
+	doc.SetURL(source.URL())
+
+	if preserveBase {
+		root := doc.DocumentElement()
+		if root == nil {
+			return nil, tree.ErrMalformed
+		}
+
+		copyDocumentBases(element, root)
+		// Keep the inherited base without rewriting the element's own xml:base.
+		root.baseURI = NodeGetBaseBeforeXMLBase(source, element)
+		tree.SetNodeBase(cloned, root.raw, root.baseURI)
+	}
 
 	return doc, nil
 }

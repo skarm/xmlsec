@@ -19,7 +19,20 @@ func ScopeDocument(source *Document, element Element) (*Document, error) {
 		origin = source.contextSource
 	}
 
-	return &Document{root: element.node, children: []*Node{element.node}, limits: source.limits, inputBytes: source.inputBytes, unparsedEntities: source.unparsedEntities, dtdInfo: source.dtdInfo, nodeBases: source.nodeBases, dtdTypes: source.dtdTypes, contextual: true, contextSource: origin, contextAnchor: element.node}, nil
+	return &Document{
+		root:             element.node,
+		children:         []*Node{element.node},
+		limits:           source.limits,
+		inputBytes:       source.inputBytes,
+		baseURI:          source.baseURI,
+		unparsedEntities: source.unparsedEntities,
+		dtdInfo:          source.dtdInfo,
+		nodeBases:        source.nodeBases,
+		dtdTypes:         source.dtdTypes,
+		contextual:       true,
+		contextSource:    origin,
+		contextAnchor:    element.node,
+	}, nil
 }
 
 // ContextElement maps a scoped element to its complete source snapshot for

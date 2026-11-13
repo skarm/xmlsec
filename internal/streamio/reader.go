@@ -59,7 +59,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 		}
 
 		if n > 0 {
-			return 0, r.LimitError
+			return 0, r.progress(n, r.LimitError)
 		}
 
 		return 0, r.progress(n, err)

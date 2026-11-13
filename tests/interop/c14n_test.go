@@ -20,7 +20,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -194,31 +193,21 @@ func canonicalCorpus() []string {
 	return docs
 }
 
-// processStderr permits diagnostics while os/exec still copies child stderr.
-// String returns an immutable snapshot, so later writes cannot change its bytes.
-type processStderr struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (s *processStderr) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buffer.Write(p)
-}
-
-func (s *processStderr) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buffer.String()
-}
-
 type lineProcess struct {
 	cmd    *exec.Cmd
 	input  io.WriteCloser
 	output *bufio.Reader
-	stderr processStderr
+	stderr *os.File
 	cancel context.CancelFunc
+}
+
+func (p *lineProcess) diagnostics() string {
+	data, err := os.ReadFile(p.stderr.Name())
+	if err != nil {
+		return err.Error()
+	}
+
+	return string(data)
 }
 
 func (p *lineProcess) call(t *testing.T, data []byte) []byte {
@@ -230,7 +219,7 @@ func (p *lineProcess) call(t *testing.T, data []byte) []byte {
 
 	line, err := p.output.ReadBytes('\n')
 	if err != nil {
-		t.Fatalf("helper response: %v: %s", err, p.stderr.String())
+		t.Fatalf("helper response: %v: %s", err, p.diagnostics())
 	}
 
 	return bytes.TrimSuffix(line, []byte{'\n'})
@@ -585,13 +574,19 @@ func (session *canonicalSession) compare(t *testing.T, r canonicalRequest, withJ
 func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *lineProcess {
 	t.Helper()
 
+	// Give the child a file descriptor so stderr is already readable when
+	// stdout reaches EOF, even if the child is still running.
+	stderr, err := os.CreateTemp(t.TempDir(), "interop-stderr-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stderr.Close() })
+
 	// These helpers exit on EOF in Cleanup, after the test context is canceled.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), canonicalSessionTimeout)
-	p := &lineProcess{cmd: exec.CommandContext(ctx, name, args...), cancel: cancel}
+	p := &lineProcess{cmd: exec.CommandContext(ctx, name, args...), stderr: stderr, cancel: cancel}
 	p.cmd.Dir = fixture.root
-	p.cmd.Stderr = &p.stderr
-
-	var err error
+	p.cmd.Stderr = stderr
 
 	p.input, err = p.cmd.StdinPipe()
 	if err != nil {
@@ -616,7 +611,7 @@ func lines(t *testing.T, fixture *interopFixture, name string, args ...string) *
 		cancel()
 
 		if err != nil {
-			t.Errorf("helper exited: %v: %s", err, p.stderr.String())
+			t.Errorf("helper exited: %v: %s", err, p.diagnostics())
 		}
 	})
 

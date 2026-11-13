@@ -106,6 +106,10 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return err
 	}
 
+	if err := validateCoreManifests(*manifests, *resources); err != nil {
+		return err
+	}
+
 	if cmd != nameSignTemplate && !allowUnspecifiedCoverage && !*rootRequired && len(requiredIDs) == 0 && len(expected) == 0 {
 		return usageError("set -require-root, -require-id, -expect-uri or -allow-unspecified-coverage")
 	}
@@ -285,16 +289,8 @@ func (c coreValidationFlags) options(ctx context.Context, doc *document.Document
 		}
 	}
 
-	switch c.manifests {
-	case cliNoManifests:
-	case "recursive", nameRecursiveExternal:
-		if c.manifests == nameRecursiveExternal && c.resources == "" {
-			return opt, errors.New("external Manifest validation requires -resources")
-		}
-
+	if c.manifests != cliNoManifests {
 		opt.Manifests = xmldsig.ManifestPolicy{Mode: xmldsig.ManifestRecursive, AllowExternal: c.manifests == nameRecursiveExternal, MaxDepth: c.depth, MaxManifests: c.nodes, MaxReferences: c.references}
-	default:
-		return opt, errors.New("-manifests must be none, recursive or recursive-external")
 	}
 
 	if c.manifestTransforms {
@@ -419,6 +415,21 @@ func requiredIDElements(ctx context.Context, doc *document.Document, opt xmldsig
 type coreInvocation struct {
 	command, key, secret                            string
 	index, maxSignatures, resourceLimit, totalLimit int
+}
+
+func validateCoreManifests(mode, resources string) error {
+	switch mode {
+	case cliNoManifests, "recursive":
+		return nil
+	case nameRecursiveExternal:
+		if resources == "" {
+			return usageError("external Manifest validation requires -resources")
+		}
+
+		return nil
+	default:
+		return usageError("-manifests must be none, recursive or recursive-external")
+	}
 }
 
 func (c coreInvocation) validate() error {

@@ -71,6 +71,39 @@ func TestApplicationHelpAndUsage(t *testing.T) {
 	}
 }
 
+func TestDetachedRequiredFlagsAreUsageErrors(t *testing.T) {
+	for _, command := range []string{nameSignDetached, nameVerifyDetached} {
+		for _, flags := range [][]string{nil, {flagResources, "-", flagKey, "key.pem"}, {flagResources, "resources.json"}, {flagKey, "key.pem"}} {
+			args := append([]string{"signature", command}, flags...)
+			err := run(t.Context(), args, nil, io.Discard, io.Discard)
+			if err == nil || exitCode(err) != cliExitUsage {
+				t.Fatalf("%v: got exit %d (%v), want %d", args, exitCode(err), err, cliExitUsage)
+			}
+		}
+	}
+}
+
+func TestVerifyRejectsNamespaceWithoutRootNameBeforeIO(t *testing.T) {
+	args := []string{"signature", nameVerify, flagKey, filepath.Join(t.TempDir(), "missing.pem"), "-root-ns", "urn:example"}
+	err := run(t.Context(), args, nil, io.Discard, io.Discard)
+	if err == nil || exitCode(err) != cliExitUsage {
+		t.Fatalf("got exit %d (%v), want %d", exitCode(err), err, cliExitUsage)
+	}
+}
+
+func TestCoreManifestFlagsAreUsageErrorsBeforeIO(t *testing.T) {
+	for _, test := range []struct{ mode, message string }{
+		{nameUnknown, "-manifests must be"},
+		{nameRecursiveExternal, "requires -resources"},
+	} {
+		args := []string{nameSignatureGroup, nameVerifyCore, flagKey, "key.pem", flagSignatureIndex, "0", flagAllowUnspecifiedCoverage, "-manifests", test.mode}
+		err := run(t.Context(), args, nil, io.Discard, io.Discard)
+		if err == nil || exitCode(err) != cliExitUsage || !strings.Contains(err.Error(), test.message) {
+			t.Fatalf("mode %q: got exit %d (%v), want usage error containing %q", test.mode, exitCode(err), err, test.message)
+		}
+	}
+}
+
 func TestCanceledStreamsAndDeadline(t *testing.T) {
 	for _, deadline := range []bool{false, true} {
 		t.Run(map[bool]string{false: "cancel", true: "deadline"}[deadline], func(t *testing.T) {

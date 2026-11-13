@@ -2,14 +2,15 @@ GO ?= go
 GOLANGCI_LINT ?= golangci-lint
 GOLANGCI_LINT_CONFIG ?= build/.golangci.yml
 DOCKER ?= docker
-INTEROP_DOCKER_IMAGE ?= xmlsec-interop:local
+INTEROP_DOCKER_TARGET ?= all
+INTEROP_DOCKER_IMAGE ?= xmlsec-interop:$(if $(filter all,$(INTEROP_DOCKER_TARGET)),local,$(INTEROP_DOCKER_TARGET))
 INTEROP_INPUT_CACHE ?= /tmp/xmlsec-interop-inputs
 FUZZ_ARGS ?=
 BENCH_ARGS ?=
 INTEROP_ARGS ?=
 SUITE_ARGS ?=
 
-.PHONY: test check lint fmt modules docs race fuzz bench examples build suites interop interop-full interop-docker
+.PHONY: test check lint fmt modules docs race fuzz bench examples build suites interop interop-transforms interop-info interop-full interop-native interop-docker
 
 test:
 	$(GO) test ./...
@@ -56,18 +57,30 @@ suites:
 interop:
 	GO="$(GO)" bash build/interop.sh $(INTEROP_ARGS)
 
-# The same complete Linux run used by the Docker image.
-interop-full:
+interop-transforms:
+	XMLSEC_INTEROP_MODE=transforms XMLSEC_REQUIRE_P3_PROOFS=1 $(MAKE) interop
+
+interop-info:
 	$(GO) version
 	xmlsec1 --version
 	openssl version
 	java -version
 	pkg-config --modversion xmlsec1-openssl libxml-2.0
+
+# The full local run includes race tests as well as both interop groups.
+interop-full: interop-info
 	$(GO) test -race -count=1 ./...
+	$(MAKE) interop-services INTEROP_MODE=all
+
+interop-native: INTEROP_MODE = native
+interop-native: interop-info interop-services
+
+.PHONY: interop-services
+interop-services:
 	XMLSEC_P7_EXPORT_FIXTURES=/tmp/xmlsec-interop-history $(GO) test -count=1 ./xades -run '^TestHistoricalExpiredTSAArchiveEvidence$$'
-	XMLSEC_DSS_FIXTURE_DIR=/tmp/xmlsec-interop-history XMLSEC_DSS_CA_PEM=root.pem sh build/dss.sh --inside-all
+	XMLSEC_INTEROP_MODE=$(INTEROP_MODE) XMLSEC_DSS_FIXTURE_DIR=/tmp/xmlsec-interop-history XMLSEC_DSS_CA_PEM=root.pem sh build/dss.sh --inside-all
 
 interop-docker:
-	sh build/prepare-interop.sh "$(INTEROP_INPUT_CACHE)"
-	$(DOCKER) build --build-context "interop-downloads=$(INTEROP_INPUT_CACHE)" --file build/interop.Dockerfile --tag "$(INTEROP_DOCKER_IMAGE)" .
-	$(DOCKER) run --rm --network=none "$(INTEROP_DOCKER_IMAGE)"
+	sh build/prepare-interop.sh "$(INTEROP_INPUT_CACHE)" "$(INTEROP_DOCKER_TARGET)"
+	$(DOCKER) build --target "$(INTEROP_DOCKER_TARGET)" --build-context "interop-downloads=$(INTEROP_INPUT_CACHE)" --file build/interop.Dockerfile --tag "$(INTEROP_DOCKER_IMAGE)" .
+	$(DOCKER) run --rm --network=none --env XMLSEC_INTEROP_TRANSFORM_PARTS --env XMLSEC_INTEROP_TRANSFORM_PART "$(INTEROP_DOCKER_IMAGE)"

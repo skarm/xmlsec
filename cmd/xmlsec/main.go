@@ -110,12 +110,12 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New("unexpected positional arguments")
-	}
-
 	if cmd != nameC14N && keyFile == "" {
 		return usageError("-key is required")
+	}
+
+	if rootNS != "" && rootLocal == "" {
+		return usageError("-root-ns requires -root-local")
 	}
 
 	ctx, cancel, err := exec.start(ctx)
@@ -272,18 +272,12 @@ func canonicalizeCLI(ctx context.Context, w io.Writer, doc *document.Document, i
 }
 
 func verifyCLI(ctx context.Context, doc *document.Document, key crypto.PublicKey, idName, expectedRoot document.Name, modern bool) ([]byte, error) {
-	rootNS, rootLocal := expectedRoot.Space, expectedRoot.Local
-
-	if rootNS != "" && rootLocal == "" {
-		return nil, errors.New("-root-ns requires -root-local")
-	}
-
 	policy, err := execution(ctx).signaturePolicy(modern)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := xmldsig.Verify(ctx, doc, key, xmldsig.VerifyOptions{Policy: policy, IDAttribute: idName, ExpectedRoot: document.Name{Space: rootNS, Local: rootLocal}})
+	result, err := xmldsig.Verify(ctx, doc, key, xmldsig.VerifyOptions{Policy: policy, IDAttribute: idName, ExpectedRoot: expectedRoot})
 	if err != nil {
 		raw, marshalErr := json.MarshalIndent(resultReport("signature verify", "externally-supplied-key", nil, err), "", "  ")
 		if marshalErr != nil {

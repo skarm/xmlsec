@@ -54,11 +54,39 @@ make interop-docker
 The [image](../build/interop.Dockerfile) supplies native tools, Saxon, released
 Shibboleth/Jetty, OpenAM/Tomcat, Google GSA and DSS runtimes, and published schemas/vectors. The build step
 downloads the [pinned inputs](../build/interop-inputs.txt) with retries and verifies
-SHA-256 on the host and again inside Docker. Override `INTEROP_INPUT_CACHE` to
-reuse a prepared cache. CI restores these downloads by the hash of
-`build/interop-inputs.txt`, verifies their checksums, and saves the verified cache
-before starting the tests. A dependency update can reuse unchanged archives from
-the preceding cache. System package versions follow Debian repositories.
+SHA-256 on the host and again inside Docker. Transform inputs are pinned in
+[a separate manifest](../build/interop-transform-inputs.txt). Override
+`INTEROP_INPUT_CACHE` to reuse a prepared cache. CI keys each download cache by
+its manifest hash and verifies checksums on restore. A dependency update can
+reuse unchanged archives from the preceding cache. System package versions
+follow Debian repositories.
+
+The ordinary pull request workflow runs Go checks, including race tests, on
+each update. The [interoperability workflow](../.github/workflows/interop.yml)
+waits for approval before testing GitHub's proposed merge commit. When the PR is
+ready, open its latest interoperability run in Actions and approve the `interop`
+environment. After the checks pass, merge the PR manually. New commits cancel
+the previous interoperability run and create a new run awaiting approval.
+
+Before using this workflow, create the `interop` environment in the repository
+settings and configure **Required reviewers**. Leave **Prevent self-review**
+off if you need to approve your own PRs. After the first successful PR run,
+require the `interop` status check for `master` and enable **Require branches
+to be up to date before merging**. Both workflows also support manual runs for
+a branch. A manual interoperability run reports `interop (manual)`.
+
+The interoperability workflow runs two transform partitions and one job with
+external engines and deployed services in parallel. It assigns discovered
+`TestCompare` functions to partitions in round-robin order. Each transform job
+builds an image with Saxon and XML tools. The `interop` check requires all three
+jobs to pass.
+
+To rerun one CI job locally:
+
+```sh
+XMLSEC_INTEROP_TRANSFORM_PARTS=2 XMLSEC_INTEROP_TRANSFORM_PART=1 make interop-docker INTEROP_DOCKER_TARGET=transforms
+make interop-docker INTEROP_DOCKER_TARGET=native
+```
 
 Runtime networking is disabled except for the container's loopback. The full
 recipe runs race tests, generates local historical fixtures, starts official DSS

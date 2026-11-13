@@ -219,6 +219,7 @@ type Document struct {
 	root             *Node
 	limits           Limits
 	inputBytes       int
+	baseURI          string
 	unparsedEntities map[string]UnparsedEntity
 	dtdInfo          *DocumentType
 	nodeBases        map[*Node]string
@@ -257,7 +258,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		return nil, err
 	}
 
-	out := &Document{limits: d.limits, inputBytes: d.inputBytes, unparsedEntities: d.unparsedEntities, dtdInfo: d.dtdInfo, children: make([]*Node, len(d.children))}
+	out := &Document{limits: d.limits, inputBytes: d.inputBytes, baseURI: d.baseURI, unparsedEntities: d.unparsedEntities, dtdInfo: d.dtdInfo, children: make([]*Node, len(d.children))}
 
 	var cp func(*Node, *Node) (*Node, error)
 

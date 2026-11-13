@@ -105,10 +105,7 @@ func (o ParseOptions) withBase(d *Document, err error) (*Document, error) {
 		return nil, err
 	}
 
-	if o.BaseURI != "" {
-		_, root := tree.Unwrap(d.Root())
-		tree.SetNodeBase(d, root, o.BaseURI)
-	}
+	tree.SetBaseURI(d, o.BaseURI)
 
 	return d, nil
 }
