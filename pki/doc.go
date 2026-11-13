@@ -71,6 +71,8 @@
 // [HistoricalSession.CheckCurrentPolicy] adds explicit historical-policy
 // freshness, anchor-sunset and cryptographic cutoffs after current verification.
 // The current [Verifier.Verify] policy and its result meaning remain unchanged.
+// The [history subpackage] validates a certificate at an explicit past time
+// using RFC 3161 timestamps over exact archived encodings.
 //
 // The library's historical workflow supplies an immutable, object-bound proof
 // set to the past-certificate and time-sliding primitives. Revocation status
@@ -96,4 +98,6 @@
 // certificate snapshot. Certificate, CRL and OCSP parsers require complete
 // DER/x509 models; these APIs do not promise constant-memory revocation
 // parsing. Network access stays separate.
+//
+// [history subpackage]: https://pkg.go.dev/github.com/skarm/xmlsec/pki/history
 package pki

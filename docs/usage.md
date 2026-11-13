@@ -28,13 +28,18 @@ and charset metadata. Context-aware key providers use `AdaptContextSigner`,
 ## XML and canonicalization
 
 `document.Parse` / `ParseReader` create immutable XML snapshots. `XML` and
-`WriteXML` serialize ordinary XML; `c14n.WriteDocument`, `WriteElement` and
-`WriteNodeSet` produce canonical bytes. Exclusive C14N is the default;
-`InclusivePrefixes` applies only to that algorithm. Use `Subtree` / `AllNodes`
-for full selections; sparse node sets may produce fragments.
+`WriteXML` serialize ordinary XML. `c14n.WriteDocument`, `WriteElement` and
+`WriteNodeSet` produce canonical bytes. Exclusive C14N is the default.
+`InclusivePrefixes` applies only to Exclusive C14N, with or without comments.
+A nonempty list with Canonical XML 1.0 or 1.1 returns an error matching
+`document.ErrUnsupported` via `errors.Is`. Use `Subtree` / `AllNodes`
+for full selections. Sparse node sets may produce fragments. The [c14n package
+documentation](../c14n/doc.go) lists the error categories for all three writers.
 
-The default security parser rejects DTDs and external entities.
-`document.ParseOptions{NonValidating: true}` enables bounded DTD processing,
+All document parsing entry points use `document.DefaultLimits()` when given
+`document.Limits{}`. Start with `DefaultLimits()` to customize individual budgets.
+The default `document.SecurityProfile` rejects DTDs and external entities.
+`document.ParseOptions{Profile: document.DTDProfile}` enables bounded DTD processing,
 including entity expansion and default attributes; external entities require an
 explicit `EntityResolver`. `Document.DTD` returns owned declaration information.
 Serialization writes expanded XML and omits the DTD. This mode also accepts
@@ -46,7 +51,9 @@ for retained trees, independent records and partial output.
 
 `xmldsig.SignEnveloped` / `Verify` implement the restricted root-enveloped profile.
 Verification needs an externally trusted key and expected expanded root name.
-General signatures require explicit selection and application coverage:
+For general signatures, select the signature and state what the application
+needs it to cover. The example checks both the reference URI and the payload
+element.
 
 ```go
 result, report, err := xmldsig.VerifySignatureDetailed(ctx, doc, signature, trustedKey,
@@ -59,9 +66,13 @@ _ = result
 _ = report
 ```
 
-`ExpectedURIs` checks the exact reference multiset. General verification does not
-require root coverage by default. Consume authenticated data from the verified
-snapshot; coverage does not establish application schema or protocol validity.
+`ExpectedURIs` checks the exact multiset of direct reference URIs. Use
+`RequiredElements` to check that specific XML elements remain covered after
+reference transforms. Set `AllowUnspecifiedCoverage: true` to verify the
+signature and its references without either requirement. The same rules apply
+to `VerifySignatureWithKeyInfo` and `VerifyHMACSignature`. Nil signature, digest
+and canonicalization allowlists select the profile defaults. Explicit empty
+allowlists are policy errors.
 
 `BuildTemplate` / `SignTemplate` support references and objects. `Preserve`
 requires trusted keys for existing signatures. Manifest recursion is opt-in:
@@ -125,6 +136,32 @@ exact token binding; they do not alone establish validity after TSA expiry.
 OCSP verification selects an exact CertID and authorized responder. Only fresh,
 authenticated GOOD is success; stale/revoked diagnostics are not successful results.
 
+Use `history.NewValidator` from `github.com/skarm/xmlsec/pki/history` to verify a
+certificate at an explicit past time using archival evidence outside XAdES.
+Configure the certificate and TSA trust
+policies separately, with offline revocation checks enabled for both. Supply the
+target certificate, certificate and TSA evidence, and RFC 3161 tokens over the
+original DER bytes. Each `history.ObjectTimestamp` pairs the token DER with the
+SHA-256 of its input object so the validator can locate the bytes and recompute
+the token imprint. For an RFC 3161 response, use `Response.TokenDER()`.
+
+```go
+result, report, err := validator.Validate(ctx, certificateDER, past, now, history.Evidence{
+    Certificate: pki.Evidence{CRLs: [][]byte{archivedCRL}},
+    TSA:         pki.Evidence{CRLs: tsaCRLs},
+    Timestamps: []history.ObjectTimestamp{
+        {TokenDER: certificateToken, ObjectSHA256: sha256.Sum256(certificateDER)},
+        {TokenDER: crlToken, ObjectSHA256: sha256.Sum256(archivedCRL)},
+    },
+})
+```
+
+Both timestamps must establish existence by `past`, accounting for TSA accuracy,
+and the CRL must cover the certificate at `past`. Include the exact intermediate
+and other revocation evidence encodings and their timestamps when policy requires
+them. A token over an earlier token can establish its existence for TSA recovery.
+Use `result` only on success. The report retains timestamp and PKI diagnostics.
+
 XAdES has separate current/with-time, baseline-format and bounded historical APIs.
 `SignBaseline` / `VerifyBaseline` authenticate selected signatures and properties;
 application coverage and trust remain explicit. `NewHistoricalValidator` additionally
@@ -136,9 +173,16 @@ and remaining ETSI gaps are in [compatibility](compatibility.md).
 ## XML Encryption
 
 AES-GCM accepts a configured RSA-OAEP, AES Key Wrap, ECDH-ES or direct-key path.
-Decryption authenticates before parsing/restoring XML and releases no plaintext
-on failure. Element/Content replacement returns a new snapshot. Encryption does
-not authenticate the sender or establish signature coverage.
+Set the data cipher, plaintext budget and key transport in `xmlenc.RSAOptions`
+for the RSA APIs. For example, `xmlenc.RSAOptions{DataAlgorithm: xmlenc.AES128GCM}`
+uses AES-128-GCM with the default RSA-OAEP parameters. The other key modes use
+`xmlenc.CipherOptions` in their `Data` field. Pass a separate
+`xmlenc.DecryptOptions` for decrypted XML limits and external ciphertext.
+Zero decrypt options accept inline ciphertext and use default XML limits.
+GCM decryption authenticates the ciphertext before parsing XML. With legacy CBC,
+the application must verify ciphertext integrity before decryption. Decryption
+releases no plaintext on failure. Element and Content replacement return a new
+snapshot. Sender authentication and signature coverage require separate checks.
 
 OAEP digest, MGF1 hash, label and key hints must match application policy.
 Omitted XMLENC digest/MGF parameters mean SHA-1, not SHA-256; accepting them

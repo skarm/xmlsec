@@ -582,6 +582,21 @@ func TestRetrievalProcessingPolicy(t *testing.T) {
 	}
 }
 
+func TestRetrievalEmptyTransformAllowlistDeniesBase64BeforeIO(t *testing.T) {
+	input := wrap(`<ds:RetrievalMethod URI="urn:key" Type="` + keyinfo.RawX509Certificate + `"><ds:Transforms><ds:Transform Algorithm="` + reference.Base64 + `"/></ds:Transforms></ds:RetrievalMethod>`)
+	options := keyinfo.Options{
+		RetrievalProcessing: &reference.Options{AllowedTransforms: []string{}},
+		External: &keyinfo.ExternalResources{
+			AllowedURIs: []string{uriUrnKey},
+			Resolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				t.Fatal("denied transform triggered resource resolution")
+				return nil, nil
+			}),
+		},
+	}
+	requireErr(t, input, options, keyinfo.ErrPolicy)
+}
+
 func TestRetrievalRejectsUnapprovedOrEmptyPrograms(t *testing.T) {
 	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "false()", Namespaces: map[string]string{"ds": ns, "k": ns11}}}}
 

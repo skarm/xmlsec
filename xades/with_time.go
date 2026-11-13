@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/skarm/xmlsec/document"
@@ -64,8 +65,8 @@ func NewWithTimeValidator(c WithTimeConfig) (*WithTimeValidator, error) {
 		return nil, e
 	}
 
-	c.Basic.Policy.AllowedSignatureMethods = append([]string(nil), c.Basic.Policy.AllowedSignatureMethods...)
-	c.Basic.Policy.AllowedDigestMethods = append([]string(nil), c.Basic.Policy.AllowedDigestMethods...)
+	c.Basic.Policy.AllowedSignatureMethods = slices.Clone(c.Basic.Policy.AllowedSignatureMethods)
+	c.Basic.Policy.AllowedDigestMethods = slices.Clone(c.Basic.Policy.AllowedDigestMethods)
 
 	return &WithTimeValidator{v, c.TSA, c.Basic, o.MaxTimestamps, o.MaxTokenBytes}, nil
 }

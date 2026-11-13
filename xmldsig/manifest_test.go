@@ -425,7 +425,7 @@ func TestExternalReferenceBaseURI(t *testing.T) {
 
 			external.BaseURI = tc.base
 
-			result, _, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, xmldsig.Signatures(signed)[0], key.Public(), xmldsig.SignatureOptions{External: external})
+			result, _, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, xmldsig.Signatures(signed)[0], key.Public(), xmldsig.SignatureOptions{External: external, ExpectedURIs: []string{tc.uri}})
 			if err != nil || result == nil || result.References()[0].URI() != tc.uri || result.References()[0].ResourceURI() != tc.resolved {
 				t.Fatal(result, err)
 			}
@@ -596,7 +596,7 @@ func TestExternalURIContextKeepsSameDocumentReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			opt := xmldsig.SignatureOptions{External: &xmldsig.ExternalReferences{BaseURI: uriSignatureBase, AllowedURIs: []string{uriSignatureBase}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+			opt := xmldsig.SignatureOptions{ExpectedURIs: []string{uri}, External: &xmldsig.ExternalReferences{BaseURI: uriSignatureBase, AllowedURIs: []string{uriSignatureBase}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 				t.Fatal("same-document reference invoked an external resolver")
 				return nil, xmldsig.ErrReference
 			})}}
@@ -968,7 +968,7 @@ func TestManifestDisabledAndBadNestedDigest(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	r, report, e := xmldsig.VerifySignatureDetailed(ctx, signed, signed.Root(), k.Public(), xmldsig.SignatureOptions{})
+	r, report, e := xmldsig.VerifySignatureDetailed(ctx, signed, signed.Root(), k.Public(), xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 	if e != nil || r == nil || report.ManifestValidation != xmldsig.NotChecked || len(r.Manifests()) != 0 {
 		t.Fatalf("core mode: %v %+v", e, report)
 	}

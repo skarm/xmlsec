@@ -12,6 +12,26 @@ import (
 	"github.com/skarm/xmlsec/document"
 )
 
+func TestParseProfileRejectsUnsupportedConfiguration(t *testing.T) {
+	resolver := func(context.Context, string, string) (io.ReadCloser, string, error) {
+		t.Fatal("unexpected entity resolution")
+		return nil, "", nil
+	}
+	readErr := errors.New("unexpected input read")
+	for _, options := range []document.ParseOptions{
+		{Profile: document.SecurityProfile, EntityResolver: resolver},
+		{Profile: document.ParseProfile(255), EntityResolver: resolver},
+		{Profile: document.ParseProfile(255)},
+	} {
+		if d, err := options.ParseReader(t.Context(), iotest.ErrReader(readErr)); d != nil || !errors.Is(err, document.ErrUnsupported) || errors.Is(err, readErr) {
+			t.Fatalf("profile %d: document=%v, error=%v", options.Profile, d, err)
+		}
+		if d, err := options.ParseText(t.Context(), "<r/>"); d != nil || !errors.Is(err, document.ErrUnsupported) {
+			t.Fatalf("profile %d: document=%v, error=%v", options.Profile, d, err)
+		}
+	}
+}
+
 func TestNonValidatingXMLInternalSubset(t *testing.T) {
 	input := `<!DOCTYPE r [
 <!ENTITY % attributes '<!ATTLIST r tokens NMTOKENS " a   b " xmlns CDATA "urn:root">'>
@@ -21,7 +41,7 @@ func TestNonValidatingXMLInternalSubset(t *testing.T) {
 <!ENTITY picture SYSTEM "picture.bin" NDATA image>
 <?application retain this?>
 ]><r>&text;</r>`
-	o := document.ParseOptions{NonValidating: true, BaseURI: "https://example.test/document.xml"}
+	o := document.ParseOptions{Profile: document.DTDProfile, BaseURI: "https://example.test/document.xml"}
 	d, err := o.ParseReader(t.Context(), iotest.OneByteReader(strings.NewReader(input)))
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +76,7 @@ func TestNonValidatingXMLExternalEntities(t *testing.T) {
 		"https://example.test/input/content.xml":           `<?xml encoding="UTF-8"?><child>external</child>`,
 	}
 	var opened, closed int
-	o := document.ParseOptions{NonValidating: true, BaseURI: base, EntityResolver: func(ctx context.Context, system, parent string) (io.ReadCloser, string, error) {
+	o := document.ParseOptions{Profile: document.DTDProfile, BaseURI: base, EntityResolver: func(ctx context.Context, system, parent string) (io.ReadCloser, string, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, "", err
 		}
@@ -89,7 +109,7 @@ func TestNonValidatingXMLExternalEntities(t *testing.T) {
 	if dtd.SystemID != "declarations/root.dtd" || dtd.Notations["last"].BaseURI != "https://example.test/input/declarations/root.dtd" {
 		t.Fatal("external declaration base", dtd)
 	}
-	if _, err := (document.ParseOptions{NonValidating: true}).ParseText(t.Context(), `<!DOCTYPE r SYSTEM "not-authorized"><r/>`); !errors.Is(err, document.ErrUnsupported) {
+	if _, err := (document.ParseOptions{Profile: document.DTDProfile}).ParseText(t.Context(), `<!DOCTYPE r SYSTEM "not-authorized"><r/>`); !errors.Is(err, document.ErrUnsupported) {
 		t.Fatal("implicit external access", err)
 	}
 }
@@ -101,24 +121,24 @@ func TestNonValidatingXMLFailureContracts(t *testing.T) {
 		`<!DOCTYPE r [<!ATTLIST r x UNKNOWN #IMPLIED>]><r/>`,
 		`<!DOCTYPE r [<!NOTATION n PUBLIC "invalid public character ^">]><r/>`,
 	} {
-		if d, err := (document.ParseOptions{NonValidating: true}).ParseText(t.Context(), input); d != nil || !errors.Is(err, document.ErrMalformed) {
+		if d, err := (document.ParseOptions{Profile: document.DTDProfile}).ParseText(t.Context(), input); d != nil || !errors.Is(err, document.ErrMalformed) {
 			t.Fatal("accepted malformed DTD/entity", input, d, err)
 		}
 	}
 	limits := document.DefaultLimits()
 	limits.MaxBytes = 96
-	if d, err := (document.ParseOptions{NonValidating: true, Limits: limits}).ParseText(t.Context(), `<!DOCTYPE r [<!ENTITY a "1234567890">]><r>&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;</r>`); d != nil || !errors.Is(err, document.ErrLimit) {
+	if d, err := (document.ParseOptions{Profile: document.DTDProfile, Limits: limits}).ParseText(t.Context(), `<!DOCTYPE r [<!ENTITY a "1234567890">]><r>&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;</r>`); d != nil || !errors.Is(err, document.ErrLimit) {
 		t.Fatal("expanded input limit", d, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if d, err := (document.ParseOptions{NonValidating: true}).ParseText(ctx, `<!DOCTYPE r><r/>`); d != nil || !errors.Is(err, context.Canceled) {
+	if d, err := (document.ParseOptions{Profile: document.DTDProfile}).ParseText(ctx, `<!DOCTYPE r><r/>`); d != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("cancellation", d, err)
 	}
 	readFailure := errors.New("read failed")
 	closeFailure := errors.New("close failed")
 	closed := 0
-	o := document.ParseOptions{NonValidating: true, EntityResolver: func(context.Context, string, string) (io.ReadCloser, string, error) {
+	o := document.ParseOptions{Profile: document.DTDProfile, EntityResolver: func(context.Context, string, string) (io.ReadCloser, string, error) {
 		return &entityReader{Reader: strings.NewReader(""), closed: &closed, closeErr: closeFailure}, "urn:entity", readFailure
 	}}
 	if d, err := o.ParseText(t.Context(), `<!DOCTYPE r SYSTEM "entity"><r/>`); d != nil || !errors.Is(err, readFailure) || !errors.Is(err, closeFailure) || closed != 1 {
@@ -150,7 +170,7 @@ func TestNonValidatingXMLWellFormedness(t *testing.T) {
 		{"short PI in external entity", `<!DOCTYPE r [<!ENTITY e SYSTEM "decl.dtd">]><r>&e;</r>`, `<?A?>`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			options := document.ParseOptions{NonValidating: true, EntityResolver: func(context.Context, string, string) (io.ReadCloser, string, error) {
+			options := document.ParseOptions{Profile: document.DTDProfile, EntityResolver: func(context.Context, string, string) (io.ReadCloser, string, error) {
 				return io.NopCloser(strings.NewReader(tc.external)), "urn:test:declarations", nil
 			}}
 			for _, fromBytes := range []bool{true, false} {
@@ -172,7 +192,7 @@ func TestNonValidatingXMLWellFormedness(t *testing.T) {
 func TestNonValidatingXMLVersionNum(t *testing.T) {
 	for _, version := range []string{"1.0", "1.1", "1.7", "1.123"} {
 		input := `<?xml version="` + version + `"?><r>text</r>`
-		options := document.ParseOptions{NonValidating: true}
+		options := document.ParseOptions{Profile: document.DTDProfile}
 		for _, text := range []bool{false, true} {
 			var d *document.Document
 			var err error
@@ -186,7 +206,7 @@ func TestNonValidatingXMLVersionNum(t *testing.T) {
 			}
 		}
 	}
-	if d, err := (document.ParseOptions{NonValidating: true}).ParseText(t.Context(), `<?xml version="1.1"?><r>&#x1;</r>`); d != nil || err == nil {
+	if d, err := (document.ParseOptions{Profile: document.DTDProfile}).ParseText(t.Context(), `<?xml version="1.1"?><r>&#x1;</r>`); d != nil || err == nil {
 		t.Fatal("version compatibility enabled XML 1.1 control characters")
 	}
 	if _, err := document.Parse(t.Context(), []byte(`<?xml version="1.7"?><r/>`), document.DefaultLimits()); err == nil {
@@ -216,7 +236,7 @@ func FuzzNonValidatingXML(f *testing.F) {
 		limits.MaxBytes = 64 << 10
 		limits.MaxNodes = 4096
 		limits.MaxDepth = 64
-		doc, err := (document.ParseOptions{NonValidating: true, Limits: limits}).Parse(t.Context(), input)
+		doc, err := (document.ParseOptions{Profile: document.DTDProfile, Limits: limits}).Parse(t.Context(), input)
 		if err != nil {
 			return
 		}
@@ -225,9 +245,9 @@ func FuzzNonValidatingXML(f *testing.F) {
 			t.Fatal(err)
 		}
 		// The expanded snapshot must remain well formed. Use the same language
-		// profile: relative namespace names are permitted by NonValidating.
+		// profile: relative namespace names are permitted by DTDProfile.
 		limits.MaxBytes = max(limits.MaxBytes, len(output))
-		if _, err := (document.ParseOptions{NonValidating: true, Limits: limits}).Parse(t.Context(), output); err != nil {
+		if _, err := (document.ParseOptions{Profile: document.DTDProfile, Limits: limits}).Parse(t.Context(), output); err != nil {
 			t.Fatalf("expanded serialization is not parseable: %q: %v", output, err)
 		}
 	})

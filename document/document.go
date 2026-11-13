@@ -47,8 +47,8 @@ type (
 	Name = tree.Name
 	// Attribute is an owned copy of a non-namespace attribute.
 	Attribute = tree.Attribute
-	// Limits bounds XML parsing and expanded node sets. Use DefaultLimits for a complete
-	// policy.
+	// Limits bounds XML parsing and expanded node sets. Parsing uses DefaultLimits
+	// for a zero value. Use DefaultLimits as a starting point for a custom policy.
 	Limits = tree.Limits
 	// Node is an immutable handle to an individual XPath node in one Document.
 	Node = tree.NodeRef
@@ -78,19 +78,28 @@ func NewNodeSet(d *Document, nodes ...Node) (NodeSet, error) {
 // DefaultLimits returns a fresh value containing the default resource budgets.
 func DefaultLimits() Limits { return tree.DefaultLimits() }
 
-// Parse parses an owned immutable XML snapshot with cancellation and explicit
-// limits. DTDs and external entities are rejected.
+func limitsOrDefault(limits Limits) Limits {
+	if limits == (Limits{}) {
+		return DefaultLimits()
+	}
+
+	return limits
+}
+
+// Parse parses an owned immutable XML snapshot using SecurityProfile. Zero
+// limits select DefaultLimits.
 func Parse(ctx context.Context, data []byte, limits Limits) (*Document, error) {
-	return tree.Parse(ctx, data, limits)
+	return tree.Parse(ctx, data, limitsOrDefault(limits))
 }
 
 // ParseReader incrementally constructs a complete immutable snapshot. It retains
 // the tree and current lexical token, which can span a large text node or start
 // tag, but no separate complete source buffer. The caller owns src; blocking
-// reads must support cancellation themselves. Use ReadRecords for independent
-// subtrees without retaining the enclosing tree.
+// reads must support cancellation themselves. It uses SecurityProfile and
+// selects DefaultLimits for zero limits. Use ReadRecords for independent subtrees
+// without retaining the enclosing tree.
 func ParseReader(ctx context.Context, src io.Reader, limits Limits) (*Document, error) {
-	return tree.ParseReader(ctx, src, limits)
+	return tree.ParseReader(ctx, src, limitsOrDefault(limits))
 }
 
 // ReadRecords incrementally validates XML and calls emit for each selected
@@ -98,7 +107,8 @@ func ParseReader(ctx context.Context, src io.Reader, limits Limits) (*Document, 
 // enclosing namespace/xml:* context, subject to options.Limits. Retaining records
 // in emit also retains their storage; this is not a fixed heap-size guarantee.
 // Callbacks may run before the enclosing input is fully validated; later errors
-// do not roll back prior callbacks. The caller owns src.
+// do not roll back prior callbacks. It uses SecurityProfile and selects
+// DefaultLimits for zero limits. The caller owns src.
 func ReadRecords(ctx context.Context, src io.Reader, options RecordOptions, emit func(*Document) error) error {
 	return tree.ReadRecords(ctx, src, options, emit)
 }

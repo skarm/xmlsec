@@ -118,8 +118,8 @@ func loadPublicKey(path string) (crypto.PublicKey, error) {
 	return keys.ParsePublic(b, keys.Limits{})
 }
 
-func encryptionOptions(t task) (xmlenc.Options, error) {
-	opts := xmlenc.Options{DataAlgorithm: t.DataAlgorithm, AllowLegacy: t.AllowLegacy}
+func encryptionOptions(t task) (xmlenc.RSAOptions, error) {
+	opts := xmlenc.RSAOptions{DataAlgorithm: t.DataAlgorithm, AllowLegacy: t.AllowLegacy}
 	if t.OAEPHash != "" || t.OAEPMGFHash != "" || t.OAEPAlgorithm != "" || t.OAEPAllowLegacy || len(t.OAEPLabel) != 0 {
 		hash, err := oaepHash(t.OAEPHash)
 		if err != nil {
@@ -134,8 +134,16 @@ func encryptionOptions(t task) (xmlenc.Options, error) {
 		opts.OAEP = &xmlenc.OAEPParameters{Algorithm: t.OAEPAlgorithm, Hash: hash, MGFHash: mgf, AllowLegacy: t.OAEPAllowLegacy, Label: t.OAEPLabel}
 	}
 
+	return opts, nil
+}
+
+func (t task) cipherOptions() xmlenc.CipherOptions {
+	return xmlenc.CipherOptions{DataAlgorithm: t.DataAlgorithm, AllowLegacy: t.AllowLegacy}
+}
+
+func decryptionOptions(t task) xmlenc.DecryptOptions {
 	if t.Resource != "" {
-		opts.External = &xmlenc.ExternalCipherReference{URI: t.CipherURI, Resolver: xmlenc.CipherResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		return xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: t.CipherURI, Resolver: xmlenc.CipherResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
 			if uri != t.CipherURI {
 				return nil, errors.New("unexpected resource URI")
 			}
@@ -145,10 +153,10 @@ func encryptionOptions(t task) (xmlenc.Options, error) {
 			}
 
 			return os.Open(t.Resource) // Exact test-owned path; no URI-to-path conversion.
-		})}
+		})}}
 	}
 
-	return opts, nil
+	return xmlenc.DecryptOptions{}
 }
 
 func oaepHash(name string) (crypto.Hash, error) {
@@ -185,9 +193,9 @@ func process(ctx context.Context, t task) (o output, err error) {
 	case "encrypt":
 		return probeEncrypt(ctx, t, b, options)
 	case nameEncryptWrap:
-		return probeKeyWrap(ctx, t, b, nil, options)
+		return probeKeyWrap(ctx, t, b, nil)
 	case nameEncryptDirect:
-		return probeSymmetric(ctx, t, b, nil, options)
+		return probeSymmetric(ctx, t, b, nil)
 	case "redirect-verify":
 		return probeRedirectVerify(ctx, t, b)
 	case "pki-verify":
@@ -205,7 +213,7 @@ func process(ctx context.Context, t task) (o output, err error) {
 	case "externalize":
 		return probeExternalize(ctx, t, doc)
 	case "decrypt-direct":
-		return probeSymmetric(ctx, t, b, doc, options)
+		return probeSymmetric(ctx, t, b, doc)
 	case "xades-sign":
 		return probeXAdESSign(ctx, t, doc)
 	case "xades-verify":
@@ -213,7 +221,7 @@ func process(ctx context.Context, t task) (o output, err error) {
 	case "decrypt":
 		return probeDecrypt(ctx, t, doc, options)
 	case "decrypt-wrap":
-		return probeKeyWrap(ctx, t, b, doc, options)
+		return probeKeyWrap(ctx, t, b, doc)
 	case "redirect-sign":
 		return probeRedirectSign(ctx, t, doc)
 	default:
@@ -221,7 +229,7 @@ func process(ctx context.Context, t task) (o output, err error) {
 	}
 }
 
-func probeElement(ctx context.Context, t task, doc *document.Document, options xmlenc.Options) (o output, e error) {
+func probeElement(ctx context.Context, t task, doc *document.Document, options xmlenc.RSAOptions) (o output, e error) {
 	selected := selectElement(doc.Root(), t.Selection)
 	if !selected.Valid() {
 		return o, errors.New("selected element missing")
@@ -237,16 +245,16 @@ func probeElement(ctx context.Context, t task, doc *document.Document, options x
 		}
 		defer clear(kek)
 
-		kw := xmlenc.KeyWrapOptions{Data: options, KeyAlgorithm: t.KeyAlgorithm}
+		kw := xmlenc.KeyWrapOptions{Data: t.cipherOptions(), KeyAlgorithm: t.KeyAlgorithm}
 		switch t.Mode {
 		case "encrypt-content-wrap":
 			result, _, e = xmlenc.EncryptContentWithKeyWrap(ctx, doc, selected, kek, kw)
 		case "decrypt-content-wrap":
-			result, _, e = xmlenc.DecryptContentWithKeyWrap(ctx, doc, selected, kek, kw)
+			result, _, e = xmlenc.DecryptContentWithKeyWrap(ctx, doc, selected, kek, kw, decryptionOptions(t))
 		case "encrypt-element-wrap":
 			result, _, e = xmlenc.EncryptElementWithKeyWrap(ctx, doc, selected, kek, kw)
 		default:
-			result, _, e = xmlenc.DecryptElementWithKeyWrap(ctx, doc, selected, kek, kw)
+			result, _, e = xmlenc.DecryptElementWithKeyWrap(ctx, doc, selected, kek, kw, decryptionOptions(t))
 		}
 	} else if strings.HasPrefix(t.Mode, "encrypt-") {
 		public, err := loadPublicKey(t.Key)
@@ -276,9 +284,9 @@ func probeElement(ctx context.Context, t task, doc *document.Document, options x
 		}
 
 		if content {
-			result, _, e = xmlenc.DecryptContent(ctx, doc, selected, decrypter, options)
+			result, _, e = xmlenc.DecryptContent(ctx, doc, selected, decrypter, options, decryptionOptions(t))
 		} else {
-			result, _, e = xmlenc.DecryptElement(ctx, doc, selected, decrypter, options)
+			result, _, e = xmlenc.DecryptElement(ctx, doc, selected, decrypter, options, decryptionOptions(t))
 		}
 	}
 
@@ -311,14 +319,14 @@ func probeExternalize(ctx context.Context, t task, doc *document.Document) (o ou
 	return o, e
 }
 
-func probeSymmetric(ctx context.Context, t task, b []byte, doc *document.Document, options xmlenc.Options) (o output, e error) {
+func probeSymmetric(ctx context.Context, t task, b []byte, doc *document.Document) (o output, e error) {
 	secret, err := read(t.Key)
 	if err != nil {
 		return o, err
 	}
 	defer clear(secret)
 
-	opts := xmlenc.SymmetricOptions{Data: options, KeyName: t.KeyName}
+	opts := xmlenc.SymmetricOptions{Data: t.cipherOptions(), KeyName: t.KeyName}
 	if t.Mode == nameEncryptDirect {
 		var encrypted *document.Document
 
@@ -339,14 +347,14 @@ func probeSymmetric(ctx context.Context, t task, b []byte, doc *document.Documen
 
 		o.Data, e = encrypted.XML(ctx)
 	} else if t.XML {
-		plain, err := xmlenc.DecryptDocumentWithKey(ctx, doc, secret, opts)
+		plain, err := xmlenc.DecryptDocumentWithKey(ctx, doc, secret, opts, decryptionOptions(t))
 		if err != nil {
 			return o, err
 		}
 
 		o.Data, e = plain.XML(ctx)
 	} else {
-		o.Data, e = xmlenc.DecryptBytesWithKey(ctx, doc, secret, opts)
+		o.Data, e = xmlenc.DecryptBytesWithKey(ctx, doc, secret, opts, decryptionOptions(t))
 	}
 
 	return o, e
@@ -399,7 +407,7 @@ func probeXAdESVerify(ctx context.Context, t task, doc *document.Document) (o ou
 	return o, nil
 }
 
-func probeEncrypt(ctx context.Context, t task, b []byte, options xmlenc.Options) (o output, e error) {
+func probeEncrypt(ctx context.Context, t task, b []byte, options xmlenc.RSAOptions) (o output, e error) {
 	var doc *document.Document
 
 	k, e := loadPublicKey(t.Key)
@@ -434,7 +442,7 @@ func probeEncrypt(ctx context.Context, t task, b []byte, options xmlenc.Options)
 	return o, e
 }
 
-func probeDecrypt(ctx context.Context, t task, doc *document.Document, options xmlenc.Options) (o output, e error) {
+func probeDecrypt(ctx context.Context, t task, doc *document.Document, options xmlenc.RSAOptions) (o output, e error) {
 	k, e := loadPrivateKey(t.Key)
 	if e != nil {
 		return o, e
@@ -446,7 +454,7 @@ func probeDecrypt(ctx context.Context, t task, doc *document.Document, options x
 	}
 
 	if t.XML {
-		d, e := xmlenc.DecryptDocument(ctx, doc, dec, options)
+		d, e := xmlenc.DecryptDocument(ctx, doc, dec, options, decryptionOptions(t))
 		if e != nil {
 			return o, e
 		}
@@ -456,12 +464,12 @@ func probeDecrypt(ctx context.Context, t task, doc *document.Document, options x
 		return o, e
 	}
 
-	o.Data, e = xmlenc.DecryptBytes(ctx, doc, dec, options)
+	o.Data, e = xmlenc.DecryptBytes(ctx, doc, dec, options, decryptionOptions(t))
 
 	return o, e
 }
 
-func probeKeyWrap(ctx context.Context, t task, b []byte, doc *document.Document, dataOptions xmlenc.Options) (o output, e error) {
+func probeKeyWrap(ctx context.Context, t task, b []byte, doc *document.Document) (o output, e error) {
 	kek, err := read(t.Key)
 	if err != nil {
 		return o, err
@@ -469,7 +477,7 @@ func probeKeyWrap(ctx context.Context, t task, b []byte, doc *document.Document,
 	defer clear(kek)
 
 	options := xmlenc.KeyWrapOptions{
-		Data:         dataOptions,
+		Data:         t.cipherOptions(),
 		KeyAlgorithm: t.KeyAlgorithm,
 	}
 	if t.Mode == nameEncryptWrap {
@@ -496,7 +504,7 @@ func probeKeyWrap(ctx context.Context, t task, b []byte, doc *document.Document,
 	}
 
 	if t.XML {
-		plaintext, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, doc, kek, options)
+		plaintext, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, doc, kek, options, decryptionOptions(t))
 		if err != nil {
 			return o, err
 		}
@@ -506,7 +514,7 @@ func probeKeyWrap(ctx context.Context, t task, b []byte, doc *document.Document,
 		return o, err
 	}
 
-	o.Data, err = xmlenc.DecryptBytesWithKeyWrap(ctx, doc, kek, options)
+	o.Data, err = xmlenc.DecryptBytesWithKeyWrap(ctx, doc, kek, options, decryptionOptions(t))
 
 	return o, err
 }

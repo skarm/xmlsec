@@ -29,8 +29,9 @@ type Options struct {
 	Extension ExtensionProcessor
 	// IDRules supplies ID attributes for XPath id(); high-level XMLDSig overrides them consistently.
 	IDRules []IDAttributeRule
-	// AllowedTransforms selects permitted transform URIs. Empty uses the built-in non-
-	// extension set. This low-level processor does not establish application profile policy.
+	// AllowedTransforms selects permitted transform URIs. Nil uses the built-in
+	// non-extension set. A non-nil empty slice denies all transforms, including
+	// implicit final canonicalization.
 	AllowedTransforms []string
 	// MaxTransforms bounds the chain length; the default is eight and the maximum is 64.
 	MaxTransforms int
@@ -79,10 +80,10 @@ func normalize(opt Options) (Options, error) {
 	d := DefaultOptions()
 
 	opt.IDRules = cloneRules(opt.IDRules)
-	if len(opt.AllowedTransforms) == 0 {
+	if opt.AllowedTransforms == nil {
 		opt.AllowedTransforms = d.AllowedTransforms
 	} else {
-		opt.AllowedTransforms = append([]string(nil), opt.AllowedTransforms...)
+		opt.AllowedTransforms = slices.Clone(opt.AllowedTransforms)
 	}
 
 	if opt.MaxTransforms == 0 {

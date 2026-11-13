@@ -1,9 +1,10 @@
 # Security policy
 
-The API is experimental. Full standards conformance and an independent security
-audit have not been established. No stable-release support or security response
-time is promised. Use a Go toolchain with security fixes that meets the
-requirements in [go.mod](go.mod).
+The public Go API is stable starting with v1.0.0 under the
+[compatibility policy](docs/compatibility.md#public-api). Full standards
+conformance and an independent security audit have not been established. No
+security response time is promised. Use a Go toolchain with security fixes that
+meets the requirements in [go.mod](go.mod).
 
 Supported profiles and limitations are documented in [compatibility](docs/compatibility.md).
 Applications must configure trust, signature coverage and resource access; see the

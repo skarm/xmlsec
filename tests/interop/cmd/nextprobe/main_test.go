@@ -31,14 +31,18 @@ func TestOAEPOptionsAndResourceBinding(t *testing.T) {
 	if err := os.WriteFile(resource, []byte{0, 1, 2, 255}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	options, err := encryptionOptions(task{DataAlgorithm: xmlenc.AES256GCM, OAEPHash: "384", OAEPMGFHash: "256", OAEPAlgorithm: xmlenc.RSAOAEP, OAEPLabel: []byte("bound"), OAEPAllowLegacy: true, AllowLegacy: true, Resource: resource, CipherURI: "urn:exact"})
+	options, err := encryptionOptions(task{DataAlgorithm: xmlenc.AES256GCM, OAEPHash: "384", OAEPMGFHash: "256", OAEPAlgorithm: xmlenc.RSAOAEP, OAEPLabel: []byte("bound"), OAEPAllowLegacy: true, AllowLegacy: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.DataAlgorithm != xmlenc.AES256GCM || options.OAEP == nil || options.OAEP.Hash != crypto.SHA384 || options.OAEP.MGFHash != crypto.SHA256 || options.OAEP.Algorithm != xmlenc.RSAOAEP || !options.OAEP.AllowLegacy || !options.AllowLegacy || !bytes.Equal(options.OAEP.Label, []byte("bound")) || options.External == nil || options.External.URI != "urn:exact" {
+	if options.DataAlgorithm != xmlenc.AES256GCM || options.OAEP == nil || options.OAEP.Hash != crypto.SHA384 || options.OAEP.MGFHash != crypto.SHA256 || options.OAEP.Algorithm != xmlenc.RSAOAEP || !options.OAEP.AllowLegacy || !options.AllowLegacy || !bytes.Equal(options.OAEP.Label, []byte("bound")) {
 		t.Fatalf("options lost fields: %+v", options)
 	}
-	source, err := options.External.Resolver.Resolve(t.Context(), "urn:exact")
+	decryption := decryptionOptions(task{Resource: resource, CipherURI: "urn:exact"})
+	if decryption.External == nil || decryption.External.URI != "urn:exact" {
+		t.Fatalf("decryption options lost resource binding: %+v", decryption)
+	}
+	source, err := decryption.External.Resolver.Resolve(t.Context(), "urn:exact")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,16 +50,19 @@ func TestOAEPOptionsAndResourceBinding(t *testing.T) {
 	if err = errors.Join(err, source.Close()); err != nil || !bytes.Equal(body, []byte{0, 1, 2, 255}) {
 		t.Fatalf("resource: %x %v", body, err)
 	}
-	if source, err := options.External.Resolver.Resolve(t.Context(), "urn:other"); source != nil || err == nil {
+	if source, err := decryption.External.Resolver.Resolve(t.Context(), "urn:other"); source != nil || err == nil {
 		t.Fatal("resolver ignored exact URI binding")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if source, err := options.External.Resolver.Resolve(ctx, "urn:exact"); source != nil || !errors.Is(err, context.Canceled) {
+	if source, err := decryption.External.Resolver.Resolve(ctx, "urn:exact"); source != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("resolver ignored cancellation", err)
 	}
-	if options, err := encryptionOptions(task{}); err != nil || options.OAEP != nil || options.External != nil {
+	if options, err := encryptionOptions(task{}); err != nil || options.OAEP != nil {
 		t.Fatalf("default options introduced features: %+v %v", options, err)
+	}
+	if decryptionOptions(task{}).External != nil {
+		t.Fatal("default decryption options introduced a resolver")
 	}
 	if _, err := encryptionOptions(task{OAEPMGFHash: "invalid"}); err == nil {
 		t.Fatal("invalid MGF hash accepted")

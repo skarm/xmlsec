@@ -1067,7 +1067,7 @@ func (scenario coreSignatureCase) verifyExchange(t *testing.T, exchange coreSign
 			verifyJava(t, java(t, scenario.suite.fixture, "CoreOracle", nameVerify, scenario.key.public, exchange.ours, strconv.Itoa(index)), true)
 		}
 
-		raw, _ := command(t, scenario.suite.fixture, true, nil, scenario.suite.cli, "verify-core", flagKey, scenario.key.public, "-signature-index", strconv.Itoa(index), "-modern-algorithms", "-c14n", exchange.recipe.cm, flagIn, exchange.theirs)
+		raw, _ := command(t, scenario.suite.fixture, true, nil, scenario.suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, scenario.key.public, "-signature-index", strconv.Itoa(index), "-modern-algorithms", "-c14n", exchange.recipe.cm, flagIn, exchange.theirs)
 		verifyReport(t, raw, true)
 
 		scenario.suite.count++
@@ -1086,13 +1086,13 @@ func (scenario coreSignatureCase) rejectTamper(t *testing.T, exchange coreSignat
 	bad := write(t, filepath.Join(scenario.dir, "bad.xml"), changed)
 	args := append([]string{flagPublicKeyPEM, scenario.key.public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 	native(t, scenario.suite.fixture, false, nameVerify, append(args, "--node-id", "s0", bad)...)
-	raw, _ := command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", flagKey, scenario.key.public, "-signature-index", "0", "-modern-algorithms", "-c14n", exchange.recipe.cm, flagIn, bad)
+	raw, _ := command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, scenario.key.public, "-signature-index", "0", "-modern-algorithms", "-c14n", exchange.recipe.cm, flagIn, bad)
 	verifyReport(t, raw, false)
 
 	if exchange.recipe.form == nameEnveloping && exchange.recipe.cm == exc {
 		write(t, bad, bytes.Replace(original, []byte("aGVsbG8="), []byte("aGVsbG8h"), 1))
 		native(t, scenario.suite.fixture, false, nameVerify, append(args, bad)...)
-		raw, _ = command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", flagKey, scenario.key.public, "-signature-index", "0", "-modern-algorithms", flagIn, bad)
+		raw, _ = command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, scenario.key.public, "-signature-index", "0", "-modern-algorithms", flagIn, bad)
 		badSecond(t, verifyReport(t, raw, false))
 	}
 }
@@ -1108,7 +1108,7 @@ func (scenario coreSignatureCase) rejectBadSecond(t *testing.T) {
 		t.Fatal(oracle)
 	}
 
-	raw, _ := command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", flagKey, scenario.key.public, "-signature-index", "0", flagIn, bad)
+	raw, _ := command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, scenario.key.public, "-signature-index", "0", flagIn, bad)
 	badSecond(t, verifyReport(t, raw, false))
 }
 

@@ -41,7 +41,7 @@ func TestRoundTripAndPrimitives(t *testing.T) {
 
 	ctx := t.Context()
 	for _, b := range [][]byte{{}, []byte("payload\x00\xff"), bytes.Repeat([]byte{1, 2, 3}, 2048)} {
-		d, e := xmlenc.EncryptBytes(ctx, b, &k.PublicKey, xmlenc.Options{})
+		d, e := xmlenc.EncryptBytes(ctx, b, &k.PublicKey, xmlenc.RSAOptions{})
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -49,7 +49,7 @@ func TestRoundTripAndPrimitives(t *testing.T) {
 		raw, _ := d.XML(ctx)
 		d = parse(t, raw)
 
-		plain, e := xmlenc.DecryptBytes(ctx, d, k, xmlenc.Options{})
+		plain, e := xmlenc.DecryptBytes(ctx, d, k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 		if e != nil || !bytes.Equal(b, plain) {
 			t.Fatalf("roundtrip %v", e)
 		}
@@ -79,12 +79,12 @@ func TestXMLDocument(t *testing.T) {
 	d := parse(t, []byte(`<?outside ok?><r xmlns="urn:test" xml:lang="ru"><v>Текст &amp; 😀</v><!--inside--></r><!--outside-->`))
 	raw, _ := d.XML(t.Context())
 
-	encrypted, e := xmlenc.EncryptDocument(t.Context(), d, &k.PublicKey, xmlenc.Options{})
+	encrypted, e := xmlenc.EncryptDocument(t.Context(), d, &k.PublicKey, xmlenc.RSAOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	out, e := xmlenc.DecryptDocument(t.Context(), encrypted, k, xmlenc.Options{})
+	out, e := xmlenc.DecryptDocument(t.Context(), encrypted, k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -99,7 +99,7 @@ func TestXMLDocument(t *testing.T) {
 		t.Fatal("mutation")
 	}
 
-	if _, e := xmlenc.DecryptBytes(t.Context(), encrypted, k, xmlenc.Options{}); !errors.Is(e, xmlenc.ErrFormat) {
+	if _, e := xmlenc.DecryptBytes(t.Context(), encrypted, k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); !errors.Is(e, xmlenc.ErrFormat) {
 		t.Fatal("type confusion", e)
 	}
 }
@@ -107,7 +107,7 @@ func TestXMLDocument(t *testing.T) {
 func TestRejectsTamperingAndDowngrade(t *testing.T) {
 	k := key(t)
 
-	d, e := xmlenc.EncryptBytes(t.Context(), []byte("hello"), &k.PublicKey, xmlenc.Options{})
+	d, e := xmlenc.EncryptBytes(t.Context(), []byte("hello"), &k.PublicKey, xmlenc.RSAOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -122,7 +122,7 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 	}{{"gcm", xmlenc.AES256GCM, xmlenc.Namespace + "aes256-cbc"}, {"oaep", xmlenc.RSAOAEP, xmlenc.Namespace + "rsa-1_5"}, {"hash", xmlenc.SHA256, "urn:sha1"}, {"mgf", xmlenc.MGF1SHA256, xmlenc.Namespace11 + "mgf1sha1"}, {"extra-key", `</ds:KeyInfo>`, `<xenc:EncryptedKey/></ds:KeyInfo>`}} {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := parse(t, []byte(strings.Replace(text, tc.from, tc.to, 1)))
-			if p, e := xmlenc.DecryptBytes(t.Context(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrFormat) {
+			if p, e := xmlenc.DecryptBytes(t.Context(), bad, k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); p != nil || !errors.Is(e, xmlenc.ErrFormat) {
 				t.Fatal(e)
 			}
 		})
@@ -133,21 +133,21 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 		b[len(b)-1] ^= 1
 
 		bad := parse(t, []byte(strings.Replace(text, v.Text(), base64.StdEncoding.EncodeToString(b), 1)))
-		if p, e := xmlenc.DecryptBytes(t.Context(), bad, k, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
+		if p, e := xmlenc.DecryptBytes(t.Context(), bad, k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
 			t.Fatalf("%d %v", i, e)
 		}
 	}
 
 	wrong := key(t)
-	if p, e := xmlenc.DecryptBytes(t.Context(), d, wrong, xmlenc.Options{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
+	if p, e := xmlenc.DecryptBytes(t.Context(), d, wrong, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); p != nil || !errors.Is(e, xmlenc.ErrDecrypt) {
 		t.Fatal(e)
 	}
 
-	if _, e := xmlenc.EncryptBytes(t.Context(), []byte("12345"), &k.PublicKey, xmlenc.Options{MaxPlaintextBytes: 4}); !errors.Is(e, xmlenc.ErrPolicy) {
+	if _, e := xmlenc.EncryptBytes(t.Context(), []byte("12345"), &k.PublicKey, xmlenc.RSAOptions{MaxPlaintextBytes: 4}); !errors.Is(e, xmlenc.ErrPolicy) {
 		t.Fatal(e)
 	}
 
-	if p, e := xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.Options{MaxPlaintextBytes: 1}); p != nil || e == nil {
+	if p, e := xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.RSAOptions{MaxPlaintextBytes: 1}, xmlenc.DecryptOptions{}); p != nil || e == nil {
 		t.Fatal(nameLimit)
 	}
 }
@@ -155,7 +155,7 @@ func TestRejectsTamperingAndDowngrade(t *testing.T) {
 func TestProviderAndCancellation(t *testing.T) {
 	k := key(t)
 
-	d, e := xmlenc.EncryptBytes(t.Context(), []byte("hello"), &k.PublicKey, xmlenc.Options{})
+	d, e := xmlenc.EncryptBytes(t.Context(), []byte("hello"), &k.PublicKey, xmlenc.RSAOptions{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -168,13 +168,13 @@ func TestProviderAndCancellation(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if _, e := xmlenc.DecryptBytes(ctx, d, a, xmlenc.Options{}); e != nil || p.calls != 1 {
+	if _, e := xmlenc.DecryptBytes(ctx, d, a, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); e != nil || p.calls != 1 {
 		t.Fatal(e)
 	}
 
 	p.cancel = cancel
 
-	if out, e := xmlenc.DecryptBytes(ctx, d, a, xmlenc.Options{}); out != nil || !errors.Is(e, context.Canceled) {
+	if out, e := xmlenc.DecryptBytes(ctx, d, a, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(e, context.Canceled) {
 		t.Fatal(e)
 	}
 
@@ -201,7 +201,7 @@ func FuzzDecrypt(f *testing.F) {
 			return
 		}
 
-		_, _ = xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.Options{MaxPlaintextBytes: 1024})
+		_, _ = xmlenc.DecryptBytes(t.Context(), d, k, xmlenc.RSAOptions{MaxPlaintextBytes: 1024}, xmlenc.DecryptOptions{})
 	})
 }
 
@@ -215,7 +215,7 @@ func BenchmarkKeyWrap(b *testing.B) {
 			return xmlenc.EncryptBytesWithKeyWrap(ctx, plain, kek, opt)
 		},
 		func(encrypted *document.Document) ([]byte, error) {
-			return xmlenc.DecryptBytesWithKeyWrap(ctx, encrypted, kek, opt)
+			return xmlenc.DecryptBytesWithKeyWrap(ctx, encrypted, kek, opt, xmlenc.DecryptOptions{})
 		},
 	)
 }
@@ -230,7 +230,7 @@ func BenchmarkDirectKey(b *testing.B) {
 			return xmlenc.EncryptBytesWithKey(ctx, plain, secret, opt)
 		},
 		func(encrypted *document.Document) ([]byte, error) {
-			return xmlenc.DecryptBytesWithKey(ctx, encrypted, secret, opt)
+			return xmlenc.DecryptBytesWithKey(ctx, encrypted, secret, opt, xmlenc.DecryptOptions{})
 		},
 	)
 }
@@ -242,7 +242,7 @@ func TestECDHRoundTripAndWire(t *testing.T) {
 			for _, wrap := range []string{xmlenc.AES128KeyWrap, xmlenc.AES192KeyWrap, xmlenc.AES256KeyWrap} {
 				for _, hash := range []crypto.Hash{0, crypto.SHA256, crypto.SHA1} {
 					t.Run(fmt.Sprintf("%s/%s/%s/%d", curve, data, wrap, hash), func(t *testing.T) {
-						options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data}, KeyAlgorithm: wrap}
+						options := xmlenc.ECDHOptions{Data: xmlenc.CipherOptions{DataAlgorithm: data}, KeyAlgorithm: wrap}
 						if hash != 0 {
 							options.KDF = &xmlenc.ConcatKDFParameters{Hash: hash, AllowLegacy: hash == crypto.SHA1, AlgorithmID: []byte{0, 'a', 'l', 'g'}, PartyUInfo: []byte{0, 'u'}, PartyVInfo: []byte{0, 'v'}, SuppPubInfo: []byte{0, 0, 0, 1, 0}}
 						}
@@ -262,7 +262,7 @@ func TestECDHRoundTripAndWire(t *testing.T) {
 							t.Fatal(err)
 						}
 						doc = parse(t, wire)
-						out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, options)
+						out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, options, xmlenc.DecryptOptions{})
 						if err != nil || !bytes.Equal(out, plain) {
 							t.Fatal(out, err)
 						}
@@ -354,7 +354,7 @@ func TestECDHRejectsMetadataBeforeProvider(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, changed), adapter, options); out != nil || err == nil || provider.calls != 0 {
+			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, changed), adapter, options, xmlenc.DecryptOptions{}); out != nil || err == nil || provider.calls != 0 {
 				t.Fatal(out, err, provider.calls)
 			}
 		})
@@ -374,23 +374,23 @@ func TestECDHPolicyAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := xmlenc.DecryptBytesWithECDH(ctx, doc, adapter, xmlenc.ECDHOptions{}); err != nil || string(out) != "secret" || provider.calls != 1 {
+	if out, err := xmlenc.DecryptBytesWithECDH(ctx, doc, adapter, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{}); err != nil || string(out) != "secret" || provider.calls != 1 {
 		t.Fatal(out, err, provider.calls)
 	}
 	provider.cancel = cancel
-	if out, err := xmlenc.DecryptBytesWithECDH(ctx, doc, adapter, xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, context.Canceled) {
+	if out, err := xmlenc.DecryptBytesWithECDH(ctx, doc, adapter, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal(out, err)
 	}
 	var nilProvider *agreementProvider
 	if _, err := xmlenc.AdaptContextECDHRecipient(nilProvider); !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal(err)
 	}
-	for _, options := range []xmlenc.ECDHOptions{{Data: xmlenc.Options{OAEP: &xmlenc.OAEPParameters{}}}, {KeyAlgorithm: xmlenc.TripleDESKeyWrap}, {KDF: &xmlenc.ConcatKDFParameters{Hash: crypto.SHA1}}, {KDF: &xmlenc.ConcatKDFParameters{Hash: crypto.SHA512}}, {KDF: &xmlenc.ConcatKDFParameters{PartyUInfo: []byte{8, 0}}}, {RecipientKeyName: " leading"}, {RecipientKeyName: string([]byte{0xff})}, {RecipientKeyName: strings.Repeat("x", 1025)}} {
+	for _, options := range []xmlenc.ECDHOptions{{KeyAlgorithm: xmlenc.TripleDESKeyWrap}, {KDF: &xmlenc.ConcatKDFParameters{Hash: crypto.SHA1}}, {KDF: &xmlenc.ConcatKDFParameters{Hash: crypto.SHA512}}, {KDF: &xmlenc.ConcatKDFParameters{PartyUInfo: []byte{8, 0}}}, {RecipientKeyName: " leading"}, {RecipientKeyName: string([]byte{0xff})}, {RecipientKeyName: strings.Repeat("x", 1025)}} {
 		if out, err := xmlenc.EncryptBytesWithECDH(t.Context(), []byte("x"), recipient.PublicKey(), options); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 			t.Fatal(options, out, err)
 		}
 	}
-	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, nil, xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, nil, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal(out, err)
 	}
 	if out, err := xmlenc.EncryptBytesWithECDH(nil, []byte("x"), recipient.PublicKey(), xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
@@ -446,7 +446,7 @@ func TestECDHLeadingZeroSecret(t *testing.T) {
 		if omit {
 			input = agreementRecipientXML(t, input, "")
 		}
-		if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, input), recipient, options); err != nil || !bytes.Equal(out, plain) {
+		if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, input), recipient, options, xmlenc.DecryptOptions{}); err != nil || !bytes.Equal(out, plain) {
 			t.Fatal(out, err)
 		}
 	}
@@ -455,11 +455,11 @@ func TestECDHLeadingZeroSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, wire), adapter, options); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, wire), adapter, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal(out, err)
 	}
 	wrong := agreementKey(t, ecdh.P256())
-	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, agreementRecipientXML(t, wire, "")), wrong, options); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, agreementRecipientXML(t, wire, "")), wrong, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal(out, err)
 	}
 }
@@ -474,7 +474,7 @@ func TestECDHOptionalRecipientAndLimits(t *testing.T) {
 		}
 		raw := xmlBytes(t, doc)
 		absent := parse(t, agreementRecipientXML(t, raw, ""))
-		out, err := xmlenc.DecryptBytesWithECDH(t.Context(), absent, recipient, options)
+		out, err := xmlenc.DecryptBytesWithECDH(t.Context(), absent, recipient, options, xmlenc.DecryptOptions{})
 		if name == "" {
 			if err != nil || string(out) != "x" {
 				t.Fatal(out, err)
@@ -486,7 +486,7 @@ func TestECDHOptionalRecipientAndLimits(t *testing.T) {
 		}
 		if name != "" {
 			named := parse(t, agreementRecipientXML(t, raw, `<xenc:RecipientKeyInfo><ds:KeyName>recipient</ds:KeyName></xenc:RecipientKeyInfo>`))
-			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), named, recipient, options); err != nil || string(out) != "x" {
+			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), named, recipient, options, xmlenc.DecryptOptions{}); err != nil || string(out) != "x" {
 				t.Fatal(out, err)
 			}
 		}
@@ -496,12 +496,12 @@ func TestECDHOptionalRecipientAndLimits(t *testing.T) {
 		field[index] = byte(index)
 	}
 	parameters := &xmlenc.ConcatKDFParameters{AlgorithmID: field, PartyUInfo: field, PartyVInfo: field, SuppPubInfo: field, SuppPrivInfo: field}
-	options := xmlenc.ECDHOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1}, KDF: parameters}
+	options := xmlenc.ECDHOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 1}, KDF: parameters}
 	doc, err := xmlenc.EncryptBytesWithECDH(t.Context(), []byte("x"), recipient.PublicKey(), options)
 	if err != nil {
 		t.Fatal("bounded large metadata", err)
 	}
-	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, options); err != nil || string(out) != "x" {
+	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, options, xmlenc.DecryptOptions{}); err != nil || string(out) != "x" {
 		t.Fatal(out, err)
 	}
 	if out, err := xmlenc.EncryptBytesWithECDH(t.Context(), []byte("xx"), recipient.PublicKey(), options); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
@@ -510,12 +510,12 @@ func TestECDHOptionalRecipientAndLimits(t *testing.T) {
 	if fips140.Enabled() {
 		return
 	}
-	legacy := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES128KeyWrap, KDF: &xmlenc.ConcatKDFParameters{Hash: crypto.SHA1, AllowLegacy: true}}
+	legacy := xmlenc.ECDHOptions{Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES128KeyWrap, KDF: &xmlenc.ConcatKDFParameters{Hash: crypto.SHA1, AllowLegacy: true}}
 	doc, err = xmlenc.EncryptBytesWithECDH(t.Context(), []byte("legacy"), recipient.PublicKey(), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, legacy); err != nil || string(out) != "legacy" {
+	if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, legacy, xmlenc.DecryptOptions{}); err != nil || string(out) != "legacy" {
 		t.Fatal(out, err)
 	}
 }
@@ -547,7 +547,7 @@ func TestECDHOriginatorHints(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, changed), adapter, xmlenc.ECDHOptions{})
+			result, err := xmlenc.DecryptBytesWithECDH(t.Context(), parse(t, changed), adapter, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{})
 			if test.valid {
 				if err != nil || string(result) != "hint is not trust" || provider.calls != 1 {
 					t.Fatal(result, err, provider.calls)
@@ -563,7 +563,7 @@ func TestECDHLegacyDataPolicy(t *testing.T) {
 	recipient := agreementKey(t, ecdh.P256())
 	for _, algorithm := range []string{xmlenc.AES128CBC, xmlenc.AES192CBC, xmlenc.AES256CBC, xmlenc.TripleDESCBC} {
 		t.Run(algorithm, func(t *testing.T) {
-			options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: algorithm}}
+			options := xmlenc.ECDHOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm}}
 			if doc, err := xmlenc.EncryptBytesWithECDH(t.Context(), []byte("legacy"), recipient.PublicKey(), options); doc != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 				t.Fatal(doc, err)
 			}
@@ -578,7 +578,7 @@ func TestECDHLegacyDataPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, options); err != nil || string(got) != "legacy" {
+			if got, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, recipient, options, xmlenc.DecryptOptions{}); err != nil || string(got) != "legacy" {
 				t.Fatal(got, err)
 			}
 			options.Data.AllowLegacy = false
@@ -587,7 +587,7 @@ func TestECDHLegacyDataPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, adapter, options); got != nil || !errors.Is(err, xmlenc.ErrPolicy) || provider.calls != 0 {
+			if got, err := xmlenc.DecryptBytesWithECDH(t.Context(), doc, adapter, options, xmlenc.DecryptOptions{}); got != nil || !errors.Is(err, xmlenc.ErrPolicy) || provider.calls != 0 {
 				t.Fatal(got, err, provider.calls)
 			}
 		})

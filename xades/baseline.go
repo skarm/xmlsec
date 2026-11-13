@@ -567,7 +567,8 @@ func checkBaselineUnsigned(element document.Element) error {
 }
 
 func baselineCanonicalizationOptions(options xmldsig.SignatureOptions) xmldsig.SignatureOptions {
-	if len(options.AllowedCanonicalizationMethods) == 0 {
+	// Preserve explicitly empty lists for XMLDSig policy validation.
+	if options.AllowedCanonicalizationMethods == nil {
 		options.AllowedCanonicalizationMethods = []string{c14n.Exclusive, c14n.ExclusiveWithComments, c14n.Canonical10, c14n.Canonical10WithComments, c14n.Canonical11, c14n.Canonical11WithComments}
 	}
 
@@ -592,7 +593,7 @@ func appendBaselineSignerCertificate(template *xmldsig.SignatureTemplate, signer
 }
 
 func findBaselineQualifying(selected document.Element) (document.Element, error) {
-	var qualifying document.Element
+	var element document.Element
 
 	for _, object := range selected.Children() {
 		if object.Name() != ds(lexicon.DSigElementObject) {
@@ -608,15 +609,15 @@ func findBaselineQualifying(selected document.Element) (document.Element, error)
 				continue
 			}
 
-			if qualifying.Valid() {
+			if element.Valid() {
 				return document.Element{}, ErrProfile
 			}
 
-			qualifying = child
+			element = child
 		}
 	}
 
-	return qualifying, nil
+	return element, nil
 }
 
 func normalizeBaselineVerifyOptions(options BaselineVerifyOptions) (BaselineVerifyOptions, error) {

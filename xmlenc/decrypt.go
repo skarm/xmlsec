@@ -12,8 +12,8 @@ import (
 
 // DecryptBytes accepts standalone, untyped EncryptedData and an explicit RSA
 // recipient. An inline EncryptedKey selects no trust source or key.
-func DecryptBytes(ctx context.Context, doc *document.Document, recipient crypto.Decrypter, options Options) ([]byte, error) {
-	p, err := rsaDecryptProfile(ctx, options, recipient)
+func DecryptBytes(ctx context.Context, doc *document.Document, recipient crypto.Decrypter, options RSAOptions, decryption DecryptOptions) ([]byte, error) {
+	p, err := rsaDecryptProfile(ctx, options, recipient, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -24,8 +24,8 @@ func DecryptBytes(ctx context.Context, doc *document.Document, recipient crypto.
 // DecryptDocument accepts only Type #Element, decrypts the ciphertext and
 // requires a single UTF-8/NFC element under the configured XML limits. No output
 // is returned on failure, including malformed or over-budget decrypted XML.
-func DecryptDocument(ctx context.Context, doc *document.Document, recipient crypto.Decrypter, options Options) (*document.Document, error) {
-	p, err := rsaDecryptProfile(ctx, options, recipient)
+func DecryptDocument(ctx context.Context, doc *document.Document, recipient crypto.Decrypter, options RSAOptions, decryption DecryptOptions) (*document.Document, error) {
+	p, err := rsaDecryptProfile(ctx, options, recipient, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -35,8 +35,8 @@ func DecryptDocument(ctx context.Context, doc *document.Document, recipient cryp
 
 // DecryptBytesWithKeyWrap accepts untyped EncryptedData and the explicit KEK.
 // Both Algorithm values must match the caller's options exactly.
-func DecryptBytesWithKeyWrap(ctx context.Context, doc *document.Document, kek []byte, options KeyWrapOptions) ([]byte, error) {
-	p, err := keyWrapProfile(ctx, kek, options)
+func DecryptBytesWithKeyWrap(ctx context.Context, doc *document.Document, kek []byte, options KeyWrapOptions, decryption DecryptOptions) ([]byte, error) {
+	p, err := keyWrapDecryptProfile(ctx, kek, options, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -46,8 +46,8 @@ func DecryptBytesWithKeyWrap(ctx context.Context, doc *document.Document, kek []
 
 // DecryptDocumentWithKeyWrap accepts only Type #Element with an explicit KEK
 // and requires a single UTF-8/NFC element under the configured XML limits.
-func DecryptDocumentWithKeyWrap(ctx context.Context, doc *document.Document, kek []byte, options KeyWrapOptions) (*document.Document, error) {
-	p, err := keyWrapProfile(ctx, kek, options)
+func DecryptDocumentWithKeyWrap(ctx context.Context, doc *document.Document, kek []byte, options KeyWrapOptions, decryption DecryptOptions) (*document.Document, error) {
+	p, err := keyWrapDecryptProfile(ctx, kek, options, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func decryptDocument(ctx context.Context, doc *document.Document, p profile) (*d
 		return nil, ErrDecrypt
 	}
 
-	parsed, err := document.Parse(ctx, raw, p.options.XMLLimits)
+	parsed, err := document.Parse(ctx, raw, p.decryption.XMLLimits)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

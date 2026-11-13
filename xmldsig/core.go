@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
@@ -43,10 +42,9 @@ const (
 	nameSignatureProperty   = "SignatureProperty"
 )
 
-// SignatureOptions verifies an explicitly selected signature. Same-document
-// references are enabled; external resources and recursive Manifest checks require
-// opt-in. Zero options do not require root coverage. Applications should set
-// RequiredElements or ExpectedURIs, or both, for their coverage contract.
+// SignatureOptions configures verification of a selected signature. Same-document
+// references are enabled by default. External resources and recursive Manifest
+// checks require opt-in.
 type SignatureOptions struct {
 	// External enables external references with a mandatory allowlist. Nil disables them.
 	External *ExternalReferences
@@ -60,8 +58,8 @@ type SignatureOptions struct {
 	AdditionalIDRules []reference.IDAttributeRule
 	// Policy sets permitted signature and digest algorithms and key and processing limits.
 	Policy Policy
-	// AllowedCanonicalizationMethods defaults to Exclusive C14N, independently of
-	// Reference transforms.
+	// AllowedCanonicalizationMethods is independent of Reference transforms.
+	// Nil selects Exclusive C14N. A non-nil empty list is rejected.
 	AllowedCanonicalizationMethods []string
 	// Processing sets reference transform permissions, extensions and execution budgets.
 	Processing reference.Options
@@ -73,8 +71,14 @@ type SignatureOptions struct {
 	RequiredElements []document.Element
 	// ExpectedURIs requires an exact multiset of direct reference URI spellings,
 	// independent of order. Nil disables this check. Repeated URIs with different
-	// transforms are permitted.
+	// transforms are permitted. Use RequiredElements to check element coverage
+	// after those transforms.
 	ExpectedURIs []string
+	// AllowUnspecifiedCoverage permits verification without application coverage
+	// requirements. SignatureValue and all direct Reference digests are still
+	// checked, along with any explicitly supplied requirements. Use CoversElement
+	// before consuming XML that has no RequiredElements check.
+	AllowUnspecifiedCoverage bool
 }
 
 // SignatureResult records acceptance after SignatureValue, every direct Reference
@@ -158,16 +162,18 @@ type VerificationReport struct {
 	Error string `json:"error,omitempty"`
 }
 
-// VerifySignature validates ONLY the explicitly selected signature with the
-// caller's trusted key. It does not trust KeyInfo or any other signature.
+// VerifySignature verifies the selected signature with the caller's trusted key.
+// Set RequiredElements, ExpectedURIs, or AllowUnspecifiedCoverage in
+// [SignatureOptions]. Use RequiredElements to require coverage of XML elements.
+// Key selection remains the caller's responsibility.
 func VerifySignature(ctx context.Context, doc *document.Document, selected document.Element, key crypto.PublicKey, opt SignatureOptions) (*SignatureResult, error) {
 	result, _, err := VerifySignatureDetailed(ctx, doc, selected, key, opt)
 	return result, err
 }
 
-// VerifySignatureDetailed stops at the first error and leaves unprocessed
-// references not-checked. No successful Result accompanies a failure. The report
-// contains diagnostic strings/steps only, never partially authenticated payloads.
+// VerifySignatureDetailed applies the same checks as [VerifySignature]. It stops
+// at the first error and marks unprocessed references [NotChecked]. On failure
+// it returns diagnostics without a result.
 func VerifySignatureDetailed(ctx context.Context, doc *document.Document, selected document.Element, key crypto.PublicKey, opt SignatureOptions) (*SignatureResult, *VerificationReport, error) {
 	return verifySignatureDetailed(ctx, doc, selected, signatureCredential{public: key}, opt)
 }
@@ -296,15 +302,9 @@ func coreOptions(doc *document.Document, opt SignatureOptions) (SignatureOptions
 		return opt, p, fmt.Errorf("%w: signature count limit", ErrPolicy)
 	}
 
-	opt.AllowedCanonicalizationMethods = append([]string(nil), opt.AllowedCanonicalizationMethods...)
-	if len(opt.AllowedCanonicalizationMethods) == 0 {
-		opt.AllowedCanonicalizationMethods = []string{c14n.Exclusive}
-	}
-
-	for _, method := range opt.AllowedCanonicalizationMethods {
-		if !canonicalAlgorithm(method) {
-			return opt, p, fmt.Errorf("%w: canonicalization policy", ErrAlgorithm)
-		}
+	opt.AllowedCanonicalizationMethods, err = normalizeCanonicalizationMethods(opt.AllowedCanonicalizationMethods)
+	if err != nil {
+		return opt, p, err
 	}
 
 	if err := reference.ValidateTransforms(nil, opt.Processing); err != nil {
@@ -391,6 +391,10 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 	opt, p, err := coreOptions(doc, opt)
 	if err != nil {
 		return nil, err
+	}
+
+	if !template && !opt.AllowUnspecifiedCoverage && len(opt.RequiredElements) == 0 && len(opt.ExpectedURIs) == 0 {
+		return nil, fmt.Errorf("%w: set RequiredElements, ExpectedURIs, or AllowUnspecifiedCoverage", ErrPolicy)
 	}
 
 	if len(findSignatures(doc)) > opt.MaxSignatures {

@@ -13,13 +13,11 @@ func (g *keyGraph) graphAgreementOptions(binding KeyGraphKey) (ECDHOptions, erro
 		options = *binding.ECDH
 	}
 
-	if options.Data != (Options{}) {
+	if options.Data != (CipherOptions{}) {
 		return ECDHOptions{}, ErrPolicy
 	}
 
 	options.Data = g.profile.options
-	// OAEP grants concern only RSA bindings in this same graph.
-	options.Data.OAEP = nil
 	if options.KeyAlgorithm != "" && options.KeyAlgorithm != binding.Algorithm {
 		return ECDHOptions{}, ErrPolicy
 	}

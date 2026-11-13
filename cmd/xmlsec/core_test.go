@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	nameSignatureGroup = "signature"
-	flagPreserve       = "-preserve"
-	flagExpectURI      = "-expect-uri"
+	nameSignatureGroup           = "signature"
+	flagPreserve                 = "-preserve"
+	flagExpectURI                = "-expect-uri"
+	flagAllowUnspecifiedCoverage = "-allow-unspecified-coverage"
 )
 
 type stage4CLICase struct {
@@ -58,8 +59,8 @@ func TestStage4CLI(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{nameVerifyCore, flagKey, public, flagSignatureIndex, "0", "-manifest-transforms"},
-		{nameSignatureGroup, nameVerifyKeyInfo, flagKey, public, flagSignatureIndex, "0", "-keyinfo-base-uri", "https://example.test/signature.xml"},
+		{nameVerifyCore, flagAllowUnspecifiedCoverage, flagKey, public, flagSignatureIndex, "0", "-manifest-transforms"},
+		{nameSignatureGroup, nameVerifyKeyInfo, flagAllowUnspecifiedCoverage, flagKey, public, flagSignatureIndex, "0", "-keyinfo-base-uri", "https://example.test/signature.xml"},
 	} {
 		var output, stderr bytes.Buffer
 		if err := run(t.Context(), args, strings.NewReader(corpus.Cases[0].XML), &output, &stderr); err == nil {
@@ -213,12 +214,15 @@ func TestCoreCLI(t *testing.T) {
 	for _, args := range [][]string{
 		{nameVerifyCore},
 		{nameVerifyCore, flagKey, public},
-		{nameVerifyCore, flagKey, public, flagSignatureIndex, "99"},
+		{nameVerifyCore, flagAllowUnspecifiedCoverage, flagKey, public, flagSignatureIndex, "99"},
+		{nameVerifyCore, flagKey, public, flagSignatureIndex, "0"},
+		{nameVerifyCore, flagAllowUnspecifiedCoverage, flagKey, public, flagSignatureIndex, "0", "-allowed-methods="},
+		{nameVerifyCore, flagAllowUnspecifiedCoverage, flagKey, public, flagSignatureIndex, "0", "-allowed-digests="},
 		{nameSignTemplate, flagKey, private, flagSignatureIndex, "1"},
 		{nameSignTemplate, flagKey, private, flagSignatureIndex, "1", flagPreserve, "bad"},
 		{nameSignTemplate, flagKey, private, flagSignatureIndex, "1", flagPreserve, "9=" + public},
 		{nameSignTemplate, flagKey, private, flagSignatureIndex, "1", flagPreserve, "0=missing-file"},
-		{nameVerifyCore, flagKey, public, flagSignatureIndex, "0", nameExtra},
+		{nameVerifyCore, flagAllowUnspecifiedCoverage, flagKey, public, flagSignatureIndex, "0", nameExtra},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var out bytes.Buffer

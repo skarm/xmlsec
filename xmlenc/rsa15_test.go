@@ -19,7 +19,7 @@ func TestRSA15ExplicitPolicyAndSessionKey(t *testing.T) {
 		t.Skip("legacy RSA transport is disabled in FIPS mode")
 	}
 	k := key(t)
-	options := xmlenc.Options{KeyTransportAlgorithm: xmlenc.RSA15, AllowLegacy: true}
+	options := xmlenc.RSAOptions{AllowLegacy: true, KeyTransportAlgorithm: xmlenc.RSA15}
 	d, err := xmlenc.EncryptBytes(t.Context(), []byte("legacy recipient"), &k.PublicKey, options)
 	if err != nil {
 		t.Fatal(err)
@@ -40,21 +40,18 @@ func TestRSA15ExplicitPolicyAndSessionKey(t *testing.T) {
 	}
 	clear(secret)
 	provider := &rsa15Provider{PrivateKey: k}
-	plain, err := xmlenc.DecryptBytes(t.Context(), d, provider, options)
+	plain, err := xmlenc.DecryptBytes(t.Context(), d, provider, options, xmlenc.DecryptOptions{})
 	if err != nil || string(plain) != "legacy recipient" || provider.sessionBytes != 32 {
 		t.Fatalf("session-key provider contract: %q %v (%d)", plain, err, provider.sessionBytes)
 	}
-	for _, policy := range []xmlenc.Options{{}, {AllowLegacy: true}, {KeyTransportAlgorithm: xmlenc.RSA15}, {KeyTransportAlgorithm: xmlenc.RSA15, AllowLegacy: true, OAEP: &xmlenc.OAEPParameters{}}} {
-		if out, err := xmlenc.DecryptBytes(t.Context(), d, provider, policy); out != nil || err == nil {
+	for _, policy := range []xmlenc.RSAOptions{{}, {AllowLegacy: true}, {KeyTransportAlgorithm: xmlenc.RSA15}, {AllowLegacy: true, KeyTransportAlgorithm: xmlenc.RSA15, OAEP: &xmlenc.OAEPParameters{}}} {
+		if out, err := xmlenc.DecryptBytes(t.Context(), d, provider, policy, xmlenc.DecryptOptions{}); out != nil || err == nil {
 			t.Fatal("RSA15 accepted without exact explicit policy")
 		}
 	}
 	corrupt := bytes.Replace(raw, []byte(wrappedValue), []byte(base64.StdEncoding.EncodeToString(make([]byte, k.Size()))), 1)
-	if out, err := xmlenc.DecryptBytes(t.Context(), parse(t, corrupt), provider, options); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptBytes(t.Context(), parse(t, corrupt), provider, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatalf("bad padding returned plaintext or a padding oracle: %v", err)
-	}
-	if _, err := xmlenc.EncryptBytesWithKey(t.Context(), []byte("x"), make([]byte, 32), xmlenc.SymmetricOptions{Data: options}); !errors.Is(err, xmlenc.ErrPolicy) {
-		t.Fatal("RSA policy silently ignored by direct-key API", err)
 	}
 }
 

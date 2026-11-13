@@ -195,7 +195,7 @@ func testCLIProtectedKeysCase(t *testing.T, mode *string, private *string, forma
 		input = *template
 
 		args = append(args, flagSignatureIndex, "0")
-		verify = []string{nameVerifyCore, flagKey, *public, flagSignatureIndex, "0"}
+		verify = []string{nameVerifyCore, flagAllowUnspecifiedCoverage, flagKey, *public, flagSignatureIndex, "0"}
 	case nameSignDetached:
 		args = append(args, flagResources, *resources)
 		verify = []string{nameVerifyDetached, flagKey, *public, flagResources, *resources}

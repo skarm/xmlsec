@@ -161,7 +161,7 @@ func TestSignedWrongCertificateDigest(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	opts := xmldsig.SignatureOptions{AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}}
+	opts := xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true, AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}}
 
 	signed, e := xmldsig.SignTemplate(t.Context(), template, xmldsig.Signatures(template)[0], k, xmldsig.TemplateSignOptions{Validation: opts})
 	if e != nil {
@@ -214,7 +214,7 @@ func TestBasicInvalidCreation(t *testing.T) {
 
 func TestAuthenticatedSigningTimeLexicalForm(t *testing.T) {
 	d, _, key, certificate := sign(t)
-	options := xmldsig.SignatureOptions{AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}}
+	options := xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true, AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}}
 
 	for _, tc := range []struct {
 		value string
@@ -805,6 +805,7 @@ func TestBaselineCounterSignatureBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	validation := preserve.Options
+	validation.ExpectedURIs = []string{"#signed-properties", "#counter-properties"}
 	preserve.Signature = xmldsig.Signatures(changed)[0]
 	changed, err = xmldsig.SignTemplate(t.Context(), changed, xmldsig.Signatures(changed)[1], key, xmldsig.TemplateSignOptions{Validation: validation, Preserve: []xmldsig.SignatureRequirement{preserve}})
 	if err != nil {
@@ -1197,6 +1198,7 @@ func baselineResign(t *testing.T, source *document.Document, key *ecdsa.PrivateK
 	if err != nil {
 		t.Fatal(err)
 	}
+	validation.AllowUnspecifiedCoverage = true
 	return signed, xmldsig.Signatures(signed)[0], validation
 }
 

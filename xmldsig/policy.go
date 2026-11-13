@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -30,10 +31,10 @@ const (
 // options, keys and signers unchanged until the operation returns.
 type Policy struct {
 	// AllowedSignatureMethods lists accepted signature algorithm URIs.
-	// Empty selects DefaultPolicy rather than denying all algorithms.
+	// Nil selects DefaultPolicy. A non-nil empty list is rejected.
 	AllowedSignatureMethods []string
 	// AllowedDigestMethods lists accepted reference digest URIs.
-	// Empty selects DefaultPolicy rather than denying all algorithms.
+	// Nil selects DefaultPolicy. A non-nil empty list is rejected.
 	AllowedDigestMethods []string
 	// MinRSABits sets the minimum RSA modulus size. Zero selects 2048 bits.
 	MinRSABits int
@@ -64,6 +65,16 @@ type Policy struct {
 	// AllowHMACTruncation permits shorter tags subject to MinHMACOutputBits.
 	// False requires a full tag.
 	AllowHMACTruncation bool
+}
+
+// IsZero reports whether all fields have their Go zero values. An explicitly
+// empty algorithm list is a configured value and will fail policy validation.
+func (p Policy) IsZero() bool {
+	return p.AllowedSignatureMethods == nil && p.AllowedDigestMethods == nil &&
+		p.MinRSABits == 0 && p.MaxRSABits == 0 && p.MaxReferences == 0 && p.MaxCanonicalBytes == 0 &&
+		p.MinPSSSaltBytes == 0 && p.MaxPSSSaltBytes == 0 &&
+		p.MinHMACKeyBytes == 0 && p.MaxHMACKeyBytes == 0 && p.MinHMACOutputBits == 0 &&
+		!p.AllowLegacySigning && !p.AllowHMACTruncation
 }
 
 // DefaultPolicy returns the default RSA/ECDSA SHA-2 signature policy.
@@ -188,16 +199,17 @@ func intersectPolicyMethods(first, second []string) []string {
 
 func normalizePolicy(p Policy) (Policy, error) {
 	d := DefaultPolicy()
-	if len(p.AllowedSignatureMethods) == 0 {
-		p.AllowedSignatureMethods = d.AllowedSignatureMethods
-	} else {
-		p.AllowedSignatureMethods = append([]string(nil), p.AllowedSignatureMethods...)
+
+	var err error
+
+	p.AllowedSignatureMethods, err = normalizeAlgorithmList(p.AllowedSignatureMethods, d.AllowedSignatureMethods, "signature method")
+	if err != nil {
+		return p, err
 	}
 
-	if len(p.AllowedDigestMethods) == 0 {
-		p.AllowedDigestMethods = d.AllowedDigestMethods
-	} else {
-		p.AllowedDigestMethods = append([]string(nil), p.AllowedDigestMethods...)
+	p.AllowedDigestMethods, err = normalizeAlgorithmList(p.AllowedDigestMethods, d.AllowedDigestMethods, "digest method")
+	if err != nil {
+		return p, err
 	}
 
 	if p.MinRSABits == 0 {
@@ -255,8 +267,38 @@ func normalizePolicy(p Policy) (Policy, error) {
 	return p, nil
 }
 
+func normalizeAlgorithmList(methods, defaults []string, name string) ([]string, error) {
+	if methods == nil {
+		return defaults, nil
+	}
+
+	if len(methods) == 0 {
+		return methods, fmt.Errorf("%w: empty %s allowlist", ErrPolicy, name)
+	}
+
+	return slices.Clone(methods), nil
+}
+
 func permits(allowed []string, value string) bool {
 	return slices.Contains(allowed, value)
+}
+
+func normalizeCanonicalizationMethods(methods []string) ([]string, error) {
+	if methods == nil {
+		return []string{c14n.Exclusive}, nil
+	}
+
+	if len(methods) == 0 {
+		return nil, fmt.Errorf("%w: empty canonicalization method allowlist", ErrPolicy)
+	}
+
+	for _, method := range methods {
+		if !canonicalAlgorithm(method) {
+			return nil, fmt.Errorf("%w: allowed canonicalization", ErrAlgorithm)
+		}
+	}
+
+	return slices.Clone(methods), nil
 }
 
 func normalizeID(name document.Name) (document.Name, error) {

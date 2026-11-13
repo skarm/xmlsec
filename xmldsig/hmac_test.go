@@ -81,7 +81,7 @@ func TestLegacyHMACSHA1(t *testing.T) {
 	}
 
 	changed := coreParse(t, strings.Replace(string(raw), "legacy fixture", "changed fixture", 1))
-	if _, err := xmldsig.VerifyHMACSignature(t.Context(), changed, xmldsig.Signatures(changed)[0], secret, xmldsig.SignatureOptions{Policy: opt.Policy}); !errors.Is(err, xmldsig.ErrDigest) {
+	if _, err := xmldsig.VerifyHMACSignature(t.Context(), changed, xmldsig.Signatures(changed)[0], secret, xmldsig.SignatureOptions{Policy: opt.Policy, ExpectedURIs: opt.ExpectedURIs}); !errors.Is(err, xmldsig.ErrDigest) {
 		t.Fatal("changed HMAC XML", err)
 	}
 }
@@ -277,7 +277,7 @@ func TestHMACExternalAuthenticationGate(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	opt := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy(), External: &xmldsig.ExternalReferences{AllowedURIs: []string{uriUrnData}, Resolver: resolver}}
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy(), ExpectedURIs: []string{uriUrnData, uriUrnData}, External: &xmldsig.ExternalReferences{AllowedURIs: []string{uriUrnData}, Resolver: resolver}}
 
 	out, e := xmldsig.SignHMACTemplate(ctx, d, s, key, xmldsig.TemplateSignOptions{Validation: opt})
 	if e != nil || calls != 1 || closed != 1 {
@@ -311,7 +311,7 @@ func TestHMACPreservationAndManifests(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	opt := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy()}
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy(), ExpectedURIs: []string{dataReferenceURI}}
 
 	signed, e := xmldsig.SignHMACTemplate(ctx, d, s, key, xmldsig.TemplateSignOptions{Validation: opt})
 	if e != nil {
@@ -337,7 +337,7 @@ func TestHMACPreservationAndManifests(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if _, e = xmldsig.VerifySignature(ctx, out, xmldsig.Signatures(out)[1], newKey.Public(), xmldsig.SignatureOptions{Policy: xmldsig.ParameterizedPolicy()}); e != nil {
+	if _, e = xmldsig.VerifySignature(ctx, out, xmldsig.Signatures(out)[1], newKey.Public(), xmldsig.SignatureOptions{Policy: xmldsig.ParameterizedPolicy(), ExpectedURIs: []string{dataReferenceURI}}); e != nil {
 		t.Fatal(e)
 	}
 
@@ -365,7 +365,7 @@ func TestHMACPreservationAndManifests(t *testing.T) {
 func TestHMACConcurrentReadOnlyVerification(t *testing.T) {
 	key := testMACKey()
 	d, s := paramTemplate(t, xmldsig.HMACSHA256, xmldsig.SignatureParameters{})
-	o := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy()}
+	o := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy(), ExpectedURIs: []string{"#a", "#b"}}
 
 	out, e := xmldsig.SignHMACTemplate(t.Context(), d, s, key, xmldsig.TemplateSignOptions{Validation: o})
 	if e != nil {

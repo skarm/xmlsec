@@ -168,7 +168,7 @@ func TestOpenAMAuthorityHTTP(t *testing.T) {
 		}
 		// OpenAM's released Mapping implementation encrypts to the requester. The
 		// envelope signature is verified before its explicitly configured CBC policy.
-		id, err := r.DecryptNameID(t.Context(), &protocol.DecryptionOptions{Keys: []crypto.Decrypter{key.signer.(crypto.Decrypter)}, Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, KeyTransportAlgorithm: xmlenc.RSA15, AllowLegacy: true}})
+		id, err := r.DecryptNameID(t.Context(), &protocol.DecryptionOptions{Keys: []crypto.Decrypter{key.signer.(crypto.Decrypter)}, Data: xmlenc.RSAOptions{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true, KeyTransportAlgorithm: xmlenc.RSA15}})
 		if err != nil {
 			t.Fatal(err)
 		}

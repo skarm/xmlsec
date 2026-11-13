@@ -136,7 +136,7 @@ func TestMappingLegacyEncryptionNeedsVerifiedEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := xmlenc.Options{DataAlgorithm: xmlenc.AES256CBC, AllowLegacy: true}
+	data := xmlenc.RSAOptions{DataAlgorithm: xmlenc.AES256CBC, AllowLegacy: true}
 	enc, err := protocol.EncryptMappedIdentifier(t.Context(), plain, &protocol.EncryptionOptions{Targets: protocol.EncryptNameID, Recipient: &recipient.PublicKey, Data: data})
 	if err != nil {
 		t.Fatal(err)

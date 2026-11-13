@@ -15,6 +15,7 @@ import (
 
 	"github.com/skarm/xmlsec/evidence"
 	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/pkipast"
 )
 
 const (
@@ -81,11 +82,14 @@ type HistoricalConfig struct {
 	HistoricalOptions
 }
 
+type pastValidationAccess = pkipast.Access[*HistoricalPath, *PastCertificateResult, *PastCertificateReport]
+
 // HistoricalSession holds the evidence, explicit present time and bounded caches
 // for one offline historical operation. Its methods serialize cache access and
 // return immutable objects. Source authentication, freshness, proof of existence
 // and past acceptance are separate checks.
 type HistoricalSession struct {
+	pastValidationAccess
 	// mu serializes operation-local caches and cumulative work counters.
 	mu sync.Mutex
 	// verifier retains the explicit certificate and revocation policy.
@@ -196,9 +200,9 @@ func (s *HistoricalSession) VerifyCurrent(ctx context.Context, targetDER []byte)
 	return s.verifier.Verify(ctx, targetDER, s.now, s.evidence)
 }
 
-// ValidatePast executes past certificate validation and time sliding. The proof
-// set is minted by the library historical workflow, never caller timestamps.
-func (s *HistoricalSession) ValidatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+// validatePastCertificate executes past certificate validation and time sliding
+// using proofs produced by the historical validation workflow.
+func (s *HistoricalSession) validatePastCertificate(ctx context.Context, targetDER []byte, proofs *historicalproof.Set, at time.Time) (*PastCertificateResult, *PastCertificateReport, error) {
 	if err := s.request(ctx); err != nil {
 		return nil, &PastCertificateReport{cause: err}, err
 	}
@@ -206,12 +210,12 @@ func (s *HistoricalSession) ValidatePast(ctx context.Context, targetDER []byte, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.validatePast(ctx, targetDER, proofs)
+	return s.validatePast(ctx, targetDER, proofs, at)
 }
 
-// ValidatePastPath evaluates one prospective path for callers with additional
-// signature-specific issuer-PoE guards, without silently selecting another path.
-func (s *HistoricalSession) ValidatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+// validatePastCertificatePath evaluates one path selected by the historical
+// validation workflow.
+func (s *HistoricalSession) validatePastCertificatePath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
 	if err := s.request(ctx); err != nil {
 		return nil, &PastCertificateReport{cause: err}, err
 	}
@@ -219,7 +223,7 @@ func (s *HistoricalSession) ValidatePastPath(ctx context.Context, path *Historic
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.validatePastPath(ctx, path, proofs)
+	return s.validatePastPath(ctx, path, proofs, time.Time{})
 }
 
 func (s *HistoricalSession) request(ctx context.Context) error {
@@ -449,7 +453,10 @@ func (v *Verifier) NewHistoricalSession(ctx context.Context, options HistoricalO
 		return nil, err
 	}
 
-	return &HistoricalSession{verifier: v, options: options, now: now.UTC(), evidence: owned, paths: make(map[[sha256.Size]byte][]*HistoricalPath), claims: make(map[[sha256.Size]byte][]historicalClaim)}, nil
+	s := &HistoricalSession{verifier: v, options: options, now: now.UTC(), evidence: owned, paths: make(map[[sha256.Size]byte][]*HistoricalPath), claims: make(map[[sha256.Size]byte][]historicalClaim)}
+	s.pastValidationAccess = pkipast.NewAccess(s.validatePastCertificate, s.validatePastCertificatePath)
+
+	return s, nil
 }
 
 func (v *Verifier) historicalOptions(options HistoricalOptions) (HistoricalOptions, error) {

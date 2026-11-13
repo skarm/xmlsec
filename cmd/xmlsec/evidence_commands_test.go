@@ -334,6 +334,7 @@ func TestProtocolJSONDoesNotOverrideSignaturePolicy(t *testing.T) {
 			{"empty algorithm list", `{"AllowedSignatureMethods":[]}`, true},
 			{"empty digest list", `{"AllowedDigestMethods":[]}`, true},
 			{"key limit", `{"MinRSABits":2048}`, true},
+			{"legacy signing flag", `{"AllowLegacySigning":true}`, true},
 			{"algorithm flag", `{"AllowHMACTruncation":true}`, true},
 		} {
 			t.Run(command+"/"+tc.name, func(t *testing.T) {

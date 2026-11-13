@@ -503,7 +503,7 @@ func TestModernTemplate(t *testing.T) {
 
 	text := "ed object"
 
-	opt := xmldsig.SignatureOptions{Policy: xmldsig.ModernPolicy()}
+	opt := xmldsig.SignatureOptions{Policy: xmldsig.ModernPolicy(), ExpectedURIs: []string{"#a"}}
 
 	for _, method := range []string{xmldsig.Ed25519, xmldsig.Ed25519ph} {
 		t.Run(method, func(t *testing.T) {
@@ -663,7 +663,7 @@ func BenchmarkVerifySignature(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := xmldsig.VerifySignature(b.Context(), d, selected, key, xmldsig.SignatureOptions{}); err != nil {
+		if _, err := xmldsig.VerifySignature(b.Context(), d, selected, key, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); err != nil {
 			b.Fatal(err)
 		}
 	}

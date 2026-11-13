@@ -261,7 +261,7 @@ func TestXMLSecECDHAgreement(t *testing.T) {
 					hash crypto.Hash
 				}{{"default", 0}, {"SHA256", crypto.SHA256}, {"SHA1", crypto.SHA1}} {
 					t.Run(curve.name+"/"+data.name+"/"+wrap.name+"/"+hash.name, func(t *testing.T) {
-						options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri}, KeyAlgorithm: wrap.uri, RecipientKeyName: "recipient"}
+						options := xmlenc.ECDHOptions{Data: xmlenc.CipherOptions{DataAlgorithm: data.uri}, KeyAlgorithm: wrap.uri, RecipientKeyName: "recipient"}
 						if hash.hash != 0 {
 							options.KDF = &xmlenc.ConcatKDFParameters{Hash: hash.hash, AlgorithmID: append([]byte{0}, []byte(wrap.uri)...), PartyUInfo: []byte{0, 'U'}, PartyVInfo: []byte{0, 'V'}, SuppPubInfo: []byte{0, 0, 0, 1, 0}, SuppPrivInfo: []byte{0, 0x42}, AllowLegacy: hash.hash == crypto.SHA1}
 						}
@@ -286,7 +286,7 @@ func TestXMLSecECDHLegacyData(t *testing.T) {
 		bits int
 	}{{"CBC128", xmlenc.AES128CBC, 128}, {"CBC192", xmlenc.AES192CBC, 192}, {"CBC256", xmlenc.AES256CBC, 256}, {"TripleDES", xmlenc.TripleDESCBC, 192}} {
 		t.Run(data.name, func(t *testing.T) {
-			options := xmlenc.ECDHOptions{Data: xmlenc.Options{DataAlgorithm: data.uri, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES256KeyWrap, RecipientKeyName: "recipient"}
+			options := xmlenc.ECDHOptions{Data: xmlenc.CipherOptions{DataAlgorithm: data.uri, AllowLegacy: true}, KeyAlgorithm: xmlenc.AES256KeyWrap, RecipientKeyName: "recipient"}
 			if data.uri != xmlenc.TripleDESCBC {
 				ecdhExchange(t, fixture, recipient, "P-256", data.bits, 32, options)
 				return
@@ -615,7 +615,7 @@ func TestXMLSecImplicitCipherCanonicalization(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			options := xmlenc.KeyGraphOptions{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}, Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES128CBC, Secret: key}}}
+			options := xmlenc.KeyGraphOptions{Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}, Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES128CBC, Secret: key}}}
 			out, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), doc, doc.Root().Children()[1], options)
 			if err != nil || !bytes.Equal(out, want) {
 				t.Fatal(out, err)
@@ -1178,7 +1178,7 @@ func (suite *selectedEncryptionSuite) encryptTheirs(t *testing.T, scenario *sele
 
 		if scenario.recipe.cm != "" {
 			write(t, scenario.output, restored)
-			raw, _ := command(t, suite.fixture, true, nil, suite.cli, "verify-core", flagKey, suite.key.public, "-signature-index", "0", "-c14n", scenario.recipe.cm, flagIn, scenario.output)
+			raw, _ := command(t, suite.fixture, true, nil, suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, suite.key.public, "-signature-index", "0", "-c14n", scenario.recipe.cm, flagIn, scenario.output)
 			verifyReport(t, raw, true)
 			native(t, suite.fixture, true, nameVerify, flagPublicKeyPEM, suite.key.public, flagIDAttrID, "urn:shadow:secret", flagEnabledReferenceURIs, "same-doc", scenario.output)
 		}
@@ -1266,7 +1266,7 @@ func ecdhExchange(t *testing.T, fixture *interopFixture, recipient *ecdh.Private
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decrypted, err := xmlenc.DecryptBytesWithECDH(t.Context(), imported, recipient, options); err != nil || !bytes.Equal(decrypted, plain) {
+	if decrypted, err := xmlenc.DecryptBytesWithECDH(t.Context(), imported, recipient, options, xmlenc.DecryptOptions{}); err != nil || !bytes.Equal(decrypted, plain) {
 		t.Fatal(decrypted, err)
 	}
 	ecdhOpenSSL(t, fixture, recipient, private, sender, external, kekBytes, options)
@@ -1274,7 +1274,7 @@ func ecdhExchange(t *testing.T, fixture *interopFixture, recipient *ecdh.Private
 		corrupt := corruptCipher(t, raw)
 		path := write(t, filepath.Join(fixture.work, "ecdh-corrupt.xml"), corrupt)
 		native(t, fixture, false, "decrypt", "--enabled-key-data", ecdhKeyData, "--privkey-pem:recipient", private, path)
-		if got, err := xmlenc.DecryptBytesWithECDH(t.Context(), xmlDoc(t, corrupt), recipient, options); got != nil || err == nil {
+		if got, err := xmlenc.DecryptBytesWithECDH(t.Context(), xmlDoc(t, corrupt), recipient, options, xmlenc.DecryptOptions{}); got != nil || err == nil {
 			t.Fatal(got, err)
 		}
 	}

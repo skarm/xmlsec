@@ -19,6 +19,7 @@ import (
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/uriref"
 	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/resource"
 )
 
 const (
@@ -29,22 +30,23 @@ const (
 // Resolver supplies original octets for an explicitly authorized URI. The library
 // does not automatically fetch HTTP or file resources or select XML fragments.
 // ExternalReferences.BaseURI enables relative URI resolution only when configured
-// for the general Signature API. Returned streams are closed on every path.
+// for the general Signature API.
 // Resolving and reading must honor ctx; the library cannot interrupt an arbitrary
 // blocked Read without leaving a worker behind.
 type Resolver interface {
-	// Resolve opens original bytes for an explicitly authorized URI. The caller closes the
-	// stream; resolving and reading must honor cancellation.
+	// Resolve opens original bytes for an explicitly authorized URI. As with
+	// [resource.Resolver], the consumer owns and closes every non-nil reader,
+	// even if Resolve also returns an error. When used by xmldsig, the library
+	// closes the reader.
 	Resolve(ctx context.Context, uri string) (io.ReadCloser, error)
 }
 
-// ResolverFunc adapts a function that returns owned readers for explicitly authorized
-// resources.
+// ResolverFunc adapts a function to the Resolver contract.
 type ResolverFunc func(context.Context, string) (io.ReadCloser, error)
 
-// Resolve calls the underlying application resolver function.
+// Resolve calls f. A nil function returns a nil reader and [resource.ErrResource].
 func (f ResolverFunc) Resolve(ctx context.Context, uri string) (io.ReadCloser, error) {
-	return f(ctx, uri)
+	return resource.ResolverFunc(f).Resolve(ctx, uri)
 }
 
 // ResourceLimits bounds each external resource and aggregate resource reads within one
@@ -95,7 +97,8 @@ type DetachedVerifyOptions struct {
 	// ExpectedURIs is required and specifies the exact expected URI set, independent of
 	// order. A subset, superset or different resource set is rejected before I/O.
 	ExpectedURIs []string
-	// AllowedCanonicalizationMethods defaults to Exclusive C14N only.
+	// AllowedCanonicalizationMethods defaults to Exclusive C14N when nil.
+	// A non-nil empty list is rejected.
 	AllowedCanonicalizationMethods []string
 	// Policy sets permitted signature and digest algorithms and key and processing limits.
 	Policy Policy
@@ -293,15 +296,9 @@ func prepareDetachedVerification(ctx context.Context, doc *document.Document, ke
 		return nil, err
 	}
 
-	methods := append([]string(nil), opt.AllowedCanonicalizationMethods...)
-	if len(methods) == 0 {
-		methods = []string{c14n.Exclusive}
-	}
-
-	for _, method := range methods {
-		if !canonicalAlgorithm(method) {
-			return nil, fmt.Errorf("%w: allowed canonicalization", ErrAlgorithm)
-		}
+	methods, err := normalizeCanonicalizationMethods(opt.AllowedCanonicalizationMethods)
+	if err != nil {
+		return nil, err
 	}
 
 	expected := make(map[string]struct{}, len(opt.ExpectedURIs))

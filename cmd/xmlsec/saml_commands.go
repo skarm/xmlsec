@@ -439,7 +439,7 @@ func (c samlCommand) verifyRequest(ctx context.Context, stdin io.Reader, stdout 
 		return err
 	}
 
-	if hasProtocolSignaturePolicy(opt.Policy) {
+	if !opt.Policy.IsZero() {
 		return usageError("signature policy in protocol JSON must be omitted; use CLI policy flags")
 	}
 
@@ -497,7 +497,7 @@ func (c samlCommand) verifyResponse(ctx context.Context, stdin io.Reader, stdout
 		return err
 	}
 
-	if hasProtocolSignaturePolicy(opt.Policy) {
+	if !opt.Policy.IsZero() {
 		return usageError("signature policy in protocol JSON must be omitted; use CLI policy flags")
 	}
 
@@ -614,11 +614,4 @@ func metadataDescription(snapshot *metadata.Snapshot, at time.Time) any {
 	}
 
 	return map[string]any{"signature_authenticated": snapshot.AuthenticatedSignature(), fieldExpiresAt: snapshot.ExpiresAt(), "entities": entities}
-}
-
-func hasProtocolSignaturePolicy(p xmldsig.Policy) bool {
-	return p.AllowedSignatureMethods != nil || p.AllowedDigestMethods != nil ||
-		p.MinRSABits != 0 || p.MaxRSABits != 0 || p.MaxReferences != 0 || p.MaxCanonicalBytes != 0 ||
-		p.MinPSSSaltBytes != 0 || p.MaxPSSSaltBytes != 0 || p.MinHMACKeyBytes != 0 || p.MaxHMACKeyBytes != 0 ||
-		p.MinHMACOutputBits != 0 || p.AllowHMACTruncation
 }

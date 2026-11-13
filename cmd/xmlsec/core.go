@@ -80,8 +80,12 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	var expected, preserve repeatedFlag
 	fs.Var(&expected, "expect-uri", "exact expected Reference URI; repeat for every reference (empty URI allowed)")
 
+	var allowUnspecifiedCoverage bool
+
 	if cmd == nameSignTemplate {
 		fs.Var(&preserve, "preserve", "existing signature INDEX=PUBLIC_KEY_FILE; repeat as needed")
+	} else {
+		fs.BoolVar(&allowUnspecifiedCoverage, "allow-unspecified-coverage", false, "verify the signature and references without requiring application coverage")
 	}
 
 	if done, err := parseFlags(fs, args[1:]); done || err != nil {
@@ -100,6 +104,10 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 
 	if err := invocation.validate(); err != nil {
 		return err
+	}
+
+	if cmd != nameSignTemplate && !allowUnspecifiedCoverage && !*rootRequired && len(requiredIDs) == 0 && len(expected) == 0 {
+		return usageError("set -require-root, -require-id, -expect-uri or -allow-unspecified-coverage")
 	}
 
 	ctx, cancel, err := exec.start(ctx)
@@ -127,6 +135,7 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		IDAttribute:                    document.Name{Space: *idNS, Local: *idAttr},
 		AllowedCanonicalizationMethods: strings.Split(*methods, ","),
 		ExpectedURIs:                   expected,
+		AllowUnspecifiedCoverage:       allowUnspecifiedCoverage,
 	}
 
 	cfg := coreValidationFlags{

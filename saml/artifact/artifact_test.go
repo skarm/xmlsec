@@ -1,6 +1,7 @@
 package artifact_test
 
 import (
+	"context"
 	"crypto"
 	"errors"
 	"net/http"
@@ -18,6 +19,20 @@ import (
 	"github.com/skarm/xmlsec/saml/protocol"
 )
 
+// issueStore exposes just the operations required by Issuer.
+type issueStore struct {
+	PutFunc     func(context.Context, artifact.Entry, time.Time) error
+	ResolveFunc func(context.Context, binding.Artifact, string, time.Time, func(*document.Document) (*document.Document, error)) (*document.Document, error)
+}
+
+func (s issueStore) Put(ctx context.Context, e artifact.Entry, at time.Time) error {
+	return s.PutFunc(ctx, e, at)
+}
+
+func (s issueStore) Resolve(ctx context.Context, a binding.Artifact, recipient string, at time.Time, reply func(*document.Document) (*document.Document, error)) (*document.Document, error) {
+	return s.ResolveFunc(ctx, a, recipient, at, reply)
+}
+
 func TestAuthenticatedArtifactSOAP(t *testing.T) {
 	at := testcert.Now()
 	cert := testcert.New(t)
@@ -30,7 +45,7 @@ func TestAuthenticatedArtifactSOAP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issuer := artifact.Issuer{EntityID: issuerID, ReturnEndpoint: destination, EndpointIndex: 7, Signing: key, Store: store}
+	issuer := artifact.Issuer{EntityID: issuerID, ReturnEndpoint: destination, EndpointIndex: 7, Signing: key, Store: issueStore{PutFunc: store.Put, ResolveFunc: store.Resolve}}
 	opaqueSource := [20]byte{0x81, 0x23, 0x47}
 	issuer.SourceID = &opaqueSource
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

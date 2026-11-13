@@ -11,6 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/historicalproof"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/pkipast"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
 )
@@ -63,7 +64,7 @@ type pastSignatureEvaluation struct {
 }
 
 func (e *pastSignatureEvaluation) evaluatePath(ctx context.Context, session *pki.HistoricalSession, path *pki.HistoricalPath, out *pastOutcome) bool {
-	past, report, err := session.ValidatePastPath(ctx, path, e.proofs)
+	past, report, err := pkipast.ValidatePath(ctx, session, path, e.proofs)
 	appendPastTransitions(out, report)
 
 	if err != nil || past == nil {

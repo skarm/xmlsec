@@ -4,8 +4,8 @@
 //
 // # Parse and navigate
 //
-// [Parse] accepts a context and explicit [Limits]; [DefaultLimits] supplies the
-// default resource policy. [ParseReader] consumes a reader incrementally while
+// [Parse], [ParseReader], [ParseOptions] and [ReadRecords] use [DefaultLimits]
+// when given a zero [Limits]. [ParseReader] consumes a reader incrementally while
 // retaining the complete tree and current lexical token. A large text node,
 // comment or start tag can require token-sized storage. [ReadRecords] emits
 // independent subtrees without constructing the enclosing tree. Start at
@@ -22,7 +22,7 @@
 // character references and the five predefined entities, and preserves the
 // resulting Unicode sequence. The default parser invokes no resource resolver.
 //
-// [ParseOptions] with NonValidating enables a separate bounded XML 1.0
+// [ParseOptions] with [DTDProfile] enables a separate bounded XML 1.0
 // nonvalidating processor: DTD entities, attribute defaults and normalization,
 // Namespaces 1.0 relative namespace names and supported single-byte encodings.
 // XML 1.x declarations are processed using XML 1.0 syntax. External subsets and

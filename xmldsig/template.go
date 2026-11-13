@@ -199,6 +199,8 @@ func signTemplate(ctx context.Context, doc *document.Document, selected document
 	if err != nil {
 		return nil, err
 	}
+	// A signing self-check verifies its references and any supplied coverage.
+	finalOptions.AllowUnspecifiedCoverage = true
 	// Reuse external processing evidence from this signing operation. The
 	// self-check retains independent budgets without fetching resources twice.
 	if plan.external != nil {

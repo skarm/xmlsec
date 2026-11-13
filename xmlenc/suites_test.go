@@ -31,7 +31,7 @@ func TestRSADataAlgorithms(t *testing.T) {
 }
 
 func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.PrivateKey) {
-	options := xmlenc.Options{DataAlgorithm: algorithm.uri}
+	options := xmlenc.RSAOptions{DataAlgorithm: algorithm.uri}
 
 	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("payload"), &(*k).PublicKey, options)
 	if err != nil {
@@ -45,7 +45,7 @@ func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.P
 		t.Fatalf("wrong data-key size %d: %v", len(symmetric), err)
 	}
 
-	out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, options)
+	out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, options, xmlenc.DecryptOptions{})
 	if err != nil || string(out) != "payload" {
 		t.Fatal(err)
 	}
@@ -55,13 +55,13 @@ func testRSADataAlgorithmsCase(t *testing.T, algorithm *algorithmSpec, k **rsa.P
 			continue
 		}
 
-		if out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, xmlenc.Options{DataAlgorithm: other.uri}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, xmlenc.RSAOptions{DataAlgorithm: other.uri}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatalf("accepted different algorithm %s: %v", other.uri, err)
 		}
 	}
 
 	if algorithm.uri != xmlenc.AES256GCM {
-		if out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+		if out, err := xmlenc.DecryptBytes(t.Context(), doc, *k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("default policy weakened", err)
 		}
 	}
@@ -116,7 +116,7 @@ func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 				t.Fatal("negative control does not change input")
 			}
 
-			if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, replace(tc.from, tc.to), kek, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+			if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, replace(tc.from, tc.to), kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 				t.Fatal("accepted bad structure/algorithm", err)
 			}
 		})
@@ -127,7 +127,7 @@ func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 		data[len(data)-1] ^= 1
 
 		bad := replace(value.Text(), base64.StdEncoding.EncodeToString(data))
-		if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, bad, kek, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+		if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, bad, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 			t.Fatal("accepted tampering", err)
 		}
 	}
@@ -135,7 +135,7 @@ func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 	wrapped := doc.Root().Children()[1].Children()[0].Children()[1].Children()[0]
 	for _, size := range []int{0, 24, 32, 39, 41, 48, 2048} {
 		bad := replace(wrapped.Text(), base64.StdEncoding.EncodeToString(make([]byte, size)))
-		if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, bad, kek, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+		if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, bad, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 			t.Fatalf("wrapped length %d: %v", size, err)
 		}
 	}
@@ -143,11 +143,11 @@ func TestKeyWrapRejectsTamperingAndConfusion(t *testing.T) {
 	wrong := bytes.Clone(kek)
 
 	wrong[0] ^= 1
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, doc, wrong, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, doc, wrong, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal("wrong KEK", err)
 	}
 	// A caller with an RSA key cannot accidentally enter the symmetric path.
-	if out, err := xmlenc.DecryptBytes(ctx, doc, key(t), xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+	if out, err := xmlenc.DecryptBytes(ctx, doc, key(t), xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 		t.Fatal("key transport confusion", err)
 	}
 }
@@ -157,12 +157,12 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 
 	kek := make([]byte, 32)
 	for _, options := range []xmlenc.KeyWrapOptions{
-		{Data: xmlenc.Options{DataAlgorithm: xmlenc.Namespace + "aes256-cbc"}},
-		{Data: xmlenc.Options{DataAlgorithm: "urn:unknown"}},
+		{Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.Namespace + "aes256-cbc"}},
+		{Data: xmlenc.CipherOptions{DataAlgorithm: "urn:unknown"}},
 		{KeyAlgorithm: "urn:unknown"},
 		{KeyAlgorithm: xmlenc.AES128KeyWrap},
-		{Data: xmlenc.Options{MaxPlaintextBytes: -1}},
-		{Data: xmlenc.Options{MaxPlaintextBytes: 32<<20 + 1}},
+		{Data: xmlenc.CipherOptions{MaxPlaintextBytes: -1}},
+		{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 32<<20 + 1}},
 	} {
 		if doc, err := xmlenc.EncryptBytesWithKeyWrap(ctx, nil, kek, options); doc != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 			t.Fatal("invalid caller policy", err)
@@ -175,7 +175,7 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 		}
 	}
 
-	limited := xmlenc.KeyWrapOptions{Data: xmlenc.Options{MaxPlaintextBytes: 4}}
+	limited := xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 4}}
 	if doc, err := xmlenc.EncryptBytesWithKeyWrap(ctx, []byte("12345"), kek, limited); doc != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal("plaintext limit", err)
 	}
@@ -189,14 +189,14 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, doc, kek, limited); out != nil || err == nil {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(ctx, doc, kek, limited, xmlenc.DecryptOptions{}); out != nil || err == nil {
 		t.Fatal("decryption limit")
 	}
 
 	raw, _ := doc.XML(ctx)
 
 	typed := parse(t, bytes.Replace(raw, []byte("<xenc:EncryptedData "), []byte(`<xenc:EncryptedData Type="`+xmlenc.ElementType+`" `), 1))
-	if out, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, typed, kek, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, typed, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal("non-XML authenticated plaintext", err)
 	}
 
@@ -208,7 +208,7 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 	limits := document.DefaultLimits()
 
 	limits.MaxDepth = 1
-	if out, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, realXML, kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: limits}}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, realXML, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{XMLLimits: limits}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal("decrypted XML depth limit", err)
 	}
 
@@ -219,11 +219,11 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 		t.Fatal("encryption cancellation", err)
 	}
 
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(canceled, doc, kek, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, context.Canceled) {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(canceled, doc, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("decryption cancellation", err)
 	}
 
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(nil, doc, kek, xmlenc.KeyWrapOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(nil, doc, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal("nil context", err)
 	}
 }
@@ -231,7 +231,7 @@ func TestEncryptionPolicyAndLimits(t *testing.T) {
 func TestProviderFailureNeverReturnsPlaintext(t *testing.T) {
 	k := key(t)
 
-	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("secret"), &k.PublicKey, xmlenc.Options{})
+	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("secret"), &k.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestProviderFailureNeverReturnsPlaintext(t *testing.T) {
 				p.err = errors.New("private provider detail")
 			}
 
-			if out, err := xmlenc.DecryptBytes(t.Context(), doc, p, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if out, err := xmlenc.DecryptBytes(t.Context(), doc, p, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatalf("provider length %d error %t: %v", size, failed, err)
 			}
 
@@ -270,7 +270,7 @@ func TestConcurrentKeyWrapReads(t *testing.T) {
 		t.Run("reader", func(t *testing.T) {
 			t.Parallel()
 
-			out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), doc, kek, xmlenc.KeyWrapOptions{})
+			out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), doc, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 			if err != nil || string(out) != "parallel" {
 				t.Fatal(err)
 			}
@@ -301,7 +301,7 @@ func FuzzDecryptWithKeyWrap(f *testing.F) {
 			return
 		}
 
-		_, _ = xmlenc.DecryptBytesWithKeyWrap(t.Context(), doc, kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1024}})
+		_, _ = xmlenc.DecryptBytesWithKeyWrap(t.Context(), doc, kek, xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 1024}}, xmlenc.DecryptOptions{})
 	})
 }
 
@@ -313,24 +313,24 @@ func TestLegacyCBCKeyTransports(t *testing.T) {
 	for _, algorithm := range cbcAlgorithms() {
 		t.Run(algorithm.uri, func(t *testing.T) {
 			for _, oaep := range []*xmlenc.OAEPParameters{nil, {Algorithm: xmlenc.RSAOAEP10, Hash: crypto.SHA1, AllowLegacy: true}} {
-				opts := xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true, OAEP: oaep}
+				opts := xmlenc.RSAOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true, OAEP: oaep}
 				envelope, err := xmlenc.EncryptBytes(t.Context(), []byte("legacy transport"), &k.PublicKey, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
-				out, err := xmlenc.DecryptBytes(t.Context(), envelope, k, opts)
+				out, err := xmlenc.DecryptBytes(t.Context(), envelope, k, opts, xmlenc.DecryptOptions{})
 				if err != nil || string(out) != "legacy transport" {
 					t.Fatal(out, err)
 				}
 			}
 			for _, wrap := range wrapAlgorithms() {
 				kek := bytes.Repeat([]byte{0x46}, wrap.keyBytes)
-				opts := xmlenc.KeyWrapOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true}, KeyAlgorithm: wrap.uri}
+				opts := xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true}, KeyAlgorithm: wrap.uri}
 				envelope, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), []byte("wrapped CBC"), kek, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
-				out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), envelope, kek, opts)
+				out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), envelope, kek, opts, xmlenc.DecryptOptions{})
 				if err != nil || string(out) != "wrapped CBC" {
 					t.Fatal(out, err)
 				}
@@ -351,9 +351,9 @@ func TestTripleDESKeyWrapPublishedVector(t *testing.T) {
 	padded := []byte{'a', 'b', 'c', 0xa1, 0xb2, 0xc3, 0xd4, 5}
 	cipher.NewCBCEncrypter(legacyBlock(t, xmlenc.TripleDESCBC, cek), data[:8]).CryptBlocks(data[8:], padded)
 	body := `<EncryptedData xmlns="` + xmlenc.Namespace + `" xmlns:ds="` + xmlenc.SignatureNamespace + `"><EncryptionMethod Algorithm="` + xmlenc.TripleDESCBC + `"/><ds:KeyInfo><EncryptedKey><EncryptionMethod Algorithm="` + xmlenc.TripleDESKeyWrap + `"/><CipherData><CipherValue>` + base64.StdEncoding.EncodeToString(wrapped) + `</CipherValue></CipherData></EncryptedKey></ds:KeyInfo><CipherData><CipherValue>` + base64.StdEncoding.EncodeToString(data) + `</CipherValue></CipherData></EncryptedData>`
-	options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{DataAlgorithm: xmlenc.TripleDESCBC, AllowLegacy: true}, KeyAlgorithm: xmlenc.TripleDESKeyWrap}
+	options := xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.TripleDESCBC, AllowLegacy: true}, KeyAlgorithm: xmlenc.TripleDESKeyWrap}
 	envelope := parse(t, []byte(body))
-	out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), envelope, kek, options)
+	out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), envelope, kek, options, xmlenc.DecryptOptions{})
 	if err != nil || string(out) != "abc" {
 		t.Fatal(out, err)
 	}
@@ -362,7 +362,7 @@ func TestTripleDESKeyWrapPublishedVector(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), encrypted, kek, options)
+		out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), encrypted, kek, options, xmlenc.DecryptOptions{})
 		if err != nil || !bytes.Equal(out, plain) {
 			t.Fatal(out, err)
 		}
@@ -375,13 +375,13 @@ func TestTripleDESKeyWrapPublishedVector(t *testing.T) {
 			bad = bad[:size]
 		}
 		mutated := parse(t, []byte(strings.Replace(body, base64.StdEncoding.EncodeToString(wrapped), base64.StdEncoding.EncodeToString(bad), 1)))
-		if out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), mutated, kek, options); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+		if out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), mutated, kek, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 			t.Fatal(size, out, err)
 		}
 	}
 	denied := options
 	denied.Data.AllowLegacy = false
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), envelope, kek, denied); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), envelope, kek, denied, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal(out, err)
 	}
 	other := options
@@ -398,7 +398,7 @@ func TestLegacyCBCProviderAndPlaintextLimits(t *testing.T) {
 	k := key(t)
 	for _, algorithm := range cbcAlgorithms() {
 		t.Run(algorithm.uri, func(t *testing.T) {
-			opts := xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true}
+			opts := xmlenc.RSAOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true}
 			envelope, err := xmlenc.EncryptBytes(t.Context(), bytes.Repeat([]byte{'x'}, 33), &k.PublicKey, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -406,7 +406,7 @@ func TestLegacyCBCProviderAndPlaintextLimits(t *testing.T) {
 			for _, size := range []int{0, 16, 24, 32, 33} {
 				actual := bytes.Repeat([]byte{0x42}, size)
 				provider := &failingProvider{public: &k.PublicKey, result: actual, err: errors.New("private unwrap failure")}
-				if out, err := xmlenc.DecryptBytes(t.Context(), envelope, provider, opts); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+				if out, err := xmlenc.DecryptBytes(t.Context(), envelope, provider, opts, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 					t.Fatal(size, out, err)
 				}
 				if !bytes.Equal(actual, make([]byte, size)) {
@@ -422,7 +422,7 @@ func TestLegacyCBCProviderAndPlaintextLimits(t *testing.T) {
 				t.Fatal(err)
 			}
 			opts.MaxPlaintextBytes = b // Wire fits max+IV+onepadblock; only unpadded length exceeds max.
-			if out, err := xmlenc.DecryptBytes(t.Context(), envelope, k, opts); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if out, err := xmlenc.DecryptBytes(t.Context(), envelope, k, opts, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatal("post-decrypt plaintext bound", out, err)
 			}
 		})
@@ -437,7 +437,7 @@ func TestEncryptionMethodKeySize(t *testing.T) {
 	for _, algorithm := range algorithms {
 		t.Run(algorithm.uri, func(t *testing.T) {
 			secret := bytes.Repeat([]byte{0x38}, algorithm.keyBytes)
-			opts := xmlenc.SymmetricOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true}}
+			opts := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true}}
 			doc, err := xmlenc.EncryptBytesWithKey(t.Context(), []byte("size"), secret, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -445,14 +445,14 @@ func TestEncryptionMethodKeySize(t *testing.T) {
 			raw, _ := doc.XML(t.Context())
 			for _, size := range []string{strconv.Itoa(algorithm.keyBytes * 8), "\t+000" + strconv.Itoa(algorithm.keyBytes*8) + "\r\n"} {
 				valid := parse(t, methodKeySizeFixture(t, raw, algorithm.uri, `<xenc:KeySize>`+size+`</xenc:KeySize>`, false))
-				out, err := xmlenc.DecryptBytesWithKey(t.Context(), valid, secret, opts)
+				out, err := xmlenc.DecryptBytesWithKey(t.Context(), valid, secret, opts, xmlenc.DecryptOptions{})
 				if err != nil || string(out) != "size" {
 					t.Fatal(size, out, err)
 				}
 			}
 			for _, size := range []string{"", "0", "-1", "1.0", "1e2", "1 28", "++128", "\u00a0128", strconv.Itoa(algorithm.keyBytes*8 + 1)} {
 				bad := parse(t, methodKeySizeFixture(t, raw, algorithm.uri, `<xenc:KeySize>`+size+`</xenc:KeySize>`, false))
-				if out, err := xmlenc.DecryptBytesWithKey(t.Context(), bad, secret, opts); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+				if out, err := xmlenc.DecryptBytesWithKey(t.Context(), bad, secret, opts, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 					t.Fatal(size, out, err)
 				}
 			}
@@ -467,7 +467,7 @@ func TestEncryptionMethodKeySize(t *testing.T) {
 			kek := bytes.Repeat([]byte{0x37}, algorithm.keyBytes)
 			opts := xmlenc.KeyWrapOptions{KeyAlgorithm: algorithm.uri}
 			if algorithm.uri == xmlenc.TripleDESKeyWrap {
-				opts.Data = xmlenc.Options{DataAlgorithm: xmlenc.TripleDESCBC, AllowLegacy: true}
+				opts.Data = xmlenc.CipherOptions{DataAlgorithm: xmlenc.TripleDESCBC, AllowLegacy: true}
 			}
 			doc, err := xmlenc.EncryptBytesWithKeyWrap(t.Context(), []byte("key size"), kek, opts)
 			if err != nil {
@@ -475,12 +475,12 @@ func TestEncryptionMethodKeySize(t *testing.T) {
 			}
 			raw, _ := doc.XML(t.Context())
 			valid := parse(t, methodKeySizeFixture(t, raw, algorithm.uri, `<xenc:KeySize>`+strconv.Itoa(algorithm.keyBytes*8)+`</xenc:KeySize>`, false))
-			out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), valid, kek, opts)
+			out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), valid, kek, opts, xmlenc.DecryptOptions{})
 			if err != nil || string(out) != "key size" {
 				t.Fatal(out, err)
 			}
 			bad := parse(t, methodKeySizeFixture(t, raw, algorithm.uri, `<xenc:KeySize>1</xenc:KeySize>`, false))
-			if out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), bad, kek, opts); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+			if out, err := xmlenc.DecryptBytesWithKeyWrap(t.Context(), bad, kek, opts, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 				t.Fatal(out, err)
 			}
 		})
@@ -490,13 +490,13 @@ func TestEncryptionMethodKeySize(t *testing.T) {
 func TestRSAEncryptionMethodKeySizeBeforeProvider(t *testing.T) {
 	ctx := t.Context()
 	k := key(t)
-	doc, err := xmlenc.EncryptBytes(ctx, []byte("RSA size"), &k.PublicKey, xmlenc.Options{})
+	doc, err := xmlenc.EncryptBytes(ctx, []byte("RSA size"), &k.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := doc.XML(ctx)
 	valid := parse(t, methodKeySizeFixture(t, raw, xmlenc.RSAOAEP, `<xenc:KeySize>`+strconv.Itoa(k.N.BitLen())+`</xenc:KeySize>`, false))
-	out, err := xmlenc.DecryptBytes(ctx, valid, k, xmlenc.Options{})
+	out, err := xmlenc.DecryptBytes(ctx, valid, k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 	if err != nil || string(out) != "RSA size" {
 		t.Fatal(out, err)
 	}
@@ -508,7 +508,7 @@ func TestRSAEncryptionMethodKeySizeBeforeProvider(t *testing.T) {
 				t.Fatal(err)
 			}
 			bad := parse(t, methodKeySizeFixture(t, raw, algorithm, content, false))
-			if out, err := xmlenc.DecryptBytes(ctx, bad, adapted, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
+			if out, err := xmlenc.DecryptBytes(ctx, bad, adapted, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
 				t.Fatal(algorithm, content, out, err, p.calls)
 			}
 		}
@@ -519,14 +519,14 @@ func TestRSAEncryptionMethodKeySizeBeforeProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := xmlenc.DecryptBytes(ctx, misplaced, adapted, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
+	if out, err := xmlenc.DecryptBytes(ctx, misplaced, adapted, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
 		t.Fatal(out, err, p.calls)
 	}
 }
 
 func TestEncryptionNamespaces(t *testing.T) {
 	k := key(t)
-	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("namespace-bound octets"), &k.PublicKey, xmlenc.Options{})
+	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("namespace-bound octets"), &k.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +540,7 @@ func TestEncryptionNamespaces(t *testing.T) {
 		"default XMLENC namespace": strings.NewReplacer("xmlns:xenc=", "xmlns=", "xenc:", "").Replace(string(wire)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if out, err := xmlenc.DecryptBytes(t.Context(), parse(t, []byte(input)), k, xmlenc.Options{}); err != nil || string(out) != "namespace-bound octets" {
+			if out, err := xmlenc.DecryptBytes(t.Context(), parse(t, []byte(input)), k, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); err != nil || string(out) != "namespace-bound octets" {
 				t.Fatal(out, err)
 			}
 		})
@@ -553,7 +553,7 @@ func TestEncryptionNamespaces(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if out, err := xmlenc.DecryptBytes(t.Context(), parse(t, bad), adapted, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
+			if out, err := xmlenc.DecryptBytes(t.Context(), parse(t, bad), adapted, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
 				t.Fatal("wrong expanded name reached provider", err, p.calls)
 			}
 		})
@@ -562,7 +562,7 @@ func TestEncryptionNamespaces(t *testing.T) {
 
 func TestCipherDataChoiceBeforeProvider(t *testing.T) {
 	k := key(t)
-	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("choice octets"), &k.PublicKey, xmlenc.Options{})
+	doc, err := xmlenc.EncryptBytes(t.Context(), []byte("choice octets"), &k.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestCipherDataChoiceBeforeProvider(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if out, err := xmlenc.DecryptBytes(t.Context(), bad, adapted, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
+			if out, err := xmlenc.DecryptBytes(t.Context(), bad, adapted, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) || p.calls != 0 {
 				t.Fatal("invalid CipherData reached provider", err, p.calls)
 			}
 		})
@@ -690,7 +690,7 @@ func TestPublishedOAEPDecryptionVectors(t *testing.T) {
 			}
 			p := &oaepVectorProvider{key: k}
 			doc := publishedOAEPEnvelope(t, ciphertext, label)
-			out, err := xmlenc.DecryptBytes(t.Context(), doc, p, xmlenc.Options{OAEP: &xmlenc.OAEPParameters{Label: label}})
+			out, err := xmlenc.DecryptBytes(t.Context(), doc, p, xmlenc.RSAOptions{OAEP: &xmlenc.OAEPParameters{Label: label}}, xmlenc.DecryptOptions{})
 			accepted := tc.valid && len(message) == 32
 			if accepted {
 				if err != nil || string(out) != "published OAEP CEK" {
@@ -770,7 +770,7 @@ func TestKeyGraphImplicitCanonicalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := bytes.Repeat([]byte{0x0e}, 16)
-	options := xmlenc.KeyGraphOptions{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true, MaxPlaintextBytes: 64}, Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES128CBC, Secret: secret}}}
+	options := xmlenc.KeyGraphOptions{Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true, MaxPlaintextBytes: 64}, Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES128CBC, Secret: secret}}}
 	for name, node := range map[string]string{
 		"canonical input":               `<b a="a" z="z" xml:id="c">AAAAAAAAAAAAAAAAAA</b>`,
 		"reordered and commented input": `<b z='z' xml:id='c' a='a'>AAAAAAAAA<!--omitted by canonicalization-->AAAAAAAAA</b>`,
@@ -798,7 +798,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 	kek := bytes.Repeat([]byte{0x27}, keyAlgorithm.keyBytes)
 	originalKEK := bytes.Clone(kek)
 
-	options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{DataAlgorithm: dataAlgorithm.uri}, KeyAlgorithm: keyAlgorithm.uri}
+	options := xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{DataAlgorithm: dataAlgorithm.uri}, KeyAlgorithm: keyAlgorithm.uri}
 	for _, plaintext := range [][]byte{{}, []byte("binary\x00\xff"), bytes.Repeat([]byte{1, 2, 3}, 1000)} {
 		doc, err := xmlenc.EncryptBytesWithKeyWrap(*ctx, plaintext, kek, options)
 		if err != nil {
@@ -808,7 +808,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 		wire, _ := doc.XML(t.Context())
 		doc = parse(t, wire)
 
-		out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options)
+		out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options, xmlenc.DecryptOptions{})
 		if err != nil || !bytes.Equal(out, plaintext) {
 			t.Fatalf("roundtrip: %v", err)
 		}
@@ -824,7 +824,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 		t.Fatal(err)
 	}
 
-	out, err := xmlenc.DecryptDocumentWithKeyWrap(*ctx, doc, kek, options)
+	out, err := xmlenc.DecryptDocumentWithKeyWrap(*ctx, doc, kek, options, xmlenc.DecryptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +834,7 @@ func testKeyWrapSuitesCase(t *testing.T, keyAlgorithm *algorithmSpec, dataAlgori
 		t.Fatalf("element scope: %s", wire)
 	}
 
-	if out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+	if out, err := xmlenc.DecryptBytesWithKeyWrap(*ctx, doc, kek, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 		t.Fatal("type confusion", err)
 	}
 

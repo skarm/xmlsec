@@ -1,8 +1,20 @@
 # Supported profiles and compatibility
 
-The API is experimental. Full standards conformance and an independent security
-audit have not been established. [standards](standards.md) lists primary sources;
-[conformance](conformance.md) explains the development requirement/evidence register.
+Full standards conformance and an independent security audit have not been
+established. See [standards](standards.md) for primary sources and
+[conformance](conformance.md) for the requirements and evidence register.
+
+## Public API
+
+Starting with v1.0.0, the module preserves source compatibility across 1.x
+releases for the exported Go API of every importable public package. This
+includes all public subpackages, such as `pki/history`, `evidence/collect` and
+`saml/*`. Use keyed literals for exported structs so compatible releases can
+add fields. Packages under `internal`, examples and test code are implementation
+details. The CLI is documented separately in [CLI](cli.md).
+
+Bug and security fixes may tighten validation of inputs that should have been
+rejected. The supported profiles below define the scope of interoperability.
 
 ## Supported scope
 
@@ -29,16 +41,20 @@ audit have not been established. [standards](standards.md) lists primary sources
   and W3C streamable execution are unsupported. Streaming annotations operate on
   trees; independent-record processing is separate. Complete Basic XSLT remains
   open; see [validation profiles](language-baseline.md).
-- `document.ParseOptions{NonValidating: true}` and language XML support bounded
-  nonvalidating DTD processing. `NonValidating` also enables supported
+- `document.ParseOptions{Profile: document.DTDProfile}` and language XML support bounded
+  nonvalidating DTD processing. `document.DTDProfile` also enables supported
   single-byte encodings; language input requires `AllowSingleByteEncodings`
   for those encodings. External entities require configured resources. Engine
   input, including DTD-free `Engine.Parse` and stylesheet records, preserves
-  relative namespace names, as does `NonValidating`. The default document parser
+  relative namespace names, as does `document.DTDProfile`. The default document parser
   and C14N reject them. See [input profiles](transforms.md#xml-input-profiles).
 - PKIX with explicit roots/time and offline complete/scoped/indirect/base-delta
   CRLs. OCSP selects an exact CertID and authorized responder. Required missing
   evidence fails without fetching. Acquisition metadata grants no trust or PoE.
+- Standalone historical certificate validation through `pki/history`, using exact
+  DER certificates and CRLs or OCSP responses covered by validated RFC 3161 tokens.
+  The caller supplies the past validation time, observation time and offline TSA
+  trust evidence. The operation reports certificate acceptance at the requested time.
 - CMS SignedData and RFC 3161/5816 timestamps. Trusted CMS operations check all
   signer policies. Optional ESS multi-certificate path restrictions are rejected.
   Selected BER envelopes/content are opt-in; signed attributes remain DER.

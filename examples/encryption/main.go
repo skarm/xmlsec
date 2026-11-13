@@ -43,7 +43,7 @@ func run() error {
 	}
 
 	selected := source.Root().Children()[1]
-	oaepOptions := xmlenc.Options{OAEP: &xmlenc.OAEPParameters{Hash: crypto.SHA384, Label: []byte("example-profile")}}
+	oaepOptions := xmlenc.RSAOptions{OAEP: &xmlenc.OAEPParameters{Hash: crypto.SHA384, Label: []byte("example-profile")}}
 
 	encrypted, encryptedElement, err := xmlenc.EncryptElement(ctx, source, selected, &recipient.PublicKey, oaepOptions)
 	if err != nil {
@@ -51,7 +51,7 @@ func run() error {
 	}
 	// After transport, parse the received XML and select the expected element
 	// again according to the application's protocol. Old handles cannot be reused.
-	restored, payload, err := xmlenc.DecryptElement(ctx, encrypted, encryptedElement, recipient, oaepOptions)
+	restored, payload, err := xmlenc.DecryptElement(ctx, encrypted, encryptedElement, recipient, oaepOptions, xmlenc.DecryptOptions{})
 	if err != nil {
 		return err
 	}
@@ -61,12 +61,12 @@ func run() error {
 		payload.Name().Local, restored.Root().Name().Local, selected.Text(), restored.Root().Children()[0].Text())
 	// Content mode keeps Payload and its attributes visible while protecting all
 	// its child nodes. Decryption returns the restored parent, even for empty text.
-	contentCipher, encryptedContent, err := xmlenc.EncryptContent(ctx, source, selected, &recipient.PublicKey, xmlenc.Options{})
+	contentCipher, encryptedContent, err := xmlenc.EncryptContent(ctx, source, selected, &recipient.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		return err
 	}
 
-	contentPlain, parent, err := xmlenc.DecryptContent(ctx, contentCipher, encryptedContent, recipient, xmlenc.Options{})
+	contentPlain, parent, err := xmlenc.DecryptContent(ctx, contentCipher, encryptedContent, recipient, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func run() error {
 	}
 	// This in-memory resolver represents an exact application-approved resource.
 	// Production transports must also honor cancellation during blocked reads.
-	options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{
+	options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{
 		URI: uri, MaxBytes: len(body), Resolver: xmlenc.CipherResolverFunc(func(ctx context.Context, gotURI string) (io.ReadCloser, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -105,9 +105,9 @@ func run() error {
 
 			return io.NopCloser(bytes.NewReader(body)), nil
 		}),
-	}}}
+	}}
 
-	plain, err := xmlenc.DecryptBytesWithKey(ctx, external, secret, options)
+	plain, err := xmlenc.DecryptBytesWithKey(ctx, external, secret, xmlenc.SymmetricOptions{}, options)
 	if err != nil {
 		return err
 	}

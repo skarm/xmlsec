@@ -77,7 +77,7 @@ func TestShibbolethAuthorityHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, _ := replay.NewMemoryStore(replay.Config{})
-	c := authority.Client{EntityID: shibbolethRequester, Peer: shibbolethEntity, Role: metadata.AttributeAuthority, Metadata: snapshot, Signing: protocol.SigningKey{Key: key.signer, CertificateDER: key.cert.Raw}, Replay: store, SOAP: binding.SOAPClient{Client: httpClient}, Options: protocol.QueryResponseOptions{ExchangeOptions: protocol.ExchangeOptions{Decryption: &protocol.DecryptionOptions{Keys: []crypto.Decrypter{key.signer.(crypto.Decrypter)}, Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128GCM}}}}}
+	c := authority.Client{EntityID: shibbolethRequester, Peer: shibbolethEntity, Role: metadata.AttributeAuthority, Metadata: snapshot, Signing: protocol.SigningKey{Key: key.signer, CertificateDER: key.cert.Raw}, Replay: store, SOAP: binding.SOAPClient{Client: httpClient}, Options: protocol.QueryResponseOptions{ExchangeOptions: protocol.ExchangeOptions{Decryption: &protocol.DecryptionOptions{Keys: []crypto.Decrypter{key.signer.(crypto.Decrypter)}, Data: xmlenc.RSAOptions{DataAlgorithm: xmlenc.AES128GCM}}}}}
 	subject, err := protocol.NewSubject(t.Context(), protocol.NameIdentifier{Value: "alice", Format: protocol.NameIDUnspecified})
 	if err != nil {
 		t.Fatal(err)

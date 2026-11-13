@@ -388,7 +388,7 @@ func standardEnvelopedTransform(element document.Element) error {
 
 func referenceDigest(ctx context.Context, d *document.Document, sig document.Element, algorithm string, p xmldsig.Policy) ([]byte, int, error) {
 	allowed := p.AllowedDigestMethods
-	if len(allowed) == 0 {
+	if allowed == nil {
 		allowed = xmldsig.DefaultPolicy().AllowedDigestMethods
 	}
 

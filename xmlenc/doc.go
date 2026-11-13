@@ -6,9 +6,9 @@
 //
 // # Keys and algorithms
 //
-// [Options] defaults to AES-256-GCM with RSA-OAEP using SHA-256 for both OAEP
-// and MGF1. Explicit options select other supported AES/SHA-2 sizes, independent
-// digest/MGF1 hashes and a bounded OAEP label. [OAEPParameters.AllowLegacy]
+// [CipherOptions] and [RSAOptions] default to AES-256-GCM. The RSA APIs default
+// to RSA-OAEP with SHA-256 for both OAEP and MGF1. Use [RSAOptions.OAEP] to
+// select supported hashes and a bounded OAEP label. [OAEPParameters.AllowLegacy]
 // separately permits SHA-1 and the XMLENC 1.0 URI with fixed MGF1-SHA1. It never
 // changes the selected parameters or permits wire-driven algorithm negotiation.
 // Legacy OAEP is rejected with crypto/fips140 enabled; this is not a claim that
@@ -44,8 +44,9 @@
 // # External ciphertext and trust
 //
 // [ExternalizeCiphertext] returns a new envelope and owned ciphertext for the
-// application to store. Reading CipherReference requires an exact absolute URI
-// and a bounded [CipherResolver], with raw bytes or one Base64 transform.
+// application to store. Reading CipherReference requires [DecryptOptions.External]
+// with an exact absolute URI and a bounded [CipherResolver]. The resolver returns
+// raw bytes or Base64 when the reference specifies that transform.
 // The strict entry points keep wrapped keys inline. Explicit key-graph entry
 // points additionally support nested, retrieved, derived and external key
 // relationships under [KeyGraphOptions]. External key resources and ciphertext
@@ -54,14 +55,15 @@
 //
 // GCM authentication does not establish sender identity or signature coverage;
 // anyone with a recipient's public key can create an RSA-transport envelope.
-// AES-CBC and TripleDES-CBC require Options.AllowLegacy and are denied in
-// FIPS mode. Callers must establish any required ciphertext integrity before
-// decryption, using an application protocol that binds integrity to the encryption
-// key. Equal error strings and dummy-key processing do not prove resistance to
-// decryption oracles. Keep CBC and GCM keys separate. Legacy permission never
-// permits wire-selected algorithms or changes the GCM default.
-// RSA PKCS#1 v1.5 transport requires Options.KeyTransportAlgorithm = RSA15 and
-// AllowLegacy, is disabled in FIPS mode, and rejects OAEP parameters. Decryptors
+// Legacy CBC ciphers require [CipherOptions.AllowLegacy] or
+// [RSAOptions.AllowLegacy] and are denied in FIPS mode. Before decryption,
+// establish ciphertext integrity with a protocol that binds integrity to the
+// encryption key. Keep CBC and GCM keys separate. Equal error strings and
+// dummy-key processing do not prove resistance to decryption oracles. Legacy
+// permission preserves the caller's algorithm choices and the GCM default.
+// RSA PKCS#1 v1.5 transport requires [RSAOptions.KeyTransportAlgorithm] set to
+// [RSA15] and [RSAOptions.AllowLegacy] set to true. FIPS mode and a non-nil
+// [RSAOptions.OAEP] field prevent this transport. Decryptors
 // receive rsa.PKCS1v15DecryptOptions with SessionKeyLen for implicit rejection.
 // Applications must authenticate ciphertext before invoking this legacy path.
 // Finite-field DH, PBKDF2 and EXI are not implemented.

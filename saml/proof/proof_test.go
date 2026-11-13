@@ -160,7 +160,7 @@ func TestSeparateXMLProofAPIs(t *testing.T) {
 			if len(signatures) != 1 {
 				t.Fatal("proof count")
 			}
-			_, err = xmldsig.VerifySignature(t.Context(), signed, signatures[0], c.LeafKey.Public(), xmldsig.SignatureOptions{})
+			_, err = xmldsig.VerifySignature(t.Context(), signed, signatures[0], c.LeafKey.Public(), xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 			if (err == nil) != api.standard {
 				t.Fatalf("ordinary XMLDSig verification: %v, standard format %v", err, api.standard)
 			}

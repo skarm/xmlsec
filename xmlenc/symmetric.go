@@ -37,8 +37,8 @@ func EncryptBytesWithKey(ctx context.Context, plaintext, key []byte, options Sym
 // data key and exact caller-selected algorithm and KeyName. It returns no plaintext
 // on cipher, format, budget or cancellation failure. GCM authenticates before
 // returning plaintext; permitted CBC plaintext has no authentication.
-func DecryptBytesWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions) ([]byte, error) {
-	p, err := symmetricProfile(ctx, key, options)
+func DecryptBytesWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions, decryption DecryptOptions) ([]byte, error) {
+	p, err := symmetricDecryptProfile(ctx, key, options, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -59,8 +59,8 @@ func EncryptDocumentWithKey(ctx context.Context, doc *document.Document, key []b
 
 // DecryptDocumentWithKey decrypts a standalone Type #Element envelope with
 // an explicit symmetric data key before parsing it under the configured XML limits.
-func DecryptDocumentWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions) (*document.Document, error) {
-	p, err := symmetricProfile(ctx, key, options)
+func DecryptDocumentWithKey(ctx context.Context, doc *document.Document, key []byte, options SymmetricOptions, decryption DecryptOptions) (*document.Document, error) {
+	p, err := symmetricDecryptProfile(ctx, key, options, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -86,13 +86,13 @@ func EncryptElementWithKey(ctx context.Context, doc *document.Document, selected
 
 // DecryptElementWithKey decrypts and restores exactly the selected element
 // with an explicit symmetric data key, using its parent's original namespace context.
-func DecryptElementWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions) (*document.Document, document.Element, error) {
+func DecryptElementWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
 
-	p, err := symmetricProfile(ctx, key, options)
+	p, err := symmetricDecryptProfile(ctx, key, options, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -118,13 +118,13 @@ func EncryptContentWithKey(ctx context.Context, doc *document.Document, parent d
 
 // DecryptContentWithKey decrypts and restores selected Type #Content with
 // an explicit symmetric data key. It has the snapshot and namespace contracts of DecryptContent.
-func DecryptContentWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions) (*document.Document, document.Element, error) {
+func DecryptContentWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil || node.Parent == nil {
 		return nil, document.Element{}, ErrFormat
 	}
 
-	p, err := symmetricProfile(ctx, key, options)
+	p, err := symmetricDecryptProfile(ctx, key, options, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -133,20 +133,29 @@ func DecryptContentWithKey(ctx context.Context, doc *document.Document, selected
 }
 
 func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions) (profile, error) {
-	if options.Data.OAEP != nil || options.Data.KeyTransportAlgorithm != "" {
-		return profile{}, ErrPolicy
-	}
-
 	p, err := normalize(ctx, options.Data)
 	if err != nil {
 		return profile{}, err
 	}
 
-	if len(key) != p.keyBytes || len(options.KeyName) > maximumKeyNameBytes || !utf8.ValidString(options.KeyName) || strings.TrimSpace(options.KeyName) != options.KeyName {
+	return bindSymmetricKey(p, key, options.KeyName)
+}
+
+func symmetricDecryptProfile(ctx context.Context, key []byte, options SymmetricOptions, decryption DecryptOptions) (profile, error) {
+	p, err := normalizeDecryption(ctx, options.Data, decryption)
+	if err != nil {
+		return profile{}, err
+	}
+
+	return bindSymmetricKey(p, key, options.KeyName)
+}
+
+func bindSymmetricKey(p profile, key []byte, keyName string) (profile, error) {
+	if len(key) != p.keyBytes || len(keyName) > maximumKeyNameBytes || !utf8.ValidString(keyName) || strings.TrimSpace(keyName) != keyName {
 		return profile{}, ErrPolicy
 	}
 
-	for _, r := range options.KeyName {
+	for _, r := range keyName {
 		if r < minimumKeyNameRune || r == keyNameDeleteRune || r == keyNameNoncharacterFFFE || r == keyNameNoncharacterFFFF {
 			return profile{}, ErrPolicy
 		}
@@ -159,7 +168,7 @@ func symmetricProfile(ctx context.Context, key []byte, options SymmetricOptions)
 
 	p.direct = block
 
-	p.keyName = options.KeyName
+	p.keyName = keyName
 
 	return p, nil
 }
@@ -190,7 +199,7 @@ func decodeDirectProfile(ctx context.Context, root document.Element, p profile) 
 		}
 	}
 
-	data, err := decodeCipherData(ctx, children[len(children)-1], p.options.MaxPlaintextBytes+p.data.overhead(), p.options.External)
+	data, err := decodeCipherData(ctx, children[len(children)-1], p.options.MaxPlaintextBytes+p.data.overhead(), p.decryption.External)
 
 	return nil, data, err
 }

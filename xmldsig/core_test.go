@@ -58,7 +58,7 @@ func testLegacyXMLDSigFixture(t *testing.T, name, method string) {
 	d := coreParse(t, string(raw))
 
 	selected := xmldsig.Signatures(d)[0]
-	if _, err := xmldsig.VerifySignature(t.Context(), d, selected, key, xmldsig.SignatureOptions{}); !errors.Is(err, xmldsig.ErrPolicy) {
+	if _, err := xmldsig.VerifySignature(t.Context(), d, selected, key, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); !errors.Is(err, xmldsig.ErrPolicy) {
 		t.Fatal("default accepted legacy", err)
 	}
 
@@ -96,7 +96,7 @@ func testLegacyXMLDSigFixture(t *testing.T, name, method string) {
 	}
 
 	changed := coreParse(t, strings.Replace(string(raw), "legacy fixture", "changed fixture", 1))
-	if _, err := xmldsig.VerifySignature(t.Context(), changed, xmldsig.Signatures(changed)[0], key, xmldsig.SignatureOptions{Policy: opt.Policy}); !errors.Is(err, xmldsig.ErrDigest) {
+	if _, err := xmldsig.VerifySignature(t.Context(), changed, xmldsig.Signatures(changed)[0], key, xmldsig.SignatureOptions{Policy: opt.Policy, ExpectedURIs: opt.ExpectedURIs}); !errors.Is(err, xmldsig.ErrDigest) {
 		t.Fatal("changed data", err)
 	}
 
@@ -313,7 +313,7 @@ func testCoreFormsCase(t *testing.T, tc *struct {
 
 	selected := xmldsig.Signatures(signed)[0]
 
-	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{})
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, selected, &(*key).PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 		}
 
 		for i, key := range []*ecdsa.PrivateKey{key1, key2} {
-			r, err := xmldsig.VerifySignature(ctx, both, xmldsig.Signatures(both)[i], &key.PublicKey, xmldsig.SignatureOptions{})
+			r, err := xmldsig.VerifySignature(ctx, both, xmldsig.Signatures(both)[i], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 			if err != nil || !r.CoversElement(coreFind(both, "item", dataLiteral)) {
 				t.Fatal(err)
 			}
@@ -437,7 +437,7 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 			t.Fatal("old strict profile relaxed")
 		}
 		// Wrong key for the chosen signature is not rescued by another signature.
-		r, report, err := xmldsig.VerifySignatureDetailed(ctx, both, xmldsig.Signatures(both)[1], &key1.PublicKey, xmldsig.SignatureOptions{})
+		r, report, err := xmldsig.VerifySignatureDetailed(ctx, both, xmldsig.Signatures(both)[1], &key1.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 		// Verification reports retain diagnostics on failure.
 		//noinspection GoDfaErrorMayBeNotNil
 		if r != nil || err == nil || report.SignatureValue != xmldsig.Invalid {
@@ -447,11 +447,11 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 		modified := strings.Replace(coreXML(t, both), coreFind(both, "Signature", "s2").Children()[1].Text(), "bad-value", 1)
 
 		broken := coreParse(t, modified)
-		if _, err := xmldsig.VerifySignature(ctx, broken, xmldsig.Signatures(broken)[0], &key1.PublicKey, xmldsig.SignatureOptions{}); err != nil {
+		if _, err := xmldsig.VerifySignature(ctx, broken, xmldsig.Signatures(broken)[0], &key1.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); err != nil {
 			t.Fatal(err)
 		}
 
-		if _, err := xmldsig.VerifySignature(ctx, broken, xmldsig.Signatures(broken)[1], &key2.PublicKey, xmldsig.SignatureOptions{}); err == nil {
+		if _, err := xmldsig.VerifySignature(ctx, broken, xmldsig.Signatures(broken)[1], &key2.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); err == nil {
 			t.Fatal("malformed selected accepted")
 		}
 	})
@@ -478,7 +478,7 @@ func TestCoreMultisignaturesAndPreservation(t *testing.T) {
 
 		bad := coreParse(t, mutated)
 
-		_, err = xmldsig.VerifySignature(ctx, bad, xmldsig.Signatures(bad)[0], &key1.PublicKey, xmldsig.SignatureOptions{})
+		_, err = xmldsig.VerifySignature(ctx, bad, xmldsig.Signatures(bad)[0], &key1.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 		if !errors.Is(err, xmldsig.ErrDigest) {
 			t.Fatal("other Signature was also excluded", err)
 		}
@@ -493,7 +493,7 @@ func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 	d := coreSign(t, coreParse(t, raw), key, xmldsig.SignatureOptions{})
 	t.Run("all-references", func(t *testing.T) {
 		bad := coreParse(t, strings.Replace(coreXML(t, d), ">two<", ">CHANGED<", 1))
-		r, report, err := xmldsig.VerifySignatureDetailed(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{})
+		r, report, err := xmldsig.VerifySignatureDetailed(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 
 		var re *xmldsig.ReferenceError
 		if r != nil || !errors.Is(err, xmldsig.ErrDigest) || !errors.As(err, &re) || re.Index != 1 {
@@ -506,8 +506,12 @@ func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 	})
 	t.Run("unsigned-root", func(t *testing.T) {
 		moved := coreParse(t, strings.Replace(coreXML(t, d), `<item ID="first">one</item>`, `<wrapper><item ID="first">one</item></wrapper>`, 1))
+		selected := xmldsig.Signatures(moved)[0]
+		if r, report, err := xmldsig.VerifySignatureDetailed(ctx, moved, selected, &key.PublicKey, xmldsig.SignatureOptions{}); r != nil || !errors.Is(err, xmldsig.ErrPolicy) || report.SignatureValue != xmldsig.NotChecked {
+			t.Fatal("missing coverage requirements", err, report)
+		}
 
-		r, err := xmldsig.VerifySignature(ctx, moved, xmldsig.Signatures(moved)[0], &key.PublicKey, xmldsig.SignatureOptions{})
+		r, err := xmldsig.VerifySignature(ctx, moved, selected, &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -516,7 +520,7 @@ func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 			t.Fatal("wrapper covered")
 		}
 
-		_, err = xmldsig.VerifySignature(ctx, moved, xmldsig.Signatures(moved)[0], &key.PublicKey, xmldsig.SignatureOptions{RequiredElements: []document.Element{moved.Root()}})
+		_, err = xmldsig.VerifySignature(ctx, moved, selected, &key.PublicKey, xmldsig.SignatureOptions{RequiredElements: []document.Element{moved.Root()}, AllowUnspecifiedCoverage: true})
 		if !errors.Is(err, xmldsig.ErrPolicy) {
 			t.Fatal("wrapping/application mismatch accepted", err)
 		}
@@ -524,7 +528,7 @@ func TestCoreDiagnosticsAndWrapping(t *testing.T) {
 	t.Run("preflight-later-reference", func(t *testing.T) {
 		bad := coreParse(t, strings.Replace(coreXML(t, d), `URI="#second"`, `URI="https://invalid.example/never-fetched"`, 1))
 
-		r, report, err := xmldsig.VerifySignatureDetailed(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{})
+		r, report, err := xmldsig.VerifySignatureDetailed(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 		// Verification reports retain diagnostics on failure.
 		//noinspection GoDfaErrorMayBeNotNil
 		if r != nil || !errors.Is(err, xmldsig.ErrPolicy) || report.SignatureValue != xmldsig.NotChecked || report.References[1].Status != xmldsig.Disallowed {
@@ -625,12 +629,12 @@ func TestCoreTemplateSafety(t *testing.T) {
 		raw := strings.Replace(coreXML(t, base), `<ds:Object`, `<ds:KeyInfo><ds:KeyName>attacker</ds:KeyName><ds:X509Data><ds:X509Certificate>not-a-certificate</ds:X509Certificate></ds:X509Data></ds:KeyInfo><ds:Object`, 1)
 
 		d := coreSign(t, coreParse(t, raw), key, xmldsig.SignatureOptions{})
-		if _, e := xmldsig.VerifySignature(ctx, d, xmldsig.Signatures(d)[0], &key.PublicKey, xmldsig.SignatureOptions{}); e != nil {
+		if _, e := xmldsig.VerifySignature(ctx, d, xmldsig.Signatures(d)[0], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); e != nil {
 			t.Fatal(e)
 		}
 
 		wrong := coreEC(t)
-		if _, e := xmldsig.VerifySignature(ctx, d, xmldsig.Signatures(d)[0], &wrong.PublicKey, xmldsig.SignatureOptions{}); e == nil {
+		if _, e := xmldsig.VerifySignature(ctx, d, xmldsig.Signatures(d)[0], &wrong.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); e == nil {
 			t.Fatal("KeyInfo supplied trust")
 		}
 	})
@@ -638,7 +642,7 @@ func TestCoreTemplateSafety(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 8 {
 			wg.Go(func() {
-				if _, e := xmldsig.VerifySignature(ctx, signed, xmldsig.Signatures(signed)[0], &key.PublicKey, xmldsig.SignatureOptions{}); e != nil {
+				if _, e := xmldsig.VerifySignature(ctx, signed, xmldsig.Signatures(signed)[0], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); e != nil {
 					t.Error(e)
 				}
 			})
@@ -659,6 +663,7 @@ func TestCoreInvalidOptions(t *testing.T) {
 		name string
 		opt  xmldsig.SignatureOptions
 	}{
+		{"empty-c14n", xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{}}},
 		{"canonicalization", xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{c14n.Canonical11}}},
 		{"unknown-c14n", xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{"unknown"}}},
 		{"byte-limit", xmldsig.SignatureOptions{Policy: xmldsig.Policy{MaxCanonicalBytes: 1}}},
@@ -669,6 +674,7 @@ func TestCoreInvalidOptions(t *testing.T) {
 		{"transform-denied", xmldsig.SignatureOptions{Processing: reference.Options{AllowedTransforms: []string{reference.Base64}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.opt.AllowUnspecifiedCoverage = true
 			r, _, e := xmldsig.VerifySignatureDetailed(ctx, d, sig, &key.PublicKey, tc.opt)
 			if e == nil || r != nil {
 				t.Fatal("invalid options accepted")
@@ -689,7 +695,7 @@ func TestCoreInvalidOptions(t *testing.T) {
 		{"nil-context", nil, d, sig, &key.PublicKey}, {"cancelled", cancelled, d, sig, &key.PublicKey}, {"nil-document", ctx, nil, sig, &key.PublicKey}, {"zero-selection", ctx, d, document.Element{}, &key.PublicKey}, {"foreign-selection", ctx, d, base.Root(), &key.PublicKey}, {"nil-key", ctx, d, sig, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, _, e := xmldsig.VerifySignatureDetailed(tc.ctx, tc.doc, tc.sig, tc.key, xmldsig.SignatureOptions{})
+			r, _, e := xmldsig.VerifySignatureDetailed(tc.ctx, tc.doc, tc.sig, tc.key, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 			if e == nil || r != nil {
 				t.Fatal("invalid input accepted")
 			}
@@ -716,7 +722,7 @@ func TestCoreCommentAndManifestSemantics(t *testing.T) {
 			signed := coreSign(t, coreParse(t, raw), key, xmldsig.SignatureOptions{})
 			bad := coreParse(t, strings.Replace(coreXML(t, signed), "<!--original-->", "<!--changed-->", 1))
 
-			r, e := xmldsig.VerifySignature(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{})
+			r, e := xmldsig.VerifySignature(ctx, bad, xmldsig.Signatures(bad)[0], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 			if uri == dataReferenceURI {
 				if e != nil {
 					t.Fatal(e)
@@ -733,7 +739,7 @@ func TestCoreCommentAndManifestSemantics(t *testing.T) {
 		refs := strings.Replace(coreRef("#manifest", c14n.Exclusive), `URI="#manifest"`, `URI="#manifest" Type="`+ds4+`Manifest"`, 1)
 		d := coreSign(t, coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, refs, manifest)), key, xmldsig.SignatureOptions{})
 
-		r, e := xmldsig.VerifySignature(ctx, d, xmldsig.Signatures(d)[0], &key.PublicKey, xmldsig.SignatureOptions{})
+		r, e := xmldsig.VerifySignature(ctx, d, xmldsig.Signatures(d)[0], &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true})
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -777,7 +783,7 @@ func FuzzVerifySignature(f *testing.F) {
 			return
 		}
 
-		result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, signatures[0], key, xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}})
+		result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, signatures[0], key, xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}, AllowUnspecifiedCoverage: true})
 		if err != nil {
 			if result != nil || report.Status == xmldsig.Valid {
 				t.Fatal("partial success")
@@ -817,7 +823,7 @@ func FuzzSignTemplate(f *testing.F) {
 		}
 
 		before := coreXML(t, d)
-		opt := xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}}
+		opt := xmldsig.SignatureOptions{Processing: reference.Options{MaxNodeVisits: 100_000}, AllowUnspecifiedCoverage: true}
 
 		out, err := xmldsig.SignTemplate(t.Context(), d, signatures[0], key, xmldsig.TemplateSignOptions{Validation: opt})
 		if coreXML(t, d) != before {

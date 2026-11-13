@@ -136,15 +136,17 @@ for a similar signing and verification example.
 
 ## Status and compatibility
 
-The API is **experimental**. The library implements specific profiles of the
-listed standards; full standards conformance and an independent security audit
-have not been established.
+Starting with v1.0.0, the module preserves source compatibility for the public
+Go API of every importable public package across 1.x releases. See the
+[compatibility policy](docs/compatibility.md#public-api) for details.
+The library implements specific profiles of the listed standards. Full standards
+conformance and an independent security audit have not been established.
 
-The document security parser rejects DTDs and external entities. Explicit
-`document.ParseOptions{NonValidating: true}` and XPath/XSLT language input provide
-bounded, nonvalidating DTD processing with explicit external resource policy; see
-[XML input profiles](docs/transforms.md#xml-input-profiles). XSD validation is
-unsupported. The XPath/XSLT engine implements selected XPath 1.0/2.0/3.0/3.1
+The default document parser rejects DTDs and external entities. Select
+`document.DTDProfile` for bounded, nonvalidating DTD processing. XPath/XSLT
+language input also supports bounded DTD processing. Both require an explicit
+resolver for external entities. See [XML input profiles](docs/transforms.md#xml-input-profiles).
+XSD validation is unsupported. The XPath/XSLT engine implements selected XPath 1.0/2.0/3.0/3.1
 and XSLT 1.0/2.0/3.0 features. Complete Basic XSLT conformance remains open;
 [validation profiles](docs/language-baseline.md) define the required suite checks.
 Schema awareness and W3C streamable execution are unsupported. SAML support covers

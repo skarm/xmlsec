@@ -22,6 +22,7 @@ import (
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/pkipast"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
 )
@@ -676,7 +677,7 @@ func TestHistoricalPKIAuthenticationOpenSSL(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, _, err := session.ValidatePast(t.Context(), leaf.Raw, proofs)
+			result, _, err := pkipast.Validate(t.Context(), session, leaf.Raw, proofs)
 			if err != nil || result == nil || !result.ValidationTime().Equal(expected) {
 				t.Fatal("published EN319102-1 time transition", result != nil, err)
 			}
@@ -684,7 +685,7 @@ func TestHistoricalPKIAuthenticationOpenSSL(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result, _, err := session.ValidatePast(t.Context(), leaf.Raw, missing); result != nil || !errors.Is(err, pki.ErrUnavailable) {
+			if result, _, err := pkipast.Validate(t.Context(), session, leaf.Raw, missing); result != nil || !errors.Is(err, pki.ErrUnavailable) {
 				t.Fatal("authentication substituted for PoE", err)
 			}
 			broken := bytes.Clone(raw)

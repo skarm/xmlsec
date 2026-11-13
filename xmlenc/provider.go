@@ -44,8 +44,8 @@ func (a *contextAdapter) decrypt(ctx context.Context, r io.Reader, ciphertext []
 	return a.ContextDecrypter.Decrypt(ctx, r, ciphertext, options)
 }
 
-func rsaEncryptProfile(ctx context.Context, options Options, recipient *rsa.PublicKey) (profile, error) {
-	p, err := normalize(ctx, options)
+func rsaEncryptProfile(ctx context.Context, options RSAOptions, recipient *rsa.PublicKey) (profile, error) {
+	p, err := normalize(ctx, options.cipherOptions())
 	if err != nil {
 		return profile{}, err
 	}
@@ -91,8 +91,8 @@ type contextualDecrypter interface {
 	decrypt(context.Context, io.Reader, []byte, crypto.DecrypterOpts) ([]byte, error)
 }
 
-func rsaDecryptProfile(ctx context.Context, options Options, recipient crypto.Decrypter) (profile, error) {
-	p, err := normalize(ctx, options)
+func rsaDecryptProfile(ctx context.Context, options RSAOptions, recipient crypto.Decrypter, decryption DecryptOptions) (profile, error) {
+	p, err := normalizeDecryption(ctx, options.cipherOptions(), decryption)
 	if err != nil {
 		return profile{}, err
 	}
@@ -151,6 +151,6 @@ func rsaDecryptProfile(ctx context.Context, options Options, recipient crypto.De
 	return p, nil
 }
 
-func legacyRSAAllowed(options Options) bool {
+func legacyRSAAllowed(options RSAOptions) bool {
 	return options.KeyTransportAlgorithm == RSA15 && options.AllowLegacy && options.OAEP == nil && !fips140.Enabled()
 }

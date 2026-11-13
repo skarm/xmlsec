@@ -15,7 +15,6 @@ import (
 	"errors"
 	"io"
 	"net/url"
-	"reflect"
 	"slices"
 	"time"
 
@@ -336,7 +335,7 @@ func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound,
 
 func (s *ServiceProvider) signRedirect(ctx context.Context, d *document.Document, relay *string) (string, error) {
 	opt := s.c.RedirectLimits
-	if emptyRedirectPolicy(opt.Policy) {
+	if opt.Policy.IsZero() {
 		opt.Policy = s.c.Signing.Policy
 	}
 
@@ -350,20 +349,6 @@ func (s *ServiceProvider) signRedirect(ctx context.Context, d *document.Document
 	opt.SignatureMethod = s.c.Signing.SignatureMethod
 
 	return binding.SignRedirect(ctx, d, binding.Request, relay, s.c.Signing.Key, opt)
-}
-
-func emptyRedirectPolicy(p xmldsig.Policy) bool {
-	// Empty algorithm lists select defaults, so their allocated-empty and nil
-	// forms both retain the historical inheritance of the signing policy.
-	if len(p.AllowedSignatureMethods) == 0 {
-		p.AllowedSignatureMethods = nil
-	}
-
-	if len(p.AllowedDigestMethods) == 0 {
-		p.AllowedDigestMethods = nil
-	}
-
-	return reflect.ValueOf(p).IsZero()
 }
 
 func pendingNameID(s string) string {

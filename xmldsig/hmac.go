@@ -378,6 +378,9 @@ func copySecret(secret []byte) ([]byte, error) {
 }
 
 func verifyRequirement(ctx context.Context, doc *document.Document, selected document.Element, req SignatureRequirement, opt SignatureOptions) error {
+	// Preservation checks the existing signature and any caller-supplied requirements.
+	opt.AllowUnspecifiedCoverage = true
+
 	if req.SharedSecret != nil {
 		if !nilcheck.IsNil(req.PublicKey) {
 			return fmt.Errorf("%w: preservation must choose exactly one trust model", ErrPolicy)

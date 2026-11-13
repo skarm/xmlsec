@@ -47,11 +47,11 @@
 // # Verify the data the application uses
 //
 // [Signatures] lists untrusted handles; selecting one does not authenticate it.
-// Set [SignatureOptions.RequiredElements] and/or ExpectedURIs to express the
-// application's coverage requirements. General verification does not require
-// the root to be signed by default. Consume data from the verified snapshot and
-// use coverage checks only within their documented node, namespace and comment
-// rules.
+// Set [SignatureOptions.RequiredElements] or [SignatureOptions.ExpectedURIs] to
+// express the application's requirements. To check the signature and references
+// without such requirements, explicitly set [SignatureOptions.AllowUnspecifiedCoverage].
+// Use coverage checks within their documented node, namespace and comment rules
+// before consuming data from the verified snapshot.
 //
 // Successful result objects exist only after all required checks pass.
 // [VerificationReport] is diagnostic, including when some checks succeeded

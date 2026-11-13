@@ -2,8 +2,8 @@
   "schema_version": 4,
   "reviewed_on": "2026-10-25",
   "completeness": "All 20 selected profile inventories are complete at named clause, grammar production, datatype, algorithm, property, role/binding/message and formal function/operator contract granularity. Related conditional rules may share one contract record. Inventory completion does not establish full implementation, test coverage or standards conformance; those gaps remain explicit. A separate Authority/query/mapping role inventory was added on 2026-11-05 and remains partial for common-role obligations; the named new protocols have executable implementation and independent message tests.",
-  "scope": "Experimental XML security toolkit with bounded signatures, encryption, key containers, XPath/XSLT, offline trust/evidence verification, selected baseline/closed/historical XAdES workflows and solicited SAML WebSSO; not a full standards conformance claim.",
-  "stage": "experimental-bounded-profiles",
+  "scope": "Selected XML security profiles covering signatures, encryption, key containers, XPath/XSLT, offline trust and evidence verification, baseline and historical XAdES, and SAML protocols. See the profile inventories for implementation and conformance gaps.",
+  "stage": "bounded-profiles",
   "documents": [
     {
       "id": "XML10",
@@ -9384,7 +9384,7 @@
   "requirements": [
     {
       "id": "XML-PARSE",
-      "notes": "The default is DTD-free UTF-8/UTF-16. Explicit document.ParseOptions.NonValidating enables bounded XML 1.0 DTD/entity/default processing, supported single-byte encodings and Namespaces 1.0 relative names. Document.DTD returns owned notation, unparsed-entity and DTD PI metadata. No implicit external I/O, DTD validity checking or XSD validation.",
+      "notes": "The default is DTD-free UTF-8/UTF-16. Explicit document.DTDProfile enables bounded XML 1.0 DTD/entity/default processing, supported single-byte encodings and Namespaces 1.0 relative names. Document.DTD returns owned notation, unparsed-entity and DTD PI metadata. No implicit external I/O, DTD validity checking or XSD validation.",
       "source": "https://www.w3.org/TR/xml/",
       "status": "implemented-restricted",
       "tests": [
@@ -10600,7 +10600,7 @@
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "document.ParseOptions.NonValidating and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
+          "reason": "document.DTDProfile and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
         }
       },
       "gap": "Public bounded nonvalidating XML processing is available. A separate unchanged W3C XML TS 20130923 run checks selected XML 1.0/Namespaces 1.0 binary outcomes; full output/encoding/notation clause-specific certification remains unverified.",
@@ -11584,7 +11584,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -11645,11 +11645,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -11675,7 +11675,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -11736,11 +11736,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -11766,7 +11766,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -11827,11 +11827,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -12217,11 +12217,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -12325,7 +12325,7 @@
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "SHA-1 requires the relevant explicit OAEPParameters.AllowLegacy, ConcatKDFParameters.AllowLegacy or CBC/TripleDES Options.AllowLegacy permission; FIPS denies selected legacy algorithms."
+          "reason": "SHA-1 requires the relevant explicit OAEPParameters.AllowLegacy, ConcatKDFParameters.AllowLegacy or CBC/TripleDES CipherOptions.AllowLegacy permission; FIPS denies selected legacy algorithms."
         }
       },
       "gap": "",
@@ -46502,7 +46502,7 @@
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "document.ParseOptions.NonValidating and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
+          "reason": "document.DTDProfile and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
         }
       },
       "gap": "Public bounded nonvalidating XML processing is available. A separate unchanged W3C XML TS 20130923 run checks selected XML 1.0/Namespaces 1.0 binary outcomes; full output/encoding/notation clause-specific certification remains unverified.",
@@ -55176,7 +55176,7 @@
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "document.ParseOptions.NonValidating and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
+          "reason": "document.DTDProfile and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
         }
       },
       "gap": "Public bounded nonvalidating XML processing is available. A separate unchanged W3C XML TS 20130923 run checks selected XML 1.0/Namespaces 1.0 binary outcomes; full output/encoding/notation clause-specific certification remains unverified.",
@@ -55276,7 +55276,7 @@
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "document.ParseOptions.NonValidating and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
+          "reason": "document.DTDProfile and XPath/XSLT input enable bounded DTD processing with explicit external resolvers. The security parser, records and approved XMLDSig programs remain DTD-free."
         }
       },
       "gap": "Public bounded nonvalidating XML processing is available. A separate unchanged W3C XML TS 20130923 run checks selected XML 1.0/Namespaces 1.0 binary outcomes; full output/encoding/notation clause-specific certification remains unverified.",
@@ -87267,11 +87267,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "Independent xmlsec1 rejects truncated blocks but accepts a zero padding length. The normative zero-length rejection is enforced locally; no agreeing external zero-padding rejection is claimed.",
@@ -87297,7 +87297,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -87358,11 +87358,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -87388,7 +87388,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -87449,11 +87449,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -88933,11 +88933,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -89284,7 +89284,7 @@
         "apis": [
           "xmlenc.KeyGraphLimits",
           "xmlenc.KeyGraphResources",
-          "xmlenc.Options",
+          "xmlenc.DecryptOptions",
           "xmlenc.DeriveConcatKey"
         ],
         "code": [
@@ -89482,7 +89482,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -89543,11 +89543,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -93467,7 +93467,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.RSAOptions",
           "xmlenc.OAEPParameters",
           "xmlenc.DecryptBytes"
         ],
@@ -788663,8 +788663,7 @@
           "pki.HistoricalSession.CheckPath",
           "pki.HistoricalSession.AuthenticateEvidence",
           "pki.HistoricalSession.CheckCurrentPolicy",
-          "pki.HistoricalSession.ValidatePast",
-          "pki.HistoricalSession.ValidatePastPath"
+          "xades.HistoricalValidator.Validate"
         ],
         "code": [
           "pki/historical.go",
@@ -788786,8 +788785,7 @@
           "pki.HistoricalSession.CheckPath",
           "pki.HistoricalSession.AuthenticateEvidence",
           "pki.HistoricalSession.CheckCurrentPolicy",
-          "pki.HistoricalSession.ValidatePast",
-          "pki.HistoricalSession.ValidatePastPath"
+          "xades.HistoricalValidator.Validate"
         ],
         "code": [
           "pki/historical.go",
@@ -789776,8 +789774,7 @@
           "pki.HistoricalSession.CheckPath",
           "pki.HistoricalSession.AuthenticateEvidence",
           "pki.HistoricalSession.CheckCurrentPolicy",
-          "pki.HistoricalSession.ValidatePast",
-          "pki.HistoricalSession.ValidatePastPath"
+          "xades.HistoricalValidator.Validate"
         ],
         "code": [
           "pki/historical.go",
@@ -789899,8 +789896,7 @@
           "pki.HistoricalSession.CheckPath",
           "pki.HistoricalSession.AuthenticateEvidence",
           "pki.HistoricalSession.CheckCurrentPolicy",
-          "pki.HistoricalSession.ValidatePast",
-          "pki.HistoricalSession.ValidatePastPath"
+          "xades.HistoricalValidator.Validate"
         ],
         "code": [
           "pki/historical.go",
@@ -860460,7 +860456,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -860521,11 +860517,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -860551,7 +860547,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -860612,11 +860608,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -860642,7 +860638,7 @@
       "implementation": {
         "status": "implemented",
         "apis": [
-          "xmlenc.Options",
+          "xmlenc.CipherOptions",
           "xmlenc.EncryptBytesWithKey",
           "xmlenc.DecryptBytesWithKey",
           "xmlenc.EncryptBytes",
@@ -860703,11 +860699,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -861093,11 +861089,11 @@
       "policy": {
         "default": {
           "status": "forbidden",
-          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and Options.AllowLegacy; no default changes."
+          "reason": "Legacy CBC/TripleDES algorithms require explicit selection and CipherOptions.AllowLegacy; no default changes."
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "Options.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
+          "reason": "CipherOptions.AllowLegacy permits the selected CBC or TripleDES-KW algorithm, is denied with crypto/fips140 enabled, and asserts neither authenticity nor sender trust. OAEP legacy permission is independent."
         }
       },
       "gap": "",
@@ -861201,7 +861197,7 @@
         },
         "compatibility": {
           "status": "opt-in",
-          "reason": "SHA-1 requires the relevant explicit OAEPParameters.AllowLegacy, ConcatKDFParameters.AllowLegacy or CBC/TripleDES Options.AllowLegacy permission; FIPS denies selected legacy algorithms."
+          "reason": "SHA-1 requires the relevant explicit OAEPParameters.AllowLegacy, ConcatKDFParameters.AllowLegacy or CBC/TripleDES CipherOptions.AllowLegacy permission; FIPS denies selected legacy algorithms."
         }
       },
       "gap": "",

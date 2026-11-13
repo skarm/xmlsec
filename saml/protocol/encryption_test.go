@@ -120,7 +120,7 @@ func TestEncryptedResponsePoliciesAndFailureOrder(t *testing.T) {
 		{"wrong key", &protocol.DecryptionOptions{Keys: []crypto.Decrypter{wrong}}, false},
 		{"rollover", &protocol.DecryptionOptions{Keys: []crypto.Decrypter{wrong, recipient}}, true},
 		{"attempt budget", &protocol.DecryptionOptions{Keys: []crypto.Decrypter{wrong, recipient}, MaxDecryptions: 1}, false},
-		{"algorithm mismatch", &protocol.DecryptionOptions{Keys: []crypto.Decrypter{recipient}, Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128GCM}}, false},
+		{"algorithm mismatch", &protocol.DecryptionOptions{Keys: []crypto.Decrypter{recipient}, Data: xmlenc.RSAOptions{DataAlgorithm: xmlenc.AES128GCM}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := options()
@@ -257,7 +257,7 @@ func TestEncryptedCBCAndUnsignedAssertion(t *testing.T) {
 	}
 	c, recipient := testcert.New(t), encryptionKey(t)
 	spec := responseSpec()
-	spec.Encryption = &protocol.EncryptionOptions{Targets: protocol.EncryptAssertion, Recipient: &recipient.PublicKey, Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}}
+	spec.Encryption = &protocol.EncryptionOptions{Targets: protocol.EncryptAssertion, Recipient: &recipient.PublicKey, Data: xmlenc.RSAOptions{DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true}}
 	d, err := protocol.SignResponse(t.Context(), spec, protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw})
 	if err != nil {
 		t.Fatal(err)

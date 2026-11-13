@@ -59,14 +59,26 @@ func TestOctetsAndImplicitCanonicalization(t *testing.T) {
 		}
 	})
 	t.Run("implicit conversion needs permission", func(t *testing.T) {
-		out, err := reference.Process(t.Context(), all(t, parse(t, `<r/>`)), nil, reference.Options{AllowedTransforms: []string{c14n.Exclusive}})
-		if out != nil || !errors.Is(err, reference.ErrPolicy) {
-			t.Fatal(out, err)
+		input := all(t, parse(t, `<r/>`))
+		for _, allowed := range [][]string{{c14n.Exclusive}, {}} {
+			out, err := reference.Process(t.Context(), input, nil, reference.Options{AllowedTransforms: allowed})
+			var step *reference.StepError
+			if out != nil || !errors.Is(err, reference.ErrPolicy) || !errors.As(err, &step) || step.Index != -1 || step.Algorithm != c14n.Canonical10 {
+				t.Fatalf("AllowedTransforms %v: got %v, %v", allowed, out, err)
+			}
+		}
+	})
+	t.Run("deny all permits untransformed octets", func(t *testing.T) {
+		opt := reference.Options{AllowedTransforms: []string{}}
+		data := reference.Octets([]byte("SGVsbG8="))
+		out := process(t, data, nil, opt)
+		if string(out.Bytes()) != "SGVsbG8=" || len(out.Steps()) != 0 {
+			t.Fatal(out.Bytes(), out.Steps())
 		}
 
-		var step *reference.StepError
-		if !errors.As(err, &step) || step.Index != -1 || step.Algorithm != c14n.Canonical10 {
-			t.Fatal(err)
+		out, err := reference.Process(t.Context(), data, []reference.Transform{{Algorithm: reference.Base64}}, opt)
+		if out != nil || !errors.Is(err, reference.ErrPolicy) {
+			t.Fatal(out, err)
 		}
 	})
 	t.Run("empty data valid, zero data invalid", func(t *testing.T) {

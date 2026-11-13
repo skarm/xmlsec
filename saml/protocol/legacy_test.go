@@ -30,7 +30,7 @@ func TestLegacySAMLAlgorithms(t *testing.T) {
 	for _, algorithm := range []string{xmlenc.AES128CBC, xmlenc.AES256CBC, xmlenc.TripleDESCBC} {
 		for _, transport := range []string{xmlenc.RSA15, xmlenc.RSAOAEP10} {
 			spec := responseSpec()
-			data := xmlenc.Options{DataAlgorithm: algorithm, AllowLegacy: true}
+			data := xmlenc.RSAOptions{DataAlgorithm: algorithm, AllowLegacy: true}
 			if transport == xmlenc.RSA15 {
 				data.KeyTransportAlgorithm = transport
 			} else {

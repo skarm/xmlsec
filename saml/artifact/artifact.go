@@ -44,11 +44,9 @@ type Entry struct {
 }
 
 // Store must atomically enforce single use across all callers and instances.
-// Take returns nil for missing, expired, consumed or wrong-recipient artifacts.
 // A wrong recipient must not consume an otherwise valid entry.
 type Store interface {
 	Put(context.Context, Entry, time.Time) error
-	Take(context.Context, binding.Artifact, string, time.Time) (*document.Document, error)
 	// Resolve must publish the signed reply and consume the artifact atomically.
 	// A callback failure must preserve the artifact. The callback sees nil for
 	// unknown, consumed, expired and unauthorized artifacts.
@@ -159,6 +157,7 @@ func (s *MemoryStore) Put(ctx context.Context, e Entry, at time.Time) error {
 }
 
 // Take atomically releases a message once to its authenticated recipient.
+// It returns nil for missing, expired, consumed or wrong-recipient artifacts.
 func (s *MemoryStore) Take(ctx context.Context, a binding.Artifact, recipient string, at time.Time) (*document.Document, error) {
 	if ctx == nil || s == nil || at.IsZero() {
 		return nil, ErrArtifact

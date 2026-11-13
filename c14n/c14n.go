@@ -30,9 +30,11 @@ type Options struct {
 	Algorithm string
 	// WithComments enables comments also with a base (non-WithComments) URI.
 	WithComments bool
-	// InclusivePrefixes applies only to Exclusive C14N. Missing prefixes are
-	// ignored; #default names the default namespace. It does not select nodes
-	// omitted from an explicit NodeSet and does not rewrite QName string values.
+	// InclusivePrefixes applies only to Exclusive C14N, with or without
+	// comments. A nonempty list with Canonical XML 1.0 or 1.1 returns an
+	// error matching [document.ErrUnsupported]. Missing prefixes are ignored.
+	// #default names the default namespace. The list does not select nodes
+	// omitted from an explicit NodeSet or rewrite QName string values.
 	InclusivePrefixes []string
 	// MaxOutputBytes bounds canonical bytes; zero uses 32 MiB. A failing write may have
 	// emitted a prefix of the output. Callers must discard partial output after any error.

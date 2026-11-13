@@ -85,7 +85,7 @@ func newGraph(ctx context.Context, c Config, in Input, now time.Time) (*graph, e
 }
 
 func (g *graph) admitObject(item Object, remaining, edges *int, maximum int) error {
-	if len(item.Bytes) == 0 && item.Kind != objectData || len(item.Bytes) > *remaining || !item.Kind.Valid() {
+	if len(item.Bytes) == 0 && item.Kind != objectData || !item.Kind.Valid() {
 		return ErrInput
 	}
 
@@ -94,11 +94,11 @@ func (g *graph) admitObject(item Object, remaining, edges *int, maximum int) err
 		return checkObjectIdentity(previous, item)
 	}
 
-	*remaining -= len(item.Bytes)
-	if len(item.Contains)+len(item.Refs) > maximum-*edges {
+	if len(item.Bytes) > *remaining || len(item.Contains)+len(item.Refs) > maximum-*edges {
 		return ErrLimit
 	}
 
+	*remaining -= len(item.Bytes)
 	*edges += len(item.Contains) + len(item.Refs)
 	item.Bytes = bytes.Clone(item.Bytes)
 	item.Contains = slices.Clone(item.Contains)

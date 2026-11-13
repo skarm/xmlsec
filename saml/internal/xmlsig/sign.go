@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"errors"
+	"slices"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
@@ -77,8 +78,8 @@ type VerifiedSignature interface {
 
 // ClonePolicy returns an owned copy of the SAML signature algorithm policy.
 func ClonePolicy(p xmldsig.Policy) xmldsig.Policy {
-	p.AllowedDigestMethods = append([]string(nil), p.AllowedDigestMethods...)
-	p.AllowedSignatureMethods = append([]string(nil), p.AllowedSignatureMethods...)
+	p.AllowedDigestMethods = slices.Clone(p.AllowedDigestMethods)
+	p.AllowedSignatureMethods = slices.Clone(p.AllowedSignatureMethods)
 
 	return p
 }
@@ -320,7 +321,12 @@ func preservedSignatures(ctx context.Context, draft *document.Document, sig docu
 
 	for _, s := range xmldsig.Signatures(draft) {
 		if !s.Same(sig) {
-			requirement := xmldsig.SignatureRequirement{Signature: s, Options: xmldsig.SignatureOptions{Policy: k.Policy, MaxSignatures: MaxMessageSignatures, AllowedCanonicalizationMethods: []string{c14n.Exclusive, c14n.Canonical10}}}
+			requirement := xmldsig.SignatureRequirement{Signature: s, Options: xmldsig.SignatureOptions{
+				Policy: k.Policy, MaxSignatures: MaxMessageSignatures,
+				AllowedCanonicalizationMethods: []string{c14n.Exclusive, c14n.Canonical10},
+				AllowUnspecifiedCoverage:       true,
+			}}
+
 			if k.PreserveKeys != nil {
 				_, node := tree.Unwrap(s)
 

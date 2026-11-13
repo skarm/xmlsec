@@ -43,7 +43,7 @@ func TestExternalExtensionContextIsNotReused(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			opt := xmldsig.SignatureOptions{Processing: reference.DefaultOptions(), External: &xmldsig.ExternalReferences{BaseURI: base, AllowedURIs: []string{resolved}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+			opt := xmldsig.SignatureOptions{ExpectedURIs: []string{uri, second}, Processing: reference.DefaultOptions(), External: &xmldsig.ExternalReferences{BaseURI: base, AllowedURIs: []string{resolved}, Resolver: xmldsig.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 				return io.NopCloser(strings.NewReader(`<payload>context-sensitive execution</payload>`)), nil
 			})}}
 			opt.Processing.Extension = engine
@@ -166,7 +166,7 @@ func testTransformXMLDSigCase(t *testing.T, tt *struct {
 		t.Fatal("required source falsely covered")
 	}
 
-	if _, e = xmldsig.VerifySignature(ctx, signed, xmldsig.Signatures(signed)[0], &k.PublicKey, xmldsig.SignatureOptions{}); e == nil {
+	if _, e = xmldsig.VerifySignature(ctx, signed, xmldsig.Signatures(signed)[0], &k.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); e == nil {
 		t.Fatal("extension enabled by default")
 	}
 }

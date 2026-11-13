@@ -33,7 +33,7 @@ func testSelectedElementAllSuitesCase(t *testing.T, data *string, wrap *string, 
 	source := parse(t, []byte(`<?before ok?><!--outside--><r xmlns="urn:outer" xmlns:p="urn:p" xmlns:q="urn:unused" xmlns:ds="urn:shadow-ds" xml:lang="ru" xml:base="https://example.test/"><before>visible</before><box xmlns:p="urn:shadow-p"><p:secret xmlns="" p:flag="é">before<bare/>й 😀<!--inside--><?inside ok?></p:secret><after/></box></r><!--after-->`))
 	before := xmlBytes(t, source)
 	selected := source.Root().Children()[1].Children()[0]
-	options := xmlenc.Options{DataAlgorithm: *data}
+	options := xmlenc.RSAOptions{DataAlgorithm: *data}
 
 	var (
 		encrypted, restored *document.Document
@@ -44,11 +44,11 @@ func testSelectedElementAllSuitesCase(t *testing.T, data *string, wrap *string, 
 	} else {
 		sizes := map[string]int{xmlenc.AES128KeyWrap: 16, xmlenc.AES192KeyWrap: 24, xmlenc.AES256KeyWrap: 32}
 		kek := bytes.Repeat([]byte{7}, sizes[(*wrap)])
-		kw := xmlenc.KeyWrapOptions{Data: options, KeyAlgorithm: *wrap}
+		kw := xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{DataAlgorithm: *data}, KeyAlgorithm: *wrap}
 
 		encrypted, _, err = xmlenc.EncryptElementWithKeyWrap(*ctx, source, selected, kek, kw)
 		if err == nil {
-			restored, _, err = xmlenc.DecryptElementWithKeyWrap(*ctx, encrypted, encrypted.Root().Children()[1].Children()[0], kek, kw)
+			restored, _, err = xmlenc.DecryptElementWithKeyWrap(*ctx, encrypted, encrypted.Root().Children()[1].Children()[0], kek, kw, xmlenc.DecryptOptions{})
 		}
 	}
 
@@ -57,7 +57,7 @@ func testSelectedElementAllSuitesCase(t *testing.T, data *string, wrap *string, 
 	}
 
 	if (*wrap) == "" {
-		restored, _, err = xmlenc.DecryptElement(*ctx, encrypted, encrypted.Root().Children()[1].Children()[0], *recipient, options)
+		restored, _, err = xmlenc.DecryptElement(*ctx, encrypted, encrypted.Root().Children()[1].Children()[0], *recipient, options, xmlenc.DecryptOptions{})
 	}
 
 	if err != nil {
@@ -89,7 +89,7 @@ func TestSelectedElementRootAndExactSelection(t *testing.T) {
 		t.Fatal("returned encrypted handle belongs to another snapshot")
 	}
 
-	plain, plainRoot, err := xmlenc.DecryptElementWithKeyWrap(ctx, root, encryptedRoot, kek, xmlenc.KeyWrapOptions{})
+	plain, plainRoot, err := xmlenc.DecryptElementWithKeyWrap(ctx, root, encryptedRoot, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,12 +116,12 @@ func TestSelectedElementRootAndExactSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	partial, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, both, both.Root().Children()[0], kek, xmlenc.KeyWrapOptions{})
+	partial, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, both, both.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	if err != nil || partial.Root().Children()[0].Text() != nameOne || partial.Root().Children()[1].Name().Local != "EncryptedData" {
 		t.Fatal("not an exact selection", err)
 	}
 
-	full, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, partial, partial.Root().Children()[1], otherKey, xmlenc.KeyWrapOptions{})
+	full, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, partial, partial.Root().Children()[1], otherKey, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSelectedElementPreservesEmbeddedSignatures(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			restored, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0].Children()[0], kek, xmlenc.KeyWrapOptions{})
+			restored, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0].Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -200,14 +200,14 @@ func TestSelectedElementSuperEncryption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	partial, restoredInner, err := xmlenc.DecryptElementWithKeyWrap(ctx, outer, outerHandle, outerKey, xmlenc.KeyWrapOptions{})
+	partial, restoredInner, err := xmlenc.DecryptElementWithKeyWrap(ctx, outer, outerHandle, outerKey, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	if err != nil || restoredInner.Name() != innerHandle.Name() {
 		t.Fatal("super-encryption did not restore exact inner EncryptedData", err)
 	}
 
 	sameXML(t, inner, partial)
 
-	full, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, partial, restoredInner, kek, xmlenc.KeyWrapOptions{})
+	full, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, partial, restoredInner, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 	parent := `<r xmlns="urn:outer" xmlns:p="urn:p" xmlns:q="urn:q">`
 	valid := authenticatedElement(t, `<p:secret xmlns="" p:flag="é"><bare/>й<q:v>ok</q:v></p:secret>`, parent, document.DefaultLimits())
 
-	restored, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, valid, valid.Root().Children()[0], kek, xmlenc.KeyWrapOptions{})
+	restored, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, valid, valid.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	if err != nil || restored.Root().Children()[0].Name().Space != "urn:p" || restored.Root().Children()[0].Children()[0].Name().Space != "" || restored.Root().Children()[0].Children()[1].Name().Space != "urn:q" {
 		t.Fatal("parent context or default reset lost", err)
 	}
@@ -231,7 +231,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 	leafLimits.MaxBytes = len(`<p:secret a="1"/>`)
 
 	leafLimits.MaxNodes, leafLimits.MaxDepth, leafLimits.MaxAttributesPerElement = 1, 1, 1
-	if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, leaf, leaf.Root().Children()[0], kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: leafLimits}}); err != nil || !handle.Same(result.Root().Children()[0]) || handle.Name().Space != "urn:p" {
+	if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, leaf, leaf.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{XMLLimits: leafLimits}); err != nil || !handle.Same(result.Root().Children()[0]) || handle.Name().Space != "urn:p" {
 		t.Fatal("namespace wrapper charged against plaintext budgets", err)
 	}
 
@@ -245,7 +245,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 			encrypted := authenticatedElement(t, raw, parent, document.DefaultLimits())
 			before := xmlBytes(t, encrypted)
 
-			result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{})
+			result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 			if result != nil || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(before, xmlBytes(t, encrypted)) {
 				t.Fatal("authenticated invalid XML leaked or changed source", err)
 			}
@@ -271,8 +271,8 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 
 			encrypted := authenticatedElement(t, `<p:secret a="1" b="2"><q:v/></p:secret>`, parent, document.DefaultLimits())
 
-			options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: limits}}
-			if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, options); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+			options := xmlenc.DecryptOptions{XMLLimits: limits}
+			if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, options); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatal("plaintext budget bypassed", err)
 			}
 		})
@@ -283,7 +283,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 	limits.MaxDepth = 9
 
 	encrypted := authenticatedElement(t, `<secret>`+strings.Repeat(`<n>`, 10)+strings.Repeat(`</n>`, 10)+`</secret>`, parent, limits)
-	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal("complete document depth bypassed", err)
 	}
 	// Escaping plaintext can make the restored document larger than its source.
@@ -298,7 +298,7 @@ func TestSelectedElementAuthenticatedXMLAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, bounded, bounded.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(wire, xmlBytes(t, bounded)) {
+	if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, bounded, bounded.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(wire, xmlBytes(t, bounded)) {
 		t.Fatal("complete document byte budget bypassed or source changed", err)
 	}
 }
@@ -335,7 +335,7 @@ func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
 			t.Fatal("foreign selection accepted", err)
 		}
 
-		if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, source, selected, kek, xmlenc.KeyWrapOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
+		if result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, source, selected, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || handle != (document.Element{}) || !errors.Is(err, xmlenc.ErrFormat) {
 			t.Fatal("foreign decryption selection accepted", err)
 		}
 	}
@@ -345,7 +345,7 @@ func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrFormat) {
+	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, encrypted, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || !errors.Is(err, xmlenc.ErrFormat) {
 		t.Fatal("stale source handle accepted", err)
 	}
 
@@ -355,7 +355,7 @@ func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
 	bad := parse(t, bytes.Replace(xmlBytes(t, encrypted), []byte(value), []byte(base64.StdEncoding.EncodeToString(tag)), 1))
 
 	before := xmlBytes(t, bad)
-	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, bad, bad.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(before, xmlBytes(t, bad)) {
+	if result, _, err := xmlenc.DecryptElementWithKeyWrap(ctx, bad, bad.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) || !bytes.Equal(before, xmlBytes(t, bad)) {
 		t.Fatal("tamper leaked plaintext or changed source", err)
 	}
 
@@ -366,11 +366,11 @@ func TestSelectedElementRejectsHandlesTamperingAndCancellation(t *testing.T) {
 		t.Fatal("cancellation lost", err)
 	}
 
-	if result, _, err := xmlenc.DecryptElementWithKeyWrap(canceled, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, context.Canceled) {
+	if result, _, err := xmlenc.DecryptElementWithKeyWrap(canceled, encrypted, encrypted.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("cancellation lost", err)
 	}
 
-	if result, _, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{Data: xmlenc.Options{MaxPlaintextBytes: 4}}); result != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+	if result, _, err := xmlenc.EncryptElementWithKeyWrap(ctx, source, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 4}}); result != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal("plaintext budget bypassed", err)
 	}
 
@@ -421,9 +421,9 @@ func FuzzSelectedElementPlaintext(f *testing.F) {
 		before := xmlBytes(t, source)
 		limits := document.DefaultLimits()
 		limits.MaxBytes, limits.MaxNodes, limits.MaxDepth, limits.MaxAttributesPerElement = 4096, 64, 8, 8
-		options := xmlenc.KeyWrapOptions{Data: xmlenc.Options{XMLLimits: limits}}
+		options := xmlenc.DecryptOptions{XMLLimits: limits}
 
-		result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, source, source.Root().Children()[0], kek, options)
+		result, handle, err := xmlenc.DecryptElementWithKeyWrap(ctx, source, source.Root().Children()[0], kek, xmlenc.KeyWrapOptions{}, options)
 		if !bytes.Equal(before, xmlBytes(t, source)) {
 			t.Fatal("source mutated")
 		}

@@ -104,7 +104,7 @@ func run() error {
 		return err
 	}
 
-	encrypted, err := xmlenc.EncryptDocument(ctx, signed, &recipient.PublicKey, xmlenc.Options{})
+	encrypted, err := xmlenc.EncryptDocument(ctx, signed, &recipient.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func run() error {
 		return err
 	}
 
-	decrypted, err := xmlenc.DecryptDocument(ctx, received, recipient, xmlenc.Options{})
+	decrypted, err := xmlenc.DecryptDocument(ctx, received, recipient, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		return err
 	}

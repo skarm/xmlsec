@@ -106,6 +106,11 @@ type encryptionOperations struct {
 	decryptContent  func(*document.Document, document.Element) (*document.Document, document.Element, error)
 }
 
+type encryptionOptions struct {
+	rsa        xmlenc.RSAOptions
+	decryption xmlenc.DecryptOptions
+}
+
 type encryptionCommand struct {
 	command     string
 	input       string
@@ -185,8 +190,14 @@ func (c encryptionCommand) run(ctx context.Context, stdin io.Reader, stdout io.W
 	return documentOutput(ctx, c.output, stdout, result)
 }
 
-func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) {
-	opt := xmlenc.Options{DataAlgorithm: c.algorithm, AllowLegacy: c.allowLegacy, MaxPlaintextBytes: c.maximum, XMLLimits: execution(ctx).xml}
+func (c encryptionCommand) options(ctx context.Context) (encryptionOptions, error) {
+	opt := encryptionOptions{
+		rsa: xmlenc.RSAOptions{
+			DataAlgorithm: c.algorithm, AllowLegacy: c.allowLegacy, MaxPlaintextBytes: c.maximum,
+		},
+		decryption: xmlenc.DecryptOptions{XMLLimits: execution(ctx).xml},
+	}
+
 	if c.scope != scopeBytes && c.scope != "document" && c.scope != scopeElement && c.scope != "content" {
 		return opt, usageError("-scope must be bytes, document, element or content")
 	}
@@ -217,9 +228,9 @@ func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) 
 			return opt, err
 		}
 
-		opt.OAEP = &xmlenc.OAEPParameters{Hash: h}
+		opt.rsa.OAEP = &xmlenc.OAEPParameters{Hash: h}
 		if c.labelFile != "" {
-			opt.OAEP.Label, err = readInputContext(ctx, c.labelFile, nil, cliMaxOAEPLabelBytes)
+			opt.rsa.OAEP.Label, err = readInputContext(ctx, c.labelFile, nil, cliMaxOAEPLabelBytes)
 			if err != nil {
 				return opt, err
 			}
@@ -244,7 +255,7 @@ func (c encryptionCommand) options(ctx context.Context) (xmlenc.Options, error) 
 			return opt, usageError("cipher manifest must contain exactly one URI/path entry")
 		}
 
-		opt.External = &xmlenc.ExternalCipherReference{
+		opt.decryption.External = &xmlenc.ExternalCipherReference{
 			URI:      entries[0].URI,
 			Resolver: resolver,
 			MaxBytes: execution(ctx).xml.MaxBytes,
@@ -266,7 +277,7 @@ func (c encryptionCommand) selection(doc *document.Document) (document.Element, 
 	return selectElement(doc, c.idName, c.id, c.index, document.Name{Space: xmlenc.Namespace, Local: "EncryptedData"})
 }
 
-func (c encryptionCommand) operations(ctx context.Context, opt xmlenc.Options) (encryptionOperations, func(), error) {
+func (c encryptionCommand) operations(ctx context.Context, opt encryptionOptions) (encryptionOperations, func(), error) {
 	closeKey := func() {}
 
 	if c.transport == nameRSA {
@@ -301,7 +312,7 @@ func (c encryptionCommand) operations(ctx context.Context, opt xmlenc.Options) (
 			}
 		}
 
-		return rsaOperations(ctx, public, private, opt), closeKey, nil
+		return rsaOperations(ctx, public, private, opt.rsa, opt.decryption), closeKey, nil
 	}
 
 	if c.keyFlags.format != namePlain || c.keyFlags.passwordFile != "" {
@@ -314,11 +325,15 @@ func (c encryptionCommand) operations(ctx context.Context, opt xmlenc.Options) (
 	}
 
 	closeKey = func() { clear(secret) }
+
+	cipher := xmlenc.CipherOptions{
+		DataAlgorithm: c.algorithm, AllowLegacy: c.allowLegacy, MaxPlaintextBytes: c.maximum,
+	}
 	if c.transport == transportDirect {
-		return directOperations(ctx, secret, xmlenc.SymmetricOptions{Data: opt, KeyName: c.keyName}), closeKey, nil
+		return directOperations(ctx, secret, xmlenc.SymmetricOptions{Data: cipher, KeyName: c.keyName}, opt.decryption), closeKey, nil
 	}
 
-	return wrapOperations(ctx, secret, xmlenc.KeyWrapOptions{Data: opt, KeyAlgorithm: c.wrap}), closeKey, nil
+	return wrapOperations(ctx, secret, xmlenc.KeyWrapOptions{Data: cipher, KeyAlgorithm: c.wrap}, opt.decryption), closeKey, nil
 }
 
 func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
@@ -401,65 +416,69 @@ func (c encryptionCommand) xmlOperation(doc *document.Document, operations encry
 }
 
 //nolint:dupl // These adapters bind distinct statically typed key and options APIs.
-func rsaOperations(ctx context.Context, public *rsa.PublicKey, private crypto.Decrypter, opt xmlenc.Options) encryptionOperations {
+func rsaOperations(ctx context.Context, public *rsa.PublicKey, private crypto.Decrypter, opt xmlenc.RSAOptions, decryption xmlenc.DecryptOptions) encryptionOperations {
 	return encryptionOperations{
-		encryptBytes: func(b []byte) (*document.Document, error) { return xmlenc.EncryptBytes(ctx, b, public, opt) }, decryptBytes: func(d *document.Document) ([]byte, error) { return xmlenc.DecryptBytes(ctx, d, private, opt) }, encryptDocument: func(d *document.Document) (*document.Document, error) {
+		encryptBytes: func(b []byte) (*document.Document, error) { return xmlenc.EncryptBytes(ctx, b, public, opt) }, decryptBytes: func(d *document.Document) ([]byte, error) {
+			return xmlenc.DecryptBytes(ctx, d, private, opt, decryption)
+		}, encryptDocument: func(d *document.Document) (*document.Document, error) {
 			return xmlenc.EncryptDocument(ctx, d, public, opt)
 		}, decryptDocument: func(d *document.Document) (*document.Document, error) {
-			return xmlenc.DecryptDocument(ctx, d, private, opt)
+			return xmlenc.DecryptDocument(ctx, d, private, opt, decryption)
 		},
 		encryptElement: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
 			return xmlenc.EncryptElement(ctx, d, e, public, opt)
 		}, decryptElement: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
-			return xmlenc.DecryptElement(ctx, d, e, private, opt)
+			return xmlenc.DecryptElement(ctx, d, e, private, opt, decryption)
 		}, encryptContent: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
 			return xmlenc.EncryptContent(ctx, d, e, public, opt)
 		}, decryptContent: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
-			return xmlenc.DecryptContent(ctx, d, e, private, opt)
+			return xmlenc.DecryptContent(ctx, d, e, private, opt, decryption)
 		},
 	}
 }
 
 //nolint:dupl // These adapters bind distinct statically typed key and options APIs.
-func directOperations(ctx context.Context, key []byte, opt xmlenc.SymmetricOptions) encryptionOperations {
+func directOperations(ctx context.Context, key []byte, opt xmlenc.SymmetricOptions, decryption xmlenc.DecryptOptions) encryptionOperations {
 	return encryptionOperations{
-		encryptBytes: func(b []byte) (*document.Document, error) { return xmlenc.EncryptBytesWithKey(ctx, b, key, opt) }, decryptBytes: func(d *document.Document) ([]byte, error) { return xmlenc.DecryptBytesWithKey(ctx, d, key, opt) }, encryptDocument: func(d *document.Document) (*document.Document, error) {
+		encryptBytes: func(b []byte) (*document.Document, error) { return xmlenc.EncryptBytesWithKey(ctx, b, key, opt) }, decryptBytes: func(d *document.Document) ([]byte, error) {
+			return xmlenc.DecryptBytesWithKey(ctx, d, key, opt, decryption)
+		}, encryptDocument: func(d *document.Document) (*document.Document, error) {
 			return xmlenc.EncryptDocumentWithKey(ctx, d, key, opt)
 		}, decryptDocument: func(d *document.Document) (*document.Document, error) {
-			return xmlenc.DecryptDocumentWithKey(ctx, d, key, opt)
+			return xmlenc.DecryptDocumentWithKey(ctx, d, key, opt, decryption)
 		},
 		encryptElement: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
 			return xmlenc.EncryptElementWithKey(ctx, d, e, key, opt)
 		}, decryptElement: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
-			return xmlenc.DecryptElementWithKey(ctx, d, e, key, opt)
+			return xmlenc.DecryptElementWithKey(ctx, d, e, key, opt, decryption)
 		}, encryptContent: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
 			return xmlenc.EncryptContentWithKey(ctx, d, e, key, opt)
 		}, decryptContent: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
-			return xmlenc.DecryptContentWithKey(ctx, d, e, key, opt)
+			return xmlenc.DecryptContentWithKey(ctx, d, e, key, opt, decryption)
 		},
 	}
 }
 
 //nolint:dupl // These adapters bind distinct statically typed key and options APIs.
-func wrapOperations(ctx context.Context, key []byte, opt xmlenc.KeyWrapOptions) encryptionOperations {
+func wrapOperations(ctx context.Context, key []byte, opt xmlenc.KeyWrapOptions, decryption xmlenc.DecryptOptions) encryptionOperations {
 	return encryptionOperations{
 		encryptBytes: func(b []byte) (*document.Document, error) {
 			return xmlenc.EncryptBytesWithKeyWrap(ctx, b, key, opt)
 		}, decryptBytes: func(d *document.Document) ([]byte, error) {
-			return xmlenc.DecryptBytesWithKeyWrap(ctx, d, key, opt)
+			return xmlenc.DecryptBytesWithKeyWrap(ctx, d, key, opt, decryption)
 		}, encryptDocument: func(d *document.Document) (*document.Document, error) {
 			return xmlenc.EncryptDocumentWithKeyWrap(ctx, d, key, opt)
 		}, decryptDocument: func(d *document.Document) (*document.Document, error) {
-			return xmlenc.DecryptDocumentWithKeyWrap(ctx, d, key, opt)
+			return xmlenc.DecryptDocumentWithKeyWrap(ctx, d, key, opt, decryption)
 		},
 		encryptElement: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
 			return xmlenc.EncryptElementWithKeyWrap(ctx, d, e, key, opt)
 		}, decryptElement: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
-			return xmlenc.DecryptElementWithKeyWrap(ctx, d, e, key, opt)
+			return xmlenc.DecryptElementWithKeyWrap(ctx, d, e, key, opt, decryption)
 		}, encryptContent: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
 			return xmlenc.EncryptContentWithKeyWrap(ctx, d, e, key, opt)
 		}, decryptContent: func(d *document.Document, e document.Element) (*document.Document, document.Element, error) {
-			return xmlenc.DecryptContentWithKeyWrap(ctx, d, e, key, opt)
+			return xmlenc.DecryptContentWithKeyWrap(ctx, d, e, key, opt, decryption)
 		},
 	}
 }

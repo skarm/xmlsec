@@ -23,12 +23,12 @@ func ExampleEncryptDocument() {
 		panic(err)
 	}
 
-	encrypted, err := xmlenc.EncryptDocument(ctx, doc, &recipient.PublicKey, xmlenc.Options{})
+	encrypted, err := xmlenc.EncryptDocument(ctx, doc, &recipient.PublicKey, xmlenc.RSAOptions{})
 	if err != nil {
 		panic(err)
 	}
 
-	restored, err := xmlenc.DecryptDocument(ctx, encrypted, recipient, xmlenc.Options{})
+	restored, err := xmlenc.DecryptDocument(ctx, encrypted, recipient, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +59,7 @@ func ExampleEncryptElementWithKey() {
 		panic(err)
 	}
 
-	restored, secret, err := xmlenc.DecryptElementWithKey(ctx, encrypted, target, key, xmlenc.SymmetricOptions{})
+	restored, secret, err := xmlenc.DecryptElementWithKey(ctx, encrypted, target, key, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		panic(err)
 	}

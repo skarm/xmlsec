@@ -16,7 +16,7 @@ import (
 // Mixed, text-only and empty content use UTF-8/NFC (XMLENC 1.1 sections 4.2–4.3).
 // Whole-output and plaintext limits follow EncryptElement. Partial encryption
 // of EncryptedData/EncryptedKey structures is forbidden.
-func EncryptContent(ctx context.Context, doc *document.Document, parent document.Element, recipient *rsa.PublicKey, options Options) (*document.Document, document.Element, error) {
+func EncryptContent(ctx context.Context, doc *document.Document, parent document.Element, recipient *rsa.PublicKey, options RSAOptions) (*document.Document, document.Element, error) {
 	node, err := contentParent(doc, parent)
 	if err != nil {
 		return nil, document.Element{}, err
@@ -54,13 +54,13 @@ func EncryptContentWithKeyWrap(ctx context.Context, doc *document.Document, pare
 // occurs. The selected EncryptedData must have an element parent. Plaintext and
 // complete-output budgets follow DecryptElement. No result is returned on error;
 // sender identity, signatures and application context require separate checks.
-func DecryptContent(ctx context.Context, doc *document.Document, selected document.Element, recipient crypto.Decrypter, options Options) (*document.Document, document.Element, error) {
+func DecryptContent(ctx context.Context, doc *document.Document, selected document.Element, recipient crypto.Decrypter, options RSAOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil || node.Parent == nil {
 		return nil, document.Element{}, ErrFormat
 	}
 
-	p, err := rsaDecryptProfile(ctx, options, recipient)
+	p, err := rsaDecryptProfile(ctx, options, recipient, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -70,13 +70,13 @@ func DecryptContent(ctx context.Context, doc *document.Document, selected docume
 
 // DecryptContentWithKeyWrap has the DecryptContent snapshot/context contracts
 // using an explicitly supplied KEK.
-func DecryptContentWithKeyWrap(ctx context.Context, doc *document.Document, selected document.Element, kek []byte, options KeyWrapOptions) (*document.Document, document.Element, error) {
+func DecryptContentWithKeyWrap(ctx context.Context, doc *document.Document, selected document.Element, kek []byte, options KeyWrapOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil || node.Parent == nil {
 		return nil, document.Element{}, ErrFormat
 	}
 
-	p, err := keyWrapProfile(ctx, kek, options)
+	p, err := keyWrapDecryptProfile(ctx, kek, options, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -138,7 +138,7 @@ func decryptContent(ctx context.Context, doc *document.Document, node *tree.Node
 	}
 	defer clear(raw)
 
-	plain, err := parseContentPlaintext(ctx, raw, node.Parent, p.options.XMLLimits, tree.Policy(doc).MaxBytes)
+	plain, err := parseContentPlaintext(ctx, raw, node.Parent, p.decryption.XMLLimits, tree.Policy(doc).MaxBytes)
 	if err == nil {
 		children := make([]*tree.Node, 0, len(node.Parent.Children)+len(plain))
 		for _, child := range node.Parent.Children {

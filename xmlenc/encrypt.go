@@ -13,7 +13,7 @@ import (
 )
 
 // EncryptBytes creates standalone EncryptedData without a Type attribute.
-func EncryptBytes(ctx context.Context, plaintext []byte, recipient *rsa.PublicKey, options Options) (*document.Document, error) {
+func EncryptBytes(ctx context.Context, plaintext []byte, recipient *rsa.PublicKey, options RSAOptions) (*document.Document, error) {
 	p, err := rsaEncryptProfile(ctx, options, recipient)
 	if err != nil {
 		return nil, err
@@ -25,7 +25,7 @@ func EncryptBytes(ctx context.Context, plaintext []byte, recipient *rsa.PublicKe
 // EncryptDocument encrypts the complete root element, excluding document-level
 // PIs and comments. The Type is #Element. Non-NFC serialization is rejected;
 // source nodes are never normalized or mutated.
-func EncryptDocument(ctx context.Context, doc *document.Document, recipient *rsa.PublicKey, options Options) (*document.Document, error) {
+func EncryptDocument(ctx context.Context, doc *document.Document, recipient *rsa.PublicKey, options RSAOptions) (*document.Document, error) {
 	p, err := rsaEncryptProfile(ctx, options, recipient)
 	if err != nil {
 		return nil, err

@@ -81,7 +81,7 @@ func TestLibraryComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decrypted, err := xmlenc.DecryptDocumentWithKey(ctx, encrypted, secret, xmlenc.SymmetricOptions{})
+	decrypted, err := xmlenc.DecryptDocumentWithKey(ctx, encrypted, secret, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestXMLDecryptionAvoidsEncodedTextAndPlaintextCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	allocated := allocatedDuring(t, func() error {
-		decoded, err := xmlenc.DecryptBytesWithKey(t.Context(), encrypted, secret, xmlenc.SymmetricOptions{})
+		decoded, err := xmlenc.DecryptBytesWithKey(t.Context(), encrypted, secret, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
 		if err != nil {
 			return err
 		}
@@ -1041,9 +1041,9 @@ func TestExternalCiphertextWorkingStorageAndAuthentication(t *testing.T) {
 				}
 				return &trackedInput{Reader: src, close: func() error { closed++; return nil }}, nil
 			})
-			options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: resolver}}}
+			options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: resolver}}
 			allocated := allocatedDuring(t, func() error {
-				got, err := xmlenc.DecryptBytesWithKey(t.Context(), doc, secret, options)
+				got, err := xmlenc.DecryptBytesWithKey(t.Context(), doc, secret, xmlenc.SymmetricOptions{}, options)
 				if err == nil && !bytes.Equal(got, plaintext) {
 					return errors.New("external plaintext changed")
 				}
@@ -1055,7 +1055,7 @@ func TestExternalCiphertextWorkingStorageAndAuthentication(t *testing.T) {
 			}
 			ciphertext[len(ciphertext)-1] ^= 1
 			encoded = base64.StdEncoding.EncodeToString(ciphertext)
-			if got, err := xmlenc.DecryptBytesWithKey(t.Context(), doc, secret, options); got != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+			if got, err := xmlenc.DecryptBytesWithKey(t.Context(), doc, secret, xmlenc.SymmetricOptions{}, options); got != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 				t.Fatal("unauthenticated plaintext returned", len(got), err)
 			}
 			ciphertext[len(ciphertext)-1] ^= 1
@@ -1079,7 +1079,7 @@ func TestXMLReplacementUsesResultParserStorage(t *testing.T) {
 		return err
 	})
 	allocated := allocatedDuring(t, func() error {
-		_, restored, err := xmlenc.DecryptElementWithKey(t.Context(), encrypted, selected, secret, xmlenc.SymmetricOptions{})
+		_, restored, err := xmlenc.DecryptElementWithKey(t.Context(), encrypted, selected, secret, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
 		if err == nil && restored.Text() != "private" {
 			return errors.New("restored selection changed")
 		}

@@ -3,6 +3,7 @@ package document
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/skarm/xmlsec/internal/tree"
@@ -14,21 +15,33 @@ import (
 // Resolution and blocking reads must honor cancellation. Nil permits no I/O.
 type EntityResolver = tree.DTDEntityResolver
 
-// ParseOptions selects the XML processor and its resource policy. The zero value
-// retains the DTD-free security parser and uses DefaultLimits.
+// ParseProfile selects the XML grammar and input features.
+type ParseProfile uint8
+
+const (
+	// SecurityProfile is the default XML 1.0 profile. It accepts UTF-8 and
+	// UTF-16, requires absolute namespace names and rejects DTDs and external
+	// entities.
+	SecurityProfile ParseProfile = iota
+	// DTDProfile enables bounded, nonvalidating XML 1.0 DTD processing,
+	// including entity expansion and attribute defaults. It accepts supported
+	// single-byte encodings and relative namespace names. External entities
+	// require an explicit EntityResolver.
+	DTDProfile
+)
+
+// ParseOptions selects the XML profile and its resource policy. The zero value
+// uses SecurityProfile and DefaultLimits.
 type ParseOptions struct {
 	// Limits bounds source bytes, expanded XML, entities, declarations and depth.
 	// A completely zero value selects DefaultLimits; partial limits must be valid.
 	Limits Limits
-	// NonValidating enables XML 1.0 internal/external DTD processing, entity and
-	// attribute expansion, supported single-byte encodings, and Namespaces 1.0
-	// relative namespace names. It does not perform DTD validity checking.
-	NonValidating bool
+	// Profile selects the parser. Unknown values are rejected.
+	Profile ParseProfile
 	// BaseURI identifies the document entity for relative external identifiers.
 	BaseURI string
-	// EntityResolver supplies external subsets, parameter and general entities.
-	// There is no implicit filesystem, network or catalog access. External
-	// declarations needing retrieval fail when no resolver is configured.
+	// EntityResolver supplies external subsets and entities for DTDProfile.
+	// External declarations needing retrieval fail when no resolver is configured.
 	EntityResolver EntityResolver
 }
 
@@ -65,23 +78,26 @@ func (o ParseOptions) ParseText(ctx context.Context, text string) (*Document, er
 }
 
 func (o ParseOptions) options() (tree.ParseOptions, error) {
-	if !o.NonValidating && o.EntityResolver != nil {
-		return tree.ParseOptions{}, ErrUnsupported
+	p := tree.ParseOptions{Limits: limitsOrDefault(o.Limits), BaseURI: o.BaseURI, DTDResolver: o.EntityResolver}
+
+	switch o.Profile {
+	case SecurityProfile:
+		if o.EntityResolver != nil {
+			return tree.ParseOptions{}, ErrUnsupported
+		}
+	case DTDProfile:
+		p.AllowDTD = true
+		p.AllowSingleByteEncodings = true
+		p.AllowRelativeNamespaces = true
+	default:
+		return tree.ParseOptions{}, fmt.Errorf("%w: XML parse profile %d", ErrUnsupported, o.Profile)
 	}
 
-	if o.Limits == (Limits{}) {
-		o.Limits = DefaultLimits()
-	}
-
-	if err := o.Limits.Validate(); err != nil {
+	if err := p.Limits.Validate(); err != nil {
 		return tree.ParseOptions{}, err
 	}
 
-	return tree.ParseOptions{
-		Limits: o.Limits, BaseURI: o.BaseURI, DTDResolver: o.EntityResolver,
-		AllowDTD: o.NonValidating, AllowSingleByteEncodings: o.NonValidating,
-		AllowRelativeNamespaces: o.NonValidating,
-	}, nil
+	return p, nil
 }
 
 func (o ParseOptions) withBase(d *Document, err error) (*Document, error) {

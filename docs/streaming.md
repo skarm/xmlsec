@@ -11,7 +11,7 @@ cancellation themselves. See [common contracts](usage.md#common-contracts).
 complete trees and current lexical tokens. Large tags, comments or unfinished
 references can require token-sized storage.
 
-`document.ParseOptions{NonValidating: true}`, `CompileXSLTReader` and language
+`document.ParseOptions{Profile: document.DTDProfile}`, `CompileXSLTReader` and language
 resource parsing can additionally retain bounded decoded and DTD-expanded input
 buffers, even when the caller supplies a reader. External entity text can remain
 cached during parsing. See the [DTD/encoding profile](transforms.md#xml-input-profiles).

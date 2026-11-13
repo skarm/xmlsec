@@ -542,7 +542,8 @@ func TestBeginRedirectIntersectsPolicies(t *testing.T) {
 		denied   bool
 	}{
 		{name: "zero inherits"},
-		{name: "empty lists inherit", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{}, AllowedDigestMethods: []string{}}},
+		{name: "empty redirect method list", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{}}, denied: true},
+		{name: "empty signing digest list", signing: xmldsig.Policy{AllowedDigestMethods: []string{}}, denied: true},
 		{name: "explicit permits", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}}},
 		{name: "explicit denies", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA384}}, denied: true},
 		{name: "signing denies", redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}}, signing: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA384}}, denied: true},
@@ -594,7 +595,7 @@ func TestBeginRedirectPolicyRSAAndLegacy(t *testing.T) {
 		{name: "RSA lower bound", redirect: xmldsig.Policy{MinRSABits: 4096}, denied: true, wantErr: xmldsig.ErrKey},
 		{name: "RSA exact bound", redirect: xmldsig.Policy{MinRSABits: 2048, MaxRSABits: 2048}},
 		{name: "legacy zero inherits", method: xmldsig.RSASHA1, signing: legacyRedirectSigningPolicy(), denied: fips140.Enabled()},
-		{name: "legacy empty inherits", method: xmldsig.RSASHA1, redirect: xmldsig.Policy{AllowedSignatureMethods: []string{}, AllowedDigestMethods: []string{}}, signing: legacyRedirectSigningPolicy(), denied: fips140.Enabled()},
+		{name: "legacy empty denied", method: xmldsig.RSASHA1, redirect: xmldsig.Policy{AllowedDigestMethods: []string{}}, signing: legacyRedirectSigningPolicy(), denied: true},
 		{name: "legacy explicit permission denied", method: xmldsig.RSASHA1, redirect: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.RSASHA1}}, signing: legacyRedirectSigningPolicy(), denied: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -27,6 +27,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/resource"
 	"github.com/skarm/xmlsec/transform"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -148,6 +149,7 @@ func TestDetachedPreauthenticationAndExactSet(t *testing.T) {
 	}{
 		{"wrong key", wrong.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}}, xmldsig.ErrSignature},
 		{"no expected set", key.Public(), source, xmldsig.DetachedVerifyOptions{}, xmldsig.ErrPolicy},
+		{"empty canonicalization list", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB}, AllowedCanonicalizationMethods: []string{}}, xmldsig.ErrPolicy},
 		{"subset", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}}, xmldsig.ErrPolicy},
 		{"superset", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, uriUrnB, "urn:c"}}, xmldsig.ErrPolicy},
 		{"different set", key.Public(), source, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA, "urn:c"}}, xmldsig.ErrPolicy},
@@ -251,6 +253,13 @@ func wrongSecondDigest(t testing.TB, doc *document.Document, key *ecdsa.PrivateK
 	end = strings.Index(src[start:], "</ds:SignatureValue>") + start
 
 	return parse(t, src[:start]+base64.StdEncoding.EncodeToString(value)+src[end:])
+}
+
+func TestZeroResolverFunc(t *testing.T) {
+	var resolver xmldsig.ResolverFunc
+	if reader, err := resolver.Resolve(t.Context(), uriUrnA); reader != nil || !errors.Is(err, resource.ErrResource) {
+		t.Fatalf("Resolve returned (%v, %v), want (nil, %v)", reader, err, resource.ErrResource)
+	}
 }
 
 func TestDetachedResourceLimitsAndCleanup(t *testing.T) {
@@ -821,7 +830,7 @@ func TestCanonicalizedReferenceReadsAndTransformsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := xmldsig.SignatureOptions{External: &xmldsig.ExternalReferences{Resolver: resolver, AllowedURIs: []string{uriUrnXML}}, Processing: reference.DefaultOptions()}
+	options := xmldsig.SignatureOptions{ExpectedURIs: []string{uriUrnXML}, External: &xmldsig.ExternalReferences{Resolver: resolver, AllowedURIs: []string{uriUrnXML}}, Processing: reference.DefaultOptions()}
 	options.Processing.Extension = engine
 	options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, reference.XPath)
 	draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: uriUrnXML, Transforms: []reference.Transform{program}}}})

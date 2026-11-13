@@ -69,7 +69,7 @@ func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *str
 		t.Fatal(err)
 	}
 
-	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, xmldsig.Signatures(d)[tc.SignatureIndex], key, xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{tc.Canonicalization}})
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, xmldsig.Signatures(d)[tc.SignatureIndex], key, xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{tc.Canonicalization}, AllowUnspecifiedCoverage: true})
 	if tc.Valid {
 		if err != nil || result == nil || report.Status != xmldsig.Valid || len(result.References()) != tc.References {
 			t.Fatal(err, report)

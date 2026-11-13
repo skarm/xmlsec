@@ -177,6 +177,18 @@ func TestGraphRejectsConflictsMissingBindingsAndCycles(t *testing.T) { //nolint:
 		t.Fatal("object cap", graph, err)
 	}
 	config.MaxObjects = 8
+	config.MaxBytes = len(a) + len(b) - 1
+	if graph, err := newGraph(t.Context(), config, valid, testcert.Now()); graph != nil || !errors.Is(err, ErrLimit) {
+		t.Fatal("byte cap", graph, err)
+	}
+
+	config.MaxBytes++
+	valid.Objects = append(valid.Objects, valid.Objects[0])
+	if graph, err := newGraph(t.Context(), config, valid, testcert.Now()); graph == nil || err != nil {
+		t.Fatal("duplicate counted against unique-byte cap", graph, err)
+	}
+	valid.Objects = valid.Objects[:2]
+
 	config.MaxEdges = 0
 	valid.Objects[0].Contains = [][32]byte{bk}
 	if graph, err := newGraph(t.Context(), config, valid, testcert.Now()); graph != nil || !errors.Is(err, ErrLimit) {

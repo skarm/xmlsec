@@ -50,6 +50,7 @@ type historicalStatus struct {
 type pastEvaluation struct {
 	session *HistoricalSession
 	proofs  *historicalproof.Set
+	archive bool
 	active  map[[sha256.Size]byte]struct{}
 	steps   []TimeTransition
 	used    []*VerifiedEvidence
@@ -70,6 +71,13 @@ func (e *pastEvaluation) slide(ctx context.Context, path *HistoricalPath, contro
 
 	if len(e.active) > e.session.verifier.maxDepth {
 		return time.Time{}, fmt.Errorf("%w: %w: historical authorization depth", ErrPolicy, ErrLimit)
+	}
+
+	if e.archive {
+		anchor := sha256.Sum256(path.chain[len(path.chain)-1].Raw)
+		if sunset, found := e.session.options.TrustAnchorSunsets[hex.EncodeToString(anchor[:])]; found && !control.Before(sunset) {
+			return time.Time{}, ErrUnavailable
+		}
 	}
 
 	claims, err := e.session.authenticate(ctx, path)
@@ -94,6 +102,10 @@ func (e *pastEvaluation) slideCertificate(ctx context.Context, path *HistoricalP
 	}
 
 	certificate := path.chain[index]
+	if e.archive && (index == 0 || e.session.options.Model == ShellModel) && (control.Before(certificate.NotBefore) || control.After(certificate.NotAfter)) {
+		return time.Time{}, ErrCertificate
+	}
+
 	if !historicalProofAt(e.proofs, sha256.Sum256(certificate.Raw), historicalproof.Certificate, control) {
 		return time.Time{}, ErrUnavailable
 	}
@@ -121,8 +133,11 @@ func (e *pastEvaluation) slideCertificate(ctx context.Context, path *HistoricalP
 		return time.Time{}, err
 	}
 
-	bound := e.cryptoBound(certificate, selected, control)
-	if bound.Before(control) {
+	if e.archive {
+		if e.cryptoBoundary(certificate, selected, control) {
+			return time.Time{}, ErrPolicy
+		}
+	} else if bound := e.cryptoBound(certificate, selected, control); bound.Before(control) {
 		e.transition(certificate, selected.primary.fact, clause562242D, stageCryptographicConstraints, control, bound)
 		control = bound
 	}
@@ -138,6 +153,10 @@ func (e *pastEvaluation) slideCertificate(ctx context.Context, path *HistoricalP
 
 func (e *pastEvaluation) slideExemptCertificate(certificate, issuer *x509.Certificate, control time.Time) (time.Time, error) {
 	cutoff := e.materialCutoff(certificate.SignatureAlgorithm, issuer)
+	if e.archive && !cutoff.IsZero() && !control.Before(cutoff) {
+		return time.Time{}, ErrPolicy
+	}
+
 	if cutoff.IsZero() || e.session.now.Before(cutoff) {
 		return control, nil
 	}
@@ -181,6 +200,10 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 			return time.Time{}, ErrEvidence
 		}
 
+		if e.archive {
+			return time.Time{}, ErrRevoked
+		}
+
 		if e.session.options.Model == ShellModel || status.reason <= 2 {
 			e.transition(certificate, status.primary.fact, clause562242B, stageRevocation, control, status.revokedAt)
 			control = status.revokedAt
@@ -190,6 +213,14 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 	}
 
 	for _, claim := range status.claims {
+		if e.archive {
+			if err := e.checkArchiveStatusTime(claim, control); err != nil {
+				return time.Time{}, err
+			}
+
+			continue
+		}
+
 		if claim.dependency || historicalFresh(claim.fact.this, claim.fact.next, control, e.session.options.RevocationFreshness) {
 			continue
 		}
@@ -201,6 +232,36 @@ func (e *pastEvaluation) slideStatus(certificate *x509.Certificate, status histo
 	}
 
 	return control, nil
+}
+
+func (e *pastEvaluation) checkArchiveStatusTime(claim historicalClaim, at time.Time) error {
+	fact := claim.fact
+	if fact.issued.After(at) {
+		return ErrUnavailable
+	}
+
+	if claim.dependency {
+		return nil
+	}
+
+	if !historicalFresh(fact.this, fact.next, at, e.session.options.RevocationFreshness) || !fact.next.IsZero() && !at.Before(fact.next) {
+		return ErrUnavailable
+	}
+
+	if claim.ocsp != nil {
+		// An archive must prove the response existed by the exact validation
+		// time. Current-time clock skew does not extend that boundary.
+		options := e.session.verifier.ocspOptions
+		options.ClockSkew = 0
+
+		return validateOCSPEntry(fact.issued, at, claim.ocsp, options)
+	}
+
+	if fact.next.IsZero() && !at.Before(fact.this.Add(e.session.verifier.crlOptions.MaxAge)) {
+		return ErrUnavailable
+	}
+
+	return nil
 }
 
 func (e *pastEvaluation) transition(certificate *x509.Certificate, fact *VerifiedEvidence, clause, reason string, before, after time.Time) {
@@ -299,7 +360,7 @@ func (e *pastEvaluation) cryptoBound(certificate *x509.Certificate, status histo
 	return control
 }
 
-func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, proofs *historicalproof.Set, at time.Time) (*PastCertificateResult, *PastCertificateReport, error) {
 	report := &PastCertificateReport{subIndication: codeNoCertificateChainFound}
 
 	target, err := s.historicalTarget(ctx, targetDER)
@@ -317,7 +378,7 @@ func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, 
 	}
 
 	for _, path := range paths {
-		result, candidate, err := s.validatePastPath(ctx, path, proofs)
+		result, candidate, err := s.validatePastPath(ctx, path, proofs, at)
 
 		report = candidate
 		if err == nil {
@@ -336,7 +397,7 @@ func (s *HistoricalSession) validatePast(ctx context.Context, targetDER []byte, 
 	return nil, report, report.cause
 }
 
-func (s *HistoricalSession) validatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set) (*PastCertificateResult, *PastCertificateReport, error) {
+func (s *HistoricalSession) validatePastPath(ctx context.Context, path *HistoricalPath, proofs *historicalproof.Set, targetTime time.Time) (*PastCertificateResult, *PastCertificateReport, error) {
 	report := &PastCertificateReport{path: path}
 
 	reject := func(sub string, err error) (*PastCertificateResult, *PastCertificateReport, error) {
@@ -353,11 +414,30 @@ func (s *HistoricalSession) validatePastPath(ctx context.Context, path *Historic
 		return reject(historicalPathFailure(err), err)
 	}
 
-	evaluator := &pastEvaluation{session: s, proofs: proofs, active: make(map[[sha256.Size]byte]struct{})}
+	archive := !targetTime.IsZero()
 	bound := s.now
 
+	if archive {
+		if !targetTime.Before(s.now) {
+			return reject(codeNoPoe, ErrPolicy)
+		}
+
+		bound = targetTime
+
+		leaf := path.chain[0]
+		if bound.Before(leaf.NotBefore) || bound.After(leaf.NotAfter) {
+			return reject(historicalPathFailure(ErrCertificate), ErrCertificate)
+		}
+
+		if !historicalProofAt(proofs, sha256.Sum256(leaf.Raw), historicalproof.Certificate, bound) {
+			return reject(codeNoPoe, ErrUnavailable)
+		}
+	}
+
+	evaluator := &pastEvaluation{session: s, proofs: proofs, archive: archive, active: make(map[[sha256.Size]byte]struct{})}
+
 	anchor := sha256.Sum256(path.chain[len(path.chain)-1].Raw)
-	if sunset, found := s.options.TrustAnchorSunsets[hex.EncodeToString(anchor[:])]; found && sunset.Before(bound) {
+	if sunset, found := s.options.TrustAnchorSunsets[hex.EncodeToString(anchor[:])]; !archive && found && sunset.Before(bound) {
 		evaluator.transition(path.chain[len(path.chain)-1], nil, clause562241, stageTrustAnchorSunset, bound, sunset)
 		bound = sunset
 	}
@@ -367,6 +447,10 @@ func (s *HistoricalSession) validatePastPath(ctx context.Context, path *Historic
 	report.evidence = canonicalEvidence(evaluator.used)
 
 	if err != nil {
+		if archive && errors.Is(err, ErrRevoked) {
+			return reject("REVOKED", err)
+		}
+
 		return reject(codeNoPoe, err)
 	}
 

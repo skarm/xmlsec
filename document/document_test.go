@@ -318,6 +318,52 @@ func TestLimitsAndContext(t *testing.T) {
 	}
 }
 
+func TestZeroParseLimits(t *testing.T) {
+	ctx := t.Context()
+	for _, tc := range []struct {
+		name  string
+		parse func(string, document.Limits) error
+	}{
+		{"Parse", func(xml string, limits document.Limits) error {
+			_, err := document.Parse(ctx, []byte(xml), limits)
+			return err
+		}},
+		{"ParseReader", func(xml string, limits document.Limits) error {
+			_, err := document.ParseReader(ctx, strings.NewReader(xml), limits)
+			return err
+		}},
+		{"ParseOptions.Parse", func(xml string, limits document.Limits) error {
+			_, err := (document.ParseOptions{Limits: limits}).Parse(ctx, []byte(xml))
+			return err
+		}},
+		{"ParseOptions.ParseText", func(xml string, limits document.Limits) error {
+			_, err := (document.ParseOptions{Limits: limits}).ParseText(ctx, xml)
+			return err
+		}},
+		{"ReadRecords", func(xml string, limits document.Limits) error {
+			options := document.RecordOptions{Path: []document.Name{{Local: "r"}, {Local: "r"}}, Limits: limits}
+			return document.ReadRecords(ctx, strings.NewReader(xml), options, func(*document.Document) error { return nil })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const valid = "<r><r/></r>"
+			if err := tc.parse(valid, document.Limits{}); err != nil {
+				t.Fatal("zero limits:", err)
+			}
+
+			depth := document.DefaultLimits().MaxDepth + 1
+			deep := strings.Repeat("<r>", depth) + strings.Repeat("</r>", depth)
+			if err := tc.parse(deep, document.Limits{}); !errors.Is(err, document.ErrLimit) {
+				t.Fatal("default depth limit:", err)
+			}
+
+			if err := tc.parse(valid, document.Limits{MaxBytes: 1024}); !errors.Is(err, document.ErrLimit) {
+				t.Fatal("incomplete limits:", err)
+			}
+		})
+	}
+}
+
 func FuzzParse(f *testing.F) {
 	f.Add([]byte{0xff, 0xfe, '<', 0, 'r', 0, '/', 0, '>', 0})
 

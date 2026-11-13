@@ -22,9 +22,10 @@
 //
 // # Algorithms and output
 //
-// An empty [Options.Algorithm] selects [Exclusive]. InclusivePrefixes applies only
-// to Exclusive C14N: #default names the default namespace, and the prefix list
-// does not reselect omitted namespace nodes or rewrite QName-valued strings.
+// An empty [Options.Algorithm] selects [Exclusive]. [Options.InclusivePrefixes]
+// is supported only by [Exclusive] and [ExclusiveWithComments]. A nonempty
+// list with Canonical XML 1.0 or 1.1 returns an error matching
+// [document.ErrUnsupported], including when comments are enabled.
 //
 // Canonicalization writes incrementally from an already retained snapshot.
 // Escaping uses fixed-size buffers even for large text or attribute values;
@@ -33,8 +34,27 @@
 // siblings. No complete canonical byte buffer is built unless the destination
 // collects it. This API retains the input tree and any supplied node set.
 // It leaves the input unchanged.
-// MaxOutputBytes bounds emitted bytes. Discard all partial output after any error,
-// including cancellation or a writer failure, along with any hash state fed by
-// that output. Blocking writers must support cancellation themselves.
+// [Options.MaxOutputBytes] bounds emitted bytes. Blocking writers must support
+// cancellation themselves.
 // Canonical bytes alone establish neither a valid signature nor application trust.
+//
+// # Errors
+//
+// Use [errors.Is] with errors from [WriteDocument], [WriteElement] and
+// [WriteNodeSet].
+//
+//   - [document.ErrMalformed] covers a nil context or writer, a missing document,
+//     an invalid element or node set, or an invalid inclusive prefix.
+//   - [document.ErrUnsupported] covers an unknown algorithm, a relative
+//     namespace name, or a nonempty inclusive prefix list used with Canonical
+//     XML 1.0 or 1.1.
+//   - [document.ErrLimit] covers a negative output budget, output that would
+//     exceed the budget, or a list of more than 128 inclusive prefixes.
+//   - [context.Canceled] and [context.DeadlineExceeded] report cancellation and
+//     deadline expiry.
+//   - [io.ErrShortWrite] covers a short write without an error or an invalid
+//     byte count. Errors from a conforming destination writer are preserved for
+//     [errors.Is] as well.
+//
+// After any error, discard the output and any hash state that consumed it.
 package c14n

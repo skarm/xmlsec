@@ -188,7 +188,7 @@ func TestParameterizedPSSXML(t *testing.T) {
 			t.Fatalf("second digest bypass %v %+v", e, report)
 		}
 
-		if _, e = xmldsig.VerifySignature(ctx, signed, signed.Root(), &key.PublicKey, xmldsig.SignatureOptions{}); !errors.Is(e, xmldsig.ErrPolicy) {
+		if _, e = xmldsig.VerifySignature(ctx, signed, signed.Root(), &key.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); !errors.Is(e, xmldsig.ErrPolicy) {
 			t.Fatalf("implicit opt-in %v", e)
 		}
 	}
@@ -354,7 +354,7 @@ func FuzzVerifyParameters(f *testing.F) {
 		p.MaxCanonicalBytes = 256 << 10
 
 		p.MaxReferences = 4
-		if r, _, e := xmldsig.VerifySignatureDetailed(t.Context(), d, d.Root(), pub, xmldsig.SignatureOptions{Policy: p}); (r != nil) != (e == nil) {
+		if r, _, e := xmldsig.VerifySignatureDetailed(t.Context(), d, d.Root(), pub, xmldsig.SignatureOptions{Policy: p, AllowUnspecifiedCoverage: true}); (r != nil) != (e == nil) {
 			t.Fatal("partial public-key result")
 		}
 
@@ -363,7 +363,7 @@ func FuzzVerifyParameters(f *testing.F) {
 		p.MaxCanonicalBytes = 256 << 10
 
 		p.MaxReferences = 4
-		if r, _, e := xmldsig.VerifyHMACSignatureDetailed(t.Context(), d, d.Root(), testKey, xmldsig.SignatureOptions{Policy: p}); (r != nil) != (e == nil) {
+		if r, _, e := xmldsig.VerifyHMACSignatureDetailed(t.Context(), d, d.Root(), testKey, xmldsig.SignatureOptions{Policy: p, AllowUnspecifiedCoverage: true}); (r != nil) != (e == nil) {
 			t.Fatal("partial HMAC result")
 		}
 	})
@@ -549,10 +549,14 @@ func TestIntersectPoliciesConstraints(t *testing.T) {
 }
 
 func TestIntersectPoliciesDefaultsAndPermissions(t *testing.T) {
-	for _, empty := range []xmldsig.Policy{{}, {AllowedSignatureMethods: []string{}, AllowedDigestMethods: []string{}}} {
-		got, err := xmldsig.IntersectPolicies(empty, xmldsig.Policy{})
-		if err != nil || !reflect.DeepEqual(got, xmldsig.DefaultPolicy()) {
-			t.Fatalf("zero/default intersection = %+v, %v", got, err)
+	defaults, err := xmldsig.IntersectPolicies(xmldsig.Policy{}, xmldsig.Policy{})
+	if err != nil || !reflect.DeepEqual(defaults, xmldsig.DefaultPolicy()) {
+		t.Fatalf("zero/default intersection = %+v, %v", defaults, err)
+	}
+
+	for _, empty := range []xmldsig.Policy{{AllowedSignatureMethods: []string{}}, {AllowedDigestMethods: []string{}}} {
+		if _, err := xmldsig.IntersectPolicies(empty, xmldsig.Policy{}); !errors.Is(err, xmldsig.ErrPolicy) {
+			t.Fatalf("explicit empty allowlist: %v", err)
 		}
 	}
 

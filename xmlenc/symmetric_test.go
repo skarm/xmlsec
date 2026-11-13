@@ -25,7 +25,7 @@ func TestDirectDataKeys(t *testing.T) {
 			secret := bytes.Repeat([]byte{0x31}, algorithm.keyBytes)
 			original := bytes.Clone(secret)
 
-			opts := xmlenc.SymmetricOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri}, KeyName: name}
+			opts := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri}, KeyName: name}
 			for _, plain := range [][]byte{nil, {}, []byte("binary\x00\xff"), bytes.Repeat([]byte{0x41}, 4096)} {
 				checkDirectDataKey(t, ctx, plain, secret, opts)
 			}
@@ -60,7 +60,7 @@ func checkDirectDataKey(t *testing.T, ctx context.Context, plain, secret []byte,
 		t.Fatal("standard GCM disagrees", err)
 	}
 
-	out, err = xmlenc.DecryptBytesWithKey(ctx, parse(t, wire), secret, opts)
+	out, err = xmlenc.DecryptBytesWithKey(ctx, parse(t, wire), secret, opts, xmlenc.DecryptOptions{})
 	if err != nil || !bytes.Equal(out, plain) {
 		t.Fatal(err)
 	}
@@ -68,14 +68,14 @@ func checkDirectDataKey(t *testing.T, ctx context.Context, plain, secret []byte,
 	data[len(data)-1] ^= 1
 
 	bad := parse(t, bytes.Replace(wire, []byte(cv.Text()), []byte(base64.StdEncoding.EncodeToString(data)), 1))
-	if out, err := xmlenc.DecryptBytesWithKey(ctx, bad, secret, opts); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptBytesWithKey(ctx, bad, secret, opts, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal("bad tag returned plaintext", err)
 	}
 
 	wrong := bytes.Clone(secret)
 
 	wrong[0] ^= 1
-	if out, err := xmlenc.DecryptBytesWithKey(ctx, d, wrong, opts); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if out, err := xmlenc.DecryptBytesWithKey(ctx, d, wrong, opts, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatal("wrong key accepted", err)
 	}
 }
@@ -111,9 +111,9 @@ func TestDirectKeyElementAndContent(t *testing.T) {
 			}
 
 			if content {
-				decrypted, _, err = xmlenc.DecryptContentWithKey(ctx, encrypted, node, secret, opts)
+				decrypted, _, err = xmlenc.DecryptContentWithKey(ctx, encrypted, node, secret, opts, xmlenc.DecryptOptions{})
 			} else {
-				decrypted, _, err = xmlenc.DecryptElementWithKey(ctx, encrypted, node, secret, opts)
+				decrypted, _, err = xmlenc.DecryptElementWithKey(ctx, encrypted, node, secret, opts, xmlenc.DecryptOptions{})
 			}
 
 			if err != nil {
@@ -136,7 +136,7 @@ func TestDirectKeyElementAndContent(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		out, err := xmlenc.DecryptDocumentWithKey(ctx, d, secret, opts)
+		out, err := xmlenc.DecryptDocumentWithKey(ctx, d, secret, opts, xmlenc.DecryptOptions{})
 		if err != nil || out.Root().Name() != source.Root().Name() {
 			t.Fatal(err)
 		}
@@ -147,7 +147,7 @@ func TestDirectKeyPolicyAndNonce(t *testing.T) {
 	ctx := t.Context()
 
 	secret := make([]byte, 32)
-	for _, bad := range []xmlenc.SymmetricOptions{{Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128GCM}}, {Data: xmlenc.Options{OAEP: &xmlenc.OAEPParameters{}}}, {KeyName: " bad "}, {KeyName: "\x00"}, {KeyName: strings.Repeat("a", 1025)}} {
+	for _, bad := range []xmlenc.SymmetricOptions{{Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.AES128GCM}}, {KeyName: " bad "}, {KeyName: "\x00"}, {KeyName: strings.Repeat("a", 1025)}} {
 		if d, err := xmlenc.EncryptBytesWithKey(ctx, nil, secret, bad); d != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 			t.Fatal("invalid policy", err)
 		}
@@ -158,8 +158,8 @@ func TestDirectKeyPolicyAndNonce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, opts := range []xmlenc.SymmetricOptions{{}, {KeyName: "two"}, {Data: xmlenc.Options{DataAlgorithm: xmlenc.AES128GCM}, KeyName: nameOne}} {
-		if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, opts); out != nil || err == nil {
+	for _, opts := range []xmlenc.SymmetricOptions{{}, {KeyName: "two"}, {Data: xmlenc.CipherOptions{DataAlgorithm: xmlenc.AES128GCM}, KeyName: nameOne}} {
+		if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, opts, xmlenc.DecryptOptions{}); out != nil || err == nil {
 			t.Fatal("name/algorithm inferred from XML")
 		}
 	}
@@ -182,12 +182,12 @@ func TestDirectKeyPolicyAndNonce(t *testing.T) {
 		seen[nonce] = struct{}{}
 	}
 
-	limited := xmlenc.SymmetricOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1}, KeyName: nameOne}
+	limited := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 1}, KeyName: nameOne}
 	if d, err := xmlenc.EncryptBytesWithKey(ctx, []byte("12"), secret, limited); d != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal(err)
 	}
 
-	if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, limited); out != nil || err == nil {
+	if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, limited, xmlenc.DecryptOptions{}); out != nil || err == nil {
 		t.Fatal("plaintext limit not checked")
 	}
 
@@ -222,7 +222,7 @@ func FuzzDecryptWithKey(f *testing.F) {
 			return
 		}
 
-		_, _ = xmlenc.DecryptBytesWithKey(t.Context(), d, secret, xmlenc.SymmetricOptions{Data: xmlenc.Options{MaxPlaintextBytes: 1024}})
+		_, _ = xmlenc.DecryptBytesWithKey(t.Context(), d, secret, xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 1024}}, xmlenc.DecryptOptions{})
 	})
 }
 
@@ -230,8 +230,8 @@ func TestLegacyCBCDataAlgorithms(t *testing.T) {
 	for _, algorithm := range cbcAlgorithms() {
 		t.Run(algorithm.uri, func(t *testing.T) {
 			secret := bytes.Repeat([]byte{0x32}, algorithm.keyBytes)
-			options := xmlenc.SymmetricOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true}}
-			if result, err := xmlenc.EncryptBytesWithKey(t.Context(), nil, secret, xmlenc.SymmetricOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri}}); result != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+			options := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true}}
+			if result, err := xmlenc.EncryptBytesWithKey(t.Context(), nil, secret, xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri}}); result != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 				t.Fatal("legacy default changed", result, err)
 			}
 			if fips140.Enabled() {
@@ -259,7 +259,7 @@ func TestLegacyCBCDataAlgorithms(t *testing.T) {
 				if !bytes.Equal(decoded[:size], plain) || int(decoded[len(decoded)-1]) != b-size%b {
 					t.Fatal("wire padding", size, decoded)
 				}
-				out, err := xmlenc.DecryptBytesWithKey(t.Context(), envelope, secret, options)
+				out, err := xmlenc.DecryptBytesWithKey(t.Context(), envelope, secret, options, xmlenc.DecryptOptions{})
 				if err != nil || !bytes.Equal(out, plain) || !bytes.Equal(plain, before) {
 					t.Fatal(size, out, err)
 				}
@@ -277,14 +277,14 @@ func TestXMLENCCBCPaddingAndUnauthenticatedOutput(t *testing.T) {
 			secret := bytes.Repeat([]byte{0x41}, algorithm.keyBytes)
 			block := legacyBlock(t, algorithm.uri, secret)
 			b := block.BlockSize()
-			options := xmlenc.SymmetricOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true}}
+			options := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true}}
 			for _, n := range []int{0, 1, b, b + 1} {
 				padded := bytes.Repeat([]byte{0xa5}, b)
 				padded[b-1] = byte(n)
 				wire := make([]byte, 2*b)
 				cipher.NewCBCEncrypter(block, wire[:b]).CryptBlocks(wire[b:], padded)
 				xml := `<EncryptedData xmlns="` + xmlenc.Namespace + `"><EncryptionMethod Algorithm="` + algorithm.uri + `"/><CipherData><CipherValue>` + base64.StdEncoding.EncodeToString(wire) + `</CipherValue></CipherData></EncryptedData>`
-				out, err := xmlenc.DecryptBytesWithKey(t.Context(), parse(t, []byte(xml)), secret, options)
+				out, err := xmlenc.DecryptBytesWithKey(t.Context(), parse(t, []byte(xml)), secret, options, xmlenc.DecryptOptions{})
 				if n == 0 || n > b {
 					if out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 						t.Fatal(n, out, err)
@@ -303,24 +303,24 @@ func TestXMLENCCBCPaddingAndUnauthenticatedOutput(t *testing.T) {
 			wire[0] ^= 1 // IV malleability: padding stays valid; CBC has no authentication.
 			raw, _ := envelope.XML(t.Context())
 			changed := parse(t, bytes.Replace(raw, []byte(cv.Text()), []byte(base64.StdEncoding.EncodeToString(wire)), 1))
-			out, err := xmlenc.DecryptBytesWithKey(t.Context(), changed, secret, options)
+			out, err := xmlenc.DecryptBytesWithKey(t.Context(), changed, secret, options, xmlenc.DecryptOptions{})
 			if err != nil || len(out) != len(plain) || out[0] != plain[0]^1 {
 				t.Fatal("CBC was presented as authenticated", out, err)
 			}
 			for _, length := range []int{0, b - 1, b, 2*b - 1} {
 				bad := parse(t, bytes.Replace(raw, []byte(cv.Text()), []byte(base64.StdEncoding.EncodeToString(wire[:length])), 1))
-				if out, err := xmlenc.DecryptBytesWithKey(t.Context(), bad, secret, options); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+				if out, err := xmlenc.DecryptBytesWithKey(t.Context(), bad, secret, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 					t.Fatal(length, out, err)
 				}
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			if out, err := xmlenc.DecryptBytesWithKey(ctx, envelope, secret, options); out != nil || !errors.Is(err, context.Canceled) {
+			if out, err := xmlenc.DecryptBytesWithKey(ctx, envelope, secret, options, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, context.Canceled) {
 				t.Fatal(out, err)
 			}
 			limited := options
 			limited.Data.MaxPlaintextBytes = len(plain) - 1
-			if out, err := xmlenc.DecryptBytesWithKey(t.Context(), envelope, secret, limited); out != nil || err == nil {
+			if out, err := xmlenc.DecryptBytesWithKey(t.Context(), envelope, secret, limited, xmlenc.DecryptOptions{}); out != nil || err == nil {
 				t.Fatal("plaintext limit", out, err)
 			}
 		})
@@ -334,14 +334,14 @@ func TestLegacyCBCElementContentAndReferences(t *testing.T) {
 	for _, algorithm := range cbcAlgorithms() {
 		t.Run(algorithm.uri, func(t *testing.T) {
 			secret := bytes.Repeat([]byte{0x36}, algorithm.keyBytes)
-			opts := xmlenc.SymmetricOptions{Data: xmlenc.Options{DataAlgorithm: algorithm.uri, AllowLegacy: true, MaxPlaintextBytes: 16}}
+			opts := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{DataAlgorithm: algorithm.uri, AllowLegacy: true, MaxPlaintextBytes: 16}}
 			source := parse(t, []byte(`<r xmlns="urn:r"><v/></r>`))
 			before, _ := source.XML(t.Context())
 			encrypted, selected, err := xmlenc.EncryptElementWithKey(t.Context(), source, source.Root().Children()[0], secret, opts)
 			if err != nil {
 				t.Fatal(err)
 			}
-			restored, _, err := xmlenc.DecryptElementWithKey(t.Context(), encrypted, selected, secret, opts)
+			restored, _, err := xmlenc.DecryptElementWithKey(t.Context(), encrypted, selected, secret, opts, xmlenc.DecryptOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -353,7 +353,7 @@ func TestLegacyCBCElementContentAndReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			restored, _, err = xmlenc.DecryptContentWithKey(t.Context(), encrypted, selected, secret, opts)
+			restored, _, err = xmlenc.DecryptContentWithKey(t.Context(), encrypted, selected, secret, opts, xmlenc.DecryptOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -370,8 +370,8 @@ func TestLegacyCBCElementContentAndReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			opts.Data.External = &xmlenc.ExternalCipherReference{URI: "urn:cbc:cipher", Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil })}
-			out, err := xmlenc.DecryptBytesWithKey(t.Context(), external, secret, opts)
+			decryption := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: "urn:cbc:cipher", Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil })}}
+			out, err := xmlenc.DecryptBytesWithKey(t.Context(), external, secret, opts, decryption)
 			if err != nil || !bytes.Equal(out, plain) {
 				t.Fatal(string(out), err)
 			}

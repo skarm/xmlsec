@@ -299,6 +299,24 @@ func TestVerifySignatureWithExplicitKeyInfoTrust(t *testing.T) {
 		t.Fatalf("result=%v error=%v", r, e)
 	}
 
+	for _, tc := range []struct {
+		name      string
+		signature xmldsig.SignatureOptions
+	}{
+		{"missing coverage", xmldsig.SignatureOptions{}},
+		{"empty canonicalization list", xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}, AllowedCanonicalizationMethods: []string{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := xmldsig.KeyInfoVerifyOptions{Signature: tc.signature, SelectTrustedKey: func(context.Context, *keyinfo.Result) (int, error) {
+				t.Fatal("invalid policy reached trust callback")
+				return 0, nil
+			}}
+			if r, err := xmldsig.VerifySignatureWithKeyInfo(t.Context(), signed, sel, o); r != nil || !errors.Is(err, xmldsig.ErrPolicy) {
+				t.Fatal(r, err)
+			}
+		})
+	}
+
 	t.Run("key-data-policy-before-trust", func(t *testing.T) {
 		called := false
 		o := opt
@@ -403,11 +421,11 @@ func TestKeyInfoIntegrationRejectsContradictoryDeclarations(t *testing.T) {
 
 	doc, sel := makeKeyInfoSigned(t, k, ki)
 	// A correct signature with an explicitly supplied key can still be checked.
-	if _, e := xmldsig.VerifySignature(ctx, doc, sel, &k.PublicKey, xmldsig.SignatureOptions{}); e != nil {
+	if _, e := xmldsig.VerifySignature(ctx, doc, sel, &k.PublicKey, xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); e != nil {
 		t.Fatal(e)
 	}
 
-	r, e := xmldsig.VerifySignatureWithKeyInfo(ctx, doc, sel, xmldsig.KeyInfoVerifyOptions{SelectTrustedKey: keySelector(t, &k.PublicKey)})
+	r, e := xmldsig.VerifySignatureWithKeyInfo(ctx, doc, sel, xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: keySelector(t, &k.PublicKey)})
 	if r != nil || !errors.Is(e, keyinfo.ErrKey) {
 		t.Fatal("contradictory declarations accepted", e)
 	}
@@ -439,7 +457,7 @@ func TestKeyInfoLinkedFromSignature(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if _, e := xmldsig.VerifySignatureWithKeyInfo(ctx, signed, xmldsig.Signatures(signed)[0], xmldsig.KeyInfoVerifyOptions{SelectTrustedKey: keySelector(t, &k.PublicKey)}); e != nil {
+	if _, e := xmldsig.VerifySignatureWithKeyInfo(ctx, signed, xmldsig.Signatures(signed)[0], xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}); e != nil {
 		t.Fatal(e)
 	}
 	// A KeyInfo from another signature is NOT searched automatically.
@@ -449,7 +467,7 @@ func TestKeyInfoLinkedFromSignature(t *testing.T) {
 	}
 
 	missing, selected := makeKeyInfoSigned(t, k, noInfo)
-	if r, e := xmldsig.VerifySignatureWithKeyInfo(ctx, missing, selected, xmldsig.KeyInfoVerifyOptions{SelectTrustedKey: keySelector(t, &k.PublicKey)}); e == nil || r != nil {
+	if r, e := xmldsig.VerifySignatureWithKeyInfo(ctx, missing, selected, xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}); e == nil || r != nil {
 		t.Fatal("guessed key")
 	}
 }
@@ -639,7 +657,7 @@ func TestKeyInfoExplicitPKIXSelection(t *testing.T) {
 
 		return -1, errors.New("no authorized partner certificate")
 	}
-	if _, e := xmldsig.VerifySignatureWithKeyInfo(ctx, doc, sel, xmldsig.KeyInfoVerifyOptions{SelectTrustedKey: selector}); e != nil {
+	if _, e := xmldsig.VerifySignatureWithKeyInfo(ctx, doc, sel, xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: selector}); e != nil {
 		t.Fatal(e)
 	}
 }

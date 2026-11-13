@@ -59,7 +59,7 @@ type EncryptionOptions struct {
 	Recipient *rsa.PublicKey
 	// Data selects data and key transport algorithms. Zero uses AES-256-GCM with
 	// RSA-OAEP-SHA256.
-	Data xmlenc.Options
+	Data xmlenc.RSAOptions
 }
 
 // DecryptionOptions supplies a bounded, application-owned RSA key ring. Keys and
@@ -70,7 +70,9 @@ type DecryptionOptions struct {
 	// try.
 	Keys []crypto.Decrypter
 	// Data fixes the expected algorithms; received XML cannot broaden policy.
-	Data xmlenc.Options
+	Data xmlenc.RSAOptions
+	// XMLLimits bounds the decrypted XML. Zero uses document defaults.
+	XMLLimits document.Limits
 	// MaxDecryptions bounds private-key attempts across the entire response.
 	// Zero selects 64; the maximum is 1024.
 	MaxDecryptions int
@@ -94,13 +96,13 @@ func CloneEncryption(o *EncryptionOptions) (*EncryptionOptions, error) {
 		return nil, nil
 	}
 
-	if o.Targets == 0 || !validEncryptionTargets(o.Targets) || o.Data.External != nil {
+	if o.Targets == 0 || !validEncryptionTargets(o.Targets) {
 		return nil, ErrEncryption
 	}
 
 	p := *o
 
-	p.Data = cloneCipherOptions(p.Data)
+	p.Data.OAEP = cloneOAEPParameters(p.Data.OAEP)
 	if p.Recipient != nil {
 		if !validRSARecipient(p.Recipient) {
 			return nil, ErrEncryption
@@ -140,14 +142,14 @@ func CloneDecryption(o *DecryptionOptions) (*DecryptionOptions, error) {
 		return nil, nil
 	}
 
-	if len(o.Keys) == 0 || len(o.Keys) > maximumDecryptionKeys || o.Data.External != nil || o.MaxDecryptions < 0 || o.MaxDecryptions > maximumDecryptionAttempts {
+	if len(o.Keys) == 0 || len(o.Keys) > maximumDecryptionKeys || o.MaxDecryptions < 0 || o.MaxDecryptions > maximumDecryptionAttempts {
 		return nil, ErrEncryption
 	}
 
 	p := *o
 	p.Keys = append([]crypto.Decrypter(nil), o.Keys...)
 
-	p.Data = cloneCipherOptions(p.Data)
+	p.Data.OAEP = cloneOAEPParameters(p.Data.OAEP)
 	for _, key := range p.Keys {
 		if nilcheck.IsNil(key) {
 			return nil, ErrEncryption
@@ -177,14 +179,15 @@ func validRSARecipient(key *rsa.PublicKey) bool {
 	return key != nil && key.N != nil && key.N.Sign() > 0 && key.N.Bit(0) != 0 && key.N.BitLen() >= minimumRSARecipientBits && key.N.BitLen() <= maximumRSARecipientBits && key.E >= minimumRSAExponent && key.E%2 != 0 && key.E <= maximumRSAExponent
 }
 
-func cloneCipherOptions(o xmlenc.Options) xmlenc.Options {
-	if o.OAEP != nil {
-		parameters := *o.OAEP
-		parameters.Label = bytes.Clone(parameters.Label)
-		o.OAEP = &parameters
+func cloneOAEPParameters(o *xmlenc.OAEPParameters) *xmlenc.OAEPParameters {
+	if o == nil {
+		return nil
 	}
 
-	return o
+	parameters := *o
+	parameters.Label = bytes.Clone(parameters.Label)
+
+	return &parameters
 }
 
 func newDecryptionState(o *DecryptionOptions) (*decryptionState, error) {
@@ -232,8 +235,8 @@ func encryptSAML(ctx context.Context, d *document.Document, selected document.El
 	return replaceSAML(ctx, encrypted, data, container)
 }
 
-func cbcCipher(o xmlenc.Options) bool {
-	return o.DataAlgorithm == xmlenc.AES128CBC || o.DataAlgorithm == xmlenc.AES192CBC || o.DataAlgorithm == xmlenc.AES256CBC || o.DataAlgorithm == xmlenc.TripleDESCBC
+func cbcCipher(algorithm string) bool {
+	return algorithm == xmlenc.AES128CBC || algorithm == xmlenc.AES192CBC || algorithm == xmlenc.AES256CBC || algorithm == xmlenc.TripleDESCBC
 }
 
 // decryptSAML is called only after the containing signature is verified, except
@@ -243,7 +246,7 @@ func (s *decryptionState) decryptSAML(ctx context.Context, d *document.Document,
 }
 
 func (s *decryptionState) decryptSAMLName(ctx context.Context, d *document.Document, wrapper document.Element, expected document.Name, authenticated bool) (*document.Document, error) {
-	if s == nil || (cbcCipher(s.options.Data) || s.options.Data.KeyTransportAlgorithm == xmlenc.RSA15) && !authenticated || xmlutil.Attrs(wrapper, nil, nil) != nil {
+	if s == nil || (cbcCipher(s.options.Data.DataAlgorithm) || s.options.Data.KeyTransportAlgorithm == xmlenc.RSA15) && !authenticated || xmlutil.Attrs(wrapper, nil, nil) != nil {
 		return nil, ErrEncryption
 	}
 
@@ -265,7 +268,7 @@ func (s *decryptionState) decryptSAMLName(ctx context.Context, d *document.Docum
 
 			s.remaining--
 
-			_, plain, err := xmlenc.DecryptElement(ctx, private, selected, key, s.options.Data)
+			_, plain, err := xmlenc.DecryptElement(ctx, private, selected, key, s.options.Data, xmlenc.DecryptOptions{XMLLimits: s.options.XMLLimits})
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}

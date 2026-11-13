@@ -21,6 +21,7 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/historical"
 	"github.com/skarm/xmlsec/internal/historicalproof"
+	"github.com/skarm/xmlsec/internal/pkipast"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/keys"
@@ -1689,7 +1690,7 @@ func TestHistoricalCertificateTimeSliding(t *testing.T) {
 				t.Fatal(err)
 			}
 			proofs := p7Proofs(t, now, test.objects, test.roles, test.proofAt)
-			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+			result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, proofs)
 			if !test.pass {
 				// Verification reports retain diagnostics on failure.
 				//noinspection GoDfaErrorMayBeNotNil
@@ -1719,11 +1720,11 @@ func TestHistoricalCertificateTimeSliding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, &historicalproof.Set{}); result != nil || !errors.Is(err, pki.ErrPolicy) {
+	if result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, &historicalproof.Set{}); result != nil || !errors.Is(err, pki.ErrPolicy) {
 		t.Fatal(result != nil, err)
 	}
 	different := p7Proofs(t, now.Add(time.Second), [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, verificationTime())
-	if result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, different); result != nil || !errors.Is(err, pki.ErrPolicy) {
+	if result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, different); result != nil || !errors.Is(err, pki.ErrPolicy) {
 		t.Fatal("cross-operation proof", result != nil, err)
 	}
 }
@@ -1776,7 +1777,7 @@ func TestHistoricalRevocationAndFreshnessBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			proofs := p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now)
-			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+			result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, proofs)
 			if test.pass {
 				if err != nil || result == nil || !result.ValidationTime().Equal(test.want) {
 					t.Fatal(result != nil, err)
@@ -1954,7 +1955,7 @@ func TestHistoricalOCSPRejectsForgedEvidenceWithoutPoisoningGood(t *testing.T) {
 				objects = append(objects, raw)
 				roles = append(roles, "ocsp")
 			}
-			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, issued))
+			result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, objects, roles, issued))
 			if tc.valid {
 				if result == nil || err != nil {
 					t.Fatal("forged extra response poisoned valid evidence", err)
@@ -2052,7 +2053,7 @@ func TestHistoricalNoCheckCertificateStillNeedsPreCutoffProof(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+			result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, proofs)
 			if tc.pass {
 				if err != nil {
 					t.Fatal(err)
@@ -2100,7 +2101,7 @@ func TestHistoricalCryptoAndSunsetProofs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
+			result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
 			if tc.pass {
 				if err != nil {
 					t.Fatal(err)
@@ -2156,7 +2157,7 @@ func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
 				objects = append(objects, raw)
 				roles = append(roles, "crl")
 			}
-			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
+			result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
 			if tc.pass {
 				if err != nil || result == nil || !result.ValidationTime().Equal(tc.want) {
 					t.Fatal(result != nil, err)
@@ -2188,7 +2189,7 @@ func TestHistoricalOCSPAndConflictingSources(t *testing.T) {
 			proofs := p7Proofs(t, now, [][]byte{c.leaf.Raw, latest, conflict}, []string{"certificate", "ocsp", "ocsp"}, now)
 			// Verification reports retain diagnostics on failure.
 			//noinspection GoDfaErrorMayBeNotNil
-			if result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, proofs); result != nil || !errors.Is(err, pki.ErrEvidence) || report.SubIndication() != "NO_POE" {
+			if result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, proofs); result != nil || !errors.Is(err, pki.ErrEvidence) || report.SubIndication() != "NO_POE" {
 				t.Fatal("input order resolved contradictory authenticated status", reversed, result != nil, report.SubIndication(), err)
 			}
 		}
@@ -2241,7 +2242,7 @@ func TestHistoricalExpiredRetention(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", kind}, now))
+				result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", kind}, now))
 				if tc.pass {
 					if err != nil || result == nil || !result.ValidationTime().Equal(now) {
 						t.Fatal(result != nil, err)
@@ -2337,7 +2338,7 @@ func TestHistoricalModelAndPathAlternatives(t *testing.T) {
 			if !bytes.Equal(paths[0].ChainDER()[1], bad.Raw) {
 				t.Fatal("fixture must enumerate rejected path first")
 			}
-			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, originalCRL}, []string{"certificate", "crl"}, now))
+			result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, originalCRL}, []string{"certificate", "crl"}, now))
 			if err != nil || result == nil || !bytes.Equal(result.Path().ChainDER()[1], validRoot.Raw) {
 				t.Fatal("failed first path masked valid alternate", result != nil, err)
 			}
@@ -2768,7 +2769,7 @@ func TestHistoricalDelegatedSourcePaths(t *testing.T) {
 			if selected == nil || selected.SignerAuthority() != "delegated" || len(selected.SignerChainDER()) != 2 || !bytes.Equal(selected.SignerChainDER()[0], responder.Raw) {
 				t.Fatal("wrong historical signer path")
 			}
-			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, verificationTime()))
+			result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, objects, roles, verificationTime()))
 			if tc.pass {
 				if err != nil {
 					t.Fatal(err)
@@ -2835,7 +2836,7 @@ func TestHistoricalLocalOCSPAuthorityBindsExactCertificates(t *testing.T) {
 				t.Fatal("issuer-scoped historical authentication", len(facts), err)
 			}
 			current, _, currentErr := session.VerifyCurrent(t.Context(), c.leaf.Raw)
-			past, _, pastErr := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "ocsp"}, now))
+			past, _, pastErr := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "ocsp"}, now))
 			if !tc.pass {
 				if current != nil || past != nil || !errors.Is(currentErr, pki.ErrUnavailable) || !errors.Is(pastErr, pki.ErrUnavailable) {
 					t.Fatal("grant crossed an exact certificate boundary", current != nil, past != nil, currentErr, pastErr)
@@ -2882,7 +2883,7 @@ func TestHistoricalLocalOCSPAuthorityBindsExactCertificates(t *testing.T) {
 			if facts, err := session.AuthenticateEvidence(t.Context(), paths[0]); facts != nil || !errors.Is(err, pki.ErrEvidence) {
 				t.Fatal("historical authentication published ambiguous signer facts", reversed, len(facts), err)
 			}
-			if result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "ocsp"}, now)); result != nil || !errors.Is(err, pki.ErrEvidence) {
+			if result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "ocsp"}, now)); result != nil || !errors.Is(err, pki.ErrEvidence) {
 				t.Fatal("past validation accepted an ambiguous local authority", reversed, err)
 			}
 		}
@@ -2958,7 +2959,7 @@ func TestHistoricalOCSPSourcePathsKeepSelectedAnchor(t *testing.T) {
 			for _, raw := range responses {
 				objects, roles = append(objects, raw), append(roles, "ocsp")
 			}
-			result, _, err := session.ValidatePastPath(t.Context(), path, p7Proofs(t, now, objects, roles, issued))
+			result, _, err := pkipast.ValidatePath(t.Context(), session, path, p7Proofs(t, now, objects, roles, issued))
 			if omitExactIssuer {
 				if result != nil || !errors.Is(err, pki.ErrUnavailable) {
 					t.Fatal("equivalent CA key substituted for exact certificate PoE", result != nil, err)
@@ -3024,7 +3025,7 @@ func TestHistoricalOCSPAuthorizationCyclesAndDepth(t *testing.T) {
 			// Repeat evaluation after failure to verify that active-path state is local
 			// to the operation and does not poison this session's authenticated cache.
 			for range 2 {
-				result, report, pastErr := session.ValidatePast(t.Context(), c.leaf.Raw, proofs)
+				result, report, pastErr := pkipast.Validate(t.Context(), session, c.leaf.Raw, proofs)
 				if tc.want == nil {
 					if result == nil || policyErr != nil || sub != "" || pastErr != nil || !result.ValidationTime().Equal(now) {
 						t.Fatal("valid dependency rejected at exact depth boundary", sub, policyErr, report.Transitions(), pastErr)
@@ -3107,7 +3108,7 @@ func TestHistoricalCertificateCyclesAndEscapingPath(t *testing.T) {
 					t.Fatal("unexpected failure of cyclic prospective path", err)
 				}
 			}
-			result, _, err := session.ValidatePast(t.Context(), leaf.Raw, proofs)
+			result, _, err := pkipast.Validate(t.Context(), session, leaf.Raw, proofs)
 			if tc.want != nil {
 				if result != nil || !errors.Is(err, tc.want) {
 					t.Fatal("cycle/depth failure returned a historical result", result != nil, err)
@@ -3238,7 +3239,7 @@ func TestHistoricalDelegatedResponderAuthority(t *testing.T) {
 				if err != nil || len(facts) != wantFacts {
 					t.Fatal("authenticated an unauthorized responder", len(facts), wantFacts, err)
 				}
-				result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, issued))
+				result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, objects, roles, issued))
 				if tc.authorized || addFallback {
 					if result == nil || err != nil || !result.ValidationTime().Equal(now) {
 						t.Fatal("unauthorized response poisoned independently valid status", result != nil, err)
@@ -3325,7 +3326,7 @@ func TestHistoricalDelegatedResponderRevocationAndProofs(t *testing.T) {
 			if tc.crlProof {
 				objects, roles = append(objects, crl), append(roles, "crl")
 			}
-			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
+			result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
 			if !tc.pass {
 				want := pki.ErrUnavailable
 				if tc.targetRevoked {
@@ -3399,7 +3400,7 @@ func TestHistoricalDeltaAndReasonCoverage(t *testing.T) {
 				objects = append(objects, raw)
 				roles = append(roles, "crl")
 			}
-			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
+			result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, objects, roles, now))
 			if tc.pass {
 				if err != nil || result == nil || !result.ValidationTime().Equal(tc.want) {
 					t.Fatal(result != nil, err)
@@ -3462,7 +3463,7 @@ func TestHistoricalSessionBoundsAndSnapshots(t *testing.T) {
 	if _, err := session.AuthenticateEvidence(ctx, paths[0]); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	if _, _, err := session.ValidatePast(ctx, c.leaf.Raw, nil); !errors.Is(err, context.Canceled) {
+	if _, _, err := pkipast.Validate(ctx, session, c.leaf.Raw, nil); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	if _, _, err := session.VerifyCurrent(ctx, c.leaf.Raw); !errors.Is(err, context.Canceled) {
@@ -3491,7 +3492,7 @@ func TestHistoricalSessionBoundsAndSnapshots(t *testing.T) {
 	}
 	// Verification reports retain diagnostics on failure.
 	//noinspection GoDfaErrorMayBeNotNil
-	if result, report, err := empty.ValidatePast(t.Context(), foreignLeaf.Raw, p7Proofs(t, now, nil, nil, now)); result != nil || !errors.Is(err, pki.ErrUnavailable) || report.SubIndication() != "NO_CERTIFICATE_CHAIN_FOUND" {
+	if result, report, err := pkipast.Validate(t.Context(), empty, foreignLeaf.Raw, p7Proofs(t, now, nil, nil, now)); result != nil || !errors.Is(err, pki.ErrUnavailable) || report.SubIndication() != "NO_CERTIFICATE_CHAIN_FOUND" {
 		t.Fatal(result != nil, report.SubIndication(), err)
 	}
 	for _, tc := range []struct {
@@ -3550,7 +3551,7 @@ func TestHistoricalIssuerToTargetOrder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, report, err := session.ValidatePast(t.Context(), leaf.Raw, proofs)
+			result, report, err := pkipast.Validate(t.Context(), session, leaf.Raw, proofs)
 			if err != nil || result == nil || !result.ValidationTime().Equal(at.Add(-10*time.Minute)) {
 				t.Fatal(result != nil, err)
 			}
@@ -3839,7 +3840,7 @@ func TestHistoricalConstraintIndications(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, report, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now))
+			result, report, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, now))
 			if tc.pass {
 				if err != nil {
 					t.Fatal(err)
@@ -3876,7 +3877,7 @@ func TestHistoricalMixedCryptoCutoffs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, _, err := session.ValidatePast(t.Context(), c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
+			result, _, err := pkipast.Validate(t.Context(), session, c.leaf.Raw, p7Proofs(t, now, [][]byte{c.leaf.Raw, raw}, []string{"certificate", "crl"}, tc.proofAt))
 			if tc.pass {
 				if err != nil || result == nil || !result.ValidationTime().Equal(sourceCutoff) {
 					t.Fatal(result != nil, err)

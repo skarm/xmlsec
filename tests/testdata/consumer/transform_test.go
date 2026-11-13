@@ -49,7 +49,7 @@ func TestDataOperationsUseCallerContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decrypted, err := xmlenc.DecryptBytesWithKey(t.Context(), encrypted, key, xmlenc.SymmetricOptions{})
+	decrypted, err := xmlenc.DecryptBytesWithKey(t.Context(), encrypted, key, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
 	if err != nil || !bytes.Equal(decrypted, canonical.Bytes()) {
 		t.Fatalf("decryption: %q, %v", decrypted, err)
 	}

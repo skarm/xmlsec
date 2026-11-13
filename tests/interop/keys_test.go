@@ -229,12 +229,12 @@ func TestXMLSecKeyFormats(t *testing.T) {
 
 				args := append([]string{arg, public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 				native(t, fixture, true, nameVerify, append(args, ours)...)
-				raw, _ := command(t, fixture, true, nil, cli, "verify-core", flagKey, public, "-modern-algorithms", "-signature-index", "0", flagIn, theirs)
+				raw, _ := command(t, fixture, true, nil, cli, "verify-core", "-allow-unspecified-coverage", flagKey, public, "-modern-algorithms", "-signature-index", "0", flagIn, theirs)
 				verifyReport(t, raw, true)
 
 				count++
 				bad := write(t, filepath.Join(dir, "trailing.der"), append(bytes.Clone(publicDER), 0))
-				command(t, fixture, false, nil, cli, "verify-core", flagKey, bad, "-modern-algorithms", "-signature-index", "0", flagIn, theirs)
+				command(t, fixture, false, nil, cli, "verify-core", "-allow-unspecified-coverage", flagKey, bad, "-modern-algorithms", "-signature-index", "0", flagIn, theirs)
 			}
 		}
 	}
@@ -455,7 +455,7 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 
 	args := append([]string{nativeArg, ours, "--pwd", password, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 	native(t, (*fixture), true, nameSign, append(args, "--output", signed, (*source))...)
-	raw, _ := command(t, (*fixture), true, nil, (*cli), "verify-core", flagKey, key.public, "-signature-index", "0", "-modern-algorithms", flagIn, signed)
+	raw, _ := command(t, (*fixture), true, nil, (*cli), "verify-core", "-allow-unspecified-coverage", flagKey, key.public, "-signature-index", "0", "-modern-algorithms", flagIn, signed)
 	verifyReport(t, raw, true)
 
 	keyFormat := "pkcs8"

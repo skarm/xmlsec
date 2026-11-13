@@ -34,8 +34,11 @@ xmlsec signature inspect -in signed.xml
 The restricted profile needs a root ID (`ID` by default), trusted verification
 key and expected root. General XMLDSig uses `signature build`, `sign-template`
 and `verify-core`; selection is zero-based and `inspect` lists indices.
-`-expect-uri` checks exact references; `-require-root` / `-require-id` require
-coverage. Core verification does not require a signed root by default.
+`verify-core` and `verify-keyinfo` require an explicit choice. Use `-expect-uri`
+to match the exact set of reference URIs, including duplicates, in any order.
+Use `-require-root` or `-require-id` to check element coverage after transforms.
+Use `-allow-unspecified-coverage` to verify the signature and references
+without either requirement.
 
 Templates use the public JSON types; see the [API examples](../examples).
 `-policy modern`, `pss` or `hmac` selects extra algorithms. HMAC uses
@@ -115,7 +118,8 @@ Protected keys use `-key-format pkcs8|pkcs12` and `-password-file`; export uses
 LF/CRLF is removed from a password file. PKCS#12 export also needs a certificate.
 
 `keyinfo build` / `inspect` describe untrusted keys. `signature verify-keyinfo`
-needs an external key pin and coverage. KeyInfo retrieval has separate
+needs an external key pin and follows the coverage options above. KeyInfo
+retrieval has separate
 `-keyinfo-resources` / `-keyinfo-base-uri` permissions; signed-data permissions
 never grant KeyInfo access.
 

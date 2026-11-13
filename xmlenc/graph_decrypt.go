@@ -34,7 +34,7 @@ func DecryptDocumentWithKeyGraph(ctx context.Context, doc *document.Document, se
 		return nil, graphPlainError(ctx)
 	}
 
-	parsed, err := document.Parse(ctx, raw, p.options.XMLLimits)
+	parsed, err := document.Parse(ctx, raw, p.decryption.XMLLimits)
 	if err != nil || !singleElement(parsed) {
 		return nil, graphPlainError(ctx)
 	}
@@ -56,7 +56,7 @@ func DecryptElementWithKeyGraph(ctx context.Context, doc *document.Document, sel
 	}
 	defer clear(raw)
 
-	plain, err := parseSelectedPlaintext(ctx, raw, node.Parent, p.options.XMLLimits, tree.Policy(doc).MaxBytes)
+	plain, err := parseSelectedPlaintext(ctx, raw, node.Parent, p.decryption.XMLLimits, tree.Policy(doc).MaxBytes)
 	if err != nil {
 		return nil, document.Element{}, graphPlainError(ctx)
 	}
@@ -83,7 +83,7 @@ func DecryptContentWithKeyGraph(ctx context.Context, doc *document.Document, sel
 	}
 	defer clear(raw)
 
-	plain, err := parseContentPlaintext(ctx, raw, node.Parent, p.options.XMLLimits, tree.Policy(doc).MaxBytes)
+	plain, err := parseContentPlaintext(ctx, raw, node.Parent, p.decryption.XMLLimits, tree.Policy(doc).MaxBytes)
 	if err != nil {
 		return nil, document.Element{}, graphPlainError(ctx)
 	}

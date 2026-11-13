@@ -44,16 +44,24 @@ const keyWrapIV uint64 = 0xa6a6a6a6a6a6a6a6
 // key-encryption key size and binds wrapping functions to the normalized
 // data-encryption profile.
 func keyWrapProfile(ctx context.Context, kek []byte, options KeyWrapOptions) (profile, error) {
-	if options.Data.OAEP != nil || options.Data.KeyTransportAlgorithm != "" {
-		return profile{}, ErrPolicy
-	}
-
 	p, err := normalize(ctx, options.Data)
 	if err != nil {
 		return profile{}, err
 	}
 
-	algorithm := options.KeyAlgorithm
+	return bindKeyWrap(p, kek, options.KeyAlgorithm)
+}
+
+func keyWrapDecryptProfile(ctx context.Context, kek []byte, options KeyWrapOptions, decryption DecryptOptions) (profile, error) {
+	p, err := normalizeDecryption(ctx, options.Data, decryption)
+	if err != nil {
+		return profile{}, err
+	}
+
+	return bindKeyWrap(p, kek, options.KeyAlgorithm)
+}
+
+func bindKeyWrap(p profile, kek []byte, algorithm string) (profile, error) {
 	if algorithm == "" {
 		algorithm = AES256KeyWrap
 	}

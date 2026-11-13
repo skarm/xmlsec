@@ -61,7 +61,7 @@ type ExternalCipherReference struct {
 // for the application to store at uri. It performs no I/O and does not change
 // EncryptedKey. Selection must belong to doc; the original snapshot is retained.
 // This operation does not authenticate the envelope, its URI or its metadata.
-// Decryption requires an explicit matching Options.External resolver and the
+// Decryption requires an explicit matching [DecryptOptions.External] resolver and the
 // same caller-selected cipher policy. CBC adds no authentication to the resource.
 func ExternalizeCiphertext(ctx context.Context, doc *document.Document, selected document.Element, uri string) (*document.Document, document.Element, []byte, error) {
 	if ctx == nil || !validCipherURI(uri) {

@@ -228,7 +228,7 @@ func graphGenerateKey(ctx context.Context, recipient KeyGraphKey, raw []byte, op
 		agreement = *recipient.ECDH
 	}
 
-	if agreement.Data != (Options{}) || agreement.KeyAlgorithm != "" && agreement.KeyAlgorithm != recipient.Algorithm || agreement.RecipientKeyName != "" && agreement.RecipientKeyName != recipient.Name {
+	if agreement.Data != (CipherOptions{}) || agreement.KeyAlgorithm != "" && agreement.KeyAlgorithm != recipient.Algorithm || agreement.RecipientKeyName != "" && agreement.RecipientKeyName != recipient.Name {
 		return nil, nil, ErrPolicy
 	}
 

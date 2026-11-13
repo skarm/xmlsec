@@ -31,7 +31,7 @@ func TestXMLSecEncryptedSAML(t *testing.T) {
 		Assertion: protocol.AssertionData{ID: "_assertion", NameID: "alice", NotBefore: at.Add(-time.Minute), NotOnOrAfter: at.Add(time.Minute), AuthnInstant: at.Add(-time.Minute), AuthnContext: "urn:test:password", Attributes: []protocol.Attribute{{Name: "role", Values: []string{"reader"}}}},
 	}
 	key := protocol.SigningKey{Key: signer.signer}
-	for _, data := range []xmlenc.Options{{DataAlgorithm: xmlenc.AES128GCM}, {DataAlgorithm: xmlenc.AES128CBC, KeyTransportAlgorithm: xmlenc.RSA15, AllowLegacy: true}} {
+	for _, data := range []xmlenc.RSAOptions{{DataAlgorithm: xmlenc.AES128GCM}, {DataAlgorithm: xmlenc.AES128CBC, AllowLegacy: true, KeyTransportAlgorithm: xmlenc.RSA15}} {
 		verification := xmldsig.Policy{}
 		if data.AllowLegacy {
 			verification = xmldsig.LegacyVerificationPolicy()
@@ -94,7 +94,7 @@ func TestXMLSecEncryptedSAML(t *testing.T) {
 	}
 }
 
-func encryptNativeSAML(t *testing.T, fixture *interopFixture, d *document.Document, local, wrapper string, recipient testKey, options xmlenc.Options) *document.Document {
+func encryptNativeSAML(t *testing.T, fixture *interopFixture, d *document.Document, local, wrapper string, recipient testKey, options xmlenc.RSAOptions) *document.Document {
 	t.Helper()
 	for {
 		candidates := nodes(tree.Root(d), protocol.AssertionNamespace, local)

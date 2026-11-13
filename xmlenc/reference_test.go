@@ -33,7 +33,7 @@ type cipherReferenceProfile struct {
 func (p cipherReferenceProfile) encrypt(ctx context.Context, plain []byte) (*document.Document, error) {
 	switch p.mode {
 	case nameRSA:
-		return xmlenc.EncryptBytes(ctx, plain, &p.rsaKey.PublicKey, xmlenc.Options{})
+		return xmlenc.EncryptBytes(ctx, plain, &p.rsaKey.PublicKey, xmlenc.RSAOptions{})
 	case nameWrap:
 		return xmlenc.EncryptBytesWithKeyWrap(ctx, plain, p.secret, xmlenc.KeyWrapOptions{})
 	default:
@@ -41,14 +41,14 @@ func (p cipherReferenceProfile) encrypt(ctx context.Context, plain []byte) (*doc
 	}
 }
 
-func (p cipherReferenceProfile) decrypt(ctx context.Context, input *document.Document, options xmlenc.Options) ([]byte, error) {
+func (p cipherReferenceProfile) decrypt(ctx context.Context, input *document.Document, options xmlenc.DecryptOptions) ([]byte, error) {
 	switch p.mode {
 	case nameRSA:
-		return xmlenc.DecryptBytes(ctx, input, p.rsaKey, options)
+		return xmlenc.DecryptBytes(ctx, input, p.rsaKey, xmlenc.RSAOptions{}, options)
 	case nameWrap:
-		return xmlenc.DecryptBytesWithKeyWrap(ctx, input, p.secret, xmlenc.KeyWrapOptions{Data: options})
+		return xmlenc.DecryptBytesWithKeyWrap(ctx, input, p.secret, xmlenc.KeyWrapOptions{}, options)
 	default:
-		return xmlenc.DecryptBytesWithKey(ctx, input, p.secret, xmlenc.SymmetricOptions{Data: options})
+		return xmlenc.DecryptBytesWithKey(ctx, input, p.secret, xmlenc.SymmetricOptions{}, options)
 	}
 }
 
@@ -121,7 +121,7 @@ func TestCipherReferenceRejectsConcatenatedBase64Values(t *testing.T) {
 		t.Fatal("missing reference")
 	}
 	external = parse(t, bytes.Replace(wire, []byte(ref), []byte(transformed), 1))
-	options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{
+	options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{
 		URI: uri,
 		Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 			return io.NopCloser(io.MultiReader(
@@ -129,8 +129,8 @@ func TestCipherReferenceRejectsConcatenatedBase64Values(t *testing.T) {
 				strings.NewReader(base64.StdEncoding.EncodeToString(body[1:])),
 			)), nil
 		}),
-	}}}
-	if out, err := xmlenc.DecryptBytesWithKey(ctx, external, secret, options); out != nil || err == nil {
+	}}
+	if out, err := xmlenc.DecryptBytesWithKey(ctx, external, secret, xmlenc.SymmetricOptions{}, options); out != nil || err == nil {
 		t.Fatalf("invalid Base64 framing accepted: plaintext=%q err=%v", out, err)
 	}
 }
@@ -189,7 +189,7 @@ func checkCipherReferenceTransform(t *testing.T, ctx context.Context, fixture ci
 		t.Fatal(fixture.profile.mode, err)
 	}
 
-	if out, err := fixture.profile.decrypt(ctx, input, xmlenc.Options{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+	if out, err := fixture.profile.decrypt(ctx, input, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 		t.Fatal("default external access enabled", err)
 	}
 
@@ -227,11 +227,11 @@ func TestCipherReferenceSelectedSnapshots(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		options := xmlenc.SymmetricOptions{Data: externalOptions(uri, body)}
+		options := externalOptions(uri, body)
 		if content {
-			restored, _, err = xmlenc.DecryptContentWithKey(ctx, external, handle, secret, options)
+			restored, _, err = xmlenc.DecryptContentWithKey(ctx, external, handle, secret, xmlenc.SymmetricOptions{}, options)
 		} else {
-			restored, _, err = xmlenc.DecryptElementWithKey(ctx, external, handle, secret, options)
+			restored, _, err = xmlenc.DecryptElementWithKey(ctx, external, handle, secret, xmlenc.SymmetricOptions{}, options)
 		}
 
 		if err != nil {
@@ -271,10 +271,10 @@ func TestCipherReferenceRejectsBeforeIO(t *testing.T) {
 	wire, _ := d.XML(ctx)
 	ref := `<xenc:CipherReference URI="urn:example:1"></xenc:CipherReference>`
 	calls := 0
-	options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+	options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 		calls++
 		return nil, errors.New("unexpected resolver call")
-	})}}}
+	})}}
 
 	for _, replacement := range []string{
 		`<xenc:CipherReference URI="urn:example:2"/>`,
@@ -291,7 +291,7 @@ func TestCipherReferenceRejectsBeforeIO(t *testing.T) {
 		}
 
 		bad := parse(t, bytes.Replace(wire, []byte(ref), []byte(replacement), 1))
-		if out, err := xmlenc.DecryptBytesWithKey(ctx, bad, secret, options); out != nil || err == nil {
+		if out, err := xmlenc.DecryptBytesWithKey(ctx, bad, secret, xmlenc.SymmetricOptions{}, options); out != nil || err == nil {
 			t.Fatal("malformed reference accepted")
 		}
 	}
@@ -303,15 +303,15 @@ func TestCipherReferenceRejectsBeforeIO(t *testing.T) {
 	for _, uri := range []string{"", "relative", "#id", "https://user:password@example.invalid/a", "urn:a#", "urn:a\n", "urn:a\\b", strings.Repeat("a", 4097)} {
 		opts := options
 
-		opts.Data.External = &xmlenc.ExternalCipherReference{URI: uri, Resolver: options.Data.External.Resolver}
-		if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, opts); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+		opts.External = &xmlenc.ExternalCipherReference{URI: uri, Resolver: options.External.Resolver}
+		if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, xmlenc.SymmetricOptions{}, opts); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 			t.Fatal("invalid URI accepted", err)
 		}
 	}
 
 	var nilResolver xmlenc.CipherResolverFunc
-	for _, p := range []*xmlenc.ExternalCipherReference{{URI: uri}, {URI: uri, Resolver: nilResolver}, {URI: uri, Resolver: options.Data.External.Resolver, MaxBytes: -1}, {URI: uri, Resolver: options.Data.External.Resolver, MaxBytes: (64 << 20) + 1}} {
-		if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, xmlenc.SymmetricOptions{Data: xmlenc.Options{External: p}}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+	for _, p := range []*xmlenc.ExternalCipherReference{{URI: uri}, {URI: uri, Resolver: nilResolver}, {URI: uri, Resolver: options.External.Resolver, MaxBytes: -1}, {URI: uri, Resolver: options.External.Resolver, MaxBytes: (64 << 20) + 1}} {
+		if out, err := xmlenc.DecryptBytesWithKey(ctx, d, secret, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{External: p}); out != nil || !errors.Is(err, xmlenc.ErrPolicy) {
 			t.Fatal("invalid resolver options accepted", err)
 		}
 	}
@@ -339,11 +339,11 @@ func TestCipherURIQueryEncoding(t *testing.T) {
 
 			changed := parse(t, bytes.Replace(wire, []byte(originalURI), []byte(uri), 1))
 			calls := 0
-			options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+			options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 				calls++
 				return io.NopCloser(bytes.NewReader(body)), nil
-			})}}}
-			if plain, err := xmlenc.DecryptBytesWithKey(t.Context(), changed, secret, options); plain != nil || !errors.Is(err, xmlenc.ErrPolicy) || calls != 0 {
+			})}}
+			if plain, err := xmlenc.DecryptBytesWithKey(t.Context(), changed, secret, xmlenc.SymmetricOptions{}, options); plain != nil || !errors.Is(err, xmlenc.ErrPolicy) || calls != 0 {
 				t.Fatal("malformed query reached resolver", err, calls)
 			}
 		})
@@ -356,14 +356,14 @@ func TestCipherURIQueryEncoding(t *testing.T) {
 			t.Fatal("encoded query rejected", err)
 		}
 		calls := 0
-		options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, got string) (io.ReadCloser, error) {
+		options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, got string) (io.ReadCloser, error) {
 			calls++
 			if got != uri {
 				t.Fatal("URI spelling changed", got)
 			}
 			return io.NopCloser(bytes.NewReader(body)), nil
-		})}}}
-		if plain, err := xmlenc.DecryptBytesWithKey(t.Context(), external, secret, options); err != nil || string(plain) != "URI payload" || calls != 1 {
+		})}}
+		if plain, err := xmlenc.DecryptBytesWithKey(t.Context(), external, secret, xmlenc.SymmetricOptions{}, options); err != nil || string(plain) != "URI payload" || calls != 1 {
 			t.Fatal("encoded query roundtrip", err, calls)
 		}
 	}
@@ -448,7 +448,7 @@ func testCipherReferenceReaderLifecycleCase(t *testing.T, ctx context.Context, b
 		limit--
 	}
 
-	options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, MaxBytes: limit, Resolver: xmlenc.CipherResolverFunc(func(got context.Context, gotURI string) (io.ReadCloser, error) {
+	options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, MaxBytes: limit, Resolver: xmlenc.CipherResolverFunc(func(got context.Context, gotURI string) (io.ReadCloser, error) {
 		if got != callCtx || gotURI != uri {
 			t.Fatal("resolver arguments changed")
 		}
@@ -467,9 +467,9 @@ func testCipherReferenceReaderLifecycleCase(t *testing.T, ctx context.Context, b
 		}
 
 		return r, nil
-	})}}}
+	})}}
 
-	out, err := xmlenc.DecryptBytesWithKey(callCtx, d, secret, options)
+	out, err := xmlenc.DecryptBytesWithKey(callCtx, d, secret, xmlenc.SymmetricOptions{}, options)
 	if kind == "ok" {
 		if err != nil || string(out) != "protected" {
 			t.Fatal(err)
@@ -568,8 +568,8 @@ func TestCipherReferenceRetainsErrorOnFullChunk(t *testing.T) {
 		return n, err
 	})}
 
-	options := xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return source, nil })}}}
-	if got, err := xmlenc.DecryptBytesWithKey(t.Context(), external, secret, options); got != nil || !errors.Is(err, failure) || !source.closed {
+	options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return source, nil })}}
+	if got, err := xmlenc.DecryptBytesWithKey(t.Context(), external, secret, xmlenc.SymmetricOptions{}, options); got != nil || !errors.Is(err, failure) || !source.closed {
 		t.Fatal("resource failure yielded plaintext", len(got), err, source.closed)
 	}
 }
@@ -809,7 +809,7 @@ func TestKeyGraphSharesExternalResourceBudget(t *testing.T) {
 					}
 					return keyBody, nil
 				})},
-				Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: cipherURI, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+				Decryption: xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: cipherURI, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
 					cipherReads++
 					if uri != cipherURI {
 						t.Fatal("unexpected ciphertext resource", uri)
@@ -986,8 +986,8 @@ func TestKeyGraphAuthenticatedPlaintextGrammar(t *testing.T) {
 			}
 			options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}}
 			if tc.maximumDepth > 0 {
-				options.Data.XMLLimits = document.DefaultLimits()
-				options.Data.XMLLimits.MaxDepth = tc.maximumDepth
+				options.Decryption.XMLLimits = document.DefaultLimits()
+				options.Decryption.XMLLimits.MaxDepth = tc.maximumDepth
 			}
 			elementEnvelope := parse(t, []byte(typed(xmlenc.ElementType)))
 			// GCM authentication and exact byte recovery succeed even when XML parsing
@@ -1117,10 +1117,10 @@ func TestKeyGraphCipherPolicySeparation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}, Data: externalOptions("https://example.test/cipher.bin", ciphertext)}
+	opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}}, Decryption: externalOptions("https://example.test/cipher.bin", ciphertext)}
 	graphAssert(t, external, selected, opts)
 	calls := 0
-	opts.Data.External = nil
+	opts.Decryption.External = nil
 	opts.External = &xmlenc.KeyGraphResources{AllowedURIs: []string{"https://example.test/cipher.bin"}, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 		calls++
 		return io.NopCloser(bytes.NewReader(ciphertext)), nil
@@ -1380,7 +1380,7 @@ func TestKeyGraphCountsActualCipherResourceBytes(t *testing.T) {
 			data := graphData(t, secret, keywire+keywire)
 			for _, ceiling := range []int{len(body), 65536} {
 				calls := 0
-				opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, Limits: xmlenc.KeyGraphLimits{MaxBytes: 32768}, Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, MaxBytes: ceiling, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				opts := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, Limits: xmlenc.KeyGraphLimits{MaxBytes: 32768}, Decryption: xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, MaxBytes: ceiling, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 					calls++
 					return io.NopCloser(bytes.NewReader(body)), nil
 				})}}}
@@ -1464,7 +1464,7 @@ func TestSizedCiphertextVerifiesActualStream(t *testing.T) {
 				source.Reader = bytes.NewReader(changed)
 				want = xmlenc.ErrDecrypt
 			}
-			options := xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return sizedCipherReader{source, size}, nil })}}
+			options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return sizedCipherReader{source, size}, nil })}}
 			out, err := profile.decrypt(ctx, external, options)
 			if !source.closed {
 				t.Fatal("source not closed")
@@ -1512,9 +1512,9 @@ func FuzzCipherReference(f *testing.F) {
 		}
 
 		options := externalOptions(uri, resource)
-		options.MaxPlaintextBytes = 1024
 		options.External.MaxBytes = 2048
-		_, _ = xmlenc.DecryptBytesWithKey(ctx, d, secret, xmlenc.SymmetricOptions{Data: options})
+		cipher := xmlenc.SymmetricOptions{Data: xmlenc.CipherOptions{MaxPlaintextBytes: 1024}}
+		_, _ = xmlenc.DecryptBytesWithKey(ctx, d, secret, cipher, options)
 	})
 }
 
@@ -1534,7 +1534,7 @@ func BenchmarkExternalCiphertext(b *testing.B) {
 			}
 			for _, known := range []bool{false, true} {
 				b.Run(strconv.FormatBool(known), func(b *testing.B) {
-					options := xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 						r := io.NopCloser(bytes.NewReader(body))
 						if known {
 							return sizedCipherReader{r, int64(len(body))}, nil
@@ -1555,8 +1555,8 @@ func BenchmarkExternalCiphertext(b *testing.B) {
 	}
 }
 
-func externalOptions(uri string, body []byte) xmlenc.Options {
-	return xmlenc.Options{External: &xmlenc.ExternalCipherReference{
+func externalOptions(uri string, body []byte) xmlenc.DecryptOptions {
+	return xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{
 		URI: uri,
 		Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(body)), nil
@@ -1581,7 +1581,7 @@ func decryptReader(t *testing.T, source io.ReadCloser) ([]byte, error) {
 		t.Fatal(err)
 	}
 
-	return xmlenc.DecryptBytesWithKey(t.Context(), external, key, xmlenc.SymmetricOptions{Data: xmlenc.Options{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return source, nil })}}})
+	return xmlenc.DecryptBytesWithKey(t.Context(), external, key, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{URI: uri, Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) { return source, nil })}})
 }
 
 func graphXML(t *testing.T, doc *document.Document) string {

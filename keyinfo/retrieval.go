@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -35,7 +36,7 @@ func (p *parser) configureRetrieval() error {
 
 	o := *p.options.RetrievalProcessing
 
-	o.AllowedTransforms = append([]string(nil), o.AllowedTransforms...)
+	o.AllowedTransforms = slices.Clone(o.AllowedTransforms)
 	if o.Signature.Valid() || len(o.IDRules) != 0 {
 		return fmt.Errorf("%w: retrieval Signature and IDRules belong to the parser", ErrPolicy)
 	}

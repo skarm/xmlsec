@@ -219,16 +219,16 @@ func TestTemplateAlgorithmsAndApprovedPrograms(t *testing.T) {
 	hmac := build(xmldsig.HMACSHA256, xmldsig.SignatureParameters{}, []reference.Transform{{Algorithm: c14n.Exclusive}})
 	signed := cli(t, hmac, "signature", "sign-template", "-signature-index", "0", "-secret-file", secret, "-policy", nameHMAC)
 	cli(t, signed, "signature", "verify-core", "-signature-index", "0", "-secret-file", secret, "-policy", nameHMAC, "-expect-uri", testObjectURI)
-	rejectCLI(t, signed, "signature", "verify-core", "-signature-index", "0", "-secret-file", secret)
+	rejectCLI(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, "-signature-index", "0", "-secret-file", secret)
 
 	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "true()", Namespaces: map[string]string{"ds": xmldsig.Namespace}}}}
 	programs := testutil.WriteJSON(t, dir, "programs.json", []reference.Transform{program})
 	draft := build(xmldsig.ECDSASHA256, xmldsig.SignatureParameters{}, []reference.Transform{program, {Algorithm: c14n.Exclusive}})
 	rejectCLI(t, draft, "signature", "sign-template", "-signature-index", "0", flagKey, key)
 	signed = cli(t, draft, "signature", "sign-template", "-signature-index", "0", flagKey, key, "-allowed-programs", programs)
-	cli(t, signed, "signature", "verify-core", "-signature-index", "0", flagKey, pub, "-allowed-programs", programs)
+	cli(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, "-signature-index", "0", flagKey, pub, "-allowed-programs", programs)
 	other := testutil.WriteJSON(t, dir, "different-program.json", []reference.Transform{{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "false()"}}}})
-	rejectCLI(t, signed, "signature", "verify-core", "-signature-index", "0", flagKey, pub, "-allowed-programs", other)
+	rejectCLI(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, "-signature-index", "0", flagKey, pub, "-allowed-programs", other)
 
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestTemplateAlgorithmsAndApprovedPrograms(t *testing.T) {
 	draft = build(xmldsig.RSAPSS, xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, MGFHash: crypto.SHA384, SaltLength: 24}}, []reference.Transform{{Algorithm: c14n.Exclusive}})
 	rejectCLI(t, draft, "signature", "sign-template", "-signature-index", "0", flagKey, rsaPrivate, "-policy", "modern")
 	signed = cli(t, draft, "signature", "sign-template", "-signature-index", "0", flagKey, rsaPrivate, "-policy", "pss")
-	cli(t, signed, "signature", "verify-core", "-signature-index", "0", flagKey, rsaPublic, "-policy", "pss")
+	cli(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, "-signature-index", "0", flagKey, rsaPublic, "-policy", "pss")
 
 	inspect := cli(t, signed, "signature", nameInspect)
 	if !bytes.Contains(inspect, []byte(xmldsig.RSAPSS)) {
@@ -488,7 +488,7 @@ func TestKeyInfoSelectionAndRequiredIDRules(t *testing.T) {
 	signed := cli(t, draft, "signature", "sign-template", flagKey, private, "-signature-index", "0", "-require-id", testObjectID)
 	cli(t, signed, "signature", nameVerifyKeyInfo, flagKey, public, "-signature-index", "0", "-expect-uri", testObjectURI, "-require-id", testObjectID)
 	wrong := testutil.WritePublicKey(t, dir, "wrong.pub", c.TSAKey.Public())
-	rejectCLI(t, signed, "signature", nameVerifyKeyInfo, flagKey, wrong, "-signature-index", "0")
+	rejectCLI(t, signed, "signature", nameVerifyKeyInfo, flagAllowUnspecifiedCoverage, flagKey, wrong, "-signature-index", "0")
 	rules := testutil.WriteJSON(t, dir, "rules.json", []reference.IDAttributeRule{{Attribute: document.Name{Space: "urn:ids", Local: "custom"}}})
 	source := []byte(`<root xmlns:i="urn:ids"><data i:custom="payload">signed</data></root>`)
 	config = testutil.WriteJSON(t, dir, "template.json", templateConfig{Method: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#payload", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}}})
@@ -520,7 +520,7 @@ func TestFilter2XSLTAndTruncatedHMAC(t *testing.T) {
 			allowed := testutil.WriteJSON(t, dir, "allowed.json", []reference.Transform{program})
 			draft := cli(t, nil, "signature", "build", "-config", config)
 			signed := cli(t, draft, "signature", "sign-template", flagKey, private, "-signature-index", "0", "-allowed-programs", allowed)
-			cli(t, signed, "signature", "verify-core", flagKey, public, "-signature-index", "0", "-allowed-programs", allowed)
+			cli(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, flagKey, public, "-signature-index", "0", "-allowed-programs", allowed)
 		})
 	}
 
@@ -529,8 +529,8 @@ func TestFilter2XSLTAndTruncatedHMAC(t *testing.T) {
 	draft := cli(t, nil, "signature", "build", "-config", config)
 	rejectCLI(t, draft, "signature", "sign-template", "-secret-file", secret, "-signature-index", "0", "-policy", nameHMAC)
 	signed := cli(t, draft, "signature", "sign-template", "-secret-file", secret, "-signature-index", "0", "-policy", nameHMAC, "-allow-hmac-truncation")
-	cli(t, signed, "signature", "verify-core", "-secret-file", secret, "-signature-index", "0", "-policy", nameHMAC, "-allow-hmac-truncation")
-	rejectCLI(t, signed, "signature", "verify-core", "-secret-file", secret, "-signature-index", "0", "-policy", nameHMAC)
+	cli(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, "-secret-file", secret, "-signature-index", "0", "-policy", nameHMAC, "-allow-hmac-truncation")
+	rejectCLI(t, signed, "signature", "verify-core", flagAllowUnspecifiedCoverage, "-secret-file", secret, "-signature-index", "0", "-policy", nameHMAC)
 }
 
 func TestRejectedOptionsDoNotPublishOutput(t *testing.T) {

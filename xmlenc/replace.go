@@ -18,7 +18,7 @@ import (
 // Source parsing limits bound the complete output; MaxPlaintextBytes bounds
 // the selected serialization. Non-NFC input is rejected without normalization.
 // Super-encryption selects the entire EncryptedData/EncryptedKey, not its children.
-func EncryptElement(ctx context.Context, doc *document.Document, selected document.Element, recipient *rsa.PublicKey, options Options) (*document.Document, document.Element, error) {
+func EncryptElement(ctx context.Context, doc *document.Document, selected document.Element, recipient *rsa.PublicKey, options RSAOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
@@ -55,13 +55,13 @@ func EncryptElementWithKeyWrap(ctx context.Context, doc *document.Document, sele
 // The returned handle selects the restored element.
 // No document or valid handle is returned on failure. The caller must separately
 // verify sender identity, restored signatures and application context before use.
-func DecryptElement(ctx context.Context, doc *document.Document, selected document.Element, recipient crypto.Decrypter, options Options) (*document.Document, document.Element, error) {
+func DecryptElement(ctx context.Context, doc *document.Document, selected document.Element, recipient crypto.Decrypter, options RSAOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
 
-	p, err := rsaDecryptProfile(ctx, options, recipient)
+	p, err := rsaDecryptProfile(ctx, options, recipient, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -74,13 +74,13 @@ func DecryptElement(ctx context.Context, doc *document.Document, selected docume
 // for other encrypted elements or recursively decrypt their contents.
 // It returns the new snapshot and restored handle, with the limits/context
 // contracts of DecryptElement.
-func DecryptElementWithKeyWrap(ctx context.Context, doc *document.Document, selected document.Element, kek []byte, options KeyWrapOptions) (*document.Document, document.Element, error) {
+func DecryptElementWithKeyWrap(ctx context.Context, doc *document.Document, selected document.Element, kek []byte, options KeyWrapOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
 
-	p, err := keyWrapProfile(ctx, kek, options)
+	p, err := keyWrapDecryptProfile(ctx, kek, options, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -127,7 +127,7 @@ func decryptSelected(ctx context.Context, doc *document.Document, node *tree.Nod
 	}
 	defer clear(raw)
 
-	plain, err := parseSelectedPlaintext(ctx, raw, node.Parent, p.options.XMLLimits, tree.Policy(doc).MaxBytes)
+	plain, err := parseSelectedPlaintext(ctx, raw, node.Parent, p.decryption.XMLLimits, tree.Policy(doc).MaxBytes)
 	if err == nil {
 		var (
 			result  *document.Document

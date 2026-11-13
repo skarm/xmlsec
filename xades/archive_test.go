@@ -946,7 +946,7 @@ func FuzzValidatePreservation(f *testing.F) {
 func verifyOnlyXML(t *testing.T, d *document.Document, c testcert.Chain) {
 	t.Helper()
 
-	_, e := xmldsig.VerifySignature(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.PublicKey, xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}, AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}, ExpectedURIs: nil})
+	_, e := xmldsig.VerifySignature(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.PublicKey, xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}, AdditionalIDRules: []reference.IDAttributeRule{{Attribute: document.Name{Local: "Id"}, Elements: []document.Name{{Space: xades.Namespace, Local: signedPropertiesLocal}}}}, AllowUnspecifiedCoverage: true})
 	if e != nil {
 		t.Fatalf("test mutation damaged primary XMLDSig: %v", e)
 	}

@@ -346,7 +346,7 @@ func (g *keyGraph) rsaEncryptedPlan(node graphNode, fields graphEncryptedFields,
 		return nil, err
 	}
 
-	oaep, err := normalizeOAEP(g.options.Data.OAEP)
+	oaep, err := normalizeOAEP(g.options.OAEP)
 	if err != nil || oaep.Algorithm != algorithm {
 		return nil, errors.Join(ErrPolicy, err)
 	}

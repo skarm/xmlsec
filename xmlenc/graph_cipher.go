@@ -77,7 +77,7 @@ func (g *keyGraph) referenceOptions(maximum int) (reference.Options, error) {
 		}
 	}
 
-	return reference.Options{AllowedTransforms: allowed, MaxTransforms: maximumCipherReferenceTransforms, MaxInputBytes: g.remaining.MaxBytes, MaxOutputBytes: min(maximum, g.remaining.MaxBytes), MaxProducedBytes: g.remaining.MaxBytes, MaxNodeVisits: g.remaining.MaxNodes, XMLLimits: g.profile.options.XMLLimits}, nil
+	return reference.Options{AllowedTransforms: allowed, MaxTransforms: maximumCipherReferenceTransforms, MaxInputBytes: g.remaining.MaxBytes, MaxOutputBytes: min(maximum, g.remaining.MaxBytes), MaxProducedBytes: g.remaining.MaxBytes, MaxNodeVisits: g.remaining.MaxNodes, XMLLimits: g.profile.decryption.XMLLimits}, nil
 }
 
 func (g *keyGraph) cipherPlan(doc *graphDocument, data document.Element, maximum int) (*graphCipherPlan, error) {
@@ -151,7 +151,7 @@ func (g *keyGraph) authorizeCipher(p *graphCipherPlan) error {
 
 	p.uri = absolute.String()
 
-	external := g.profile.options.External
+	external := g.profile.decryption.External
 	if external == nil || p.uri != external.URI {
 		return ErrPolicy
 	}
@@ -218,7 +218,7 @@ func (g *keyGraph) readCipher(plan *graphCipherPlan) ([]byte, error) {
 	}
 
 	g.remaining.MaxResources--
-	external := *g.profile.options.External
+	external := *g.profile.decryption.External
 	original := external.Resolver
 	actual := 0
 	external.Resolver = resource.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {

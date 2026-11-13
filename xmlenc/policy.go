@@ -35,15 +35,16 @@ type keyTransport struct {
 }
 
 type profile struct {
-	options   Options
-	keyBytes  int
-	transport keyTransport
-	direct    cipher.Block
-	data      dataCipher
-	keyName   string
+	options    CipherOptions
+	decryption DecryptOptions
+	keyBytes   int
+	transport  keyTransport
+	direct     cipher.Block
+	data       dataCipher
+	keyName    string
 }
 
-func normalize(ctx context.Context, options Options) (profile, error) {
+func normalize(ctx context.Context, options CipherOptions) (profile, error) {
 	if ctx == nil {
 		return profile{}, ErrPolicy
 	}
@@ -69,20 +70,27 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 		return profile{}, ErrPolicy
 	}
 
+	return profile{options: options, keyBytes: data.keyBytes, data: data}, nil
+}
+
+func normalizeDecryption(ctx context.Context, cipherOptions CipherOptions, options DecryptOptions) (profile, error) {
+	p, err := normalize(ctx, cipherOptions)
+	if err != nil {
+		return profile{}, err
+	}
+
 	if options.XMLLimits == (document.Limits{}) {
 		options.XMLLimits = document.DefaultLimits()
 	}
 
-	if options.XMLLimits.MaxBytes > options.MaxPlaintextBytes {
-		options.XMLLimits.MaxBytes = options.MaxPlaintextBytes
-	}
+	options.XMLLimits.MaxBytes = min(options.XMLLimits.MaxBytes, p.options.MaxPlaintextBytes)
 
 	if err := options.XMLLimits.Validate(); err != nil {
 		return profile{}, err
 	}
 
 	if options.External != nil {
-		external, err := normalizeExternal(*options.External, options.MaxPlaintextBytes+data.overhead())
+		external, err := normalizeExternal(*options.External, p.options.MaxPlaintextBytes+p.data.overhead())
 		if err != nil {
 			return profile{}, err
 		}
@@ -90,7 +98,9 @@ func normalize(ctx context.Context, options Options) (profile, error) {
 		options.External = &external
 	}
 
-	return profile{options: options, keyBytes: data.keyBytes, data: data}, nil
+	p.decryption = options
+
+	return p, nil
 }
 
 func validateRSAKey(key *rsa.PublicKey) error {

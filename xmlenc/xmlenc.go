@@ -80,37 +80,58 @@ var (
 	ErrResource = errors.New("XML Encryption resource failure")
 )
 
-// Options selects the expected data cipher and resource limits. The zero value
-// uses AES256GCM and default limits. Decryption requires the XML Algorithm to match
-// the selected cipher, even when another cipher is supported. An optional
-// EncryptionMethod/KeySize must match the data key, wrapping key or RSA modulus.
-type Options struct {
-	// AllowLegacy explicitly permits CBC data encryption, TripleDES key wrap
-	// and explicitly selected RSA15 key transport.
+// CipherOptions selects the data cipher and plaintext budget. The zero value
+// uses AES256GCM and the default budget. Decryption requires the XML Algorithm to
+// match the selected cipher.
+type CipherOptions struct {
+	// AllowLegacy permits supported legacy CBC ciphers and TripleDES key wrap
+	// when the caller explicitly selects them.
 	// CBC plaintext is unauthenticated. Callers must establish any required
 	// ciphertext integrity before decryption and keep legacy keys separate from
 	// GCM keys. This flag changes no algorithm choice and grants no trust.
 	// Selected legacy algorithms are rejected with crypto/fips140 enabled.
-	// OAEP's SHA-1/legacy URI permission remains OAEPParameters.AllowLegacy.
 	AllowLegacy bool
 	// DataAlgorithm selects the expected data cipher; empty selects AES256GCM.
 	// Decryption rejects ciphertext declaring a different algorithm.
 	DataAlgorithm string
-	// KeyTransportAlgorithm selects RSA15 explicitly for legacy interoperability.
-	// Empty uses RSA-OAEP with OAEP parameters. RSA15 requires AllowLegacy,
-	// rejects OAEP parameters and is disabled in FIPS mode. It must be used
-	// behind ciphertext authentication to avoid decryption-oracle exposure.
-	// Only the RSA APIs accept this field; key graphs use their own bindings.
+	// MaxPlaintextBytes bounds plaintext bytes; default 8 MiB, maximum 32 MiB.
+	MaxPlaintextBytes int
+}
+
+// RSAOptions selects the data cipher and RSA key transport. The zero value
+// uses AES-256-GCM and RSA-OAEP with SHA-256 for both hashes and an empty label.
+type RSAOptions struct {
+	// DataAlgorithm selects the data cipher as in [CipherOptions.DataAlgorithm].
+	DataAlgorithm string
+	// MaxPlaintextBytes bounds plaintext as in [CipherOptions.MaxPlaintextBytes].
+	MaxPlaintextBytes int
+	// AllowLegacy permits explicitly selected legacy CBC ciphers and RSA15.
+	// CBC and RSA15 require ciphertext authentication before decryption.
+	// OAEP compatibility is controlled by [OAEPParameters.AllowLegacy].
+	AllowLegacy bool
+	// KeyTransportAlgorithm is empty for RSA-OAEP. Set it to RSA15 to select
+	// legacy PKCS#1 v1.5 transport. RSA15 requires AllowLegacy and a nil OAEP
+	// field and is disabled in FIPS mode.
 	KeyTransportAlgorithm string
-	// OAEP selects RSA-OAEP parameters. Nil uses SHA-256 and an empty label.
-	// These parameters are rejected by direct-key and AES Key Wrap APIs.
+	// OAEP selects RSA-OAEP parameters. Nil uses SHA-256 for both hashes
+	// and an empty label.
 	OAEP *OAEPParameters
+}
+
+func (o RSAOptions) cipherOptions() CipherOptions {
+	return CipherOptions{
+		DataAlgorithm: o.DataAlgorithm, MaxPlaintextBytes: o.MaxPlaintextBytes, AllowLegacy: o.AllowLegacy,
+	}
+}
+
+// DecryptOptions sets the decrypted XML budget and external ciphertext policy.
+// The zero value uses default XML limits and accepts inline ciphertext only.
+type DecryptOptions struct {
 	// External permits one exact application-selected CipherReference URI on
 	// decryption. Nil denies external ciphertext; no implicit I/O is performed.
 	External *ExternalCipherReference
-	// MaxPlaintextBytes bounds plaintext bytes; default 8 MiB, maximum 32 MiB.
-	MaxPlaintextBytes int
-	// XMLLimits bounds decrypted XML; zero uses document defaults.
+	// XMLLimits bounds decrypted XML. Zero uses document defaults, and the
+	// byte limit is capped by the selected plaintext budget.
 	XMLLimits document.Limits
 }
 
@@ -141,9 +162,8 @@ type OAEPParameters struct {
 // resolves no key from XML. CBC requires Data.AllowLegacy and provides no
 // authentication.
 type SymmetricOptions struct {
-	// Data selects the exact data cipher, plaintext and XML limits, and ciphertext resource
-	// policy.
-	Data Options
+	// Data selects the exact data cipher and plaintext budget.
+	Data CipherOptions
 	// KeyName supplies an optional untrusted KeyInfo hint, bounded to 1024 bytes.
 	// When configured, decryption requires the same name. Empty requires no KeyInfo.
 	KeyName string
@@ -155,9 +175,8 @@ type SymmetricOptions struct {
 // use AES256GCM and AES256KeyWrap. TripleDESKeyWrap requires a 24-byte wrapping
 // key, TripleDESCBC data and Data.AllowLegacy.
 type KeyWrapOptions struct {
-	// Data selects the exact data cipher, plaintext and XML limits, and ciphertext resource
-	// policy.
-	Data Options
+	// Data selects the exact data cipher and plaintext budget.
+	Data CipherOptions
 	// KeyAlgorithm defaults to AES256KeyWrap. The supplied key-encryption key
 	// must match this algorithm's size; its length does not select the algorithm.
 	KeyAlgorithm string

@@ -170,7 +170,7 @@ func TestCryptographicallyValidSemanticFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := resign(t, d, c, tc.change)
 			for _, s := range xmldsig.Signatures(bad) {
-				if _, e := xmldsig.VerifySignature(t.Context(), bad, s, c.LeafKey.Public(), xmldsig.SignatureOptions{}); e != nil {
+				if _, e := xmldsig.VerifySignature(t.Context(), bad, s, c.LeafKey.Public(), xmldsig.SignatureOptions{AllowUnspecifiedCoverage: true}); e != nil {
 					t.Fatal("negative control NOT cryptographically valid", e)
 				}
 			}

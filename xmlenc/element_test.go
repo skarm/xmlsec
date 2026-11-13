@@ -64,7 +64,7 @@ func TestElementPlaintextProfile(t *testing.T) {
 	raw, _ := encrypted.XML(ctx)
 
 	labeled := parse(t, bytes.Replace(raw, []byte("<xenc:EncryptedData "), []byte("<xenc:EncryptedData Type=\""+xmlenc.ElementType+"\" "), 1))
-	if result, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, labeled, kek, xmlenc.KeyWrapOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
+	if result, err := xmlenc.DecryptDocumentWithKeyWrap(ctx, labeled, kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{}); result != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 		t.Fatalf("UTF-16 #Element accepted: %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func testElementPlaintextProfileCase(t *testing.T, rsaTransport *bool, ctx *cont
 		err       error
 	)
 	if *rsaTransport {
-		encrypted, err = xmlenc.EncryptBytes(*ctx, []byte(tc.xml), &(*rsaKey).PublicKey, xmlenc.Options{})
+		encrypted, err = xmlenc.EncryptBytes(*ctx, []byte(tc.xml), &(*rsaKey).PublicKey, xmlenc.RSAOptions{})
 	} else {
 		encrypted, err = xmlenc.EncryptBytesWithKeyWrap(*ctx, []byte(tc.xml), *kek, xmlenc.KeyWrapOptions{})
 	}
@@ -98,9 +98,9 @@ func testElementPlaintextProfileCase(t *testing.T, rsaTransport *bool, ctx *cont
 
 	var result *document.Document
 	if *rsaTransport {
-		result, err = xmlenc.DecryptDocument(*ctx, labeled, *rsaKey, xmlenc.Options{})
+		result, err = xmlenc.DecryptDocument(*ctx, labeled, *rsaKey, xmlenc.RSAOptions{}, xmlenc.DecryptOptions{})
 	} else {
-		result, err = xmlenc.DecryptDocumentWithKeyWrap(*ctx, labeled, *kek, xmlenc.KeyWrapOptions{})
+		result, err = xmlenc.DecryptDocumentWithKeyWrap(*ctx, labeled, *kek, xmlenc.KeyWrapOptions{}, xmlenc.DecryptOptions{})
 	}
 
 	if tc.valid && (err != nil || result == nil) || !tc.valid && (result != nil || !errors.Is(err, xmlenc.ErrDecrypt)) {
@@ -137,12 +137,12 @@ func TestECDHDocumentAndElement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			restored, err := xmlenc.DecryptDocumentWithECDH(t.Context(), encrypted, recipient, xmlenc.ECDHOptions{})
+			restored, err := xmlenc.DecryptDocumentWithECDH(t.Context(), encrypted, recipient, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			sameXML(t, parse(t, []byte(`<r xmlns="urn:r" xmlns:p="urn:p" xml:lang="ru"><head>visible</head><box><p:secret xmlns:p="urn:shadow" flag="é"><p:v>й 😀</p:v><!--inside--></p:secret><tail/></box></r>`)), restored)
-			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), encrypted, recipient, xmlenc.ECDHOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
+			if out, err := xmlenc.DecryptBytesWithECDH(t.Context(), encrypted, recipient, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{}); out != nil || !errors.Is(err, xmlenc.ErrFormat) {
 				t.Fatal(out, err)
 			}
 			selected := source.Root().Children()[1].Children()[0]
@@ -153,7 +153,7 @@ func TestECDHDocumentAndElement(t *testing.T) {
 			if !handle.Same(encrypted.Root().Children()[1].Children()[0]) {
 				t.Fatal("wrong encrypted handle")
 			}
-			restored, handle, err = xmlenc.DecryptElementWithECDH(t.Context(), encrypted, handle, recipient, xmlenc.ECDHOptions{})
+			restored, handle, err = xmlenc.DecryptElementWithECDH(t.Context(), encrypted, handle, recipient, xmlenc.ECDHOptions{}, xmlenc.DecryptOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}

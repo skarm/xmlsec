@@ -47,9 +47,8 @@ const (
 // Defaults are AES256GCM and AES256KeyWrap. Agreement establishes no sender
 // identity; the application must authenticate the ciphertext and its context.
 type ECDHOptions struct {
-	// Data selects the data cipher, plaintext and XML limits, and external ciphertext
-	// policy.
-	Data Options
+	// Data selects the data cipher and plaintext budget.
+	Data CipherOptions
 	// KeyAlgorithm selects AES128KeyWrap, AES192KeyWrap or AES256KeyWrap (default).
 	KeyAlgorithm string
 	// KDF supplies exact expected ConcatKDF fields, copied without adding values.
@@ -106,8 +105,8 @@ func EncryptBytesWithECDH(ctx context.Context, plaintext []byte, recipient *ecdh
 }
 
 // DecryptBytesWithECDH uses an explicit static ECDH recipient and AES key wrap.
-func DecryptBytesWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions) ([]byte, error) {
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
+func DecryptBytesWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions, decryption DecryptOptions) ([]byte, error) {
+	p, err := ecdhDecryptProfile(ctx, recipient, options, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +125,8 @@ func EncryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipi
 }
 
 // DecryptDocumentWithECDH has the root-element, NFC and snapshot contracts of DecryptDocument.
-func DecryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions) (*document.Document, error) {
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
+func DecryptDocumentWithECDH(ctx context.Context, doc *document.Document, recipient ECDHRecipient, options ECDHOptions, decryption DecryptOptions) (*document.Document, error) {
+	p, err := ecdhDecryptProfile(ctx, recipient, options, decryption)
 	if err != nil {
 		return nil, err
 	}
@@ -151,13 +150,13 @@ func EncryptElementWithECDH(ctx context.Context, doc *document.Document, selecte
 }
 
 // DecryptElementWithECDH has the selected-node, namespace and budget contracts of DecryptElement.
-func DecryptElementWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions) (*document.Document, document.Element, error) {
+func DecryptElementWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
 
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
+	p, err := ecdhDecryptProfile(ctx, recipient, options, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -181,7 +180,7 @@ func EncryptContentWithECDH(ctx context.Context, doc *document.Document, selecte
 }
 
 // DecryptContentWithECDH has the selected-node, namespace and budget contracts of DecryptContent.
-func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions) (*document.Document, document.Element, error) {
+func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
 	node, err := selectedNode(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
@@ -191,7 +190,7 @@ func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selecte
 		return nil, document.Element{}, ErrFormat
 	}
 
-	p, err := ecdhDecryptProfile(ctx, recipient, options)
+	p, err := ecdhDecryptProfile(ctx, recipient, options, decryption)
 	if err != nil {
 		return nil, document.Element{}, err
 	}
@@ -223,10 +222,6 @@ type agreementParameters struct {
 }
 
 func agreementProfile(ctx context.Context, recipient *ecdh.PublicKey, options ECDHOptions) (profile, agreementParameters, error) {
-	if options.Data.OAEP != nil || options.Data.KeyTransportAlgorithm != "" {
-		return profile{}, agreementParameters{}, ErrPolicy
-	}
-
 	p, err := normalize(ctx, options.Data)
 	if err != nil {
 		return profile{}, agreementParameters{}, err
@@ -359,8 +354,8 @@ func ecdhEncryptProfile(ctx context.Context, recipient *ecdh.PublicKey, options 
 	return wrapped, nil
 }
 
-func ecdhDecryptProfile(ctx context.Context, recipient ECDHRecipient, options ECDHOptions) (profile, error) {
-	p, err := normalize(ctx, options.Data)
+func ecdhDecryptProfile(ctx context.Context, recipient ECDHRecipient, options ECDHOptions, decryption DecryptOptions) (profile, error) {
+	p, err := normalizeDecryption(ctx, options.Data, decryption)
 	if err != nil {
 		return profile{}, err
 	}

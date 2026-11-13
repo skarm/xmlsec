@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/skarm/xmlsec/document"
@@ -100,8 +101,8 @@ func NewValidator(c ValidatorConfig) (*Validator, error) {
 		return nil, fmt.Errorf("%w: signer revocation checking required", ErrProfile)
 	}
 
-	c.Basic.Policy.AllowedSignatureMethods = append([]string(nil), c.Basic.Policy.AllowedSignatureMethods...)
-	c.Basic.Policy.AllowedDigestMethods = append([]string(nil), c.Basic.Policy.AllowedDigestMethods...)
+	c.Basic.Policy.AllowedSignatureMethods = slices.Clone(c.Basic.Policy.AllowedSignatureMethods)
+	c.Basic.Policy.AllowedDigestMethods = slices.Clone(c.Basic.Policy.AllowedDigestMethods)
 
 	v, e := pki.NewVerifier(c.SignerPKI)
 	if e != nil {

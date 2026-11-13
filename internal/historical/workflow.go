@@ -187,6 +187,10 @@ func (w *validationWorkflow) initialize() error {
 		}
 	}
 
+	return w.checkEvidenceLimits()
+}
+
+func (w *validationWorkflow) checkEvidenceLimits() error {
 	if len(w.input.Timestamps) > w.config.MaxTimestamps {
 		return ErrLimit
 	}
@@ -663,23 +667,7 @@ func validate(ctx context.Context, c Config, input Input, now time.Time, signerE
 		return report, err
 	}
 
-	if err := workflow.admitEvidence(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.prepareTimestamps(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.preparePaths(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.prepareGraph(); err != nil {
-		return report, err
-	}
-
-	if err := workflow.processTimestamps(); err != nil {
+	if err := workflow.proveObjects(); err != nil {
 		return report, err
 	}
 
@@ -696,6 +684,16 @@ func validate(ctx context.Context, c Config, input Input, now time.Time, signerE
 	}
 
 	return report, nil
+}
+
+func (w *validationWorkflow) proveObjects() error {
+	for _, step := range []func() error{w.admitEvidence, w.prepareTimestamps, w.preparePaths, w.prepareGraph, w.processTimestamps} {
+		if err := step(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func validateStamp(ctx context.Context, c Config, stamp preparedStamp, now time.Time, session *pki.HistoricalSession, proofs *historicalproof.Set) (Stamp, error) {

@@ -112,9 +112,12 @@ type KeyGraphResources struct {
 // a non-nil context must match the declared algorithm and party bitstrings before
 // derivation.
 type KeyGraphOptions struct {
-	// Data selects the expected data cipher, OAEP parameters and ciphertext resource
-	// policy.
-	Data Options
+	// Data selects the expected data cipher and plaintext budget.
+	Data CipherOptions
+	// Decryption sets XML limits and the separate ciphertext resource policy.
+	Decryption DecryptOptions
+	// OAEP selects the expected parameters for RSA-OAEP bindings.
+	OAEP *OAEPParameters
 	// Keys supplies explicit application-owned key material and exact name and algorithm
 	// restrictions.
 	Keys []KeyGraphKey
@@ -196,11 +199,7 @@ type keyGraph struct {
 }
 
 func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOptions) (*keyGraph, *graphDocument, error) {
-	if options.Data.KeyTransportAlgorithm != "" {
-		return nil, nil, ErrPolicy
-	}
-
-	p, err := normalize(ctx, options.Data)
+	p, err := normalizeDecryption(ctx, options.Data, options.Decryption)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -210,14 +209,13 @@ func newKeyGraph(ctx context.Context, doc *document.Document, options KeyGraphOp
 		return nil, nil, ErrPolicy
 	}
 
-	options.Data = p.options
-	if options.Data.OAEP != nil {
-		parameters, err := normalizeOAEP(options.Data.OAEP)
+	if options.OAEP != nil {
+		parameters, err := normalizeOAEP(options.OAEP)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		options.Data.OAEP = &parameters
+		options.OAEP = &parameters
 	}
 
 	options.Keys = append([]KeyGraphKey(nil), options.Keys...)

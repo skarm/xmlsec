@@ -34,7 +34,7 @@ func TestDocumentPublicMethods(t *testing.T) {
 }
 
 func TestNonValidatingDocumentAPI(t *testing.T) {
-	options := document.ParseOptions{NonValidating: true}
+	options := document.ParseOptions{Profile: document.DTDProfile}
 	d, err := options.ParseText(t.Context(), `<!DOCTYPE r [<!ENTITY e "value"><!ATTLIST r words NMTOKENS " one   two "><!NOTATION png SYSTEM "image/png">]><r>&e;</r>`)
 	if err != nil {
 		t.Fatal(err)

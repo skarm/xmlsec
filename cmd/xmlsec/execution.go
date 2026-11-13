@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,8 +55,8 @@ type executionFlags struct {
 	transforms          int
 	timeout             time.Duration
 	policy              string
-	methods             string
-	digests             string
+	methods             []string
+	digests             []string
 	programs            string
 	minRSABits          int
 	maxRSABits          int
@@ -112,12 +113,16 @@ func (e *executionFlags) signaturePolicy(modern bool) (xmldsig.Policy, error) {
 		return p, usageError("-policy must be default, modern, pss or hmac")
 	}
 
-	if e.methods != "" {
-		p.AllowedSignatureMethods = splitList(e.methods)
+	if slices.Contains(e.methods, "") || slices.Contains(e.digests, "") {
+		return p, usageError("-allowed-methods and -allowed-digests require nonempty algorithm URIs")
 	}
 
-	if e.digests != "" {
-		p.AllowedDigestMethods = splitList(e.digests)
+	if e.methods != nil {
+		p.AllowedSignatureMethods = e.methods
+	}
+
+	if e.digests != nil {
+		p.AllowedDigestMethods = e.digests
 	}
 
 	p.MinRSABits = e.minRSABits
@@ -416,8 +421,14 @@ func registerExecutionFlags(fs *flag.FlagSet) *executionFlags {
 	fs.IntVar(&e.transforms, "max-transforms", cliDefaultTransforms, "maximum transforms per reference (1..64)")
 	fs.DurationVar(&e.timeout, "timeout", cliDefaultOperationTimeout, "operation deadline, e.g. 30s; 0 has no deadline")
 	fs.StringVar(&e.policy, "policy", nameDefault, "signature policy: default, modern, pss or hmac (explicit shared secret)")
-	fs.StringVar(&e.methods, "allowed-methods", "", "comma-separated signature method allowlist; overrides selected policy")
-	fs.StringVar(&e.digests, "allowed-digests", "", "comma-separated digest method allowlist")
+	fs.Func("allowed-methods", "comma-separated signature method allowlist; overrides selected policy", func(value string) error {
+		e.methods = splitList(value)
+		return nil
+	})
+	fs.Func("allowed-digests", "comma-separated digest method allowlist", func(value string) error {
+		e.digests = splitList(value)
+		return nil
+	})
 	fs.StringVar(&e.programs, "allowed-programs", "", "trusted local JSON array of exact approved XPath/Filter2/XSLT transforms")
 	fs.IntVar(&e.minRSABits, "min-rsa-bits", cliMinRSABits, "minimum RSA modulus size")
 	fs.IntVar(&e.maxRSABits, "max-rsa-bits", cliDefaultMaxRSABits, "maximum RSA modulus size (up to 16384)")

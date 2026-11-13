@@ -320,7 +320,7 @@ func decodeProfile(ctx context.Context, doc *document.Document, typ string, p pr
 		return nil, nil, ErrDecrypt
 	}
 
-	data, err := decodeCipherData(ctx, children[2], p.options.MaxPlaintextBytes+p.data.overhead(), p.options.External)
+	data, err := decodeCipherData(ctx, children[2], p.options.MaxPlaintextBytes+p.data.overhead(), p.decryption.External)
 	if err != nil {
 		return nil, nil, err
 	}
