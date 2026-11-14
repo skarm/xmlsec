@@ -84,6 +84,8 @@ func TestValueDecimalPreservesIntegerPrecisionAndOwnership(t *testing.T) {
 		{"derived_integer", derived, "18446744073709551615/1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			for range 2 {
 				got, err := tc.value.Decimal()
 				if err != nil || got == nil || got.String() != tc.want {
