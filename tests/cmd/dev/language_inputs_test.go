@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,41 @@ func TestLanguageInputConfiguration(t *testing.T) {
 	}
 	if value != "explicit-qt3" {
 		t.Fatal("explicit environment did not override configured input", value)
+	}
+}
+
+func TestConfigureLanguageInputsRequiresAllInputsBeforeWriting(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XMLSEC_LANGUAGE_CACHE", cache)
+	names := []string{"XMLSEC_QT3_DIR", "XMLSEC_XSLT_DIR", "SAXON_CLASSPATH", "SAXON20_CLASSPATH", "SERIALIZATION_SCHEMA_DIR", "JSON_SCHEMA_FILE"}
+	for _, name := range names {
+		t.Setenv(name, "configured")
+	}
+
+	for _, missing := range []string{names[0], names[len(names)-1]} {
+		t.Run(missing, func(t *testing.T) {
+			t.Setenv(missing, "")
+
+			var output bytes.Buffer
+			err := configureLanguageInputs(t.Context(), "fixture-checkout", &output)
+			if err == nil || !strings.Contains(err.Error(), missing) || output.Len() != 0 {
+				t.Errorf("configureLanguageInputs with %s missing = (%q, %v), want no output and a diagnostic naming %s", missing, output.String(), err, missing)
+			}
+			entries, err := os.ReadDir(cache)
+			if err != nil || len(entries) != 0 {
+				t.Errorf("cache contents = (%v, %v), want an empty cache", entries, err)
+			}
+		})
+	}
+}
+
+func TestPrepareLanguageInputsReportsMissingConfiguration(t *testing.T) {
+	t.Setenv("XMLSEC_LANGUAGE_CACHE", t.TempDir())
+
+	var output bytes.Buffer
+	err := prepareLanguageInputs(t.Context(), "fixture-checkout", &output, io.Discard)
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "proof configure") || output.Len() != 0 {
+		t.Errorf("prepareLanguageInputs = (%q, %v), want no output and missing-configuration error naming proof configure", output.String(), err)
 	}
 }
 

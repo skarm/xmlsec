@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,57 @@ import (
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
 )
+
+func TestParseKeyNamesPreservesTextAndAggregateByteBudget(t *testing.T) {
+	t.Parallel()
+
+	source := wrap(`<ds:KeyName>é<!--note--><?p data?>x</ds:KeyName><ds:KeyName>y</ds:KeyName>`)
+	doc := parseXML(t, source)
+	for _, tc := range []struct {
+		name        string
+		blob, total int
+		wantErr     error
+	}{
+		{"exact_utf8_budget", 3, 4, nil},
+		{"name_too_long", 2, 4, keyinfo.ErrLimit},
+		{"aggregate_too_long", 3, 3, keyinfo.ErrLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{Limits: keyinfo.Limits{MaxBlobBytes: tc.blob, MaxTotalBytes: tc.total}})
+			if tc.wantErr != nil {
+				if result != nil || !errors.Is(err, tc.wantErr) {
+					t.Errorf("Parse = (%v, %v), want no result and %v", result, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || result == nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := result.KeyNames(); !slices.Equal(got, []string{"éx", "y"}) {
+				t.Errorf("key names = %q, want [éx y]", got)
+			}
+		})
+	}
+}
+
+func TestParseNamedCurveRequiresPublicKeyAndCurveURI(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, fields string }{
+		{"missing_public_key", `<k:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/>`},
+		{"missing_curve_uri", `<k:NamedCurve/><k:PublicKey>AQID</k:PublicKey>`},
+		{"curve_must_be_empty", `<k:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"><k:Label/></k:NamedCurve><k:PublicKey>AQID</k:PublicKey>`},
+		{"public_key_wrong_name", `<k:NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/><k:Label>AQID</k:Label>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			requireErr(t, wrap("<ds:KeyValue><k:ECKeyValue>"+tc.fields+"</k:ECKeyValue></ds:KeyValue>"), keyinfo.Options{}, keyinfo.ErrInput)
+		})
+	}
+}
 
 const (
 	ns   = keyinfo.Namespace
@@ -216,11 +268,15 @@ func testBuildParsePublicKeysCase(t *testing.T, test *struct {
 	}
 
 	cs := out.Candidates()
-	if len(cs) != 1 || out.KeyNames()[0] != "  significant name\n" {
-		t.Fatalf("bad hints: %+v", out)
+	names := out.KeyNames()
+	if len(cs) != 1 || len(names) != 1 || names[0] != "  significant name\n" {
+		t.Fatalf("Parse returned %d candidates and names %q, want one candidate and the original name", len(cs), names)
 	}
 
-	expected, _ := x509.MarshalPKIXPublicKey(test.key)
+	expected, err := x509.MarshalPKIXPublicKey(test.key)
+	if err != nil {
+		t.Fatalf("encode %s fixture public key: %v", test.name, err)
+	}
 	if !bytes.Equal(expected, cs[0].SPKI()) {
 		t.Fatal("wrong key")
 	}

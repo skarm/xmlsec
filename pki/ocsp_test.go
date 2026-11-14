@@ -101,6 +101,85 @@ func TestOCSPRoundTripAndFailures(t *testing.T) {
 	}
 }
 
+func TestOCSPRequestOwnsDERAndDefaultsHash(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	wantNonce := bytes.Repeat([]byte{42}, 32)
+	nonce := bytes.Clone(wantNonce)
+	raw, err := pki.CreateOCSPRequest(chain.Leaf.Raw, chain.Root.Raw, 0, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDER := bytes.Clone(raw)
+	clear(nonce)
+	request, err := pki.ParseOCSPRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(raw)
+	derCopy := request.DER()
+	clear(derCopy)
+	if !bytes.Equal(request.DER(), wantDER) || !bytes.Equal(request.Nonce(), wantNonce) || request.Hash() != crypto.SHA256 {
+		t.Errorf("request lost original DER, nonce or default SHA-256 after caller buffers were cleared")
+	}
+}
+
+func TestCreateOCSPRequestRejectsInvalidCertificateInputs(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	for _, tc := range []struct {
+		name   string
+		target []byte
+		issuer []byte
+		hash   crypto.Hash
+		want   error
+	}{
+		{"missing_target", nil, chain.Root.Raw, crypto.SHA256, pki.ErrCertificate},
+		{"missing_issuer", chain.Leaf.Raw, nil, crypto.SHA256, pki.ErrCertificate},
+		{"different_issuer", chain.Leaf.Raw, chain.Responder.Raw, crypto.SHA256, pki.ErrCertificate},
+		{"unsupported_digest", chain.Leaf.Raw, chain.Root.Raw, crypto.SHA3_256, pki.ErrPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if raw, err := pki.CreateOCSPRequest(tc.target, tc.issuer, tc.hash, nil); raw != nil || !errors.Is(err, tc.want) {
+				t.Errorf("CreateOCSPRequest = (%x, %v), want nil and %v", raw, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseOCSPRequestDistinguishesMalformedAndUnsupportedShape(t *testing.T) {
+	t.Parallel()
+
+	hashAlgorithm := der.Seq(der.OID(asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}), []byte{5, 0})
+	hash := der.Octets(bytes.Repeat([]byte{1}, 32))
+	id := der.Seq(hashAlgorithm, hash, hash, der.Int(1))
+	entry := der.Seq(id)
+	list := der.Seq(entry)
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		want error
+	}{
+		{"malformed_tbs", der.Seq(der.Seq()), pki.ErrEvidence},
+		{"multiple_requests", der.Seq(der.Seq(der.Seq(entry, entry))), pki.ErrUnsupported},
+		{"unexpected_request_field", der.Seq(der.Seq(der.Seq(der.Seq(id, der.Ctx(0))))), pki.ErrUnsupported},
+		{"missing_certificate_serial", der.Seq(der.Seq(der.Seq(der.Seq(der.Seq(hashAlgorithm, hash, hash))))), pki.ErrEvidence},
+		{"unexpected_extension_tag", der.Seq(der.Seq(list, der.Ctx(1, der.Seq()))), pki.ErrEvidence},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if req, err := pki.ParseOCSPRequest(tc.raw); req != nil || !errors.Is(err, tc.want) {
+				t.Errorf("ParseOCSPRequest = (%v, %v), want nil and %v", req, err, tc.want)
+			}
+		})
+	}
+}
+
 func testOCSPRoundTripAndFailuresCase(t *testing.T, tc *struct {
 	name     string
 	at       time.Time

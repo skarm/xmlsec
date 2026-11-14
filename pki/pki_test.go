@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"errors"
 	"math/big"
 	"os"
@@ -20,6 +22,107 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
 )
+
+func TestNewVerifierRejectsInvalidConfiguration(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	base := pki.Config{Roots: [][]byte{chain.Root.Raw}}
+	for _, tc := range []struct {
+		name    string
+		change  func(*pki.Config)
+		wantErr error
+	}{
+		{"invalid_revocation_mode", func(c *pki.Config) { c.Revocation = "unknown" }, pki.ErrPolicy},
+		{"unknown_required_key_usage", func(c *pki.Config) { c.RequiredKeyUsage = 1 << 12 }, pki.ErrPolicy},
+		{"depth_below_minimum", func(c *pki.Config) { c.MaxChainDepth = 1 }, pki.ErrPolicy},
+		{"ocsp_count_above_maximum", func(c *pki.Config) { c.MaxOCSPResponses = 257 }, pki.ErrPolicy},
+		{"too_many_extended_key_usages", func(c *pki.Config) { c.KeyUsages = make([]x509.ExtKeyUsage, 33) }, pki.ErrPolicy},
+		{"ocsp_skew_above_maximum", func(c *pki.Config) { c.OCSPClockSkew = 10*time.Minute + time.Second }, pki.ErrPolicy},
+		{"negative_crl_max_age", func(c *pki.Config) { c.CRL.MaxAge = -time.Second }, pki.ErrPolicy},
+		{"root_exceeds_byte_budget", func(c *pki.Config) { c.MaxEvidenceBytes = len(chain.Root.Raw) - 1 }, pki.ErrPolicy},
+		{"leaf_as_anchor", func(c *pki.Config) { c.Roots = [][]byte{chain.Leaf.Raw} }, pki.ErrPolicy},
+		{"malformed_intermediate", func(c *pki.Config) { c.Intermediates = [][]byte{{0x30, 0x00}} }, pki.ErrCertificate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := base
+			tc.change(&config)
+			if got, err := pki.NewVerifier(config); got != nil || !errors.Is(err, tc.wantErr) {
+				t.Errorf("NewVerifier = verifier present %t, error %v, want nil and %v", got != nil, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyReportsCertificateFailureStage(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	at := testcert.Now()
+	verifier, err := pki.NewVerifier(pki.Config{Roots: [][]byte{chain.Root.Raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	noSigningUsage := testcert.Issue(t, &x509.Certificate{
+		SerialNumber: big.NewInt(42), Subject: pkix.Name{CommonName: "encryption-only certificate"},
+		NotBefore: at.Add(-time.Hour), NotAfter: at.Add(time.Hour), KeyUsage: x509.KeyUsageKeyEncipherment,
+	}, chain.Root, chain.LeafKey.Public(), chain.RootKey)
+
+	for _, tc := range []struct {
+		name        string
+		leaf        []byte
+		evidence    pki.Evidence
+		chainStatus pki.Status
+	}{
+		{"empty_leaf", nil, pki.Evidence{}, pki.Invalid},
+		{"malformed_leaf", []byte{0x30, 0x00}, pki.Evidence{}, pki.Invalid},
+		{"leaf_without_signing_usage", noSigningUsage.Raw, pki.Evidence{}, pki.Invalid},
+		{"malformed_supplied_intermediate", chain.Leaf.Raw, pki.Evidence{Intermediates: [][]byte{{0x30, 0x00}}}, pki.NotChecked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, report, err := verifier.Verify(t.Context(), tc.leaf, at, tc.evidence)
+			if got != nil || !errors.Is(err, pki.ErrCertificate) {
+				t.Fatalf("Verify = result present %t, error %v, want nil and %v", got != nil, err, pki.ErrCertificate)
+			}
+			if report.Chain != tc.chainStatus || report.Revocation != pki.NotChecked || report.ChainLength != 0 || report.Error != err.Error() || !report.VerificationTime.Equal(at) {
+				t.Errorf("report = %+v, want chain %q, revocation not checked and original error/time", report, tc.chainStatus)
+			}
+		})
+	}
+}
+
+func TestKeyPinFingerprintAndInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	pin, err := pki.NewKeyPin(chain.Leaf.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(chain.Leaf.RawSubjectPublicKeyInfo)
+	if got := pin.FingerprintSHA256(); got != hex.EncodeToString(digest[:]) {
+		t.Errorf("fingerprint = %q, want SHA-256 of the certificate SPKI", got)
+	}
+	if got, err := pki.NewKeyPin(nil); got != nil || !errors.Is(err, pki.ErrCertificate) {
+		t.Errorf("NewKeyPin(nil) = (%v, %v), want nil and %v", got, err, pki.ErrCertificate)
+	}
+	if err := pin.MatchCertificate(nil); !errors.Is(err, pki.ErrCertificate) {
+		t.Errorf("MatchCertificate with empty DER = %v, want %v", err, pki.ErrCertificate)
+	}
+
+	var absent *pki.KeyPin
+	if got := absent.FingerprintSHA256(); got != "" {
+		t.Errorf("nil pin fingerprint = %q, want empty", got)
+	}
+	if err := absent.MatchCertificate(chain.Leaf.Raw); !errors.Is(err, pki.ErrPolicy) {
+		t.Errorf("nil pin MatchCertificate = %v, want %v", err, pki.ErrPolicy)
+	}
+}
 
 func TestPKIXAndCRL(t *testing.T) {
 	c := makeChain(t)

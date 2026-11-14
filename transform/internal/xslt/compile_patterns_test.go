@@ -3,7 +3,67 @@ package xslt //nolint:testpackage // Exercises match-pattern compilation and dis
 import (
 	"errors"
 	"testing"
+
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
+
+func TestMatchPatternResolvesExpandedKindTestNames(t *testing.T) {
+	t.Parallel()
+
+	const input = `<r xmlns="https://example.test/items" xmlns:p="https://example.test/items" xmlns:q="urn:other" id="plain" p:id="bound"><p:n>A</p:n><q:n>B</q:n><n xmlns="">C</n></r>`
+	for _, tc := range []struct {
+		name, pattern, population, want string
+	}{
+		{"braced_uri_with_colon", `element(Q{https://example.test/items}n)`, `/*/*`, "A"},
+		{"bare_element_uses_xpath_default_namespace", `element(n)`, `/*/*`, "A"},
+		{"explicit_empty_uri_overrides_xpath_default", `element(Q{}n)`, `/*/*`, "C"},
+		{"bare_attribute_has_no_namespace", `attribute(id)`, `/*/@*`, "plain"},
+		{"braced_attribute_uri", `attribute(Q{https://example.test/items}id)`, `/*/@*`, "bound"},
+		{"wildcard_with_attribute_type", `attribute(*, xs:untypedAtomic)`, `/*/@*`, "plainbound"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ss := compileTestStylesheet(t, `<xsl:mode name="m" on-no-match="deep-skip"/><xsl:template mode="m" xpath-default-namespace="https://example.test/items" match="`+tc.pattern+`"><xsl:value-of select="."/></xsl:template>`,
+				`<xsl:apply-templates mode="m" select="`+tc.population+`"/>`)
+			got, err := ss.Transform(parseTestDocument(t, input)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
+func TestMatchElementPatternChecksTypeAndNilledStatus(t *testing.T) {
+	t.Parallel()
+
+	doc := parseTestDocument(t, `<root><n/><n/><n/></root>`)
+	nodes := doc.DocumentElement()
+	typed := nodes.FirstChild().(*xdm.Element)
+	nilled := typed.NextSibling().(*xdm.Element)
+	untyped := nilled.NextSibling().(*xdm.Element)
+	ec := &execContext{stylesheet: &Stylesheet{}}
+	ec.annotateNode(typed, xdm.TypeInteger)
+	ec.annotateNode(nilled, xdm.TypeInteger)
+	ec.markNilled(nilled)
+	for _, tc := range []struct {
+		name string
+		node xdm.Node
+		test xdm.ElementTest
+		want bool
+	}{
+		{"integer_matches_decimal_supertype", typed, xdm.ElementTest{Name: "n", TypeName: "xs:decimal"}, true},
+		{"unrelated_type", typed, xdm.ElementTest{Name: "n", TypeName: "xs:string"}, false},
+		{"non_nillable_rejects_nilled_node", nilled, xdm.ElementTest{Name: "n", TypeName: "xs:integer"}, false},
+		{"nillable_accepts_nilled_node", nilled, xdm.ElementTest{Name: "n", TypeName: "xs:integer", Nillable: true}, true},
+		{"unannotated_node_is_untyped", untyped, xdm.ElementTest{Name: "n", TypeName: "xs:untyped"}, true},
+		{"document_does_not_match_element_test", doc, xdm.ElementTest{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := matchElementTest(t.Context(), ec, tc.test, tc.node); got != tc.want {
+				t.Errorf("matchElementTest(%+v) = %t, want %t", tc.test, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestMatchPatternPathAndPredicateFocus(t *testing.T) {
 	t.Parallel()

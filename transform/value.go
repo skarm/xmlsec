@@ -187,6 +187,10 @@ func (v Value) Decimal() (*big.Rat, error) {
 		return nil, wrap(lexicon.TypeDecimal, ErrInput)
 	}
 
+	if xdm.BuiltinIsSubtypeOf(a.TypeName, xdm.TypeInteger) {
+		return new(big.Rat).SetInt(a.BigInt()), nil
+	}
+
 	return new(big.Rat).Set(a.BigRat()), nil
 }
 

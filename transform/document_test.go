@@ -2,14 +2,118 @@ package transform_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/transform"
 )
+
+func TestImportNodePreservesKindValueAndOwner(t *testing.T) {
+	t.Parallel()
+
+	const ns = "urn:items"
+	e := engine(t, transform.Config{})
+	doc, err := document.Parse(t.Context(), []byte(`<p:r xmlns:p="urn:items" p:label="x">text<!--note--><?step next?></p:r>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := doc.Root()
+	children := root.Node().Children()
+	if len(children) != 3 || len(root.AttributeNodes()) != 1 {
+		t.Fatalf("fixture has %d children and %d attributes", len(children), len(root.AttributeNodes()))
+	}
+	var binding document.Node
+	for _, ns := range root.NamespaceNodes() {
+		if ns.Name().Local == "p" {
+			binding = ns
+			break
+		}
+	}
+	if !binding.Valid() {
+		t.Fatal("fixture lacks namespace node p")
+	}
+	for _, tc := range []struct {
+		original document.Node
+		kind     string
+		name     transform.Name
+		value    string
+	}{
+		{doc.Node(), "document", transform.Name{}, "text"},
+		{root.Node(), "element", transform.Name{Space: ns, Local: "r"}, "text"},
+		{root.AttributeNodes()[0], "attribute", transform.Name{Space: ns, Local: "label"}, "x"},
+		{children[0], "text", transform.Name{}, "text"},
+		{children[1], "comment", transform.Name{}, "note"},
+		{children[2], "processing-instruction", transform.Name{Local: "step"}, "next"},
+		{binding, "namespace", transform.Name{Local: "p"}, ns},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+
+			value, err := e.ImportNode(t.Context(), tc.original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node, ok := value.Node()
+			if !ok || value.Kind() != transform.NodeValue || node.Kind() != tc.kind ||
+				node.Name() != tc.name || node.StringValue() != tc.value || !node.Reference().Same(tc.original) {
+				t.Errorf("imported %s has kind=%q name=%v value=%q same reference=%t", tc.kind, node.Kind(), node.Name(), node.StringValue(), node.Reference().Same(tc.original))
+			}
+			if got, err := e.Export(t.Context(), node.Document()); got != doc || err != nil {
+				t.Errorf("owner export = (%p, %v), want original document %p", got, err, doc)
+			}
+		})
+	}
+}
+
+func TestDocumentOperationsRejectInvalidInputsAndPreserveReadErrors(t *testing.T) {
+	t.Parallel()
+
+	e := engine(t, transform.Config{})
+	var nilReader *bytes.Reader
+	var missing *transform.Document
+	value := missing.Root()
+	node, ok := value.Node()
+	if value.Kind() != transform.InvalidValue || ok || node.Kind() != "" || node.StringValue() != "" || node.Reference().Valid() || node.Document() != nil {
+		t.Error("zero document root exposed a valid node or owner")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	readErr := errors.New("input read failed")
+	for _, tc := range []struct {
+		name, operation string
+		call            func(*testing.T) error
+		wantErr         error
+	}{
+		{"nil_reader", "parse", func(t *testing.T) error { _, err := e.ParseReader(t.Context(), nilReader); return err }, transform.ErrInput},
+		{"read_error", "parse", func(t *testing.T) error {
+			_, err := e.ParseReader(t.Context(), iotest.ErrReader(readErr))
+			return err
+		}, readErr},
+		{"cancelled_parse", "parse", func(*testing.T) error { _, err := e.Parse(ctx, []byte("<r/>")); return err }, context.Canceled},
+		{"missing_import", "import", func(t *testing.T) error { _, err := e.Import(t.Context(), nil); return err }, transform.ErrInput},
+		{"missing_export", "export", func(t *testing.T) error { _, err := e.Export(t.Context(), missing); return err }, transform.ErrInput},
+		{"invalid_import_node", "import node", func(t *testing.T) error {
+			_, err := e.ImportNode(t.Context(), document.Node{})
+			return err
+		}, transform.ErrInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.call(t)
+			detail, ok := errors.AsType[*transform.Error](err)
+			if !errors.Is(err, tc.wantErr) || !ok || detail.Operation != tc.operation {
+				t.Errorf("operation error = %v, want %s with cause %v", err, tc.operation, tc.wantErr)
+			}
+		})
+	}
+}
 
 const xmlIDInvalidValueExpression = `let $d := parse-xml('<r xml:id=" one &#x9; two "/>') return string($d/r/@xml:id) eq 'one two' and empty(id('one', $d))`
 

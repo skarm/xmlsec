@@ -25,3 +25,29 @@ func TestPerformSortPreservesItemsAndStableOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestSortGroupsUsesGroupFocusAndStableTies(t *testing.T) {
+	t.Parallel()
+
+	const input = `<r><n g="a">1</n><n g="b">2</n><n g="c">3</n><n g="d">4</n><n g="b">5</n><n g="d">6</n></r>`
+	const result = `<xsl:value-of select="current-grouping-key() || ':' || string-join(current-group() ! string(.), ',') || ';'"/>`
+	for _, tc := range []struct {
+		name, keys, want, code string
+	}{
+		{"single_key_preserves_equal_key_group_order", `<xsl:sort select="count(current-group())" order="descending"/>`, "b:2,5;d:4,6;a:1;c:3;", ""},
+		{"secondary_key_breaks_group_size_ties", `<xsl:sort select="count(current-group())" order="descending"/><xsl:sort select="current-grouping-key()" order="descending"/>`, "d:4,6;b:2,5;c:3;a:1;", ""},
+		{"group_key_exposes_unsorted_group_position", `<xsl:sort select="position()" order="descending"/>`, "d:4,6;c:3;b:2,5;a:1;", ""},
+		{"secondary_key_must_be_orderable_across_groups", `<xsl:sort select="count(current-group())"/><xsl:sort select="if (current-grouping-key() eq 'a') then 1 else 'text'"/>`, "", "XTDE1030"},
+		{"group_sort_key_must_be_singleton", `<xsl:sort select="current-group()"/>`, "", "XTTE1020"},
+		{"dynamic_unknown_collation", `<xsl:sort select="current-grouping-key()" collation="{'urn:unknown-collation'}"/>`, "", "XTDE1035"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := `<xsl:for-each-group select="r/n" group-by="@g">` + tc.keys + result + `</xsl:for-each-group>`
+			ss := compileTestStylesheet(t, "", body)
+			got, err := ss.Transform(parseTestDocument(t, input)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, tc.code)
+		})
+	}
+}

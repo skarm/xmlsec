@@ -171,6 +171,98 @@ func TestTimestampFailureNoPartialDocument(t *testing.T) {
 	}
 }
 
+func TestAttachSignatureTimestampPreservesBoundToken(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	source := basicDocument(t, chain)
+	signature := xmldsig.Signatures(source)[0]
+	before, err := source.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := xades.AddTimestampOptions{
+		Validation:       timeOptions(t, chain),
+		Canonicalization: c14n.Canonical11,
+		Request:          timestamp.RequestOptions{Hash: crypto.SHA384, Policy: tsaPolicy()},
+	}
+	_, original, err := xades.AddSignatureTimestamp(t.Context(), source, signature, chain.Leaf.Raw, &localTSA{chain: chain}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := original.Timestamps()[0].TokenDER()
+	options.Validation.MaxTokenBytes = len(token)
+
+	stamped, result, err := xades.AttachSignatureTimestamp(t.Context(), source, signature, chain.Leaf.Raw, token, options)
+	if err != nil || stamped == nil || result == nil {
+		t.Fatalf("attach token at exact byte limit: document=%t result=%t error=%v", stamped != nil, result != nil, err)
+	}
+	got := result.Timestamps()
+	if len(got) != 1 || !bytes.Equal(got[0].TokenDER(), token) {
+		t.Fatalf("attachment did not retain the original token, got %d timestamps", len(got))
+	}
+	if !result.Basic().Signature().CoversElement(stamped.Root()) || result.Basic().Signature().CoversElement(source.Root()) {
+		t.Error("verification result does not refer to the new snapshot")
+	}
+	after, err := source.XML(t.Context())
+	if err != nil || !bytes.Equal(after, before) {
+		t.Errorf("attachment changed source snapshot, XML error=%v", err)
+	}
+}
+
+func TestAttachSignatureTimestampReturnsNoPartialDocument(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	source := basicDocument(t, chain)
+	signature := xmldsig.Signatures(source)[0]
+	before, err := source.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := xades.AddTimestampOptions{
+		Validation:       timeOptions(t, chain),
+		Canonicalization: c14n.Canonical11,
+		Request:          timestamp.RequestOptions{Policy: tsaPolicy()},
+	}
+	stamped, result, err := xades.AddSignatureTimestamp(t.Context(), source, signature, chain.Leaf.Raw, &localTSA{chain: chain}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := result.Timestamps()[0].TokenDER()
+	for _, tc := range []struct {
+		name, method string
+		document     *document.Document
+		maxTokens    int
+		maxBytes     int
+		want         error
+	}{
+		{"token_exceeds_byte_limit", c14n.Canonical11, source, 0, len(token) - 1, xades.ErrTimestamp},
+		{"existing_timestamp_fills_limit", c14n.Canonical11, stamped, 1, 0, xades.ErrTimestamp},
+		{"unsupported_canonicalization", "urn:unknown", source, 0, 0, xades.ErrTimestamp},
+		{"token_bound_to_different_canonicalization", c14n.Exclusive, source, 0, 0, timestamp.ErrBinding},
+		{"negative_timestamp_limit", c14n.Canonical11, source, -1, 0, xades.ErrTimestamp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			o := options
+			o.Canonicalization = tc.method
+			o.Validation.MaxTimestamps, o.Validation.MaxTokenBytes = tc.maxTokens, tc.maxBytes
+			doc, result, err := xades.AttachSignatureTimestamp(t.Context(), tc.document, xmldsig.Signatures(tc.document)[0], chain.Leaf.Raw, token, o)
+			if doc != nil || result != nil || !errors.Is(err, tc.want) {
+				t.Errorf("AttachSignatureTimestamp = document present %t, result present %t, %v, want no results and %v", doc != nil, result != nil, err, tc.want)
+			}
+		})
+	}
+	t.Cleanup(func() {
+		after, err := source.XML(context.WithoutCancel(t.Context()))
+		if err != nil || !bytes.Equal(before, after) {
+			t.Errorf("failed attachment changed source snapshot, XML error=%v", err)
+		}
+	})
+}
+
 func TestTSARevocationUsesVerificationTimeAndExactTarget(t *testing.T) {
 	chain := testcert.New(t)
 	generated := testcert.Now()

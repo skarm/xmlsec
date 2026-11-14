@@ -1,17 +1,70 @@
 package transform_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
 )
+
+func TestWriteTransformRunsApprovedStylesheet(t *testing.T) {
+	t.Parallel()
+
+	tr := style(`<xsl:output method="text"/><xsl:template match="/"><xsl:value-of select="concat('name=', /r/name)"/></xsl:template>`)
+	e := engine(t, transform.Config{AllowedPrograms: []reference.Transform{tr}})
+	const source = `<r><name>café</name></r>`
+	var out bytes.Buffer
+	if err := e.WriteTransform(t.Context(), &out, iotest.OneByteReader(strings.NewReader(source)), tr, reference.ExtensionContext{}); err != nil || out.String() != "name=café" {
+		t.Errorf("WriteTransform = (%q, %v), want %q", out.String(), err, "name=café")
+	}
+}
+
+func TestWriteTransformRejectsUnapprovedOrInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	approved := style(`<xsl:template match="/"><out/></xsl:template>`)
+	unapproved := style(`<xsl:template match="/"><other/></xsl:template>`)
+	xpathProgram := xp("true()")
+	e := engine(t, transform.Config{AllowedPrograms: []reference.Transform{approved, xpathProgram}})
+	readErr := errors.New("source read failed")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, tc := range []struct {
+		name    string
+		ctx     context.Context
+		program reference.Transform
+		source  io.Reader
+		wantErr error
+	}{
+		{"unapproved_stylesheet", t.Context(), unapproved, iotest.ErrReader(readErr), reference.ErrPolicy},
+		{"unsupported_streaming_xpath", t.Context(), xpathProgram, iotest.ErrReader(readErr), reference.ErrUnsupported},
+		{"cancelled", ctx, approved, iotest.ErrReader(readErr), context.Canceled},
+		{"source_error", t.Context(), approved, iotest.ErrReader(readErr), readErr},
+		{"incomplete_xml", t.Context(), approved, strings.NewReader("<r>"), reference.ErrInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var out bytes.Buffer
+			err := e.WriteTransform(tc.ctx, &out, tc.source, tc.program, reference.ExtensionContext{})
+			if !errors.Is(err, tc.wantErr) || out.Len() != 0 {
+				t.Errorf("WriteTransform = (%q, %v), want no output and %v", out.String(), err, tc.wantErr)
+			}
+			if !errors.Is(tc.wantErr, readErr) && errors.Is(err, readErr) {
+				t.Error("preflight read from the source")
+			}
+		})
+	}
+}
 
 func TestUnifiedEngineModernAndV1(t *testing.T) {
 	ctx := t.Context()
