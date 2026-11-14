@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -50,7 +51,7 @@ func run() error {
 		return err
 	}
 
-	checked, err := xmldsig.Verify(ctx, received, key.Public(), xmldsig.VerifyOptions{ExpectedRoot: document.Name{Space: "urn:example:invoice", Local: "Invoice"}})
+	checked, err := verifyInvoice(ctx, received, key.Public())
 	if err != nil {
 		return err
 	}
@@ -62,4 +63,10 @@ func run() error {
 	}
 
 	return nil
+}
+
+func verifyInvoice(ctx context.Context, received *document.Document, trustedKey crypto.PublicKey) (*xmldsig.Result, error) {
+	return xmldsig.Verify(ctx, received, trustedKey, xmldsig.VerifyOptions{
+		ExpectedRoot: document.Name{Space: "urn:example:invoice", Local: "Invoice"},
+	})
 }

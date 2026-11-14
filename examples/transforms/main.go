@@ -29,19 +29,9 @@ func run() error {
 		return err
 	}
 
-	query, err := engine.CompileXPath(ctx, `map{'total': sum(/order/price ! xs:decimal(.))}?total + $extra`, transform.XPathOptions{Version: transform.XPath31})
-	if err != nil {
-		return err
-	}
-
 	parameters := transform.Bindings{{Local: "extra"}: transform.Values(transform.Integer(2))}
 
-	value, err := query.Evaluate(ctx, source, transform.XPathContext{Variables: parameters})
-	if err != nil {
-		return err
-	}
-
-	total, err := value.Text()
+	total, err := xpathTotal(ctx, engine, source, parameters)
 	if err != nil {
 		return err
 	}
@@ -63,4 +53,18 @@ func run() error {
 	fmt.Println("XSLT:", string(output.Primary))
 
 	return nil
+}
+
+func xpathTotal(ctx context.Context, engine *transform.Engine, source *transform.Document, parameters transform.Bindings) (string, error) {
+	query, err := engine.CompileXPath(ctx, `map{'total': sum(/order/price ! xs:decimal(.))}?total + $extra`, transform.XPathOptions{Version: transform.XPath31})
+	if err != nil {
+		return "", err
+	}
+
+	value, err := query.Evaluate(ctx, source, transform.XPathContext{Variables: parameters})
+	if err != nil {
+		return "", err
+	}
+
+	return value.Text()
 }

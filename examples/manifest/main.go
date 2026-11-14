@@ -63,17 +63,12 @@ func run() error {
 		External: &xmldsig.ExternalReferences{
 			AllowedURIs: []string{uriUrnExampleAttachment},
 			Resolver: xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
-				if err := ctx.Err(); err != nil {
-					return nil, err
+				attachment, err := openAttachment(ctx, uri)
+				if err == nil {
+					fetches++
 				}
 
-				if uri != uriUrnExampleAttachment {
-					return nil, fmt.Errorf("unexpected resource %q", uri)
-				}
-
-				fetches++
-
-				return io.NopCloser(strings.NewReader("external binary-safe data")), nil
+				return attachment, err
 			}),
 		},
 	}
@@ -111,4 +106,16 @@ func run() error {
 	}
 
 	return nil
+}
+
+func openAttachment(ctx context.Context, uri string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if uri != uriUrnExampleAttachment {
+		return nil, fmt.Errorf("unexpected resource %q", uri)
+	}
+
+	return io.NopCloser(strings.NewReader("external binary-safe data")), nil
 }

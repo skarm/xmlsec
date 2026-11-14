@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/skarm/xmlsec/document"
@@ -55,13 +56,29 @@ func TestSOAPHTTPStatusAndRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	request, err := document.Parse(t.Context(), []byte(soapPrefix+`<s:Body><p:LogoutRequest/></s:Body></s:Envelope>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
 	envelope, err := binding.WrapSOAP(t.Context(), payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var action string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		action = r.Header.Get("SoapAction")
+	var redirectHits, targetHits atomic.Int32
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect":
+			redirectHits.Add(1)
+			http.Redirect(w, r, "/target", http.StatusFound)
+			return
+		case "/target":
+			targetHits.Add(1)
+			http.Error(w, "unexpected redirect", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("SoapAction") == "" {
+			t.Error("SOAP request has an empty SOAPAction header")
+		}
 		if _, err := binding.ReadSOAPRequest(r.Context(), r, binding.SOAPOptions{}); err != nil {
 			t.Error(err)
 			return
@@ -70,10 +87,17 @@ func TestSOAPHTTPStatusAndRedirects(t *testing.T) {
 			t.Error(err)
 		}
 	}))
-	defer server.Close()
-	client := binding.SOAPClient{AllowHTTP: true}
-	if _, err := client.RoundTrip(t.Context(), server.URL, envelope); err != nil || action == "" {
-		t.Fatalf("exchange/action: %v", err)
+	client := binding.SOAPClient{Client: server.Client(), AllowHTTP: true}
+	message, err := client.RoundTrip(t.Context(), server.URL, request)
+	if err != nil {
+		t.Fatalf("SOAP exchange: %v", err)
+	}
+	got, err := message.Payload(t.Context())
+	if err != nil {
+		t.Fatalf("extract SOAP response payload: %v", err)
+	}
+	if want := (document.Name{Space: binding.ProtocolNamespace, Local: "LogoutResponse"}); got.Root().Name() != want {
+		t.Fatalf("SOAP response payload name = %v, want %v", got.Root().Name(), want)
 	}
 	fault, err := binding.FaultSOAP(t.Context(), binding.SOAPFault{Code: document.Name{Space: binding.SOAPNamespace, Local: "Client"}, Message: "invalid"})
 	if err != nil {
@@ -90,17 +114,14 @@ func TestSOAPHTTPStatusAndRedirects(t *testing.T) {
 	if err := binding.WriteSOAPResponse(t.Context(), w, envelope); err != nil || w.Code != 200 {
 		t.Fatal("SAML response must retain HTTP 200")
 	}
-	redirected := false
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		redirected = true
-		http.Redirect(w, r, server.URL, http.StatusFound)
-	}))
-	defer redirect.Close()
-	if _, err := client.RoundTrip(t.Context(), redirect.URL, envelope); err == nil || !redirected {
-		t.Fatal("redirect accepted")
+	if message, err := client.RoundTrip(t.Context(), server.URL+"/redirect", request); message != nil || !errors.Is(err, binding.ErrBinding) {
+		t.Fatalf("SOAP redirect returned message=%p, err=%v; want nil, %v", message, err, binding.ErrBinding)
 	}
-	if _, err := (binding.SOAPClient{}).RoundTrip(t.Context(), server.URL, envelope); err == nil {
-		t.Fatal("HTTP allowed implicitly")
+	if redirects, targets := redirectHits.Load(), targetHits.Load(); redirects != 1 || targets != 0 {
+		t.Fatalf("SOAP redirect and target received %d and %d requests, want 1 and 0", redirects, targets)
+	}
+	if message, err := (binding.SOAPClient{Client: server.Client()}).RoundTrip(t.Context(), server.URL, request); message != nil || !errors.Is(err, binding.ErrBinding) {
+		t.Fatalf("SOAP over HTTP without permission returned message=%p, err=%v; want nil, %v", message, err, binding.ErrBinding)
 	}
 }
 

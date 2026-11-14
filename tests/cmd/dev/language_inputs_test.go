@@ -77,7 +77,7 @@ func TestLanguagePreparedSnapshotRejectsStaleOrMissingEvidence(t *testing.T) {
 func TestLanguageIndependentPatternsSelectExactTestNames(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeFixture(t, root, "docs/conformance.json", `[{"file":"transform/comparison_v1_test.go","name":"TestCompareOne"},{"file":"transform/comparison_v1_test.go","name":"TestCompareTwo"},{"file":"transform/comparison_v1_test.go","name":"TestCompareOne"},{"file":"other_test.go","name":"TestCompareOther"}]`)
+	writeFixture(t, root, "docs/conformance.json", `[{"file":"transform/xpath_xslt_interop_test.go","name":"TestCompareOne"},{"file":"transform/xpath_xslt_interop_test.go","name":"TestCompareTwo"},{"file":"transform/xpath_xslt_interop_test.go","name":"TestCompareOne"},{"file":"other_test.go","name":"TestCompareOther"}]`)
 	patterns, err := languageIndependentPatterns(root)
 	if err != nil {
 		t.Fatal(err)

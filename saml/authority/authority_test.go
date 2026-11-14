@@ -56,7 +56,10 @@ func TestAuthoritySOAPAndURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sub, _ := protocol.NewSubject(t.Context(), protocol.NameIdentifier{Value: "alice"})
+	sub, err := protocol.NewSubject(t.Context(), protocol.NameIdentifier{Value: "alice"})
+	if err != nil {
+		t.Fatalf("build authority subject: %v", err)
+	}
 	statement := parsed(t, `<saml:AttributeStatement xmlns:saml="`+protocol.AssertionNamespace+`"><saml:Attribute Name="role"><saml:AttributeValue>reader</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>`)
 	assertion, err := protocol.SignAuthorityAssertion(t.Context(), protocol.AuthorityAssertion{ID: "_held", Issuer: issuer, IssueInstant: at, Subject: sub, Statements: []*document.Document{statement}}, key)
 	if err != nil {
@@ -71,7 +74,10 @@ func TestAuthoritySOAPAndURI(t *testing.T) {
 		}
 		bulk = append(bulk, a)
 	}
-	store, _ := NewMemoryAssertions(4)
+	store, err := NewMemoryAssertions(4)
+	if err != nil {
+		t.Fatalf("create assertion store: %v", err)
+	}
 	if err = store.Add(t.Context(), assertion); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +90,12 @@ func TestAuthoritySOAPAndURI(t *testing.T) {
 			http.Error(w, "SOAP", 400)
 			return
 		}
-		d, _ := m.Payload(r.Context())
+		d, err := m.Payload(r.Context())
+		if err != nil {
+			t.Errorf("extract authority SOAP request: %v", err)
+			http.Error(w, "SOAP payload", http.StatusBadRequest)
+			return
+		}
 		out, err := service.Respond(r.Context(), d, requester, at)
 		if err != nil {
 			http.Error(w, "denied", http.StatusForbidden)
@@ -148,7 +159,10 @@ func TestAuthoritySOAPAndURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := md.XML(t.Context())
+	raw, err := md.XML(t.Context())
+	if err != nil {
+		t.Fatalf("serialize authority metadata: %v", err)
+	}
 	snapshot, err := metadata.ParseTrusted(t.Context(), raw, at, metadata.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -169,8 +183,11 @@ func TestAuthoritySOAPAndURI(t *testing.T) {
 	q.Kind = protocol.AssertionRequest
 	q.Subject = nil
 	q.AssertionIDs = []string{"_held"}
-	if r, err = client.Query(t.Context(), q, at); err != nil || r.Assertions()[0].ID() != "_held" {
+	if r, err = client.Query(t.Context(), q, at); err != nil {
 		t.Fatalf("assertion ID SOAP: %v", err)
+	}
+	if assertions := r.Assertions(); len(assertions) != 1 || assertions[0].ID() != "_held" {
+		t.Fatalf("assertion ID SOAP returned %v, want one assertion with ID _held", assertions)
 	}
 	for _, test := range []struct {
 		kind protocol.QueryKind
@@ -211,9 +228,15 @@ func TestAuthoritySOAPAndURI(t *testing.T) {
 	if err = store.Add(t.Context(), assertion); err != nil {
 		t.Fatal(err)
 	}
-	other, _ := protocol.SignAuthorityAssertion(t.Context(), protocol.AuthorityAssertion{ID: "_held", Issuer: issuer, IssueInstant: at, Subject: sub}, key)
+	other, err := protocol.SignAuthorityAssertion(t.Context(), protocol.AuthorityAssertion{ID: "_held", Issuer: issuer, IssueInstant: at, Subject: sub}, key)
+	if err != nil {
+		t.Fatalf("sign replacement assertion with ID _held: %v", err)
+	}
 	if err = store.Add(t.Context(), other); !errors.Is(err, ErrDenied) {
-		t.Fatal("URI rebound to different assertion")
+		t.Fatalf("Add replacement assertion returned %v, want %v", err, ErrDenied)
+	}
+	if got, err := store.Get(t.Context(), "_held"); err != nil || got != assertion {
+		t.Fatalf("Get after rejected replacement returned assertion=%p, err=%v; want %p, nil", got, err, assertion)
 	}
 	q = protocol.Query{ID: "_bulk", Kind: protocol.AttributeQuery, Subject: sub}
 	if r, err = client.Query(t.Context(), q, at); err != nil || len(r.Assertions()) != len(bulk) {

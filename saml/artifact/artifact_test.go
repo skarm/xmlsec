@@ -49,7 +49,6 @@ func TestAuthenticatedArtifactSOAP(t *testing.T) {
 	opaqueSource := [20]byte{0x81, 0x23, 0x47}
 	issuer.SourceID = &opaqueSource
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Millisecond)
 		m, err := binding.ReadSOAPRequest(r.Context(), r, binding.SOAPOptions{})
 		if err != nil {
 			t.Error(err)
@@ -67,8 +66,8 @@ func TestAuthenticatedArtifactSOAP(t *testing.T) {
 		}
 		strict := issuer
 		strict.Limits.MaxMessageAge = time.Second
-		if _, err := strict.Respond(r.Context(), verified, at.Add(2*time.Second)); err == nil {
-			t.Error("held ArtifactResolve bypassed the responder's freshness policy")
+		if _, err := strict.Respond(r.Context(), verified, at.Add(2*time.Second)); !errors.Is(err, artifact.ErrArtifact) {
+			t.Errorf("stale ArtifactResolve returned %v, want %v", err, artifact.ErrArtifact)
 			return
 		}
 		response, err := issuer.Respond(r.Context(), verified, at.Add(time.Millisecond))
@@ -140,10 +139,17 @@ func TestArtifactAtomicRecipientAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if m, err := store.Take(t.Context(), a, "https://attacker.test", at); err != nil || m != nil {
-		t.Fatal("wrong-recipient disclosure")
+		t.Fatalf("Take for wrong recipient returned message=%p, err=%v; want nil, nil", m, err)
 	}
-	if _, err := store.Resolve(t.Context(), a, entry.Recipient, at, func(*document.Document) (*document.Document, error) { return nil, errors.New("signing failed") }); err == nil {
-		t.Fatal("callback failure ignored")
+	signingFailure := errors.New("signing failed")
+	response, err := store.Resolve(t.Context(), a, entry.Recipient, at, func(message *document.Document) (*document.Document, error) {
+		if message != d {
+			t.Errorf("Resolve callback received message=%p, want %p", message, d)
+		}
+		return nil, signingFailure
+	})
+	if response != nil || !errors.Is(err, signingFailure) {
+		t.Fatalf("Resolve after signing failure returned response=%p, err=%v; want nil, %v", response, err, signingFailure)
 	}
 	var successes atomic.Int32
 	var wg sync.WaitGroup
@@ -154,19 +160,41 @@ func TestArtifactAtomicRecipientAndExpiry(t *testing.T) {
 				t.Error(err)
 			}
 			if m != nil {
+				if m != d {
+					t.Errorf("Take returned message=%p, want %p", m, d)
+				}
 				successes.Add(1)
 			}
 		})
 	}
 	wg.Wait()
-	if successes.Load() != 1 {
-		t.Fatal("artifact not single-use")
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("successful Take calls = %d, want 1", got)
 	}
 	if err := store.Put(t.Context(), entry, at); err == nil {
 		t.Fatal("consumed handle was reinserted")
 	}
-	if m, err := store.Take(t.Context(), a, entry.Recipient, entry.ExpiresAt); err != nil || m != nil {
-		t.Fatal("expired artifact")
+	for _, tc := range []struct {
+		name      string
+		checkTime time.Time
+		want      *document.Document
+	}{
+		{"before_expiry", entry.ExpiresAt.Add(-time.Nanosecond), d},
+		{"at_expiry", entry.ExpiresAt, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := artifact.NewMemoryStore(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(t.Context(), entry, at); err != nil {
+				t.Fatal(err)
+			}
+			m, err := store.Take(t.Context(), a, entry.Recipient, tc.checkTime)
+			if err != nil || m != tc.want {
+				t.Fatalf("Take returned message=%p, err=%v; want %p, nil", m, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -174,7 +202,10 @@ func TestInvalidArtifactReturnsEmptySuccess(t *testing.T) {
 	at := testcert.Now()
 	c := testcert.New(t)
 	key := protocol.SigningKey{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}
-	store, _ := artifact.NewMemoryStore(10)
+	store, err := artifact.NewMemoryStore(10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	issuer := artifact.Issuer{EntityID: "https://idp.test/entity", Endpoint: "https://idp.test/ars", ReturnEndpoint: "https://sp.test/return", Store: store, Signing: key}
 	for _, value := range []string{"", "unrecognized-artifact"} {
 		d, err := protocol.SignArtifactResolve(t.Context(), protocol.ArtifactResolve{ID: "_resolve_invalid", Issuer: "https://sp.test/entity", Destination: issuer.Endpoint, IssueInstant: at, Artifact: value}, key)

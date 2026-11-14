@@ -55,7 +55,7 @@ func run() error {
 		return err
 	}
 
-	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Example CA"}, NotBefore: now.Add(-certificateBackdate), NotAfter: now.Add(rootLifetime), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
+	caTemplate, leafTemplate := certificateTemplates(now)
 
 	rootDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, issuer.Public(), issuer)
 	if err != nil {
@@ -66,8 +66,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-
-	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "Example signer"}, NotBefore: now.Add(-certificateBackdate), NotAfter: now.Add(signerLifetime), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}, BasicConstraintsValid: true}
 
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, root, signingKey.Public(), issuer)
 	if err != nil {
@@ -138,4 +136,25 @@ func run() error {
 	fmt.Printf("claimed-signing-time=%s (not a trusted timestamp)\n", result.ClaimedSigningTime().Format(time.RFC3339))
 
 	return nil
+}
+
+func certificateTemplates(now time.Time) (ca, signer *x509.Certificate) {
+	return &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Example CA"},
+		NotBefore:             now.Add(-certificateBackdate),
+		NotAfter:              now.Add(rootLifetime),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SubjectKeyId:          []byte{1, 2, 3, 4},
+	}, &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "Example signer"},
+		NotBefore:             now.Add(-certificateBackdate),
+		NotAfter:              now.Add(signerLifetime),
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
+	}
 }

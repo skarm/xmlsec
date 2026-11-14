@@ -66,22 +66,28 @@ func run() error {
 		return err
 	}
 
-	now := time.Now().UTC()
-
-	entries := []replay.Entry{{Scope: "example-only", ID: "already-validated-id", ExpiresAt: now.Add(replayEntryLifetime)}}
-	if err = store.Consume(ctx, entries, now); err != nil {
+	if err := demonstrateReplay(ctx, store, time.Now().UTC()); err != nil {
 		return err
 	}
 
-	if err = store.Consume(ctx, entries, now); !errors.Is(err, replay.ErrReplay) {
+	fmt.Println("replay-store-demo=second-consume-rejected (single-process)")
+
+	return nil
+}
+
+func demonstrateReplay(ctx context.Context, store replay.Store, now time.Time) error {
+	entries := []replay.Entry{{Scope: "example-only", ID: "already-validated-id", ExpiresAt: now.Add(replayEntryLifetime)}}
+	if err := store.Consume(ctx, entries, now); err != nil {
+		return err
+	}
+
+	if err := store.Consume(ctx, entries, now); !errors.Is(err, replay.ErrReplay) {
 		if err == nil {
 			return errors.New("replay unexpectedly accepted")
 		}
 
 		return fmt.Errorf("expected replay rejection, got %w", err)
 	}
-
-	fmt.Println("replay-store-demo=second-consume-rejected (single-process)")
 
 	return nil
 }

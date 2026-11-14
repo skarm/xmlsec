@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,6 +29,21 @@ type evidenceFixture struct {
 	Status   string
 	Valid    bool
 	Detached bool
+}
+
+func fixtureExpectations(fixture evidenceFixture) (time.Time, []byte, error) {
+	at, err := time.Parse(time.RFC3339, fixture.At)
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("fixture %q validation time: %w", fixture.Name, err)
+	}
+	if fixture.Group != "ocsp" {
+		return at, nil, nil
+	}
+	nonce, err := hex.DecodeString(fixture.Nonce)
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("fixture %q OCSP nonce: %w", fixture.Name, err)
+	}
+	return at, nonce, nil
 }
 
 func TestIndependentEvidence(t *testing.T) {
@@ -63,7 +79,7 @@ func testIndependentEvidenceCase(t *testing.T, base string, tc evidenceFixture) 
 		return b
 	}
 
-	at, e := time.Parse(time.RFC3339, tc.At)
+	at, nonce, e := fixtureExpectations(tc)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -89,12 +105,7 @@ func testIndependentEvidenceCase(t *testing.T, base string, tc evidenceFixture) 
 			t.Fatal(e)
 		}
 	case "ocsp":
-		n, e := hex.DecodeString(tc.Nonce)
-		if e != nil {
-			t.Fatal(e)
-		}
-
-		r, rep, e := pki.VerifyOCSP(ctx, read("response.der"), read("leaf.der"), read("issuer.der"), at, pki.OCSPOptions{ExpectedNonce: n})
+		r, rep, e := pki.VerifyOCSP(ctx, read("response.der"), read("leaf.der"), read("issuer.der"), at, pki.OCSPOptions{ExpectedNonce: nonce})
 		if tc.Valid {
 			if e != nil || r == nil {
 				t.Fatalf("%v %+v", e, rep)

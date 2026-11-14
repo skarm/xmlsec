@@ -1,4 +1,4 @@
-FROM golang:1.27.3 AS go
+FROM golang:1.27.4 AS go
 
 FROM debian:forky-slim AS archive-tools
 

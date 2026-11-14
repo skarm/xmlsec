@@ -39,18 +39,7 @@ func run() error {
 		uriUrnExampleBinary:  {0, 1, 2, 255},
 		uriUrnExampleInvoice: []byte(`<Invoice currency="EUR" number="42"><Amount>10.00</Amount></Invoice>`),
 	}
-	resolver := xmldsig.ResolverFunc(func(ctx context.Context, uri string) (io.ReadCloser, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		payload, ok := payloads[uri]
-		if !ok {
-			return nil, fmt.Errorf("unapproved URI %q", uri)
-		}
-
-		return io.NopCloser(bytes.NewReader(payload)), nil
-	})
+	resolver := payloadResolver(payloads)
 	recipes := []xmldsig.DetachedReference{
 		{URI: uriUrnExampleBinary}, // Exact binary bytes, no automatic XML parsing.
 		{URI: uriUrnExampleInvoice, Transforms: []reference.Transform{{Algorithm: c14n.Canonical11}}},
@@ -86,4 +75,19 @@ func run() error {
 	}
 
 	return nil
+}
+
+func payloadResolver(payloads map[string][]byte) xmldsig.ResolverFunc {
+	return func(ctx context.Context, uri string) (io.ReadCloser, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		payload, ok := payloads[uri]
+		if !ok {
+			return nil, fmt.Errorf("unapproved URI %q", uri)
+		}
+
+		return io.NopCloser(bytes.NewReader(payload)), nil
+	}
 }

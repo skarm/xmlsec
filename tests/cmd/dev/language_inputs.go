@@ -306,7 +306,7 @@ func languageIndependentPatterns(root string) ([]string, error) {
 		switch node := value.(type) {
 		case map[string]any:
 			name, _ := node["name"].(string)
-			if node["file"] == "transform/comparison_v1_test.go" && strings.HasPrefix(name, "TestCompare") {
+			if node["file"] == "transform/xpath_xslt_interop_test.go" && strings.HasPrefix(name, "TestCompare") {
 				names[name] = struct{}{}
 			}
 

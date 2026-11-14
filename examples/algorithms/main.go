@@ -38,13 +38,7 @@ func run() error {
 		return err
 	}
 
-	message := "this Object, not the entire Signature container, is protected"
-	spec := xmldsig.SignatureTemplate{
-		SignatureMethod:     xmldsig.RSAPSS,
-		SignatureParameters: xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, MGFHash: crypto.SHA384, SaltLength: pssSaltBytes}},
-		References:          []xmldsig.ReferenceTemplate{{URI: "#payload", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}},
-		Objects:             []xmldsig.ObjectTemplate{{ID: "payload", Text: &message}},
-	}
+	spec := pssTemplate("this Object, not the entire Signature container, is protected")
 
 	draft, selected, err := xmldsig.BuildTemplate(ctx, nil, document.Element{}, spec)
 	if err != nil {
@@ -116,4 +110,13 @@ func run() error {
 	fmt.Printf("HMAC: output-bits=%d references=%d container-covered=%v\n", macResult.OutputLength(), len(macResult.References()), macResult.CoversElement(authenticated.Root()))
 
 	return nil
+}
+
+func pssTemplate(message string) xmldsig.SignatureTemplate {
+	return xmldsig.SignatureTemplate{
+		SignatureMethod:     xmldsig.RSAPSS,
+		SignatureParameters: xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA384, MGFHash: crypto.SHA384, SaltLength: pssSaltBytes}},
+		References:          []xmldsig.ReferenceTemplate{{URI: "#payload", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}},
+		Objects:             []xmldsig.ObjectTemplate{{ID: "payload", Text: &message}},
+	}
 }

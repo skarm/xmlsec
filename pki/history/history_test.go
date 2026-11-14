@@ -19,6 +19,49 @@ import (
 	"github.com/skarm/xmlsec/timestamp"
 )
 
+func TestValidateRejectsUninitializedValidator(t *testing.T) {
+	now := testcert.Now()
+	for _, tc := range []struct {
+		name      string
+		validator *history.Validator
+	}{
+		{name: "nil_receiver"},
+		{name: "zero_value", validator: &history.Validator{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, report, err := tc.validator.Validate(t.Context(), nil, now.Add(-time.Hour), now, history.Evidence{})
+			if !errors.Is(err, history.ErrInput) || result != nil {
+				t.Fatalf("Validate returned result=%v, error=%v, want nil result and %v", result, err, history.ErrInput)
+			}
+			if report == nil || report.Certificate != nil || len(report.Timestamps) != 0 {
+				t.Fatalf("Validate returned report=%+v, want an empty report", report)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsTooManyTimestampsBeforeReadingEvidence(t *testing.T) {
+	chain := testcert.New(t)
+	validator, err := history.NewValidator(history.Config{
+		CertificatePKI: pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}},
+		TSA:            newTSA(t, chain.Root.Raw, asn1.ObjectIdentifier{1, 2, 3, 4}),
+		MaxTimestamps:  1,
+	})
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	now := testcert.Now()
+	input := history.Evidence{Timestamps: make([]history.ObjectTimestamp, 2)}
+	result, report, err := validator.Validate(t.Context(), chain.Leaf.Raw, now.Add(-time.Hour), now, input)
+	if !errors.Is(err, history.ErrLimit) || result != nil {
+		t.Fatalf("Validate with two timestamps returned result=%v, error=%v, want nil result and %v", result, err, history.ErrLimit)
+	}
+	if report == nil || report.Certificate != nil || len(report.Timestamps) != 0 {
+		t.Fatalf("Validate with two timestamps returned report=%+v, want an empty report", report)
+	}
+}
+
 func TestValidateExpiredCertificate(t *testing.T) {
 	chain := testcert.New(t)
 	now := testcert.Now()

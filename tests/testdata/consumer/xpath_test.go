@@ -550,7 +550,9 @@ func TestApplicationFunctionsKeepXMLDSigPolicySeparate(t *testing.T) {
 }
 
 func TestXPathXMLParsingUsesReaderStorage(t *testing.T) {
-	engine := newEngine(t, transform.Config{})
+	// The large fixture measures allocations. Give the instrumented parser
+	// time to finish independently of the default XPath evaluation budget.
+	engine := newEngine(t, transform.Config{Limits: transform.Limits{Timeout: 15 * time.Second}})
 	text := strings.Repeat("x", 1<<20)
 	for _, fragment := range []bool{false, true} {
 		t.Run(fmt.Sprint(fragment), func(t *testing.T) {

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -36,13 +37,8 @@ func run() error {
 		return err
 	}
 
-	parsed, err := keys.ParseEncryptedPrivate(ctx, private, password, keys.Limits{})
-	if err != nil {
+	if err := verifyRestoredKey(ctx, private, password, &c.SignerKey.PublicKey); err != nil {
 		return err
-	}
-
-	if !c.SignerKey.PublicKey.Equal(parsed.Public()) {
-		return errors.New("unexpected PKCS#8 key")
 	}
 
 	container, err := keys.MarshalPKCS12(ctx, keys.PKCS12Identity{
@@ -60,6 +56,19 @@ func run() error {
 	// certificate remains untrusted evidence; use explicit roots/time in pki.
 	fmt.Printf("PKCS#8 key restored; PKCS#12 certificate %q, %d extra certificate\n",
 		identity.Certificate.Subject.CommonName, len(identity.ExtraCertificates))
+
+	return nil
+}
+
+func verifyRestoredKey(ctx context.Context, private, password []byte, expected *ecdsa.PublicKey) error {
+	parsed, err := keys.ParseEncryptedPrivate(ctx, private, password, keys.Limits{})
+	if err != nil {
+		return err
+	}
+
+	if !expected.Equal(parsed.Public()) {
+		return errors.New("unexpected PKCS#8 key")
+	}
 
 	return nil
 }

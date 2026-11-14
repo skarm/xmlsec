@@ -50,7 +50,7 @@ func run() error {
 	transport := timestamp.TransportFunc(func(ctx context.Context, request []byte) (io.ReadCloser, error) {
 		sequence++
 
-		response, e := timestamp.IssueResponse(ctx, request, c.TSAKey, c.TSA.Raw, timestamp.IssueOptions{Policy: policy, SerialNumber: big.NewInt(sequence), GenTime: now.Add(time.Duration(sequence) * time.Second), ExtraCertificates: [][]byte{c.Root.Raw}})
+		response, e := timestamp.IssueResponse(ctx, request, c.TSAKey, c.TSA.Raw, demoIssueOptions(now, sequence, policy, c.Root.Raw))
 		if e != nil {
 			return nil, e
 		}
@@ -110,4 +110,13 @@ func run() error {
 	fmt.Println("historical-validation=not-performed; keys-and-TSA-clock=demonstration-only")
 
 	return nil
+}
+
+func demoIssueOptions(start time.Time, sequence int64, policy asn1.ObjectIdentifier, rootDER []byte) timestamp.IssueOptions {
+	return timestamp.IssueOptions{
+		Policy:            policy,
+		SerialNumber:      big.NewInt(sequence),
+		GenTime:           start.Add(time.Duration(sequence) * time.Second),
+		ExtraCertificates: [][]byte{rootDER},
+	}
 }

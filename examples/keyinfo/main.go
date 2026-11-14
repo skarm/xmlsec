@@ -92,21 +92,9 @@ func run() error {
 	}
 
 	result, err := xmldsig.VerifySignatureWithKeyInfo(ctx, received, signatures[0], xmldsig.KeyInfoVerifyOptions{
-		Signature: xmldsig.SignatureOptions{RequiredElements: []document.Element{payload}, ExpectedURIs: []string{"#payload"}},
-		KeyInfo:   keyinfo.Options{AllowedKeyData: []document.Name{{Space: keyinfo.Namespace11, Local: lexicon.DSigElementECKeyValue}}},
-		SelectTrustedKey: func(ctx context.Context, untrusted *keyinfo.Result) (int, error) {
-			if err := ctx.Err(); err != nil {
-				return -1, err
-			}
-
-			for i, c := range untrusted.Candidates() {
-				if sha256.Sum256(c.SPKI()) == expectedPin {
-					return i, nil
-				}
-			}
-
-			return -1, errors.New("no key authorized for the expected partner")
-		},
+		Signature:        xmldsig.SignatureOptions{RequiredElements: []document.Element{payload}, ExpectedURIs: []string{"#payload"}},
+		KeyInfo:          keyinfo.Options{AllowedKeyData: []document.Name{{Space: keyinfo.Namespace11, Local: lexicon.DSigElementECKeyValue}}},
+		SelectTrustedKey: trustedKeySelector(expectedPin),
 	})
 	if err != nil {
 		return err
@@ -116,4 +104,20 @@ func run() error {
 	fmt.Printf("verified payload: %s\n", payload.Text())
 
 	return nil
+}
+
+func trustedKeySelector(expectedPin [sha256.Size]byte) xmldsig.TrustedKeySelector {
+	return func(ctx context.Context, untrusted *keyinfo.Result) (int, error) {
+		if err := ctx.Err(); err != nil {
+			return -1, err
+		}
+
+		for i, c := range untrusted.Candidates() {
+			if sha256.Sum256(c.SPKI()) == expectedPin {
+				return i, nil
+			}
+		}
+
+		return -1, errors.New("no key authorized for the expected partner")
+	}
 }

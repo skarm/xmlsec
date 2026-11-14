@@ -91,21 +91,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// This in-memory resolver represents an exact application-approved resource.
-	// Production transports must also honor cancellation during blocked reads.
-	options := xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{
-		URI: uri, MaxBytes: len(body), Resolver: xmlenc.CipherResolverFunc(func(ctx context.Context, gotURI string) (io.ReadCloser, error) {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
 
-			if gotURI != uri {
-				return nil, errors.New("unexpected ciphertext URI")
-			}
-
-			return io.NopCloser(bytes.NewReader(body)), nil
-		}),
-	}}
+	options := xmlenc.DecryptOptions{External: storedCiphertext(uri, body)}
 
 	plain, err := xmlenc.DecryptBytesWithKey(ctx, external, secret, xmlenc.SymmetricOptions{}, options)
 	if err != nil {
@@ -120,4 +107,24 @@ func run() error {
 	fmt.Println("Authenticated direct-key ciphertext from the exact external resource")
 
 	return nil
+}
+
+// This in-memory resolver represents an exact application-approved resource.
+// Production transports must also honor cancellation during blocked reads.
+func storedCiphertext(uri string, body []byte) *xmlenc.ExternalCipherReference {
+	return &xmlenc.ExternalCipherReference{
+		URI:      uri,
+		MaxBytes: len(body),
+		Resolver: xmlenc.CipherResolverFunc(func(ctx context.Context, gotURI string) (io.ReadCloser, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			if gotURI != uri {
+				return nil, errors.New("unexpected ciphertext URI")
+			}
+
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}),
+	}
 }

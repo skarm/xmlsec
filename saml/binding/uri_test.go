@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 
@@ -38,7 +39,19 @@ func TestAssertionURIBinding(t *testing.T) {
 	}
 	for _, mode := range []string{"good", "wrong-id", "redirect", "oversize"} {
 		t.Run(mode, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var requests, targetHits atomic.Int32
+			server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/elsewhere" {
+					targetHits.Add(1)
+					http.Error(w, "unexpected redirect", http.StatusForbidden)
+					return
+				}
+				requests.Add(1)
+				if r.Method != http.MethodGet || r.URL.RawQuery != "ID=_held" {
+					t.Errorf("assertion request method=%q, query=%q; want GET, ID=_held", r.Method, r.URL.RawQuery)
+					http.Error(w, "invalid test request", http.StatusBadRequest)
+					return
+				}
 				if mode == "redirect" {
 					http.Redirect(w, r, "/elsewhere", http.StatusFound)
 					return
@@ -48,16 +61,29 @@ func TestAssertionURIBinding(t *testing.T) {
 				if mode == "wrong-id" {
 					id = "_other"
 				}
-				_, _ = w.Write([]byte(`<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="` + id + `"/>`))
+				if _, err := io.WriteString(w, `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="`+id+`"/>`); err != nil {
+					t.Errorf("write test assertion: %v", err)
+				}
 			}))
-			defer server.Close()
 			client := binding.URIClient{Client: server.Client(), AllowHTTP: true}
 			if mode == "oversize" {
 				client.MaxBytes = 16
 			}
-			_, err := client.Resolve(t.Context(), server.URL, "_held")
-			if (err == nil) != (mode == "good") {
-				t.Fatalf("URI %s: %v", mode, err)
+			got, err := client.Resolve(t.Context(), server.URL, "_held")
+			if count, followed := requests.Load(), targetHits.Load(); count != 1 || followed != 0 {
+				t.Errorf("assertion endpoint and redirect target received %d and %d requests, want 1 and 0", count, followed)
+			}
+			if mode != "good" {
+				if got != nil || !errors.Is(err, binding.ErrBinding) {
+					t.Fatalf("Resolve returned assertion=%p, err=%v; want nil, %v", got, err, binding.ErrBinding)
+				}
+				return
+			}
+			if err != nil || got == nil {
+				t.Fatalf("Resolve returned assertion=%p, err=%v; want an assertion and nil error", got, err)
+			}
+			if id, _ := got.Root().Attribute(document.Name{Local: "ID"}); id != "_held" {
+				t.Fatalf("resolved assertion ID = %q, want _held", id)
 			}
 		})
 	}

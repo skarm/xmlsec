@@ -22,29 +22,20 @@ func main() {
 }
 
 func run() error {
-	doc, err := document.Parse(context.Background(), []byte(`<Envelope xml:lang="ru" xml:base="https://example.test/a/"><Payload xml:base="../b/">данные<!--служебный комментарий--></Payload></Envelope>`), document.DefaultLimits())
+	ctx := context.Background()
+
+	doc, err := document.Parse(ctx, []byte(`<Envelope xml:lang="ru" xml:base="https://example.test/a/"><Payload xml:base="../b/">данные<!--служебный комментарий--></Payload></Envelope>`), document.DefaultLimits())
 	if err != nil {
 		return err
 	}
 
-	payload := doc.Root().Children()[0]
-
-	nodes, err := payload.Subtree(context.Background())
+	nodes, err := subtreeWithoutComments(ctx, doc.Root().Children()[0])
 	if err != nil {
 		return err
-	}
-	// Selecting just payload.Node() would NOT include its text/attributes.
-	for _, node := range nodes.Nodes() {
-		if node.Kind() == document.CommentNode {
-			nodes, err = nodes.Without(node)
-			if err != nil {
-				return err
-			}
-		}
 	}
 
 	var result bytes.Buffer
-	if err := c14n.WriteNodeSet(context.Background(), &result, nodes, c14n.Options{
+	if err := c14n.WriteNodeSet(ctx, &result, nodes, c14n.Options{
 		Algorithm: c14n.Canonical11WithComments,
 	}); err != nil {
 		return err
@@ -54,4 +45,24 @@ func run() error {
 	fmt.Println(result.String())
 
 	return nil
+}
+
+func subtreeWithoutComments(ctx context.Context, root document.Element) (document.NodeSet, error) {
+	// Subtree includes the element's text and attributes. root.Node() selects
+	// just the element itself.
+	nodes, err := root.Subtree(ctx)
+	if err != nil {
+		return document.NodeSet{}, err
+	}
+
+	for _, node := range nodes.Nodes() {
+		if node.Kind() == document.CommentNode {
+			nodes, err = nodes.Without(node)
+			if err != nil {
+				return document.NodeSet{}, err
+			}
+		}
+	}
+
+	return nodes, nil
 }
