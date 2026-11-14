@@ -83,8 +83,12 @@ func BenchmarkSuiteReportEncoders(b *testing.B) {
 func TestIncrementalSuiteReport(t *testing.T) {
 	var minimal bytes.Buffer
 	err := writeJSONListObject(&minimal, struct{}{}, "items", []int{42}, func(dst io.Writer, value *int) error { return json.NewEncoder(dst).Encode(value) })
-	if err != nil || !json.Valid(minimal.Bytes()) {
-		t.Fatal("empty metadata object", minimal.String(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, minimal.Bytes()); err != nil || compact.String() != `{"items":[42]}` {
+		t.Fatalf("report without metadata = %q, %v; want one item with value 42", minimal.String(), err)
 	}
 
 	for _, cases := range [][]suiteOutcome{nil, {}, {{Name: "é <&\"\n", Reason: strings.Repeat("漢字", 4096), Status: suiteFailed}}} {

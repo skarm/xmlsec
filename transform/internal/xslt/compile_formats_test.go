@@ -1,8 +1,15 @@
 package xslt //nolint:testpackage // Exercises decimal and whitespace declarations in the internal compiler.
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"strings"
 	"testing"
+
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 func TestDecimalFormatsMergePropertiesByExpandedName(t *testing.T) {
@@ -57,6 +64,60 @@ func TestCompileFormatDeclarationErrors(t *testing.T) {
 			if ss != nil || !errors.As(err, &detail) || detail.Code != tc.code {
 				t.Errorf("Compile returned stylesheet=%t, error=%v, want no stylesheet and %s", ss != nil, err, tc.code)
 			}
+		})
+	}
+}
+
+func TestCompileOutputAppliesSerializationParameterDocument(t *testing.T) {
+	t.Parallel()
+
+	const paramsURI = "https://styles.example/params.xml"
+	const params = `<serialization-parameters xmlns="http://www.w3.org/2010/xslt-xquery-serialization"><method value="text"/><item-separator value="|"/><encoding value="UTF-8"/><media-type value="text/plain"/></serialization-parameters>`
+	const source = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:output method="text" item-separator="," parameter-document="params.xml"/><xsl:template match="/"><xsl:sequence select="(2,3)"/></xsl:template></xsl:stylesheet>`
+
+	for _, tc := range []struct {
+		name, contents, want, code string
+		openErr                    error
+	}{
+		{"resolved_document_overrides_separator", params, "2|3", "", nil},
+		{"missing_document_leaves_declared_separator", "", "2,3", "", fs.ErrNotExist},
+		{"wrong_root_element", "<parameters/>", "", "SEPM0017", nil},
+		{"malformed_document", "<parameters>", "", "SEPM0017", nil},
+		{"resolver_failure_keeps_cause", "", "", "XTSE0090", io.ErrClosedPipe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := &closeTrackingReader{reader: strings.NewReader(tc.contents)}
+			var opens int
+			resolver := contractURIResolver(func(_ context.Context, uri string) (io.ReadCloser, error) {
+				opens++
+				if uri != paramsURI {
+					return nil, fmt.Errorf("parameter document URI = %q, want %q", uri, paramsURI)
+				}
+				if tc.openErr != nil {
+					return nil, tc.openErr
+				}
+				return reader, nil
+			})
+			ss, err := NewCompiler().BaseURI("https://styles.example/main.xsl").URIResolver(resolver).Compile(t.Context(), parseTestDocument(t, source))
+			if opens != 1 || tc.openErr == nil && reader.closed != 1 {
+				t.Errorf("parameter document opens = %d, closes = %d", opens, reader.closed)
+			}
+			if tc.code != "" {
+				static, isStatic := errors.AsType[*XSLTError](err)
+				serialization, isSerialization := errors.AsType[*xdm.Error](err)
+				matches := isStatic && static.Code == tc.code || isSerialization && serialization.Code == tc.code
+				if ss != nil || !matches || tc.openErr != nil && !errors.Is(err, tc.openErr) {
+					t.Errorf("Compile returned stylesheet=%t, error=%v, want no stylesheet and %s with cause %v", ss != nil, err, tc.code, tc.openErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			got, err := ss.Transform(parseTestDocument(t, "<r/>")).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
 		})
 	}
 }

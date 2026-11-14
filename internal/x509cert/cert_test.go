@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/der"
@@ -14,18 +15,88 @@ import (
 	"github.com/skarm/xmlsec/internal/x509cert"
 )
 
+func TestParseCRLDistributionPointsWithReasonAndIssuer(t *testing.T) {
+	t.Parallel()
+
+	const wantURI = "https://example.test/root.crl"
+	chain := testcert.New(t)
+	uri := der.Wrap(asn1.ClassContextSpecific, 6, false, []byte(wantURI))
+	// A two-bit ReasonFlags value with only keyCompromise (bit 1) set.
+	reason := der.Wrap(asn1.ClassContextSpecific, 1, false, []byte{6, 0x40})
+	fullName := der.Seq(der.Ctx(0, der.Ctx(0, uri)), reason)
+	issuerOnly := der.Seq(der.Ctx(2, der.Ctx(4, chain.Root.RawSubject)))
+	points := der.Seq(relativeCRLPoint(), fullName, issuerOnly)
+	encoded := issueWithCRLPoints(t, chain, points)
+
+	parsed, err := x509cert.ParseDefault(encoded)
+	if err != nil {
+		t.Fatalf("ParseDefault() error = %v", err)
+	}
+	if !slices.Equal(parsed.CRLDistributionPoints, []string{wantURI}) {
+		t.Errorf("CRLDistributionPoints = %q, want [%q]", parsed.CRLDistributionPoints, wantURI)
+	}
+	for _, ext := range parsed.Extensions {
+		if ext.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 31}) {
+			if !bytes.Equal(ext.Value, points) {
+				t.Errorf("CRL distribution point extension = %x, want %x", ext.Value, points)
+			}
+			return
+		}
+	}
+	t.Error("parsed certificate lost its CRL distribution point extension")
+}
+
+func TestParseRejectsIncompleteCRLDistributionPoints(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	// Use a relative first point to exercise the package's distribution point parser.
+	relative := relativeCRLPoint()
+	for _, tc := range []struct {
+		name  string
+		point []byte
+	}{
+		{name: "empty_point", point: der.Seq()},
+		{name: "empty_full_name", point: der.Seq(der.Ctx(0, der.Ctx(0)))},
+		{name: "empty_relative_name", point: der.Seq(der.Ctx(0, der.Ctx(1)))},
+		{name: "reason_without_name_or_issuer", point: der.Seq(der.Wrap(asn1.ClassContextSpecific, 1, false, []byte{6, 0x40}))},
+		{name: "empty_issuer", point: der.Seq(der.Ctx(2))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			encoded := issueWithCRLPoints(t, chain, der.Seq(relative, tc.point))
+			got, err := x509cert.ParseDefault(encoded)
+			if got != nil || !errors.Is(err, der.ErrInvalidDER) {
+				t.Fatalf("ParseDefault() = (%v, %v), want (nil, %v)", got, err, der.ErrInvalidDER)
+			}
+		})
+	}
+}
+
+func relativeCRLPoint() []byte {
+	cn := der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(asn1.ClassUniversal, asn1.TagUTF8String, false, []byte("relative CRL")))
+	return der.Seq(der.Ctx(0, der.Ctx(1, cn)))
+}
+
+func issueWithCRLPoints(t *testing.T, chain testcert.Chain, points []byte) []byte {
+	t.Helper()
+
+	template := *chain.Leaf
+	template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: points}}
+	encoded, err := x509.CreateCertificate(rand.Reader, &template, chain.Root, chain.LeafKey.Public(), chain.RootKey)
+	if err != nil {
+		t.Fatalf("create certificate with CRL distribution points: %v", err)
+	}
+	return encoded
+}
+
 func TestParsePreservesOriginalSignedCertificate(t *testing.T) {
 	t.Parallel()
 
 	chain := testcert.New(t)
-	cn := der.Seq(der.OID(asn1.ObjectIdentifier{2, 5, 4, 3}), der.Wrap(0, asn1.TagUTF8String, false, []byte("relative crl")))
-	relative := der.Seq(der.Seq(der.Ctx(0, der.Ctx(1, cn))))
-	template := *chain.Leaf
-	template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 31}, Value: relative}}
-	encoded, err := x509.CreateCertificate(rand.Reader, &template, chain.Root, chain.LeafKey.Public(), chain.RootKey)
-	if err != nil {
-		t.Fatal(err)
-	}
+	relative := der.Seq(relativeCRLPoint())
+	encoded := issueWithCRLPoints(t, chain, relative)
 	before := bytes.Clone(encoded)
 	parsed, err := x509cert.ParseDefault(encoded)
 	if err != nil {

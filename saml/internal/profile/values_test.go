@@ -90,17 +90,20 @@ func TestBoolParsesXMLSchemaLexicalValues(t *testing.T) {
 
 func TestSAMLTimeLexicalForm(t *testing.T) {
 	t.Parallel()
-	for _, s := range []string{
-		"2026-10-18T01:02:03Z",
-		"2026-10-18T01:02:03.1Z",
-		"2026-10-18T01:02:03.123456789Z",
-		"2026-10-18T01:02:03.100Z",
+	for _, tc := range []struct {
+		input string
+		nanos int
+	}{
+		{"2026-10-18T01:02:03Z", 0},
+		{"2026-10-18T01:02:03.1Z", 100_000_000},
+		{"2026-10-18T01:02:03.123456789Z", 123_456_789},
+		{"2026-10-18T01:02:03.100Z", 100_000_000},
 	} {
-		t.Run(s, func(t *testing.T) {
+		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
-			got, err := profile.ParseTime(s)
 
-			want, _ := time.Parse(time.RFC3339Nano, s)
+			want := time.Date(2026, time.October, 18, 1, 2, 3, tc.nanos, time.UTC)
+			got, err := profile.ParseTime(tc.input)
 			if err != nil || !got.Equal(want) {
 				t.Fatalf("got %v, %v; want %v", got, err, want)
 			}

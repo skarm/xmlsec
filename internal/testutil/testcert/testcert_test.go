@@ -2,14 +2,18 @@ package testcert_test
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"os"
-	"path/filepath"
+	"errors"
+	"io"
+	"math/big"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 )
 
@@ -71,20 +75,79 @@ func TestChainAndRevocationFixtures(t *testing.T) {
 	}
 }
 
-func TestPublicFixtureSelection(t *testing.T) {
-	dir := t.TempDir()
-	manifest := `[{"name":"first","at":"2020-01-01T00:00:00Z","certificate":"wrong.der","nonce":"00"},{"name":"selected","at":"2026-10-25T12:30:00.123Z","certificate":"certificate.der","nonce":"0102ff"}]`
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestIssueReportsSignerError(t *testing.T) {
+	t.Parallel()
 
-	if err := os.WriteFile(filepath.Join(dir, "certificate.der"), []byte{1, 2, 3, 4}, 0o600); err != nil {
-		t.Fatal(err)
+	chain := testcert.New(t)
+	signErr := errors.New("test signer unavailable")
+	err := captureFixtureFatal(t, func(tb testing.TB) {
+		testcert.Issue(tb, chain.Leaf, chain.Root, chain.Leaf.PublicKey, unavailableSigner{chain.RootKey, signErr})
+	})
+	if !errors.Is(err, signErr) {
+		t.Errorf("Issue failed with %v, want signer error %v", err, signErr)
 	}
+}
 
-	fixture := testcert.LoadFixture(t, dir, "selected")
-	wantTime := time.Date(2026, 10, 25, 12, 30, 0, 123000000, time.UTC)
-	if fixture.Certificate != "certificate.der" || !fixture.At.Equal(wantTime) || !bytes.Equal(fixture.Nonce, []byte{1, 2, 255}) || !bytes.Equal(fixture.Read(t, fixture.Certificate), []byte{1, 2, 3, 4}) {
-		t.Fatalf("selected fixture metadata/bytes differ: %+v", fixture)
+type unavailableSigner struct {
+	crypto.Signer
+	err error
+}
+
+func (s unavailableSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, error) {
+	return nil, s.err
+}
+
+func TestCRLReportsMissingIssuer(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.Chain{RootKey: testcert.Key(t)}
+	err := captureFixtureFatal(t, func(tb testing.TB) { testcert.CRL(tb, chain) })
+	if !strings.Contains(err.Error(), "issuer") {
+		t.Errorf("CRL failed with %v, want a missing issuer diagnostic", err)
+	}
+}
+
+func TestCertificateEncodingsReportsInvalidLeaf(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		der  []byte
+	}{
+		{"truncated_certificate", []byte{0x30, 0x02, 0x05}},
+		{"wrong_outer_shape", []byte{0x30, 0x00}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain := testcert.Chain{Leaf: &x509.Certificate{Raw: tc.der}}
+			err := captureFixtureFatal(t, func(tb testing.TB) { testcert.CertificateEncodings(tb, chain) })
+			if !errors.Is(err, der.ErrInvalidDER) {
+				t.Errorf("CertificateEncodings failed with %v, want %v", err, der.ErrInvalidDER)
+			}
+		})
+	}
+}
+
+func TestCertificateEncodingsRequiresNoncriticalExtension(t *testing.T) {
+	t.Parallel()
+
+	key := testcert.Key(t)
+	at := testcert.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "key usage fixture"},
+		NotBefore:    at.Add(-time.Hour),
+		NotAfter:     at.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	leaf := testcert.Issue(t, template, template, key.Public(), key)
+	if len(leaf.Extensions) != 1 || !leaf.Extensions[0].Critical {
+		t.Fatalf("fixture has extensions %v, want a single critical key usage", leaf.Extensions)
+	}
+	chain := testcert.Chain{Leaf: leaf, RootKey: key}
+	err := captureFixtureFatal(t, func(tb testing.TB) { testcert.CertificateEncodings(tb, chain) })
+	if !strings.Contains(err.Error(), "noncritical extension") {
+		t.Errorf("CertificateEncodings failed with %v, want a missing noncritical extension diagnostic", err)
 	}
 }

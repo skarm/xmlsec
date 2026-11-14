@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -191,4 +192,239 @@ func TestNodeNavigationFunctionsASTAndVM(t *testing.T) {
 		{"identity and empty node arguments", doc + `(root($d/r/a[1]) is $d,has-children($d/r),has-children($d/r/a[2]),count(path(())),count(node-name($d/r/a[1]/text()[1])))`, `true|true|false|0|0`},
 		{"ID search returns document order regardless of token order", `let $d := parse-xml('<r><a xml:id="a"/><b xml:id="b"/></r>') return id(('b a','a','missing'),$d) ! local-name(.)`, `a|b`},
 	})
+}
+
+type dataContentSchema struct{ castContractSchema }
+
+func (dataContentSchema) SchemaTypeContentKind(name string) (ContentTypeKind, bool) {
+	switch name {
+	case "Q{urn:test}Empty":
+		return ContentTypeEmpty, true
+	case "Q{urn:test}ElementOnly":
+		return ContentTypeElementOnly, true
+	default:
+		return ContentTypeSimple, false
+	}
+}
+
+func TestFnDataTypedValues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, source string
+		want         []xdm.AtomicValue
+		code         string
+	}{
+		{"nested_arrays_skip_nilled_and_empty_elements", `data([r/nilled, [1,r/empty,2], r/count])`, []xdm.AtomicValue{
+			{TypeName: xdm.TypeInteger, Value: int64(1)},
+			{TypeName: xdm.TypeInteger, Value: int64(2)},
+			{TypeName: xdm.TypeInteger, Value: int64(7)},
+		}, ""},
+		{"uses_context_node_annotation", `r/count ! data()`, []xdm.AtomicValue{{TypeName: xdm.TypeInteger, Value: int64(7)}}, ""},
+		{"atomizes_attribute_and_untyped_element", `data((r/@name, r/complex/v))`, []xdm.AtomicValue{
+			{TypeName: xdm.TypeUntypedAtomic, Value: "count"},
+			{TypeName: xdm.TypeUntypedAtomic, Value: "kept"},
+		}, ""},
+		{"element_only_content_has_no_typed_value", `data(r/complex)`, nil, "FOTY0012"},
+		{"first_error_comes_from_map_inside_array", `data([map{}, r/complex])`, nil, "FOTY0013"},
+		{"first_error_comes_from_element_inside_array", `data([r/complex, map{}])`, nil, "FOTY0012"},
+		{"empty_input_has_no_atoms", `data(())`, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const fixture = `<r name="count"><nilled/><empty/><complex><v>kept</v></complex><count>7</count></r>`
+			doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			children := slices.Collect(xdm.Children(doc.DocumentElement()))
+			if len(children) != 4 {
+				t.Fatalf("fixture has %d children, want 4", len(children))
+			}
+			nilled, empty, elementOnly, count := children[0], children[1], children[2], children[3]
+			evaluator := NewEvaluator(DefaultEvaluatorOptions).
+				SchemaDeclarations(dataContentSchema{}).
+				NilledElements(map[xdm.Node]struct{}{nilled: {}}).
+				TypeAnnotations(map[xdm.Node]string{
+					nilled: "Q{urn:test}ElementOnly", empty: "Q{urn:test}Empty",
+					elementOnly: "Q{urn:test}ElementOnly", count: xdm.TypeInteger,
+				})
+			expr, err := NewCompiler().Language(31, nil).Compile(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := evaluator.Evaluate(t.Context(), expr, doc)
+			if tc.code != "" {
+				if got != nil || !errors.Is(err, &xdm.Error{Code: tc.code}) {
+					t.Fatalf("%s returned %v, %v; want no result and %s", tc.source, got, err, tc.code)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", tc.source, err)
+			}
+			seq := got.Sequence()
+			if xdm.SequenceLen(seq) != len(tc.want) {
+				t.Fatalf("%s returned %d items, want %d", tc.source, xdm.SequenceLen(seq), len(tc.want))
+			}
+			for index, want := range tc.want {
+				item, ok := seq.Get(index).(xdm.AtomicValue)
+				if !ok || item.TypeName != want.TypeName {
+					t.Errorf("%s item %d = %v, want %v", tc.source, index+1, seq.Get(index), want)
+					continue
+				}
+				equal := item.Value == want.Value
+				if integer, ok := want.Value.(int64); ok {
+					value, fits := item.Int64Val()
+					equal = fits && value == integer
+				}
+				if !equal {
+					t.Errorf("%s item %d = %v, want %v", tc.source, index+1, item, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFnNilledDistinguishesSchemaPropertyFromAttribute(t *testing.T) {
+	t.Parallel()
+	const fixture = `<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><confirmed xsi:nil="true"/><unvalidated xsi:nil="true"/></r>`
+	doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := NewCompiler().Language(31, nil).Compile(`(nilled(r/confirmed), r/unvalidated ! nilled(), count(nilled(r/unvalidated/@*)), count(nilled(())))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		mark bool
+	}{
+		{"validated_nilled_element", true},
+		{"unvalidated_document", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			evaluator := NewEvaluator(DefaultEvaluatorOptions)
+			if tc.mark {
+				evaluator = evaluator.NilledElements(map[xdm.Node]struct{}{doc.DocumentElement().FirstChild(): {}})
+			}
+			got, err := evaluator.Evaluate(t.Context(), expression, doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAtomicSequence(t, got.Sequence(), []xdm.AtomicValue{
+				{TypeName: xdm.TypeBoolean, Value: tc.mark},
+				{TypeName: xdm.TypeBoolean, Value: false},
+				{TypeName: xdm.TypeInteger, Value: int64(0)},
+				{TypeName: xdm.TypeInteger, Value: int64(0)},
+			})
+		})
+	}
+}
+
+func TestFnNumber(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, query string
+		want        float64
+		code        string
+	}{
+		{"absent_context", `number()`, 0, "XPDY0002"},
+		{"empty_sequence", `number(())`, math.NaN(), ""},
+		{"invalid_lexical_number", `number('two')`, math.NaN(), ""},
+		{"boolean_conversion", `number(true())`, 1, ""},
+		{"node_context", `parse-xml('<n> 12.5 </n>')/n ! number()`, 12.5, ""},
+		{"explicit_attribute", `number(parse-xml('<n x=" 2.5 "/>')/n/@x)`, 2.5, ""},
+		{"infinity", `number('INF')`, math.Inf(1), ""},
+		{"cannot_atomize_a_map", `number(map{})`, 0, "FOTY0013"},
+	} {
+		for _, mode := range []string{runtimeASTMode, "VM"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				t.Parallel()
+				seq, err := evaluateFunctionExpression(t, tc.query, mode)
+				if tc.code != "" {
+					if xdm.SequenceLen(seq) != 0 || !errors.Is(err, &xdm.Error{Code: tc.code}) {
+						t.Fatalf("%s returned %v, %v; want no result and %s", tc.query, seq, err, tc.code)
+					}
+					return
+				}
+				if err != nil || xdm.SequenceLen(seq) != 1 {
+					t.Fatalf("%s returned %v, %v; want one xs:double", tc.query, seq, err)
+				}
+				item, ok := seq.Get(0).(xdm.AtomicValue)
+				if !ok || item.TypeName != xdm.TypeDouble {
+					t.Fatalf("%s returned %v; want xs:double", tc.query, seq.Get(0))
+				}
+				got := item.DoubleVal()
+				if got != tc.want && !(math.IsNaN(got) && math.IsNaN(tc.want)) {
+					t.Errorf("%s = %g, want %g", tc.query, got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestIDLookupTypedNodes(t *testing.T) {
+	t.Parallel()
+	doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), `<r><entry><code>one</code></entry><other key="two"/><link refs="two one"/><plain refs="two"/></r>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := slices.Collect(xdm.Children(doc.DocumentElement()))
+	if len(children) != 4 {
+		t.Fatalf("fixture has %d child nodes; want 4", len(children))
+	}
+	entry, other, link := children[0], children[1], children[2]
+	otherElement, otherOK := other.(*xdm.Element)
+	linkElement, linkOK := link.(*xdm.Element)
+	if !otherOK || !linkOK {
+		t.Fatalf("fixture has child nodes %T and %T; want elements", other, link)
+	}
+	code := entry.FirstChild()
+	keys, references := otherElement.Attributes(), linkElement.Attributes()
+	if code == nil || len(keys) != 1 || len(references) != 1 {
+		t.Fatal("fixture lacks the ID or IDREF nodes")
+	}
+	key, refs := keys[0], references[0]
+	foreign, err := (xdm.ParseOptions{}).ParseText(t.Context(), `<foreign>one</foreign>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluator := NewEvaluator(DefaultEvaluatorOptions).TypeAnnotations(map[xdm.Node]string{
+		code: xdm.TypeID, key: xdm.TypeID, refs: "xs:IDREFS", foreign.DocumentElement(): xdm.TypeID,
+	})
+
+	for _, tc := range []struct {
+		name, expr string
+		want       []xdm.Node
+	}{
+		{"id selects the annotated element and the attribute owner in document order", `id(('two one', 'one', 'missing', '1invalid'), /r/other)`, []xdm.Node{code, other}},
+		{"element-with-id returns the annotated element's parent", `element-with-id(('two', 'one'), /r)`, []xdm.Node{entry, other}},
+		{"idref matches list members without duplicates", `idref(('two', 'one', 'two'), /r)`, []xdm.Node{refs}},
+		{"idref input strings are individual tokens", `idref('two one', /r)`, nil},
+		{"empty id input", `id((), /r)`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			compiled, err := NewCompiler().Language(31, nil).Compile(tc.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := evaluator.Evaluate(t.Context(), compiled, doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seq := result.Sequence()
+			if xdm.SequenceLen(seq) != len(tc.want) {
+				t.Fatalf("%s returned %d nodes; want %d", tc.expr, xdm.SequenceLen(seq), len(tc.want))
+			}
+			for i, want := range tc.want {
+				got, ok := seq.Get(i).(xdm.NodeItem)
+				if !ok || got.Node != want {
+					t.Errorf("%s item %d = %v; want node %s in the fixture document", tc.expr, i+1, seq.Get(i), want.Name())
+				}
+			}
+		})
+	}
 }

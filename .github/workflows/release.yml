@@ -1,0 +1,205 @@
+name: CLI release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    if: github.event_name != 'push' || !github.event.deleted
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build CLI (${{ matrix.target }})
+    if: github.event_name != 'push' || !github.event.deleted
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: macos-arm64
+            go-platform: darwin/arm64
+            binary: xmlsec
+          - runner: ubuntu-26.04
+            target: linux-amd64
+            go-platform: linux/amd64
+            binary: xmlsec
+          - runner: windows-2025
+            target: windows-amd64
+            go-platform: windows/amd64
+            binary: xmlsec.exe
+    env:
+      CGO_ENABLED: '0'
+      GOTOOLCHAIN: local
+      BINARY: ${{ matrix.binary }}
+      GO_PLATFORM: ${{ matrix.go-platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build and run the CLI
+        run: |
+          test "$(go env GOOS)/$(go env GOARCH)" = "$GO_PLATFORM"
+          go build -mod=readonly -trimpath -buildvcs=true -ldflags='-s -w' -o "bin/$BINARY" ./cmd/xmlsec
+          "./bin/$BINARY" --help
+          "./bin/$BINARY" --version | jq -e --arg sha "$(git rev-parse HEAD)" \
+            '.name == "xmlsec" and .revision == $sha and .modified == false'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.target }}
+          path: bin/${{ matrix.binary }}
+          if-no-files-found: error
+          overwrite: true
+
+  package:
+    name: Package CLI and calculate checksums
+    needs: [checks, build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      asset-version: ${{ steps.source.outputs.asset-version }}
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read source revision and release version
+        id: source
+        run: |
+          sha=$(git rev-parse HEAD)
+          version=$sha
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version=$GITHUB_REF_NAME
+            number='(0|[1-9][0-9]*)'
+            prerelease='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+            build='[0-9A-Za-z-]+'
+            pattern="^v$number\.$number\.$number(-$prerelease(\.$prerelease)*)?(\+$build(\.$build)*)?$"
+            if [[ ${#version} -gt 128 || ! "$version" =~ $pattern ]]; then
+              echo 'Expected a version tag such as v1.2.3 or v1.2.3-rc.1' >&2
+              exit 1
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "asset-version=${version//+/_}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cli-*
+          path: candidates
+      - name: Create tarballs and Windows zip
+        env:
+          ASSET_VERSION: ${{ steps.source.outputs.asset-version }}
+        run: |
+          mkdir release-assets
+          timestamp=$(git show -s --format=%ct HEAD)
+          for target in macos-arm64 linux-amd64 windows-amd64; do
+            candidate="candidates/cli-$target"
+            cp -R LICENSE licenses "$candidate/"
+            archive="xmlsec-$ASSET_VERSION-$target"
+            if [[ "$target" == windows-amd64 ]]; then
+              test -s "$candidate/xmlsec.exe"
+              find "$candidate" -exec touch -d "@$timestamp" {} +
+              (cd "$candidate" && python3 -m zipfile -c "../../release-assets/$archive.zip" xmlsec.exe LICENSE licenses)
+            else
+              test -s "$candidate/xmlsec"
+              chmod 0755 "$candidate/xmlsec"
+              tar --sort=name --mtime="@$timestamp" --owner=0 --group=0 --numeric-owner \
+                -C "$candidate" -czf "release-assets/$archive.tar.gz" xmlsec LICENSE licenses
+            fi
+          done
+          (cd release-assets && sha256sum -- *.tar.gz *.zip > SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: release-assets
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    name: Publish GitHub Release
+    needs: package
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Verify and publish release assets
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+          BUILD_SHA: ${{ needs.package.outputs.sha }}
+          ASSET_VERSION: ${{ needs.package.outputs.asset-version }}
+        run: |
+          verify_tag() {
+            local actual
+            actual=$(gh api "repos/$GH_REPO/commits/tags/$VERSION" --jq '.sha') || return 1
+            if [[ "$actual" != "$BUILD_SHA" ]]; then
+              echo 'Release tag no longer points to the built commit' >&2
+              return 1
+            fi
+          }
+
+          assets=("xmlsec-$ASSET_VERSION-linux-amd64.tar.gz" "xmlsec-$ASSET_VERSION-macos-arm64.tar.gz"
+                  "xmlsec-$ASSET_VERSION-windows-amd64.zip" SHA256SUMS)
+          for asset in "${assets[@]}"; do
+            test -s "$asset"
+          done
+          sha256sum -- "${assets[@]:0:3}" | cmp - SHA256SUMS
+          verify_tag
+
+          prerelease=false
+          [[ "${VERSION%%+*}" != *-* ]] || prerelease=true
+          if release=$(gh release view "$VERSION" --json isDraft,assets); then
+            if [[ "$(jq -r '.isDraft' <<< "$release")" == true ]]; then
+              gh release upload "$VERSION" "${assets[@]}" --clobber
+            else
+              missing=()
+              for asset in "${assets[@]}"; do
+                existing=$(jq -c --arg name "$asset" '.assets[] | select(.name == $name)' <<< "$release")
+                if [[ -z "$existing" ]]; then
+                  missing+=("$asset")
+                  continue
+                fi
+                digest=$(sha256sum "$asset")
+                if ! jq -e --arg digest "sha256:${digest%% *}" '.digest == $digest' <<< "$existing" > /dev/null; then
+                  echo "Published asset $asset differs from the built asset" >&2
+                  exit 1
+                fi
+              done
+              if (( ${#missing[@]} > 0 )); then
+                verify_tag
+                gh release upload "$VERSION" "${missing[@]}"
+              fi
+              exit 0
+            fi
+          else
+            gh release create "$VERSION" "${assets[@]}" --verify-tag --draft --prerelease="$prerelease" --generate-notes --title "$VERSION"
+          fi
+          verify_tag
+          gh release edit "$VERSION" --verify-tag --draft=false --prerelease="$prerelease"

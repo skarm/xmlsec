@@ -124,3 +124,71 @@ func TestCollapseSpace(t *testing.T) {
 		}
 	}
 }
+
+func TestIsValidEncName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, label string
+		want        bool
+	}{
+		{"single_ascii_letter", "Z", true},
+		{"mixed_case_and_punctuation", "Iso_8859-1.0", true},
+		{"empty", "", false},
+		{"starts_with_digit", "8bit", false},
+		{"space_inside", "utf 8", false},
+		{"non_ascii_letter", "café", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := xmlchar.IsValidEncName(tc.label); got != tc.want {
+				t.Errorf("IsValidEncName(%q) = %t, want %t", tc.label, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsValidPITarget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, target string
+		want         bool
+	}{
+		{"ordinary", "xml-stylesheet", true},
+		{"non_ascii_name", "étiquette", true},
+		{"encoded_replacement_character", "\ufffd", true},
+		{"reserved_in_any_case", "xMl", false},
+		{"empty", "", false},
+		{"colon_is_disallowed", "p:target", false},
+		{"invalid_encoding", "\xff", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := xmlchar.IsValidPITarget(tc.target); got != tc.want {
+				t.Errorf("IsValidPITarget(%q) = %t, want %t", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsValidQName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, qname string
+		want        bool
+	}{
+		{"unprefixed", "item", true},
+		{"unicode_prefix_and_local", "préfixe:名", true},
+		{"empty", "", false},
+		{"missing_prefix", ":item", false},
+		{"missing_local", "prefix:", false},
+		{"more_than_one_colon", "a:b:c", false},
+		{"local_starts_with_digit", "a:1b", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := xmlchar.IsValidQName(tc.qname); got != tc.want {
+				t.Errorf("IsValidQName(%q) = %t, want %t", tc.qname, got, tc.want)
+			}
+		})
+	}
+}

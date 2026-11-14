@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -17,12 +20,190 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+func TestVerifyParameterizedPSSKnownAnswers(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join("..", "testdata", "parameters")
+	der, err := os.ReadFile(filepath.Join(dir, "rsa.spki.der"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		hash crypto.Hash
+		mgf  crypto.Hash
+		salt int
+	}{
+		{"pss-256-mgf256-salt0", crypto.SHA256, crypto.SHA256, 0},
+		{"pss-256-mgf384-salt0", crypto.SHA256, crypto.SHA384, 0},
+		{"pss-512-mgf256-salt20", crypto.SHA512, crypto.SHA256, 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(dir, tc.name+".xml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := coreParse(t, string(raw)).Root()
+			signedInfo := findImportElement(t, root, document.Name{Space: xmldsig.Namespace, Local: "SignedInfo"})
+			signatureValue := findImportElement(t, root, document.Name{Space: xmldsig.Namespace, Local: "SignatureValue"})
+			value, err := base64.StdEncoding.DecodeString(signatureValue.Text())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var message bytes.Buffer
+			if err := c14n.WriteElement(t.Context(), &message, signedInfo, c14n.Options{Algorithm: c14n.Exclusive}); err != nil {
+				t.Fatal(err)
+			}
+
+			policy := xmldsig.ParameterizedPolicy()
+			parameters := xmldsig.PSSParameters{Hash: tc.hash, MGFHash: tc.mgf, SaltLength: tc.salt, TrailerField: 1}
+			verify := func(input []byte, parameters xmldsig.PSSParameters) error {
+				return xmldsig.VerifyMessageWithParameters(t.Context(), input, value, key, xmldsig.RSAPSS, xmldsig.SignatureParameters{PSS: &parameters}, policy)
+			}
+			if err := verify(message.Bytes(), parameters); err != nil {
+				t.Fatalf("known-answer verification: %v", err)
+			}
+			if err := verify(append(bytes.Clone(message.Bytes()), ' '), parameters); !errors.Is(err, xmldsig.ErrSignature) {
+				t.Errorf("verification of changed message = %v, want ErrSignature", err)
+			}
+			parameters.SaltLength++
+			if err := verify(message.Bytes(), parameters); !errors.Is(err, xmldsig.ErrSignature) {
+				t.Errorf("verification with incorrect salt length = %v, want ErrSignature", err)
+			}
+			parameters.SaltLength = tc.salt
+			parameters.MGFHash = crypto.SHA512
+			if err := verify(message.Bytes(), parameters); !errors.Is(err, xmldsig.ErrSignature) {
+				t.Errorf("verification with incorrect MGF hash = %v, want ErrSignature", err)
+			}
+		})
+	}
+}
+
+func TestParameterizedMessageReadersRejectInvalidInputsBeforeReading(t *testing.T) {
+	t.Parallel()
+
+	key := ecKey(t, elliptic.P256())
+	rsaSigner := rsaKey(t)
+	for _, tc := range []struct {
+		name   string
+		key    crypto.Signer
+		method string
+		params xmldsig.SignatureParameters
+		policy xmldsig.Policy
+		want   error
+	}{
+		{"invalid policy", key, xmldsig.ECDSASHA256, xmldsig.SignatureParameters{}, xmldsig.Policy{AllowedSignatureMethods: []string{}}, xmldsig.ErrPolicy},
+		{"fixed method parameters", key, xmldsig.ECDSASHA256, xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{}}, xmldsig.Policy{}, xmldsig.ErrStructure},
+		{"unsupported message digest", rsaSigner, xmldsig.RSAPSS, xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{Hash: crypto.SHA3_256}}, xmldsig.ParameterizedPolicy(), xmldsig.ErrAlgorithm},
+		{"unsupported mask digest", rsaSigner, xmldsig.RSAPSS, xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{MGFHash: crypto.SHA3_256}}, xmldsig.ParameterizedPolicy(), xmldsig.ErrAlgorithm},
+		{"unsupported trailer", rsaSigner, xmldsig.RSAPSS, xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{TrailerField: 2}}, xmldsig.ParameterizedPolicy(), xmldsig.ErrAlgorithm},
+		{"salt does not fit", rsaSigner, xmldsig.RSAPSS, xmldsig.SignatureParameters{PSS: &xmldsig.PSSParameters{SaltLength: 223}}, xmldsig.ParameterizedPolicy(), xmldsig.ErrPolicy},
+		{"method disabled", rsaSigner, xmldsig.RSAPSS, xmldsig.SignatureParameters{}, xmldsig.Policy{}, xmldsig.ErrPolicy},
+		{"shared-secret method", rsaSigner, xmldsig.HMACSHA256, xmldsig.SignatureParameters{}, xmldsig.HMACPolicy(), xmldsig.ErrKey},
+		{"key algorithm mismatch", key, xmldsig.RSASHA256, xmldsig.SignatureParameters{}, xmldsig.Policy{}, xmldsig.ErrKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := &parameterInput{Reader: strings.NewReader("payload")}
+			value, err := xmldsig.SignMessageWithParametersReader(t.Context(), reader, tc.key, tc.method, tc.params, tc.policy)
+			if value != nil || !errors.Is(err, tc.want) || reader.reads != 0 {
+				t.Errorf("sign = (%x, %v), reads = %d, want nil, %v and no reads", value, err, reader.reads, tc.want)
+			}
+			err = xmldsig.VerifyMessageWithParametersReader(t.Context(), reader, nil, tc.key.Public(), tc.method, tc.params, tc.policy)
+			if !errors.Is(err, tc.want) || reader.reads != 0 {
+				t.Errorf("verify = %v, reads = %d, want %v and no reads", err, reader.reads, tc.want)
+			}
+		})
+	}
+}
+
+func TestParameterizedMessageReadersPreserveOwnershipAndErrors(t *testing.T) {
+	t.Parallel()
+
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	message := []byte("exact input\x00\xff")
+	params := xmldsig.SignatureParameters{}
+	policy := xmldsig.ModernPolicy()
+	policy.MaxCanonicalBytes = len(message)
+	expected := ed25519.Sign(key, message)
+
+	sign := func(ctx context.Context, src io.Reader) ([]byte, error) {
+		return xmldsig.SignMessageWithParametersReader(ctx, src, key, xmldsig.Ed25519, params, policy)
+	}
+	verify := func(ctx context.Context, src io.Reader, signature []byte) error {
+		return xmldsig.VerifyMessageWithParametersReader(ctx, src, signature, key.Public(), xmldsig.Ed25519, params, policy)
+	}
+
+	src := &parameterInput{Reader: iotest.OneByteReader(bytes.NewReader(message))}
+	value, err := sign(t.Context(), src)
+	if err != nil || !bytes.Equal(value, expected) || src.reads < len(message) || src.closed {
+		t.Fatalf("sign = %x, %v, read calls = %d, closed = %t", value, err, src.reads, src.closed)
+	}
+	src = &parameterInput{Reader: iotest.OneByteReader(bytes.NewReader(message))}
+	if err := verify(t.Context(), src, expected); err != nil || src.reads < len(message) || src.closed {
+		t.Errorf("verify = %v, read calls = %d, closed = %t", err, src.reads, src.closed)
+	}
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	sourceError := errors.New("reader failed")
+	var absent *strings.Reader
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		src  func() io.Reader
+		want error
+	}{
+		{"missing context", nil, func() io.Reader { return bytes.NewReader(message) }, xmldsig.ErrPolicy},
+		{"cancelled", cancelled, func() io.Reader { return bytes.NewReader(message) }, context.Canceled},
+		{"typed nil reader", t.Context(), func() io.Reader { return absent }, xmldsig.ErrPolicy},
+		{"above limit", t.Context(), func() io.Reader { return bytes.NewReader(append(bytes.Clone(message), '!')) }, xmldsig.ErrPolicy},
+		{"read failure", t.Context(), func() io.Reader { return iotest.ErrReader(sourceError) }, sourceError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got, err := sign(tc.ctx, tc.src()); got != nil || !errors.Is(err, tc.want) {
+				t.Errorf("sign = (%x, %v), want nil and %v", got, err, tc.want)
+			}
+			if err := verify(tc.ctx, tc.src(), expected); !errors.Is(err, tc.want) {
+				t.Errorf("verify = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+type parameterInput struct {
+	io.Reader
+	reads  int
+	closed bool
+}
+
+func (r *parameterInput) Read(p []byte) (int, error) {
+	r.reads++
+	return r.Reader.Read(p)
+}
+
+func (r *parameterInput) Close() error {
+	r.closed = true
+	return nil
+}
 
 func TestParameterizedPSSMessages(t *testing.T) {
 	ctx := t.Context()

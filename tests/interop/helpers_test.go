@@ -17,6 +17,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"math/big"
 	"os"
@@ -85,8 +86,11 @@ func command(t *testing.T, fixture *interopFixture, success bool, input []byte, 
 	c.Stdout = &out
 	c.Stderr = &errout
 	err := c.Run()
+	var exitErr *exec.ExitError
+	rejected := errors.As(err, &exitErr) && exitErr.ExitCode() > 0
+	matches := (success && err == nil) || (!success && rejected)
 
-	if ctx.Err() != nil || (err == nil) != success {
+	if ctx.Err() != nil || !matches {
 		directory := t.ArtifactDir()
 		testutil.WriteFile(t, directory, "command-stdout.txt", out.Bytes())
 		testutil.WriteFile(t, directory, "command-stderr.txt", errout.Bytes())
@@ -97,7 +101,7 @@ func command(t *testing.T, fixture *interopFixture, success bool, input []byte, 
 		t.Fatalf("%s: %v", name, ctx.Err())
 	}
 
-	if (err == nil) != success {
+	if !matches {
 		t.Fatalf("%s %q: error=%v, expected success=%v\n%s\n%s", name, args, err, success, out.Bytes(), errout.Bytes())
 	}
 

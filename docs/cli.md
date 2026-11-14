@@ -1,6 +1,11 @@
 # Command-line application
 
-Build with `make build`; run `bin/xmlsec --help`. Examples assume `bin` is on PATH.
+Download the CLI from [GitHub Releases](https://github.com/skarm/xmlsec/releases)
+for macOS (Apple Silicon), Linux (x86-64), or Windows (x86-64). CLI releases
+include `SHA256SUMS` for their archives.
+
+To build from source, run `make build`, then `bin/xmlsec --help`. Examples
+assume the executable is on PATH.
 Use `xmlsec help <group>` or a command's `-h` for flags/defaults;
 `xmlsec algorithms` lists supported algorithm URIs and policies.
 

@@ -345,7 +345,7 @@ func TestCRLScopedReasonCoverage(t *testing.T) {
 	point := func(uri string, mask uint16) []byte {
 		fields := [][]byte{p6PointName(uri)}
 		if mask != 255 {
-			fields = append(fields, der.Wrap(2, 1, false, p6Reasons(mask)))
+			fields = append(fields, der.Wrap(2, 1, false, p6Reasons(t, mask)))
 		}
 		return der.Seq(fields...)
 	}
@@ -356,7 +356,7 @@ func TestCRLScopedReasonCoverage(t *testing.T) {
 			fields = append(fields, der.Wrap(2, flag, false, []byte{255}))
 		}
 		if mask != 255 {
-			fields = append(fields, der.Wrap(2, 3, false, p6Reasons(mask)))
+			fields = append(fields, der.Wrap(2, 3, false, p6Reasons(t, mask)))
 		}
 		return der.Seq(fields...)
 	}
@@ -547,12 +547,14 @@ func TestCRLAuthenticatedMetadataBinding(t *testing.T) {
 	base := p6CRL(t, c, 1, at.Add(-2*time.Minute), at.Add(-time.Second), -1, nil, nil)
 	number := der.Int(999)
 	var serial asn1.RawValue
-	_, _ = asn1.Unmarshal(number, &serial)
+	if rest, err := asn1.Unmarshal(number, &serial); err != nil || len(rest) != 0 {
+		t.Fatalf("decode authority serial fixture: trailing=%d, err=%v", len(rest), err)
+	}
 	authority := der.Seq(der.Wrap(2, 0, false, c.root.SubjectKeyId), der.Wrap(2, 1, true, der.Ctx(4, c.root.RawIssuer)), der.Wrap(2, 2, false, serial.Bytes))
 	badDelta := makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(2), ThisUpdate: at.Add(-time.Minute), NextUpdate: at.Add(time.Hour), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 27}, Critical: true, Value: der.Int(1)}, {Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: authority}}})
 	badDelta = p6ReplaceCRLExtension(t, badDelta, c, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: authority})
 	advertised := der.Seq(der.Seq(p6PointName("urn:delta-source")))
-	invalidAdvertised := der.Seq(der.Seq(p6PointName("urn:delta-source"), der.Wrap(2, 1, false, p6Reasons(255))))
+	invalidAdvertised := der.Seq(der.Seq(p6PointName("urn:delta-source"), der.Wrap(2, 1, false, p6Reasons(t, 255))))
 	complete := func(fresh []byte) []byte {
 		return makeCRL(t, c, false, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: at.Add(-2 * time.Minute), NextUpdate: at.Add(time.Hour), ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 46}, Value: fresh}}})
 	}
@@ -1293,7 +1295,9 @@ func p6PointName(uri string) []byte {
 	return der.Ctx(0, der.Wrap(2, 0, true, der.Wrap(2, 6, false, []byte(uri))))
 }
 
-func p6Reasons(mask uint16) []byte {
+func p6Reasons(t *testing.T, mask uint16) []byte {
+	t.Helper()
+
 	bits := asn1.BitString{}
 	for index := 1; index <= 8; index++ {
 		if mask&(1<<(index-1)) != 0 {
@@ -1306,9 +1310,14 @@ func p6Reasons(mask uint16) []byte {
 			bits.Bytes[index/8] |= 1 << (7 - index%8)
 		}
 	}
-	encoded, _ := asn1.Marshal(bits)
+	encoded, err := asn1.Marshal(bits)
+	if err != nil {
+		t.Fatalf("encode reason flags fixture for mask %#x: %v", mask, err)
+	}
 	var value asn1.RawValue
-	_, _ = asn1.Unmarshal(encoded, &value)
+	if rest, err := asn1.Unmarshal(encoded, &value); err != nil || len(rest) != 0 {
+		t.Fatalf("decode reason flags fixture for mask %#x: trailing=%d, err=%v", mask, len(rest), err)
+	}
 	return value.Bytes
 }
 

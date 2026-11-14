@@ -10545,7 +10545,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -10563,7 +10563,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -10649,7 +10649,7 @@
             "name": "TestTemplateObjectNamespaceImport"
           },
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/namespace_test.go",
             "name": "TestImportSubtreeKeepsNamespaceContextAndSnapshots"
           }
         ],
@@ -24513,7 +24513,7 @@
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
-            "file": "internal/tree/write_test.go",
+            "file": "internal/tree/stream_xml_test.go",
             "name": "TestXMLWriterReconcilesEmptyDefaultNamespace"
           },
           {
@@ -24579,7 +24579,7 @@
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
-            "file": "internal/tree/write_test.go",
+            "file": "internal/tree/stream_xml_test.go",
             "name": "TestXMLWriterReconcilesEmptyDefaultNamespace"
           },
           {
@@ -47086,7 +47086,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47096,7 +47096,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47236,7 +47236,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47246,7 +47246,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47318,7 +47318,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47328,7 +47328,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47400,7 +47400,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -47410,7 +47410,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48434,7 +48434,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48444,7 +48444,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48516,7 +48516,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48526,7 +48526,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48598,7 +48598,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48608,7 +48608,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48680,7 +48680,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48690,7 +48690,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48762,7 +48762,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48772,7 +48772,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48844,7 +48844,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -48854,7 +48854,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49402,7 +49402,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49412,7 +49412,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49484,7 +49484,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49494,7 +49494,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49566,7 +49566,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49576,7 +49576,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49648,7 +49648,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49658,7 +49658,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49730,7 +49730,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49740,7 +49740,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49812,7 +49812,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49822,7 +49822,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49894,7 +49894,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49904,7 +49904,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49976,7 +49976,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -49986,7 +49986,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50058,7 +50058,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50068,7 +50068,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50140,7 +50140,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50150,7 +50150,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50222,7 +50222,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50232,7 +50232,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50304,7 +50304,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50314,7 +50314,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50386,7 +50386,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50396,7 +50396,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50468,7 +50468,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50482,7 +50482,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50558,7 +50558,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50568,7 +50568,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50640,7 +50640,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50650,7 +50650,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50722,7 +50722,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50732,7 +50732,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50804,7 +50804,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50814,7 +50814,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50886,7 +50886,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50896,7 +50896,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50968,7 +50968,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -50978,7 +50978,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51050,7 +51050,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51060,7 +51060,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51340,7 +51340,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51350,7 +51350,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51422,7 +51422,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51432,7 +51432,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51504,7 +51504,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51514,7 +51514,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51586,7 +51586,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51596,7 +51596,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51668,7 +51668,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51678,7 +51678,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51750,7 +51750,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51760,7 +51760,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51832,7 +51832,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51842,7 +51842,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51914,7 +51914,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51924,7 +51924,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -51996,7 +51996,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52006,7 +52006,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52078,7 +52078,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52088,7 +52088,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52296,7 +52296,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52306,7 +52306,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52378,7 +52378,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52388,7 +52388,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52460,7 +52460,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52470,7 +52470,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52542,7 +52542,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52552,7 +52552,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52624,7 +52624,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -52634,7 +52634,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -53161,7 +53161,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -53171,7 +53171,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -53243,7 +53243,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -53253,7 +53253,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55121,7 +55121,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55139,7 +55139,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55221,7 +55221,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55239,7 +55239,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55663,7 +55663,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55673,7 +55673,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55792,7 +55792,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55802,7 +55802,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55946,7 +55946,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -55956,7 +55956,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56028,7 +56028,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56038,7 +56038,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56178,7 +56178,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56188,7 +56188,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56260,7 +56260,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56270,7 +56270,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56342,7 +56342,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56352,7 +56352,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56424,7 +56424,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56434,7 +56434,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56600,7 +56600,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56610,7 +56610,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56823,7 +56823,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56833,7 +56833,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56905,7 +56905,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56915,7 +56915,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56987,7 +56987,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -56997,7 +56997,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57618,7 +57618,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57628,7 +57628,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57768,7 +57768,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57778,7 +57778,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57850,7 +57850,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57860,7 +57860,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57979,7 +57979,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -57989,7 +57989,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -58129,7 +58129,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -58139,7 +58139,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -58305,7 +58305,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -58315,7 +58315,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -58387,7 +58387,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -58397,7 +58397,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59692,7 +59692,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59702,7 +59702,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59774,7 +59774,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59784,7 +59784,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59856,7 +59856,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59866,7 +59866,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59938,7 +59938,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -59948,7 +59948,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -60020,7 +60020,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -60030,7 +60030,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -60102,7 +60102,7 @@
         "reason": "Bounded language DTD controls exercise this family of rules; complete production/clause-specific positive and negative coverage remains open.",
         "positive": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -60112,7 +60112,7 @@
         ],
         "negative": [
           {
-            "file": "internal/tree/fragment_test.go",
+            "file": "internal/tree/dtd_test.go",
             "name": "TestLanguageDTDProcessing"
           },
           {
@@ -492705,7 +492705,7 @@
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
-            "file": "internal/tree/write_test.go",
+            "file": "internal/tree/stream_xml_test.go",
             "name": "TestXMLWriterReconcilesEmptyDefaultNamespace"
           },
           {
@@ -492847,7 +492847,7 @@
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
-            "file": "internal/tree/write_test.go",
+            "file": "internal/tree/stream_xml_test.go",
             "name": "TestXMLWriterReconcilesEmptyDefaultNamespace"
           },
           {
@@ -495935,7 +495935,7 @@
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
-            "file": "internal/tree/write_test.go",
+            "file": "internal/tree/stream_xml_test.go",
             "name": "TestXMLWriterReconcilesEmptyDefaultNamespace"
           },
           {
@@ -496045,7 +496045,7 @@
             "name": "TestCopyNodePreservesNamespaceContext"
           },
           {
-            "file": "internal/tree/write_test.go",
+            "file": "internal/tree/stream_xml_test.go",
             "name": "TestXMLWriterReconcilesEmptyDefaultNamespace"
           },
           {

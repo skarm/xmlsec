@@ -6,6 +6,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
+	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +18,186 @@ import (
 
 	"github.com/skarm/xmlsec/transform"
 )
+
+func TestValueNumericAccessorsPreserveTypeAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	original := new(big.Int).Lsh(big.NewInt(1), 80)
+	want := new(big.Int).Set(original)
+	integer := transform.BigInteger(original)
+	original.SetInt64(0)
+	for range 2 {
+		got, err := integer.Integer()
+		if err != nil || got.Cmp(want) != 0 {
+			t.Fatalf("Integer() = (%v, %v), want %s", got, err, want)
+		}
+		got.SetInt64(5)
+	}
+	if got, err := integer.Float64(); err != nil || got != math.Ldexp(1, 80) {
+		t.Errorf("integer as Float64() = (%g, %v), want 2^80", got, err)
+	}
+	if got, err := integer.Double(); got != 0 || !errors.Is(err, transform.ErrInput) {
+		t.Errorf("integer as Double() = (%g, %v), want ErrInput", got, err)
+	}
+
+	decimal, err := transform.Decimal("0.1250")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		got, err := decimal.Decimal()
+		if err != nil || got.Cmp(big.NewRat(1, 8)) != 0 {
+			t.Fatalf("Decimal() = (%v, %v), want 1/8", got, err)
+		}
+		got.SetInt64(2)
+	}
+	if got, err := transform.Double(math.Inf(-1)).Double(); err != nil || !math.IsInf(got, -1) {
+		t.Errorf("Double() = (%g, %v), want negative infinity", got, err)
+	}
+	if got := transform.BigInteger(nil); got.Kind() != transform.InvalidValue || got.Type() != (transform.Name{}) {
+		t.Errorf("BigInteger(nil) has kind %v and type %v, want absent item", got.Kind(), got.Type())
+	}
+	if got, err := transform.Decimal("1e2"); got.Kind() != transform.InvalidValue || err == nil {
+		t.Errorf("Decimal with exponent = (kind %v, %v), want error and absent item", got.Kind(), err)
+	}
+}
+
+func TestValueDecimalPreservesIntegerPrecisionAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	large, ok := new(big.Int).SetString("1208925819614629174706177", 10)
+	if !ok {
+		t.Fatal("invalid large integer fixture")
+	}
+	derived, err := evaluate(t, engine(t, transform.Config{}), `xs:unsignedLong("18446744073709551615")`, transform.XPath31).Single()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value transform.Value
+		want  string
+	}{
+		{"int64", transform.Integer(-7), "-7/1"},
+		{"large_integer", transform.BigInteger(large), "1208925819614629174706177/1"},
+		{"derived_integer", derived, "18446744073709551615/1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			for range 2 {
+				got, err := tc.value.Decimal()
+				if err != nil || got == nil || got.String() != tc.want {
+					t.Fatalf("Decimal() = (%v, %v), want %s", got, err, tc.want)
+				}
+				got.SetInt64(0)
+			}
+		})
+	}
+}
+
+func TestValueAccessorsRejectImplicitConversion(t *testing.T) {
+	t.Parallel()
+
+	input := transform.String("1")
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"boolean", func() error { _, err := input.Boolean(); return err }},
+		{"integer", func() error { _, err := input.Integer(); return err }},
+		{"decimal", func() error { _, err := input.Decimal(); return err }},
+		{"float64", func() error { _, err := input.Float64(); return err }},
+		{"double", func() error { _, err := input.Double(); return err }},
+		{"date_time", func() error { _, err := input.DateTime(); return err }},
+		{"collection_size", func() error { _, err := input.Size(); return err }},
+		{"map_keys", func() error { _, err := input.Keys(); return err }},
+		{"array_member", func() error { _, err := input.Member(0); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := tc.call(); !errors.Is(err, transform.ErrInput) {
+				t.Errorf("%s accessor on xs:string returned %v, want ErrInput", tc.name, err)
+			}
+		})
+	}
+	when := time.Date(2026, 11, 14, 14, 3, 2, 125_000_000, time.FixedZone("test", 5*3600))
+	got, err := transform.DateTime(when).DateTime()
+	_, offset := got.Zone()
+	if err != nil || !got.Equal(when) || offset != 5*3600 {
+		t.Errorf("DateTime() = (%v, %v), want %v with its original offset", got, err, when)
+	}
+}
+
+func TestValueMapAndArrayRetainEmptyMembers(t *testing.T) {
+	t.Parallel()
+
+	empty := transform.Sequence{}
+	mapping, err := transform.Map(
+		transform.MapEntry{Key: transform.String("empty"), Value: empty},
+		transform.MapEntry{Key: transform.String("value"), Value: transform.Values(transform.Boolean(true))},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapping.Kind() != transform.MapValue || mapping.Type() != (transform.Name{}) {
+		t.Errorf("map kind/type = %v/%v", mapping.Kind(), mapping.Type())
+	}
+	if size, err := mapping.Size(); err != nil || size != 2 {
+		t.Errorf("map Size() = (%d, %v), want 2", size, err)
+	}
+	keys, err := mapping.Keys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		name, err := key.Text()
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"empty", "value"}) {
+		t.Errorf("map keys = %q, want [empty value]", names)
+	}
+	if seq, found := mapping.Lookup(transform.String("empty")); !found || seq.Len() != 0 {
+		t.Errorf("empty entry = (%d items, %t), want present and empty", seq.Len(), found)
+	}
+	array := transform.Array(empty, transform.Values(transform.Value{}, transform.Boolean(true)))
+	if array.Kind() != transform.ArrayValue {
+		t.Errorf("array kind = %v", array.Kind())
+	}
+	if size, err := array.Size(); err != nil || size != 2 {
+		t.Errorf("array Size() = (%d, %v), want 2", size, err)
+	}
+	if seq, err := array.Member(0); err != nil || seq.Len() != 0 {
+		t.Errorf("first member = (%d items, %v), want empty sequence", seq.Len(), err)
+	}
+	seq, err := array.Member(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := seq.Single()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := value.Boolean(); err != nil || !got {
+		t.Errorf("second member = (%t, %v), want true", got, err)
+	}
+	if got, found := mapping.Lookup(array); found || got.Len() != 0 {
+		t.Errorf("lookup with array key = (%d items, %t), want absent entry", got.Len(), found)
+	}
+	if got, err := transform.Map(transform.MapEntry{Key: array}); got.Kind() != transform.InvalidValue || !errors.Is(err, transform.ErrInput) {
+		t.Errorf("map with array key = (kind %v, %v), want ErrInput and absent item", got.Kind(), err)
+	}
+	if got, present := seq.At(-1); present || got.Kind() != transform.InvalidValue {
+		t.Errorf("sequence At(-1) = (kind %v, %t), want absent item", got.Kind(), present)
+	}
+}
 
 func TestTypedValues(t *testing.T) {
 	if value, err := transform.Values(transform.Integer(1), transform.Integer(2)).EffectiveBoolean(); err == nil {

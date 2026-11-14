@@ -64,3 +64,24 @@ func TestNormalizerErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNormalizerPreservesJoinersAcrossRuns(t *testing.T) {
+	t.Parallel()
+
+	var normalizer normalization.Normalizer
+	var emitted []string
+	// The first run requires exact normalization even though it fits in one
+	// short batch. The second run must neither overwrite nor extend it.
+	source := "a\u034f" + strings.Repeat("\u0301", 40)
+	for _, input := range []string{source, "e\u0301"} {
+		if err := normalizer.Each(t.Context(), normalization.NFC, input, func(part string) error {
+			emitted = append(emitted, part)
+			return nil
+		}); err != nil {
+			t.Fatalf("Each: %v", err)
+		}
+	}
+	if got, want := strings.Join(emitted, ""), source+"é"; got != want {
+		t.Errorf("normalized runs = %q, want %q", got, want)
+	}
+}

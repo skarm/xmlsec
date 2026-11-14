@@ -12,6 +12,56 @@ import (
 	"github.com/skarm/xmlsec/internal/der"
 )
 
+func TestOIDEncodesObjectIdentifier(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		oid  asn1.ObjectIdentifier
+		want []byte
+	}{
+		{"single_byte_arcs", asn1.ObjectIdentifier{1, 2, 3}, []byte{0x06, 0x02, 0x2a, 0x03}},
+		{"multi_byte_first_subidentifier", asn1.ObjectIdentifier{2, 999, 3}, []byte{0x06, 0x03, 0x88, 0x37, 0x03}},
+		{"too_few_arcs", asn1.ObjectIdentifier{1}, nil},
+		{"invalid_first_arc", asn1.ObjectIdentifier{3, 0}, nil},
+		{"invalid_second_arc", asn1.ObjectIdentifier{1, 40}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := der.OID(tc.oid)
+			if !bytes.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Errorf("OID(%v) = % x (nil=%t), want % x (nil=%t)", tc.oid, got, got == nil, tc.want, tc.want == nil)
+			}
+		})
+	}
+}
+
+func TestOIDEqualRequiresOneCompleteMatchingIdentifier(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		der  []byte
+		want bool
+	}{
+		{"same_arcs", []byte{0x06, 0x02, 0x2a, 0x03}, true},
+		{"different_last_arc", []byte{0x06, 0x02, 0x2a, 0x04}, false},
+		{"octet_string_with_same_payload", []byte{0x04, 0x02, 0x2a, 0x03}, false},
+		{"trailing_value", []byte{0x06, 0x02, 0x2a, 0x03, 0x05, 0x00}, false},
+		{"truncated_value", []byte{0x06, 0x02, 0x2a}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			oid := asn1.ObjectIdentifier{1, 2, 3}
+			if got := der.OIDEqual(asn1.RawValue{FullBytes: tc.der}, oid); got != tc.want {
+				t.Errorf("OIDEqual(% x, %v) = %t, want %t", tc.der, oid, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDERHeaders(t *testing.T) {
 	for _, size := range []int{0, 1, 127, 128, 255, 256, 65535, 65536, 1 << 20} {
 		payload := make([]byte, size)
@@ -210,28 +260,40 @@ func TestCompositionMatchesStandardEncoder(t *testing.T) {
 			}
 		}
 
-		parts := [][]byte{der.Octets(payload), der.Int(1)}
-
-		original := append([][]byte(nil), parts...)
-		for _, tc := range []struct {
-			class   int
-			tag     int
-			got     []byte
-			content []byte
-		}{
-			{0, 16, der.Seq(parts...), bytes.Join(parts, nil)},
-			{0, 17, der.Set(parts...), append(bytes.Clone(parts[1]), parts[0]...)},
-			{2, 4, der.Ctx(4, parts...), bytes.Join(parts, nil)},
-			{2, 128, der.Ctx(128, parts...), bytes.Join(parts, nil)},
-		} {
-			want, err := asn1.Marshal(asn1.RawValue{Class: tc.class, Tag: tc.tag, IsCompound: true, Bytes: tc.content})
-			if err != nil || !bytes.Equal(tc.got, want) {
-				t.Fatalf("class=%d tag=%d size=%d: %v", tc.class, tc.tag, size, err)
-			}
+		octets, err := asn1.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		integer, err := asn1.Marshal(1)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		if !bytes.Equal(parts[0], original[0]) || !bytes.Equal(parts[1], original[1]) {
-			t.Fatal("SET sorting changed caller component order")
+		ordered := bytes.Join([][]byte{octets, integer}, nil)
+		sorted := bytes.Join([][]byte{integer, octets}, nil)
+		for _, tc := range []struct {
+			name    string
+			class   int
+			tag     int
+			compose func(...[]byte) []byte
+			content []byte
+		}{
+			{"sequence", 0, 16, der.Seq, ordered},
+			{"set", 0, 17, der.Set, sorted},
+			{"context short tag", 2, 4, func(parts ...[]byte) []byte { return der.Ctx(4, parts...) }, ordered},
+			{"context high tag", 2, 128, func(parts ...[]byte) []byte { return der.Ctx(128, parts...) }, ordered},
+		} {
+			want, err := asn1.Marshal(asn1.RawValue{Class: tc.class, Tag: tc.tag, IsCompound: true, Bytes: tc.content})
+			if err != nil {
+				t.Fatalf("%s fixture, size=%d: %v", tc.name, size, err)
+			}
+			parts := [][]byte{bytes.Clone(octets), bytes.Clone(integer)}
+			if got := tc.compose(parts...); !bytes.Equal(got, want) {
+				t.Errorf("%s, size=%d: encoding differs from the standard encoder", tc.name, size)
+			}
+			if !bytes.Equal(parts[0], octets) || !bytes.Equal(parts[1], integer) {
+				t.Errorf("%s, size=%d: changed caller components or their order", tc.name, size)
+			}
 		}
 	}
 }
@@ -461,5 +523,80 @@ func checkValidatedViews(t testing.TB, raw []byte) {
 	}
 	if !reflect.DeepEqual(actual, want) {
 		t.Fatal("borrowed child order differs")
+	}
+}
+
+func TestExplicitRequiresOneChildAndMatchingTag(t *testing.T) {
+	t.Parallel()
+	const tag = 33
+	child := der.Int(17)
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		ok   bool
+	}{
+		{"one_child_under_high_context_tag", der.Ctx(tag, child), true},
+		{"wrong_context_tag", der.Ctx(tag+1, child), false},
+		{"wrong_class", der.Wrap(asn1.ClassApplication, tag, true, child), false},
+		{"primitive", der.Wrap(asn1.ClassContextSpecific, tag, false, child), false},
+		{"empty", der.Ctx(tag), false},
+		{"two_children", der.Ctx(tag, child, der.Int(18)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			value, err := der.Read(tc.raw, len(tc.raw))
+			if err != nil {
+				t.Fatalf("read wrapper fixture: %v", err)
+			}
+			got, err := der.Explicit(value, tag)
+			if !tc.ok {
+				if !errors.Is(err, der.ErrInvalidDER) || len(got.FullBytes) != 0 {
+					t.Fatalf("result=%x, error=%v; want no child and ErrInvalidDER", got.FullBytes, err)
+				}
+				return
+			}
+			var integer int
+			if err != nil || !bytes.Equal(got.FullBytes, child) {
+				t.Fatalf("result=%x, error=%v; want the original child %x", got.FullBytes, err, child)
+			}
+			if err := der.Decode(got, &integer); err != nil || integer != 17 {
+				t.Fatalf("decoded %d with error %v, want 17", integer, err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalValidatesCompleteValueBeforeDecoding(t *testing.T) {
+	t.Parallel()
+	type record struct {
+		Number int
+		Label  string
+	}
+	want := record{Number: 42, Label: "note"}
+	raw, err := asn1.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got record
+	if err := der.Unmarshal(raw, &got); err != nil || got != want {
+		t.Fatalf("decoded %+v with error %v, want %+v", got, err, want)
+	}
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"trailing_value", append(append([]byte(nil), raw...), der.Int(7)...)},
+		{"different_type", der.Octets([]byte("note"))},
+		{"truncated_sequence", raw[:len(raw)-1]},
+		{"empty_input", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			before := record{Number: 1, Label: "original"}
+			got := before
+			if err := der.Unmarshal(tc.raw, &got); !errors.Is(err, der.ErrInvalidDER) || got != before {
+				t.Fatalf("decoded %+v with error %v; want unchanged destination and ErrInvalidDER", got, err)
+			}
+		})
 	}
 }

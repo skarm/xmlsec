@@ -3,9 +3,95 @@ package xpath //nolint:testpackage // Exercises general and value comparisons th
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
+
+func TestGeneralComparisonWithRangeBoundsASTAndVM(t *testing.T) {
+	t.Parallel()
+
+	assertFunctionResults(t, []functionResultCase{
+		{"inclusive_endpoints", `(2 = (2 to 4), 4 = (2 to 4), 1 = (2 to 4), 5 = (2 to 4))`, "true|true|false|false"},
+		{"existential_inequality", `(2 != (2 to 4), (2 to 2) != 2, 2 != (3 to 3), 2 != (4 to 2))`, "true|false|true|false"},
+		{"range_on_right", `(4 < (2 to 4), 4 <= (2 to 4), 2 > (2 to 4), 2 >= (2 to 4), 3 < (2 to 4), 3 > (2 to 4))`, "false|true|false|true|true|true"},
+		{"range_on_left", `((2 to 4) < 2, (2 to 4) <= 2, (2 to 4) > 4, (2 to 4) >= 4, (2 to 4) < 3, (2 to 4) > 3)`, "false|true|false|true|true|true"},
+		{"empty_operands", `(() = (2 to 4), 3 = (() to 4), (2 to ()) < 3)`, "false|false|false"},
+		{"decimal_and_sequence_operands", `(2.5 < (2 to 3), (0,5) = (2 to 4), (0,3) = (2 to 4), parse-xml('<n>03</n>')/n = (2 to 4))`, "true|false|true|true"},
+		{"large_integer_endpoints", `(9223372036854775809 = (9223372036854775808 to 9223372036854775810), 9223372036854775811 = (9223372036854775808 to 9223372036854775810), 9223372036854775808 != (9223372036854775808 to 9223372036854775808))`, "true|false|false"},
+		{"large_integer_range_on_right", `(9223372036854775810 < (9223372036854775808 to 9223372036854775810), 9223372036854775810 <= (9223372036854775808 to 9223372036854775810), 9223372036854775808 > (9223372036854775808 to 9223372036854775810), 9223372036854775808 >= (9223372036854775808 to 9223372036854775810))`, "false|true|false|true"},
+		{"large_integer_range_on_left", `((9223372036854775808 to 9223372036854775810) < 9223372036854775808, (9223372036854775808 to 9223372036854775810) <= 9223372036854775808, (9223372036854775808 to 9223372036854775810) > 9223372036854775810, (9223372036854775808 to 9223372036854775810) >= 9223372036854775810)`, "false|true|false|true"},
+	})
+}
+
+func TestGeneralCompareStopsBeforeUnusedOperands(t *testing.T) {
+	t.Parallel()
+
+	one := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(1)}
+	two := xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: int64(2)}
+	invalid := xdm.NewMap(nil)
+	for _, tc := range []struct {
+		name        string
+		left, right xdm.Sequence
+		want        bool
+		wantErr     error
+	}{
+		{"matching_pair_precedes_invalid_items", xdm.ItemSlice{one, invalid}, xdm.ItemSlice{one, invalid}, true, nil},
+		{"right_atomization_error_is_returned", xdm.ItemSlice{two}, xdm.ItemSlice{one, invalid}, false, &xdm.Error{Code: "FOTY0013"}},
+		{"left_atomization_error_is_returned", xdm.ItemSlice{two, invalid}, xdm.ItemSlice{one}, false, &xdm.Error{Code: "FOTY0013"}},
+		{"empty_left_operand_does_not_atomize_right", nil, xdm.ItemSlice{invalid}, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := GeneralCompare(TokenEquals, tc.left, tc.right)
+			if got != tc.want || !errors.Is(err, tc.wantErr) {
+				t.Errorf("GeneralCompare = (%t, %v), want (%t, %v)", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestGregorianToReferenceDateTime(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		value    xdm.AtomicValue
+		year     int
+		month    time.Month
+		day      int
+		offset   int
+		explicit bool
+	}{
+		{"month_day_on_leap_reference_year", xdm.AtomicValue{TypeName: xdm.TypeGMonthDay, Value: "--02-29+05:30"}, 1972, time.February, 29, 19800, true},
+		{"month_without_timezone", xdm.AtomicValue{TypeName: xdm.TypeGMonth, Value: "--03"}, 1972, time.March, 1, 0, false},
+		{"day_with_negative_offset", xdm.AtomicValue{TypeName: xdm.TypeGDay, Value: "---17-04:00"}, 1972, time.December, 17, -14400, true},
+		{"year_with_explicit_utc", xdm.AtomicValue{TypeName: xdm.TypeGYear, Value: "2024Z"}, 2024, time.January, 1, 0, true},
+		{"year_month", xdm.AtomicValue{TypeName: xdm.TypeGYearMonth, Value: "2024-09"}, 2024, time.September, 1, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := GregorianToReferenceDateTime(tc.value)
+			year, month, day := got.Date()
+			_, offset := got.Zone()
+			if !ok || year != tc.year || month != tc.month || day != tc.day || offset != tc.offset || xdm.HasTimezone(got) != tc.explicit || got.Hour() != 0 || got.Minute() != 0 || got.Second() != 0 {
+				t.Errorf("GregorianToReferenceDateTime(%v) = (%v, %t) with explicit timezone %t, want date %04d-%02d-%02d at midnight and offset %d (explicit=%t)", tc.value, got, ok, xdm.HasTimezone(got), tc.year, tc.month, tc.day, tc.offset, tc.explicit)
+			}
+		})
+	}
+
+	for _, value := range []xdm.AtomicValue{
+		{TypeName: xdm.TypeString, Value: "2024Z"},
+		{TypeName: xdm.TypeGYear, Value: int64(2024)},
+		{TypeName: xdm.TypeGMonthDay, Value: "--02-30Z"},
+	} {
+		if got, ok := GregorianToReferenceDateTime(value); ok || !got.IsZero() {
+			t.Errorf("GregorianToReferenceDateTime(%v) = (%v, %t), want no date", value, got, ok)
+		}
+	}
+}
 
 func TestComparisonSemanticsASTAndVM(t *testing.T) {
 	t.Parallel()
