@@ -85,8 +85,17 @@ func Double(value float64) Value {
 	return Value{item: xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: value}}
 }
 
-// DateTime creates an xs:dateTime with an explicit timezone.
+// DateTime creates an xs:dateTime with the fixed offset at value's instant.
+// If the offset is outside ±14 hours or includes a nonzero seconds component,
+// it records the same instant in UTC.
 func DateTime(value time.Time) Value {
+	name, offset := value.Zone()
+	if !validXSDTimezoneOffset(offset) {
+		value = value.UTC()
+	} else if start, end := value.ZoneBounds(); !start.IsZero() || !end.IsZero() {
+		value = value.In(time.FixedZone(name, offset))
+	}
+
 	return Value{item: xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: value}}
 }
 

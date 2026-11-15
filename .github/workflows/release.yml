@@ -113,17 +113,16 @@ jobs:
           timestamp=$(git show -s --format=%ct HEAD)
           for target in macos-arm64 linux-amd64 windows-amd64; do
             candidate="candidates/cli-$target"
-            cp -R LICENSE licenses "$candidate/"
             archive="xmlsec-$ASSET_VERSION-$target"
             if [[ "$target" == windows-amd64 ]]; then
               test -s "$candidate/xmlsec.exe"
-              find "$candidate" -exec touch -d "@$timestamp" {} +
-              (cd "$candidate" && python3 -m zipfile -c "../../release-assets/$archive.zip" xmlsec.exe LICENSE licenses)
+              touch -d "@$timestamp" "$candidate/xmlsec.exe"
+              (cd "$candidate" && python3 -m zipfile -c "../../release-assets/$archive.zip" xmlsec.exe)
             else
               test -s "$candidate/xmlsec"
               chmod 0755 "$candidate/xmlsec"
               tar --sort=name --mtime="@$timestamp" --owner=0 --group=0 --numeric-owner \
-                -C "$candidate" -czf "release-assets/$archive.tar.gz" xmlsec LICENSE licenses
+                -C "$candidate" -czf "release-assets/$archive.tar.gz" xmlsec
             fi
           done
           (cd release-assets && sha256sum -- *.tar.gz *.zip > SHA256SUMS)

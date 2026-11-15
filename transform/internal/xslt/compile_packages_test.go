@@ -45,3 +45,29 @@ func TestCompilePackageCallsPublicComponents(t *testing.T) {
 	got, err = ss.CallFunction("Q{urn:unit}internal", xdm.SingleString("private")).Serialize(t.Context())
 	requireSerialization(t, got, err, "", "XTDE0041")
 }
+
+func TestCompileUsePackageRejectsExplicitEmptyVersion(t *testing.T) {
+	t.Parallel()
+
+	const library = `<xsl:package xmlns:xsl="http://www.w3.org/1999/XSL/Transform" name="urn:library" version="3.0"/>`
+
+	for _, version := range []string{"", "   "} {
+		t.Run("["+version+"]", func(t *testing.T) {
+			t.Parallel()
+
+			app := `<xsl:package xmlns:xsl="http://www.w3.org/1999/XSL/Transform" name="urn:app" version="3.0">
+				<xsl:use-package name="urn:library" package-version="` + version + `"/>
+			</xsl:package>`
+			resolved := false
+			resolver := contractPackageResolver(func(context.Context, string, string) (io.ReadCloser, string, error) {
+				resolved = true
+
+				return io.NopCloser(strings.NewReader(library)), "", nil
+			})
+			_, err := NewCompiler().PackageResolver(resolver).Compile(t.Context(), parseTestDocument(t, app))
+			if err == nil || !strings.Contains(err.Error(), errCodeXTSE0020) || resolved {
+				t.Fatalf("compile error = %v, dependency resolved = %v", err, resolved)
+			}
+		})
+	}
+}

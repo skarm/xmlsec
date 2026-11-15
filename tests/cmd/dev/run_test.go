@@ -480,6 +480,79 @@ func TestSuiteImplementationChoices(t *testing.T) {
 	}
 }
 
+func TestLocalXPath20Compatibility(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteQTNamespace+`"><test-set name="local-xpath20" file="compatibility.xml"/></catalog>`)
+	writeFixture(t, root, "compatibility.xml", `<test-set xmlns="`+suiteQTNamespace+`">
+  <dependency type="spec" value="XP20"/>
+  <test-case name="arithmetic">
+    <dependency type="feature" value="xpath-1.0-compatibility"/>
+    <test>1 + '2'</test><result><assert-eq>3</assert-eq></result>
+  </test-case>
+  <test-case name="first-item">
+    <dependency type="feature" value="xpath-1.0-compatibility"/>
+    <test>string-length(('ab','longer'))</test><result><assert-eq>2</assert-eq></result>
+  </test-case>
+  <test-case name="concatenation">
+    <dependency type="feature" value="xpath-1.0-compatibility"/>
+    <test>concat('x',('a','b'))</test><result><assert-string-value>xa</assert-string-value></result>
+  </test-case>
+  <test-case name="substring">
+    <dependency type="feature" value="xpath-1.0-compatibility"/>
+    <test>substring('abcdef','2')</test><result><assert-string-value>bcdef</assert-string-value></result>
+  </test-case>
+  <test-case name="strict-arithmetic">
+    <dependency type="feature" value="xpath-1.0-compatibility" satisfied="false"/>
+    <test>1 + '2'</test><result><error code="XPTY0004"/></result>
+  </test-case>
+</test-set>`)
+
+	for _, tc := range []struct {
+		name       string
+		compatible bool
+		passed     []string
+	}{
+		{"enabled", true, []string{"arithmetic", "first-item", "concatenation", "substring"}},
+		{"disabled", false, []string{"strict-arithmetic"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			options, err := parseSuiteOptions([]string{
+				suiteDirectoryFlag, root, "-suite=qt3", "-version=" + suiteVersion20,
+				"-xpath10-compatibility=" + strconv.FormatBool(tc.compatible),
+			}, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteQTNamespace})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var passed []string
+			for _, outcome := range report.Cases {
+				switch outcome.Status {
+				case suitePassed:
+					passed = append(passed, outcome.Name)
+					if outcome.ExecutionVersion != suiteVersion20 {
+						t.Errorf("%s executed with XPath %s, want %s", outcome.Name, outcome.ExecutionVersion, suiteVersion20)
+					}
+				case suiteNotApplicable:
+				default:
+					t.Errorf("%s = %s (%s)", outcome.Name, outcome.Status, outcome.Reason)
+				}
+			}
+			if !slices.Equal(passed, tc.passed) || report.Totals[suiteNotApplicable] != 5-len(tc.passed) {
+				t.Errorf("passed %v, want %v, totals %v", passed, tc.passed, report.Totals)
+			}
+			t.Logf("%d passed, %d failed, %d not applicable", report.Totals[suitePassed], report.Totals[suiteFailed], report.Totals[suiteNotApplicable])
+		})
+	}
+}
+
 func TestSuitePackageVersionsShareName(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

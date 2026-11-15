@@ -27,8 +27,8 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 		return staticError(errCodeXTSE0010, "xsl:use-package requires name attribute")
 	}
 
-	pkgVersion := getAttr(elem, namePackageVersion)
-	if !ParseVersionConstraint(pkgVersion).Valid() {
+	pkgVersion, present := elem.GetAttribute(namePackageVersion)
+	if present && (strings.Trim(pkgVersion, lexicon.XMLWhitespace) == "" || !ParseVersionConstraint(pkgVersion).Valid()) {
 		return staticError(errCodeXTSE0020, "invalid package version range %q", pkgVersion)
 	}
 

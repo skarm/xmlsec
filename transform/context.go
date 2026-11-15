@@ -14,9 +14,10 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
-// Go reports zone offsets in seconds; XML Schema implicit timezones use whole minutes with magnitude at most fourteen hours.
+// Go reports zone offsets in seconds. XML Schema timezones use whole minutes
+// with magnitude at most fourteen hours.
 const (
-	maximumImplicitTimezoneSeconds = 14 * 60 * 60
+	maximumTimezoneOffsetSeconds = 14 * 60 * 60
 )
 
 // DynamicContext supplies shared XPath and XSLT execution settings.
@@ -126,7 +127,7 @@ func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (co
 	}
 
 	_, offset := now.In(zone).Zone()
-	if offset%60 != 0 || offset < -maximumImplicitTimezoneSeconds || offset > maximumImplicitTimezoneSeconds {
+	if !validXSDTimezoneOffset(offset) {
 		return nil, ErrInput
 	}
 
@@ -134,6 +135,10 @@ func (e *Engine) dynamicContext(ctx context.Context, options DynamicContext) (co
 	now = now.In(zone)
 
 	return xpath.WithEvaluationContext(ctx, xpath.EvaluationContext{CurrentTime: now, Timezone: zone, Language: language, Trace: checkedTrace{ctx: ctx, writer: traceWriter(options.TraceWriter)}, Collections: e.collectionResolver()}), nil
+}
+
+func validXSDTimezoneOffset(seconds int) bool {
+	return seconds%60 == 0 && seconds >= -maximumTimezoneOffsetSeconds && seconds <= maximumTimezoneOffsetSeconds
 }
 
 func (e *Engine) collectionResolver() xpath.CollectionResolver {

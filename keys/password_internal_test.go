@@ -832,6 +832,8 @@ func FuzzPEMDecoding(f *testing.F) {
 		f.Add(input)
 	}
 
+	f.Add(bytes.Replace(encoded, []byte{'\n'}, []byte{'\r'}, 1))
+
 	f.Fuzz(func(t *testing.T, input []byte) {
 		if len(input) > 16<<10 {
 			return
@@ -839,7 +841,11 @@ func FuzzPEMDecoding(f *testing.F) {
 
 		trimmed := bytes.TrimSpace(input)
 
-		block, rest := pem.Decode(trimmed)
+		// RFC 7468 permits CRLF, CR and LF; encoding/pem splits lines on LF.
+		reference := bytes.ReplaceAll(trimmed, []byte("\r\n"), []byte("\n"))
+		reference = bytes.ReplaceAll(reference, []byte("\r"), []byte("\n"))
+
+		block, rest := pem.Decode(reference)
 		if block != nil && block.Type != "PRIVATE KEY" {
 			return
 		}

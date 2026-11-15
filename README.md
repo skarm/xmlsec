@@ -32,7 +32,7 @@ The optional [CLI](docs/cli.md) exposes operations through the same public APIs.
 
 ## Quick start
 
-Requires **Go 1.27.3 or later**.
+Requires **Go 1.27.4 or later**.
 To try the library in a new project:
 
 ```sh

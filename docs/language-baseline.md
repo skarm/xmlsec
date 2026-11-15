@@ -29,6 +29,13 @@ Datatype editions do not enable schema validation. Expanded budgets retain
 bounded work/depth and the per-case deadline. Compatibility runs select explicit
 matching catalog dependencies; no passing applicable case means failure.
 
+## Local XPath 2.0 compatibility check
+
+Run `go test -count=1 -v ./tests/cmd/dev -run '^TestLocalXPath20Compatibility$'`
+to exercise XPath 2.0 with the XPath 1.0 compatibility property enabled and
+disabled using project-owned cases. The official XPath 2.0 compatibility
+profile still runs against the pinned QT3 catalog and reports its own outcome.
+
 ## Results and evidence
 
 Reports bind outcomes to source, catalog and configuration identities. The
