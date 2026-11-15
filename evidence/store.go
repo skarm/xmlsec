@@ -142,7 +142,7 @@ func (s *Store) PutReader(ctx context.Context, kind Kind, src io.Reader, provena
 	}
 
 	s.used -= int64(maximum) - size
-	record := &Record{store: s, path: f.Name(), size: int(size), kind: kind, provenance: provenance}
+	record := &Record{store: s, file: &recordFile{path: f.Name()}, size: int(size), kind: kind, provenance: provenance}
 	copy(record.digest[:], digest.Sum(nil))
 
 	return record, nil
@@ -170,13 +170,14 @@ func (s *Store) Close() error {
 
 // Record identifies exact untrusted bytes retained by a Store. Its immutable
 // metadata remains available after closure. Closing the record releases its file
-// and storage reservation; repeated Close calls are safe. Open fails after the
-// record or its store has closed.
+// and storage reservation; repeated Close calls are safe. Copies of a Record
+// share the same file and closure state. Open fails after the record or its
+// store has closed.
 type Record struct {
 	// store owns the backing file and controls the record's lifetime.
 	store *Store
-	// path identifies the store-owned backing file.
-	path string
+	// file shares the backing file's lifetime across copies of this handle.
+	file *recordFile
 	// size is the recorded object length in bytes.
 	size int
 	// kind identifies the stored DER object's encoding.
@@ -185,7 +186,11 @@ type Record struct {
 	digest [sha256.Size]byte
 	// provenance retains collection metadata independently of trust.
 	provenance Provenance
-	closed     bool // protected by store.mutex
+}
+
+type recordFile struct {
+	path   string
+	closed bool // protected by Record.store.mutex
 }
 
 // Open returns a new independently positioned reader over the original bytes.
@@ -204,7 +209,7 @@ func (r *Record) Open(ctx context.Context) (io.ReadCloser, error) {
 	r.store.mutex.Lock()
 	defer r.store.mutex.Unlock()
 
-	if r.closed || r.store.closed {
+	if r.file.closed || r.store.closed {
 		return nil, errors.Join(ErrResource, os.ErrClosed)
 	}
 
@@ -212,7 +217,7 @@ func (r *Record) Open(ctx context.Context) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	file, err := os.Open(filepath.Clean(r.path))
+	file, err := os.Open(filepath.Clean(r.file.path))
 	if err != nil {
 		return nil, errors.Join(ErrResource, err)
 	}
@@ -233,11 +238,11 @@ func (r *Record) Close() error {
 	r.store.mutex.Lock()
 	defer r.store.mutex.Unlock()
 
-	if r.closed {
+	if r.file.closed {
 		return nil
 	}
 
-	err := os.Remove(r.path)
+	err := os.Remove(r.file.path)
 	if r.store.closed && errors.Is(err, os.ErrNotExist) {
 		err = nil
 	}
@@ -246,7 +251,7 @@ func (r *Record) Close() error {
 		return errors.Join(ErrResource, err)
 	}
 
-	r.closed = true
+	r.file.closed = true
 	r.store.used -= int64(r.size)
 	r.store.records--
 

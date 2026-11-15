@@ -998,6 +998,9 @@ func TestLanguageResidualCoverage(t *testing.T) {
 		if len(totals) != len(report.Totals) {
 			t.Fatal("unknown suite total status", file)
 		}
+		if totals[suitePassed] == 0 {
+			t.Errorf("required suite profile %s has no passing applicable case", profile)
+		}
 	}
 	for key := range profiles {
 		t.Error("required complete suite profile is missing", key)

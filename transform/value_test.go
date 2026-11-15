@@ -131,6 +131,58 @@ func TestValueAccessorsRejectImplicitConversion(t *testing.T) {
 	}
 }
 
+func TestValueDateTimePreservesInstantWithNonXSDOffset(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		offset int
+	}{
+		{"seconds", 5*3600 + 30},
+		{"above_maximum", 15 * 3600},
+		{"below_minimum", -15 * 3600},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			instant := time.Date(2026, 11, 14, 3, 0, 0, 125_000_000, time.FixedZone(tc.name, tc.offset))
+			value := transform.DateTime(instant)
+			text, err := value.Text()
+			if err != nil || text != instant.UTC().Format(time.RFC3339Nano) {
+				t.Fatalf("Text() = (%q, %v), want %s", text, err, instant.UTC().Format(time.RFC3339Nano))
+			}
+			got, err := value.DateTime()
+			if err != nil || !got.Equal(instant) {
+				t.Fatalf("DateTime() = (%v, %v), want instant %v", got, err, instant)
+			}
+		})
+	}
+}
+
+func TestValueDateTimeArithmeticKeepsOffsetAcrossDST(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	instant := time.Date(2026, time.February, 15, 12, 0, 0, 0, location)
+	options := transform.XPathContext{
+		Variables: transform.Bindings{{Local: "when"}: transform.Values(transform.DateTime(instant))},
+	}
+	e := engine(t, transform.Config{})
+	for _, expression := range []string{`$when + xs:yearMonthDuration("P1M")`, `$when + xs:dayTimeDuration("P28D")`} {
+		result, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const want = "2026-03-15T12:00:00-05:00"
+		if got, err := result.Text(); err != nil || got != want {
+			t.Errorf("%s = (%q, %v), want %s", expression, got, err, want)
+		}
+	}
+}
+
 func TestValueMapAndArrayRetainEmptyMembers(t *testing.T) {
 	t.Parallel()
 

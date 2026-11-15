@@ -101,3 +101,51 @@ func TestStoreRejectsMissingParentAndCanceledAcquisition(t *testing.T) {
 		t.Errorf("record bytes = (%q, %v), want fullsize", got, err)
 	}
 }
+
+func TestRecordCopiesShareClose(t *testing.T) {
+	t.Parallel()
+
+	const contents = "evidence"
+
+	store, err := evidence.NewStore(t.TempDir(), int64(len(contents)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	record, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(contents), evidence.Provenance{}, len(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyOfRecord := *record
+	closed := make(chan error, 1)
+	go func() { closed <- copyOfRecord.Close() }()
+	if err := errors.Join(record.Close(), <-closed); err != nil {
+		t.Fatalf("closing both handles: %v", err)
+	}
+
+	for _, handle := range []*evidence.Record{record, &copyOfRecord} {
+		reader, err := handle.Open(t.Context())
+		if reader != nil {
+			t.Error("closed record opened a reader", reader.Close())
+		}
+		if !errors.Is(err, os.ErrClosed) {
+			t.Errorf("Open after Close: %v, want %v", err, os.ErrClosed)
+		}
+	}
+
+	replacement, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(contents), evidence.Provenance{}, len(contents))
+	if err != nil {
+		t.Fatalf("replacement write could not reuse released storage: %v", err)
+	}
+	if _, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader("x"), evidence.Provenance{}, 1); !errors.Is(err, evidence.ErrLimit) {
+		t.Fatalf("store accepted more than its capacity: %v", err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
