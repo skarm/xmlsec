@@ -48,6 +48,10 @@ rejected. The supported profiles below define the scope of interoperability.
   input, including DTD-free `Engine.Parse` and stylesheet records, preserves
   relative namespace names, as does `document.DTDProfile`. The default document parser
   and C14N reject them. See [input profiles](transforms.md#xml-input-profiles).
+- Language text decoding and output serialization distinguish ISO-8859-11,
+  TIS-620 and Windows-874. ISO-8859-11 preserves C1 controls and no-break space;
+  TIS-620 does not assign those octets. Use an explicit Windows-874 label for
+  its Windows-specific characters.
 - PKIX with explicit roots/time and offline complete/scoped/indirect/base-delta
   CRLs. OCSP selects an exact CertID and authorized responder. Required missing
   evidence fails without fetching. Acquisition metadata grants no trust or PoE.
@@ -156,6 +160,12 @@ and assert these differences separately:
   removing the encoding pseudo-attribute. The native character-input parser
   retains XML 1.0 production [81] validation and reports `FODC0006`. This case is
   a separate diagnostic, excluded from successful query agreement counts.
+- `fn:resolve-uri` preserves percent-encoded registered names, internationalized
+  user information and IPvFuture literals in syntactic IRI resolution
+  ([F&O 3.1 §6.1](https://www.w3.org/TR/xpath-functions-31/#func-resolve-uri),
+  [RFC 3987 §2.2](https://www.rfc-editor.org/rfc/rfc3987.html#section-2.2)).
+  Saxon HE 12.10 rejects the tested IPvFuture literal. Accepting its syntax in
+  XPath does not enable dereferencing that address or change resource policy.
 - Saxon HE 12.10 and two QT3 case-conversion expectations retain older Greek
   U+037F/U+03F3 mappings. The native Unicode 17.0 mappings agree with the
   Unicode 7.0 data selected by those catalog cases. Catalog Unicode dependencies

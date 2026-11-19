@@ -1,14 +1,17 @@
 package binding_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/saml/binding"
 )
@@ -48,6 +51,145 @@ func TestSOAPIndependentEnvelopes(t *testing.T) {
 	}
 	if _, err := binding.DecodeSOAP(t.Context(), []byte(soapPrefix+`<s:Body><p:LogoutResponse/></s:Body></s:Envelope>`), binding.SOAPOptions{MaxBytes: 20}); err == nil {
 		t.Fatal("byte bound ignored")
+	}
+}
+
+func TestSOAPMandatoryHeaderTargetsConfiguredRole(t *testing.T) {
+	t.Parallel()
+
+	const intermediary = "urn:mediator"
+	notice := document.Name{Space: "urn:notice", Local: "notice"}
+	for _, tc := range []struct {
+		name, localActor, recipient string
+		understood, wantFault       bool
+	}{
+		{name: "ultimate destination handles actorless header", wantFault: true},
+		{name: "intermediary preserves ultimate header", localActor: intermediary},
+		{name: "intermediary preserves other actor header", localActor: intermediary, recipient: "urn:receiver"},
+		{name: "intermediary handles own header", localActor: intermediary, recipient: intermediary, wantFault: true},
+		{name: "intermediary handles next header", localActor: intermediary, recipient: binding.SOAPNext, wantFault: true},
+		{name: "intermediary recognizes own header", localActor: intermediary, recipient: intermediary, understood: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			actor := ""
+			if tc.recipient != "" {
+				actor = ` s:actor="` + tc.recipient + `"`
+			}
+			raw := soapPrefix + `<s:Header><notice xmlns="urn:notice" s:mustUnderstand="1"` + actor +
+				`>for the recipient</notice></s:Header><s:Body><p:LogoutResponse/></s:Body></s:Envelope>`
+			options := binding.SOAPOptions{Actor: tc.localActor}
+			if tc.understood {
+				options.Understood = []document.Name{notice}
+			}
+
+			message, err := binding.DecodeSOAP(t.Context(), []byte(raw), options)
+			if tc.wantFault {
+				fault, ok := errors.AsType[*binding.SOAPFault](err)
+				if message != nil || !ok || fault.Code != (document.Name{Space: binding.SOAPNamespace, Local: "MustUnderstand"}) {
+					t.Fatalf("DecodeSOAP = %v, %v; want no message and MustUnderstand", message, err)
+				}
+				return
+			}
+			if err != nil || message == nil {
+				t.Fatalf("DecodeSOAP = %v, %v; want message and no error", message, err)
+			}
+
+			headers := message.Headers()
+			if len(headers) != 1 || headers[0].Name() != notice || headers[0].Text() != "for the recipient" {
+				t.Fatalf("original header not retained: %v", headers)
+			}
+			value, present := headers[0].Attribute(document.Name{Space: binding.SOAPNamespace, Local: "actor"})
+			if value != tc.recipient || present != (tc.recipient != "") {
+				t.Fatalf("retained header actor = %q, %t; want %q", value, present, tc.recipient)
+			}
+		})
+	}
+}
+
+func TestSOAPFaultCodeRequiresQName(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []string{":Client", "&#xA0;s:Client", "s:Client&#xA0;"} {
+		raw := soapPrefix + `<s:Body><s:Fault><faultcode>` + code + `</faultcode><faultstring>failed</faultstring></s:Fault></s:Body></s:Envelope>`
+		got, err := binding.DecodeSOAP(t.Context(), []byte(raw), binding.SOAPOptions{})
+		if got != nil || !errors.Is(err, binding.ErrBinding) {
+			t.Errorf("faultcode %q: DecodeSOAP = %v, %v, want nil and ErrBinding", code, got, err)
+		}
+	}
+}
+
+func TestWrapSOAPRetainsPayloadBase(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, envelopeBase, bodyBase, effectiveBase string
+	}{
+		{"absolute parent", ` xml:base="https://example.test/root/"`, ` xml:base="messages/"`, "https://example.test/root/messages/"},
+		{"relative parent", ` xml:base="root/"`, ` xml:base="messages/"`, "root/messages/"},
+		{"absolute child", ` xml:base="root/"`, ` xml:base="https://example.test/messages/"`, "https://example.test/messages/"},
+		{"empty child", ` xml:base="https://example.test/root/"`, ` xml:base=""`, "https://example.test/root/"},
+		{"only Envelope", ` xml:base="https://example.test/root/"`, "", "https://example.test/root/"},
+		{"only Body", "", ` xml:base="messages/"`, "messages/"},
+		{"no base", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			headerBase := "https://example.test/notice/"
+			if tc.envelopeBase != "" && tc.bodyBase != "" {
+				headerBase = "notice/"
+			}
+			raw := strings.TrimSuffix(soapPrefix, ">") + tc.envelopeBase + `>` +
+				`<s:Header><notice xmlns="urn:notice" xml:base="` + headerBase + `"/></s:Header>` +
+				`<s:Body` + tc.bodyBase + `><p:LogoutResponse/></s:Body></s:Envelope>`
+			original, err := binding.DecodeSOAP(ctx, []byte(raw), binding.SOAPOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical := func(element document.Element, method string) string {
+				t.Helper()
+				var output bytes.Buffer
+				if err := c14n.WriteElement(ctx, &output, element, c14n.Options{Algorithm: method}); err != nil {
+					t.Fatal(err)
+				}
+				return output.String()
+			}
+			payload, err := original.Payload(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelope, err := binding.WrapSOAP(ctx, payload, original.Headers()...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := envelope.XML(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forwarded, err := binding.DecodeSOAP(ctx, data, binding.SOAPOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := forwarded.Payload(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, method := range []string{c14n.Canonical10, c14n.Canonical11, c14n.Exclusive} {
+				if got, want := canonical(body.Root(), method), canonical(payload.Root(), method); got != want {
+					t.Errorf("canonical payload using %s = %s; want %s", method, got, want)
+				}
+			}
+			got := canonical(body.Root(), c14n.Canonical11)
+			if tc.effectiveBase == "" && strings.Contains(got, `xml:base=`) || tc.effectiveBase != "" && !strings.Contains(got, `xml:base="`+tc.effectiveBase+`"`) {
+				t.Errorf("canonical payload = %s; want effective base %q", got, tc.effectiveBase)
+			}
+			headers := forwarded.Headers()
+			if len(headers) != 1 || canonical(headers[0], c14n.Canonical11) != canonical(original.Headers()[0], c14n.Canonical11) {
+				t.Fatal("forwarding changed the header's effective base")
+			}
+		})
 	}
 }
 
@@ -122,6 +264,40 @@ func TestSOAPHTTPStatusAndRedirects(t *testing.T) {
 	}
 	if message, err := (binding.SOAPClient{Client: server.Client()}).RoundTrip(t.Context(), server.URL, request); message != nil || !errors.Is(err, binding.ErrBinding) {
 		t.Fatalf("SOAP over HTTP without permission returned message=%p, err=%v; want nil, %v", message, err, binding.ErrBinding)
+	}
+}
+
+func TestBindingHTTPClientRejectsTypedNilConfiguration(t *testing.T) {
+	t.Parallel()
+
+	request, err := document.Parse(t.Context(), []byte(soapPrefix+`<s:Body><p:LogoutRequest/></s:Body></s:Envelope>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var transport *http.Transport
+
+	var jar *cookiejar.Jar
+	for _, tc := range []struct {
+		name   string
+		client *http.Client
+	}{
+		{"typed nil transport", &http.Client{Transport: transport}},
+		{"typed nil jar", &http.Client{Jar: jar}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			soap := binding.SOAPClient{Client: tc.client}
+			if result, err := soap.RoundTrip(t.Context(), "https://authority.test/soap", request); result != nil || !errors.Is(err, binding.ErrBinding) {
+				t.Errorf("SOAPClient.RoundTrip = %v, %v; want nil, ErrBinding", result, err)
+			}
+
+			uri := binding.URIClient{Client: tc.client}
+			if result, err := uri.Resolve(t.Context(), "https://authority.test/assertion", "_held"); result != nil || !errors.Is(err, binding.ErrBinding) {
+				t.Errorf("URIClient.Resolve = %v, %v; want nil, ErrBinding", result, err)
+			}
+		})
 	}
 }
 

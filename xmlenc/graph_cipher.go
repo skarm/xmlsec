@@ -13,6 +13,7 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/uriref"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/resource"
 )
@@ -31,32 +32,33 @@ type graphCipherPlan struct {
 	inline     bool
 }
 
-func (g *keyGraph) absoluteReference(source *graphDocument, element document.Element, raw string) (*url.URL, error) {
+func (g *keyGraph) absoluteReference(source *graphDocument, element document.Element, raw string) (string, error) {
 	if !validGraphReference(raw) {
-		return nil, ErrFormat
+		return "", ErrFormat
 	}
 
 	_, node := tree.Unwrap(element)
 
 	resolved, err := uriref.Resolve(raw, g.baseURI, source.uri, node)
 	if err != nil {
-		return nil, errors.Join(ErrFormat, err)
+		return "", errors.Join(ErrFormat, err)
 	}
 
 	if !validGraphReference(resolved) {
-		return nil, ErrFormat
+		return "", ErrFormat
 	}
 
 	uri, err := url.Parse(resolved)
 	if err != nil || uri.User != nil {
-		return nil, ErrFormat
+		return "", ErrFormat
 	}
 
 	if !uri.IsAbs() {
-		return nil, ErrPolicy
+		return "", ErrPolicy
 	}
 
-	return uri, nil
+	// Use the resolved spelling for allowlists and resolver calls.
+	return resolved, nil
 }
 
 func (g *keyGraph) referenceOptions(maximum int) (reference.Options, error) {
@@ -145,11 +147,11 @@ func (g *keyGraph) authorizeCipher(p *graphCipherPlan) error {
 		return err
 	}
 
-	if absolute.Fragment != "" {
+	if strings.Contains(absolute, "#") {
 		return ErrPolicy
 	}
 
-	p.uri = absolute.String()
+	p.uri = absolute
 
 	external := g.profile.decryption.External
 	if external == nil || p.uri != external.URI {
@@ -288,12 +290,16 @@ func graphCipherTransform(item document.Element) (reference.Transform, error) {
 		return t, nil
 	}
 
+	if t.Algorithm != c14n.Exclusive && t.Algorithm != c14n.ExclusiveWithComments {
+		return reference.Transform{}, ErrFormat
+	}
+
 	children, err := childElements(item, elementName(c14n.Exclusive, lexicon.C14NElementInclusiveNamespaces))
 	if err != nil || !exactAttributes(children[0], lexicon.C14NAttrPrefixList) || len(children[0].Children()) != 0 || !xmlSpace(children[0].Text()) {
 		return reference.Transform{}, ErrFormat
 	}
 
-	t.InclusivePrefixes = strings.Fields(attributeValue(children[0], lexicon.C14NAttrPrefixList))
+	t.InclusivePrefixes = strings.FieldsFunc(attributeValue(children[0], lexicon.C14NAttrPrefixList), xmlchar.IsSpace)
 
 	return t, nil
 }
@@ -316,6 +322,14 @@ func graphStructuralText(element document.Element) bool {
 type graphCountedReader struct {
 	io.ReadCloser
 	count *int
+}
+
+func (r *graphCountedReader) Size() int64 {
+	if sized, ok := r.ReadCloser.(resource.SizedReader); ok {
+		return sized.Size()
+	}
+
+	return -1
 }
 
 func (r *graphCountedReader) Read(p []byte) (int, error) {

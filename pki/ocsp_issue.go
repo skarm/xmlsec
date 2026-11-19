@@ -102,11 +102,12 @@ func WriteOCSPResponse(ctx context.Context, dst io.Writer, requestDER, certifica
 }
 
 func genTime(t time.Time) ([]byte, error) {
+	t = t.UTC()
 	if t.IsZero() || t.Year() < 1 || t.Year() > maximumOCSPTimeYear || t.Nanosecond() != 0 {
 		return nil, ErrPolicy
 	}
 
-	return asn1.MarshalWithParams(t.UTC(), generalizedTimeEncoding)
+	return asn1.MarshalWithParams(t, generalizedTimeEncoding)
 }
 
 func ocspResponseSize(parts [][]byte) (int, error) {
@@ -183,6 +184,10 @@ func prepareOCSPResponse(ctx context.Context, requestDER, certificateDER, issuer
 	h, _ := signature.Hash(r.id.alg, true)
 
 	want, e := makeCertID(ctx, c, issuer, h)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if e != nil || !sameCertID(r.id, want) {
 		return nil, ErrCertificate
 	}

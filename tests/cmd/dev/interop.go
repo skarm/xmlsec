@@ -38,6 +38,9 @@ func validateInteropLog(input io.Reader) (int, error) {
 
 	var events []languageProofEvent
 
+	type testName struct{ packagePath, name string }
+
+	running := make(map[testName]struct{})
 	passed := 0
 
 	for {
@@ -53,11 +56,33 @@ func validateInteropLog(input io.Reader) (int, error) {
 		}
 
 		if event.Action == goTestSkipEvent {
+			if event.Test == "" {
+				return 0, fmt.Errorf("external package skipped: %s", event.Package)
+			}
+
 			return 0, fmt.Errorf("external check skipped: %s/%s", event.Package, event.Test)
 		}
 
-		if event.Action == "pass" && event.Test != "" {
-			passed++
+		if event.Test != "" {
+			name := testName{event.Package, event.Test}
+			_, active := running[name]
+
+			switch event.Action {
+			case "run":
+				if active {
+					return 0, fmt.Errorf("external test started twice: %s/%s", event.Package, event.Test)
+				}
+
+				running[name] = struct{}{}
+			case "pass":
+				if !active {
+					return 0, fmt.Errorf("external test passed without starting: %s/%s", event.Package, event.Test)
+				}
+
+				delete(running, name)
+
+				passed++
+			}
 		}
 
 		events = append(events, event)
@@ -65,6 +90,10 @@ func validateInteropLog(input io.Reader) (int, error) {
 
 	if err := validateLanguageProofPackages(events); err != nil {
 		return 0, err
+	}
+
+	if len(running) != 0 {
+		return 0, fmt.Errorf("external test stream is incomplete: %d tests did not finish", len(running))
 	}
 
 	if passed == 0 {

@@ -98,6 +98,42 @@ func TestProcessJSONErrorsAndDeadline(t *testing.T) {
 	}
 }
 
+func TestProcessHelpRequiresWritableStderr(t *testing.T) {
+	diagnostics, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer diagnostics.Close()
+
+	for _, args := range [][]string{{nameC14N, "-h"}, {jsonErrorsFlag, nameC14N, "-h"}} {
+		cmd := testProcess(t, args...)
+		cmd.Stderr = diagnostics
+		err := cmd.Run()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != cliExitFailure {
+			t.Errorf("unwritable stderr with %v returned %v, want exit %d", args, err, cliExitFailure)
+		}
+	}
+}
+
+func TestProcessNullDeviceOutput(t *testing.T) {
+	sink, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	for _, args := range [][]string{{"help"}, {nameC14N, "-h"}, {jsonErrorsFlag, nameC14N, "-h"}, {nameC14N}} {
+		cmd := testProcess(t, args...)
+		cmd.Stdin = bytes.NewReader([]byte("<r/>"))
+		cmd.Stdout = sink
+		cmd.Stderr = sink
+		if err := cmd.Run(); err != nil {
+			t.Errorf("writing %v to the null device: %v", args, err)
+		}
+	}
+}
+
 func TestProcessInterruptsBlockedStdout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Interrupt is not supported by os.Process.Signal on Windows")

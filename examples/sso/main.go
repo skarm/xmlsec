@@ -158,7 +158,7 @@ func run() error {
 			return errors.New("replay unexpectedly accepted")
 		}
 
-		return fmt.Errorf("replay unexpectedly accepted: %w", e)
+		return fmt.Errorf("expected replay rejection: %w", e)
 	}
 
 	fmt.Println("replay=rejected; transport=local-demo; stores=single-process")
@@ -169,6 +169,14 @@ func run() error {
 type registry map[string]*metadata.Snapshot
 
 func (r registry) Lookup(ctx context.Context, id string, at time.Time) (*metadata.Entity, error) {
+	if ctx == nil {
+		return nil, metadata.ErrMetadata
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s, ok := r[id]
 	if !ok {
 		return nil, metadata.ErrMetadata

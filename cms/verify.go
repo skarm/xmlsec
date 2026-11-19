@@ -33,7 +33,8 @@ type VerifyOptions struct {
 	// RequireCertificateBinding requires an authenticated ESS certificate binding,
 	// independently of PKIX trust.
 	RequireCertificateBinding bool
-	// AllowLegacyESSCertID permits the SHA-1 ESSCertID certificate identifier.
+	// AllowLegacyESSCertID permits the SHA-1 ESSCertID certificate identifier
+	// when strict FIPS 140 enforcement is disabled.
 	// It does not enable SHA-1 CMS signatures.
 	AllowLegacyESSCertID bool
 	// RequireUnrestrictedCertificatePath rejects additional ESS certificate

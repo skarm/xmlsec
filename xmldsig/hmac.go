@@ -74,7 +74,9 @@ func (r *HMACResult) SignatureMethod() string {
 	return r.checked.SignatureMethod()
 }
 
-// OutputLength returns the HMACOutputLength parameter in bits; zero denotes the full digest.
+// OutputLength reports the authenticated HMAC tag length in bits, including
+// the full digest length when HMACOutputLength is omitted. A nil or zero-value
+// receiver returns zero.
 func (r *HMACResult) OutputLength() int {
 	if r == nil || r.checked == nil {
 		return 0

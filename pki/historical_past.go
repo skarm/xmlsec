@@ -472,7 +472,7 @@ func (s *HistoricalSession) selectHistoricalStatusFor(ctx context.Context, certi
 		return historicalStatus{}, err
 	}
 
-	selected, err := historicalCRLStatuses(ctx, eligible, s.verifier.crlOptions.DisableDeltaCRLs, freshest)
+	selected, err := historicalCRLStatuses(ctx, certificate, eligible, s.verifier.crlOptions.DisableDeltaCRLs, freshest)
 	if err != nil {
 		return historicalStatus{}, err
 	}
@@ -565,7 +565,10 @@ func eligibleHistoricalClaims(ctx context.Context, certificate *x509.Certificate
 }
 
 func latestHistoricalOCSP(eligible []historicalClaim) (*historicalClaim, error) {
-	var latestOCSP *historicalClaim
+	var (
+		latestOCSP  *historicalClaim
+		conflicting bool
+	)
 
 	for index := range eligible {
 		claim := &eligible[index]
@@ -575,12 +578,22 @@ func latestHistoricalOCSP(eligible []historicalClaim) (*historicalClaim, error) 
 
 		if latestOCSP == nil || claim.fact.this.After(latestOCSP.fact.this) {
 			latestOCSP = claim
+			conflicting = false
+
 			continue
 		}
 
-		if claim.fact.this.Equal(latestOCSP.fact.this) && claim.fact.status != latestOCSP.fact.status {
-			return nil, ErrEvidence
+		if !claim.fact.this.Equal(latestOCSP.fact.this) {
+			continue
 		}
+		// For revoked assertions the event date also determines the historical control time.
+		if claim.fact.status != latestOCSP.fact.status || claim.fact.status == string(OCSPRevoked) && !claim.fact.revoked.Equal(latestOCSP.fact.revoked) {
+			conflicting = true
+		}
+	}
+
+	if conflicting {
+		return nil, ErrEvidence
 	}
 
 	return latestOCSP, nil
@@ -634,7 +647,7 @@ func requiredHistoricalCRLs(statuses []historicalStatus, required bool) []histor
 	return chosen
 }
 
-func historicalCRLStatuses(ctx context.Context, claims []historicalClaim, disableDelta bool, freshest bool) ([]historicalStatus, error) {
+func historicalCRLStatuses(ctx context.Context, target *x509.Certificate, claims []historicalClaim, disableDelta bool, freshest bool) ([]historicalStatus, error) {
 	groups := make(map[string][]historicalClaim)
 
 	for _, claim := range claims {
@@ -670,7 +683,7 @@ func historicalCRLStatuses(ctx context.Context, claims []historicalClaim, disabl
 		}
 
 		views := historicalViews(auth, disableDelta)
-		if err := checkEquivalentCRLViews(ctx, views); err != nil {
+		if err := checkEquivalentCRLViews(ctx, views, target); err != nil {
 			return nil, err
 		}
 
@@ -682,7 +695,7 @@ func historicalCRLStatuses(ctx context.Context, claims []historicalClaim, disabl
 				continue
 			}
 
-			entry, err := viewCRLEntry(ctx, view, primary.target)
+			entry, err := viewCRLEntry(ctx, view, target)
 			if err != nil {
 				return nil, err
 			}

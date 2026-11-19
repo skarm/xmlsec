@@ -446140,6 +446140,7 @@
           "transform/xpath.go",
           "transform/internal/xpath/function_signatures.go",
           "transform/internal/xpath/functions_uri.go",
+          "transform/internal/xdm/uri/resolve.go",
           "transform/internal/xpath/eval_funcall.go",
           "transform/internal/xpath/profile.go"
         ]
@@ -446148,6 +446149,10 @@
         "status": "covered",
         "reason": "Case-level controls below execute exact publisher assertions or fixed native/independent-engine fixtures; structural parents require every recorded child.",
         "positive": [
+          {
+            "file": "transform/resolve_uri_test.go",
+            "name": "TestResolveIRIAuthoritySyntax"
+          },
           {
             "file": "transform/xpath_test.go",
             "name": "TestXPathURIEscapeBytes"
@@ -446170,6 +446175,10 @@
           }
         ],
         "negative": [
+          {
+            "file": "transform/resolve_uri_test.go",
+            "name": "TestResolveIRIAuthoritySyntax"
+          },
           {
             "file": "transform/xpath_test.go",
             "name": "TestXPathURIEscapeBytes"

@@ -15,27 +15,32 @@ func runKeyInfo(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs := flag.NewFlagSet("keyinfo "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "XML input for inspect")
-	output := fs.String("out", "-", "output XML or diagnostic JSON")
-	id := fs.String("id", "", "KeyInfo Id (build) or exact selection ID (inspect)")
-	index := fs.Int("index", cliUnspecifiedSelectionIndex, "explicit zero-based KeyInfo index")
-	format := fs.String("format", string(keyinfo.DERKeyValue), "public key representation: der or xml")
-	resources := fs.String("resources", "", "separate trusted URI/path allowlist for external KeyInfo retrieval")
-	configFile := fs.String("config", "", "trusted JSON keyinfo.Options for inspection limits, ID rules and allowed representations")
-	baseURI := fs.String("base-uri", "", "explicit KeyInfo document base URI; requires -resources")
+	input := fs.String(flagNameIn, stdioPath, "XML input for inspect")
+	output := fs.String(flagNameOut, stdioPath, "output XML or diagnostic JSON")
+	id := fs.String(flagNameID, "", "KeyInfo Id (build) or exact selection ID (inspect)")
+	index := fs.Int(flagNameIndex, cliUnspecifiedSelectionIndex, "explicit zero-based KeyInfo index")
+	format := fs.String(flagNameFormat, string(keyinfo.DERKeyValue), "public key representation: der or xml")
+	resources := fs.String(flagNameResources, "", "separate trusted URI/path allowlist for external KeyInfo retrieval")
+	configFile := fs.String(flagNameConfig, "", "trusted JSON keyinfo.Options for inspection limits, ID rules and allowed representations")
+	baseURI := fs.String(flagNameBaseURI, "", "explicit KeyInfo document base URI; requires -resources")
 
 	var names, keys, certs, refs repeatedFlag
-	fs.Var(&names, "name", "KeyName hint; repeatable")
-	fs.Var(&keys, "key", "public key file; repeatable")
-	fs.Var(&certs, "certificate", "certificate file; repeatable")
-	fs.Var(&refs, "reference", "KeyInfoReference URI; repeatable")
+	fs.Var(&names, flagNameName, "KeyName hint; repeatable")
+	fs.Var(&keys, flagNameKey, "public key file; repeatable")
+	fs.Var(&certs, flagNameCertificate, "certificate file; repeatable")
+	fs.Var(&refs, flagNameReference, "KeyInfoReference URI; repeatable")
 
-	specific := "in out id index resources config base-uri allowed-programs"
+	specific := []string{
+		flagNameIn, flagNameOut, flagNameID, flagNameIndex, flagNameResources, flagNameConfig, flagNameBaseURI,
+		flagNameAllowedPrograms,
+	}
 	if cmd == "build" {
-		specific = "out id format name key certificate reference"
+		specific = []string{
+			flagNameOut, flagNameID, flagNameFormat, flagNameName, flagNameKey, flagNameCertificate, flagNameReference,
+		}
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {

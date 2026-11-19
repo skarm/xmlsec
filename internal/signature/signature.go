@@ -124,6 +124,27 @@ func Key(k crypto.PublicKey) error {
 	return nil
 }
 
+// SignerPublic obtains a signer's public key. An absent signer or malformed
+// standard Ed25519 private key has no usable public key.
+func SignerPublic(s crypto.Signer) crypto.PublicKey {
+	if nilcheck.IsNil(s) {
+		return nil
+	}
+
+	switch k := s.(type) {
+	case ed25519.PrivateKey:
+		if len(k) != ed25519.PrivateKeySize {
+			return nil
+		}
+	case *ed25519.PrivateKey:
+		if len(*k) != ed25519.PrivateKeySize {
+			return nil
+		}
+	}
+
+	return s.Public()
+}
+
 // HashOID returns a caller-owned OID for a supported digest algorithm.
 func HashOID(h crypto.Hash) (asn1.ObjectIdentifier, error) {
 	switch h {
@@ -359,8 +380,27 @@ func Sign(ctx context.Context, s crypto.Signer, a pkix.AlgorithmIdentifier, mess
 		return nil, e
 	}
 
-	if e = Key(s.Public()); e != nil {
+	key := SignerPublic(s)
+
+	if e = ctx.Err(); e != nil {
 		return nil, e
+	}
+
+	if e = Key(key); e != nil {
+		return nil, e
+	}
+
+	switch key.(type) {
+	case *rsa.PublicKey:
+		if mode != lexicon.SignatureFamilyRSA && mode != lexicon.SignatureFamilyRSAPSS {
+			return nil, Err
+		}
+	case *ecdsa.PublicKey:
+		if mode != lexicon.SignatureFamilyECDSA {
+			return nil, Err
+		}
+	default:
+		return nil, Err
 	}
 
 	digest, e := Sum(h, message)
@@ -373,6 +413,10 @@ func Sign(ctx context.Context, s crypto.Signer, a pkix.AlgorithmIdentifier, mess
 		opt = &rsa.PSSOptions{SaltLength: h.Size(), Hash: h}
 	}
 
+	if e = ctx.Err(); e != nil {
+		return nil, e
+	}
+
 	value, e := SignDigest(ctx, s, rand.Reader, digest, opt)
 	if e != nil {
 		return nil, e
@@ -382,7 +426,7 @@ func Sign(ctx context.Context, s crypto.Signer, a pkix.AlgorithmIdentifier, mess
 		return nil, e
 	}
 
-	if e = Verify(s.Public(), a, message, value); e != nil {
+	if e = Verify(key, a, message, value); e != nil {
 		return nil, fmt.Errorf("%w: provider output: %w", Err, e)
 	}
 
@@ -463,11 +507,12 @@ func MatchCertificate(s crypto.Signer, c *x509.Certificate) error {
 		return Err
 	}
 
-	if e := Key(s.Public()); e != nil {
+	key := SignerPublic(s)
+	if e := Key(key); e != nil {
 		return e
 	}
 
-	b, e := x509.MarshalPKIXPublicKey(s.Public())
+	b, e := x509.MarshalPKIXPublicKey(key)
 	if e != nil || !bytes.Equal(b, c.RawSubjectPublicKeyInfo) {
 		return Err
 	}

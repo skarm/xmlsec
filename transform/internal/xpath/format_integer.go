@@ -80,7 +80,6 @@ const (
 	ordinalMasculine            = false // masculine vocabulary in italianOrdinalWord
 	ordinalFeminine             = true  // feminine vocabulary in italianOrdinalWord
 	italianOrdinalDecimalFormat = "%d°"
-	integerRepeatingGroupPair   = 2 // one separator between two groups repeats
 	integerMinimumDecimalDigits = 1
 )
 
@@ -230,15 +229,10 @@ func formatIntegerPicture(n *big.Int, picture, lang string) (string, error) {
 		return "", &xdm.Error{Code: errCodeFODF1310, Message: "empty primary format token"}
 	}
 
-	if modifier == "" && hasImplicitFormatModifier(primary) {
-		return "", &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid picture: %q", picture)}
-	}
-
-	if err := validateModifier(modifier); err != nil {
+	ordinal, ordSuffix, err := parseModifier(modifier)
+	if err != nil {
 		return "", err
 	}
-
-	ordinal, ordSuffix := parseModifier(modifier)
 
 	// Determine formatting based on primary token
 	negative := n.Sign() < 0
@@ -316,32 +310,11 @@ const (
 )
 
 func classifyFormatToken(primary string) formatTokenKind {
+	if strings.ContainsFunc(primary, unicode.IsDigit) {
+		return fmtTokenDecimal
+	}
+
 	runes := []rune(primary)
-	if len(runes) == 0 {
-		return fmtTokenDecimal
-	}
-
-	hasDecimal, hasLetter := false, false
-
-	for _, r := range runes {
-		if r == '#' || unicode.IsDigit(r) {
-			hasDecimal = true
-			continue
-		}
-
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			hasLetter = true
-		}
-	}
-
-	if hasDecimal {
-		if hasLetter {
-			return fmtTokenUnknown
-		}
-
-		return fmtTokenDecimal
-	}
-
 	if len(runes) != 1 {
 		return fmtTokenUnknown
 	}
@@ -497,80 +470,34 @@ func splitFormatModifier(picture string) (string, string) {
 	return picture[:idx], picture[idx+1:]
 }
 
-func hasImplicitFormatModifier(primary string) bool {
-	if !containsDecimalPattern(primary) {
-		return false
-	}
-
-	for i, r := range primary {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			return validateModifier(primary[i:]) == nil
-		}
-	}
-
-	return false
-}
-
-func containsDecimalPattern(primary string) bool {
-	for _, r := range primary {
-		if r == '#' || unicode.IsDigit(r) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func parseModifier(mod string) (bool, string) {
-	if mod == "" {
-		return false, ""
-	}
-
+func parseModifier(mod string) (bool, string, error) {
+	rest := mod
 	ordinal := false
 	suffix := ""
 
-	for i := 0; i < len(mod); i++ {
-		switch mod[i] {
-		case 'o':
-			ordinal = true
-		case 't', 'c':
-			// traditional or cardinal — no special handling
-		case '(':
-			end := strings.Index(mod[i:], ")")
-			if end > 0 {
-				suffix = mod[i+1 : i+end]
-				i += end
-			}
-		}
-	}
+	// The cardinal or ordinal selector and its variant precede the optional
+	// alphabetic or traditional selector.
+	if len(rest) != 0 && (rest[0] == 'c' || rest[0] == 'o') {
+		ordinal = rest[0] == 'o'
+		rest = rest[1:]
 
-	return ordinal, suffix
-}
-
-func validateModifier(mod string) error {
-	if mod == "" {
-		return nil
-	}
-	// Valid modifier: [co][t]?  or [co]?[t]  followed by optional (...)
-	// Characters allowed: c, o, t, and a single parenthesized group
-	i := 0
-	for i < len(mod) {
-		switch mod[i] {
-		case 'c', 'o', 't':
-			i++
-		case '(':
-			end := strings.Index(mod[i:], ")")
+		if variant, ok := strings.CutPrefix(rest, "("); ok {
+			end := strings.LastIndexByte(variant, ')')
 			if end < 0 {
-				return &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("unclosed parenthesis in format modifier: %q", mod)}
+				return false, "", &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("unclosed parenthesis in format modifier: %q", mod)}
 			}
 
-			i += end + 1
-		default:
-			return &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid character in format modifier: %q", mod)}
+			// Accept an empty variant for compatibility.
+			suffix, rest = variant[:end], variant[end+1:]
 		}
 	}
 
-	return nil
+	switch rest {
+	case "", "a", "t":
+		return ordinal, suffix, nil
+	default:
+		return false, "", &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid format modifier: %q", mod)}
+	}
 }
 
 // formatAlpha formats a number using alphabetic numbering (a=1, b=2, ..., z=26, aa=27, ...).
@@ -583,20 +510,23 @@ func formatAlpha(n *big.Int, upper bool) string {
 	one := big.NewInt(1)
 	twentySix := big.NewInt(latinAlphabetSize)
 
-	var digits []rune
+	var (
+		digits    []byte
+		remainder big.Int
+	)
 
-	base := 'a'
+	base := byte('a')
 	if upper {
 		base = 'A'
 	}
 
 	for val.Sign() > 0 {
 		val.Sub(val, one)
-
-		mod := new(big.Int)
-		val.DivMod(val, twentySix, mod)
-		digits = append([]rune{base + rune(mod.Int64())}, digits...) // #nosec G115 -- DivMod by 26 produces a remainder in 0..25.
+		val.DivMod(val, twentySix, &remainder)
+		digits = append(digits, base+byte(remainder.Uint64())) // #nosec G115 -- DivMod by 26 produces a remainder in 0..25.
 	}
+
+	slices.Reverse(digits)
 
 	return string(digits)
 }
@@ -879,7 +809,7 @@ func formatIntegerDecimal(n *big.Int, picture string) (string, error) {
 	}
 
 	if len(parsed.groups) > 1 {
-		if integerGroupingRepeats(parsed.groups) {
+		if integerGroupingRepeats(parsed.groups, parsed.separators) {
 			result = groupRegularIntegerDigits(result, parsed.groups[len(parsed.groups)-1], parsed.separators[len(parsed.separators)-1])
 		} else {
 			result = groupIrregularIntegerDigits(result, parsed.groups, parsed.separators)
@@ -927,6 +857,8 @@ func parseIntegerDecimalPicture(picture string) (integerDecimalPicture, error) {
 			currentSize++
 			parsed.minDigits++
 			seenMandatory = true
+		case unicode.IsNumber(r) || unicode.IsLetter(r):
+			return parsed, &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid digit or separator in picture: %q", picture)}
 		default:
 			if currentSize == 0 && len(parsed.groups) == 0 {
 				return parsed, &xdm.Error{Code: errCodeFODF1310, Message: fmt.Sprintf("invalid picture: %q", picture)}
@@ -953,14 +885,21 @@ func parseIntegerDecimalPicture(picture string) (integerDecimalPicture, error) {
 	return parsed, nil
 }
 
-func integerGroupingRepeats(groups []int) bool {
-	if len(groups) == integerRepeatingGroupPair {
-		return true // One separator repeats at its rightmost interval.
+// integerGroupingRepeats takes validated group widths and separators in picture
+// order. The leftmost group can be shorter than the others.
+func integerGroupingRepeats(groups []int, separators []rune) bool {
+	if len(separators) == 0 {
+		return false
 	}
 
 	interval := groups[len(groups)-1]
-	for _, size := range groups {
-		if size != interval {
+	if groups[0] > interval {
+		return false
+	}
+
+	separator := separators[len(separators)-1]
+	for i, candidate := range separators {
+		if candidate != separator || groups[i+1] != interval {
 			return false
 		}
 	}

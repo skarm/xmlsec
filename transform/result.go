@@ -63,7 +63,7 @@ func (r *Result) Messages() []Message {
 // It reads the completed output definition without serializing or validating it.
 func (r *Result) OutputEncoding(uri string) (string, error) {
 	if r == nil || r.native == nil {
-		return "", wrap("output encoding", ErrInput)
+		return "", wrap(opOutputEncoding, ErrInput)
 	}
 
 	value := r.native.Primary
@@ -73,7 +73,7 @@ func (r *Result) OutputEncoding(uri string) (string, error) {
 
 		value, ok = r.native.Secondary[uri]
 		if !ok {
-			return "", wrap("output encoding", ErrInput)
+			return "", wrap(opOutputEncoding, ErrInput)
 		}
 	}
 
@@ -90,12 +90,12 @@ func (r *Result) OutputEncoding(uri string) (string, error) {
 // partial Output on error; the Result and collected output coexist in memory.
 func (r *Result) Serialize(ctx context.Context) (*Output, error) {
 	if r == nil || r.native == nil {
-		return nil, wrap("serialize XSLT", ErrInput)
+		return nil, wrap(opSerializeXSLT, ErrInput)
 	}
 
 	ctx, cancel, err := r.engine.invocation(ctx)
 	if err != nil {
-		return nil, wrap("serialize XSLT", err)
+		return nil, wrap(opSerializeXSLT, err)
 	}
 	defer cancel()
 
@@ -109,7 +109,7 @@ func (r *Result) Serialize(ctx context.Context) (*Output, error) {
 	serialize := func(v xslt.ValueResult) ([]byte, error) {
 		writer := boundedBuffer{ctx: ctx, limit: r.engine.limits.MaxOutputBytes - used}
 		if err := xslt.SerializeValue(ctx, &writer, v); err != nil {
-			return nil, xsltError("serialize XSLT", err)
+			return nil, xsltError(opSerializeXSLT, err)
 		}
 
 		used += writer.Len()
@@ -148,12 +148,12 @@ func (r *Result) WriterTo(ctx context.Context) io.WriterTo {
 // and partial-output behavior as WriterTo. The destination remains caller-owned.
 func (r *Result) WriteSecondary(ctx context.Context, uri string, dst io.Writer) (int64, error) {
 	if r == nil || r.native == nil {
-		return 0, wrap("write secondary XSLT", ErrInput)
+		return 0, wrap(opWriteSecondaryXSLT, ErrInput)
 	}
 
 	value, ok := r.native.Secondary[uri]
 	if !ok {
-		return 0, wrap("write secondary XSLT", ErrInput)
+		return 0, wrap(opWriteSecondaryXSLT, ErrInput)
 	}
 
 	return r.writeValue(ctx, dst, value, "write secondary XSLT")
@@ -164,12 +164,12 @@ func (r *Result) WriteSecondary(ctx context.Context, uri string, dst io.Writer) 
 // unrelated nodes in its owner document are excluded. No XML is serialized or reparsed.
 func (r *Result) Document(ctx context.Context) (*Document, error) {
 	if r == nil || r.engine == nil {
-		return nil, wrap("result document", ErrInput)
+		return nil, wrap(opResultDocument, ErrInput)
 	}
 
 	ctx, cancel, err := r.engine.invocation(ctx)
 	if err != nil {
-		return nil, wrap("result document", err)
+		return nil, wrap(opResultDocument, err)
 	}
 	defer cancel()
 
@@ -180,14 +180,14 @@ func (r *Result) Document(ctx context.Context) (*Document, error) {
 
 	node, ok := value.Node()
 	if !ok || node.native.Type() != xdm.DocumentNode && node.native.Type() != xdm.ElementNode {
-		return nil, wrap("result document", ErrInput)
+		return nil, wrap(opResultDocument, ErrInput)
 	}
 
 	doc := node.Document()
 	if element, ok := node.native.(*xdm.Element); ok {
 		native, err := xdm.ElementDocument(ctx, element, true)
 		if err != nil {
-			return nil, wrap("result document", err)
+			return nil, wrap(opResultDocument, err)
 		}
 
 		doc = &Document{native: native}
@@ -236,7 +236,7 @@ func (s *Stylesheet) Execute(ctx context.Context, d *Document, options XSLTConte
 
 	execution, err := invocation.Execute(ctx)
 	if err != nil {
-		return nil, xsltError("execute XSLT", err)
+		return nil, xsltError(opExecuteXSLT, err)
 	}
 
 	if options.ResultMode != ResultRaw {
@@ -255,12 +255,12 @@ func (s *Stylesheet) Execute(ctx context.Context, d *Document, options XSLTConte
 
 	publication := nodePublication{ctx: ctx, limits: s.engine.limits}
 	if err := publication.visit(execution.Primary.Items, 0); err != nil {
-		return nil, wrap("execute XSLT", err)
+		return nil, wrap(opExecuteXSLT, err)
 	}
 
 	for _, output := range execution.Secondary {
 		if err := publication.visit(output.Items, 0); err != nil {
-			return nil, wrap("execute XSLT", err)
+			return nil, wrap(opExecuteXSLT, err)
 		}
 	}
 
@@ -270,13 +270,13 @@ func (s *Stylesheet) Execute(ctx context.Context, d *Document, options XSLTConte
 
 	checker := sequenceChecker{ctx: ctx, limits: s.engine.limits}
 	if err := checker.walk(execution.Primary.Items, 0); err != nil {
-		return nil, wrap("execute XSLT", err)
+		return nil, wrap(opExecuteXSLT, err)
 	}
 
 	result := &Result{engine: s.engine, native: execution, primary: ownSequence(execution.Primary.Items), secondary: make(map[string]Sequence), messages: slices.Clone(collector.output.Messages)}
 	for uri, output := range execution.Secondary {
 		if err := checker.walk(output.Items, 0); err != nil {
-			return nil, wrap("execute XSLT", err)
+			return nil, wrap(opExecuteXSLT, err)
 		}
 
 		result.secondary[uri] = ownSequence(output.Items)
@@ -322,7 +322,7 @@ type resultWriterTo struct {
 func (w resultWriterTo) WriteTo(dst io.Writer) (int64, error) {
 	r := w.result
 	if r == nil || r.native == nil {
-		return 0, wrap("write XSLT", ErrInput)
+		return 0, wrap(opWriteXSLT, ErrInput)
 	}
 
 	return r.writeValue(w.ctx, dst, r.native.Primary, "write XSLT")

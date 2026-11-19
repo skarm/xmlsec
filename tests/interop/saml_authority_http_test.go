@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/skarm/xmlsec/document"
@@ -47,6 +48,8 @@ const (
 	shibbolethEntity    = "https://authority.test/entity"
 	shibbolethRequester = "https://requester.test/entity"
 )
+
+var errAuthorityBodyLimit = errors.New("authority HTTP response exceeds byte limit")
 
 // This runs the released, unmodified IdP WAR in Jetty. Request decoding, peer
 // authentication, resolution, filtering, encryption and signing are all upstream
@@ -138,12 +141,6 @@ func checkAuthorityDenial(t *testing.T, recorder *authorityHTTPRecorder, request
 	// The early Shibboleth security failures have no outbound signing parameters.
 	// Their wire status is authenticated by the verified TLS connection. The Go
 	// message-signature profile must continue to reject an unsigned envelope.
-	if err != nil && (!errors.Is(err, protocol.ErrSignature) || result != nil) {
-		t.Fatalf("unexpected client failure: %v", err)
-	}
-	if err == nil && (result.Status().Code != protocol.Requester || len(result.Assertions()) != 0) {
-		t.Fatal("client accepted a rejected Authority request")
-	}
 	path := filepath.Join(recorder.directory, fmt.Sprintf("authority-response-%d.xml", recorder.sequence.Load()))
 	message, decodeErr := binding.DecodeSOAP(t.Context(), read(t, path), binding.SOAPOptions{})
 	if decodeErr != nil {
@@ -162,6 +159,9 @@ func checkAuthorityDenial(t *testing.T, recorder *authorityHTTPRecorder, request
 	}
 	found, issuer := false, false
 	for _, child := range payload.Root().Children() {
+		if child.Name() == (document.Name{Space: ds, Local: "Signature"}) {
+			t.Fatal("expected an unsigned early rejection from the pinned Authority")
+		}
 		issuer = issuer || child.Name() == (document.Name{Space: protocol.AssertionNamespace, Local: "Issuer"}) && child.Text() == shibbolethEntity
 		if child.Name() == (document.Name{Space: protocol.ProtocolNamespace, Local: "Status"}) {
 			codes := child.Children()
@@ -181,6 +181,9 @@ func checkAuthorityDenial(t *testing.T, recorder *authorityHTTPRecorder, request
 	if !found || !issuer {
 		t.Fatal("Authority did not report Requester/RequestDenied over authenticated HTTPS")
 	}
+	if !errors.Is(err, protocol.ErrSignature) || result != nil {
+		t.Fatalf("unsigned Authority rejection must return no verified result and ErrSignature; got %v, %v", result, err)
+	}
 }
 
 type authorityHTTPRecorder struct {
@@ -194,19 +197,91 @@ func (r *authorityHTTPRecorder) RoundTrip(request *http.Request) (*http.Response
 	if err != nil {
 		return nil, err
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, authorityRecordedBodyBytes))
-	closeErr := response.Body.Close()
-	if err != nil {
+	raw, readErr := readAuthorityHTTPBody(response.Body, authorityRecordedBodyBytes)
+	if err := errors.Join(readErr, response.Body.Close()); err != nil {
 		return nil, err
-	}
-	if closeErr != nil {
-		return nil, closeErr
 	}
 	if err = os.WriteFile(filepath.Join(r.directory, fmt.Sprintf("authority-response-%d.xml", r.sequence.Add(1))), raw, fixtureFileMode); err != nil {
 		return nil, err
 	}
 	response.Body = io.NopCloser(bytes.NewReader(raw))
 	return response, nil
+}
+
+func readAuthorityHTTPBody(body io.Reader, limit int64) ([]byte, error) {
+	raw, readErr := io.ReadAll(io.LimitReader(body, limit+1))
+	if int64(len(raw)) > limit {
+		readErr = errors.Join(readErr, errAuthorityBodyLimit)
+	}
+
+	if readErr != nil {
+		return nil, readErr
+	}
+
+	return raw, nil
+}
+
+type authorityHTTPTestBody struct {
+	io.Reader
+	closeErr error
+	closed   int
+}
+
+func (body *authorityHTTPTestBody) Close() error {
+	body.closed++
+	return body.closeErr
+}
+
+func (body *authorityHTTPTestBody) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+}
+
+func TestAuthorityHTTPBodyRequiresCompleteRead(t *testing.T) {
+	t.Parallel()
+
+	const limit = 4
+	for _, tc := range []struct {
+		name    string
+		reader  io.Reader
+		wantErr error
+	}{
+		{"at limit", strings.NewReader("body"), nil},
+		{"overflow", strings.NewReader("body+"), errAuthorityBodyLimit},
+		{"read failure", iotest.ErrReader(io.ErrUnexpectedEOF), io.ErrUnexpectedEOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := readAuthorityHTTPBody(tc.reader, limit)
+			if tc.wantErr == nil {
+				if err != nil || string(got) != "body" {
+					t.Fatalf("at exact limit = %q, %v; want body and no error", got, err)
+				}
+				return
+			}
+			if got != nil || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("incomplete response = %q, %v; want no bytes and %v", got, err, tc.wantErr)
+			}
+		})
+	}
+
+	t.Run("recorder closes failed read", func(t *testing.T) {
+		t.Parallel()
+
+		closeFailure := errors.New("close test response")
+		body := &authorityHTTPTestBody{Reader: iotest.ErrReader(io.ErrUnexpectedEOF), closeErr: closeFailure}
+		recorder := &authorityHTTPRecorder{base: body, directory: t.TempDir()}
+		got, err := recorder.RoundTrip(&http.Request{})
+		if got != nil {
+			if got.Body != nil {
+				_ = got.Body.Close()
+			}
+			t.Fatalf("recorder returned a response after a failed read: %v", got)
+		}
+		if !errors.Is(err, io.ErrUnexpectedEOF) || !errors.Is(err, closeFailure) || body.closed != 1 || recorder.sequence.Load() != 0 {
+			t.Fatalf("incomplete response error = %v; close count %d, artifact count %d", err, body.closed, recorder.sequence.Load())
+		}
+	})
 }
 
 func installShibboleth(t *testing.T, f *interopFixture, dist string, key testKey) string {

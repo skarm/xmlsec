@@ -1,8 +1,10 @@
 package protocol_test
 
 import (
+	"context"
 	"crypto"
 	"crypto/fips140"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,6 +63,15 @@ func TestNameIDMapping(t *testing.T) {
 		if err != nil || got != mapped {
 			t.Fatalf("target identifier: %v", err)
 		}
+		canceled, cancel := context.WithCancel(t.Context())
+		cancel()
+		decryption := &protocol.DecryptionOptions{Keys: []crypto.Decrypter{target}}
+		if got, err := result.DecryptNameID(canceled, decryption); got != (protocol.NameIdentifier{}) || !errors.Is(err, context.Canceled) {
+			t.Errorf("canceled %s identifier: %+v, %v", id.Root().Name().Local, got, err)
+		}
+		if got, err := protocol.DecryptMappedNameID(canceled, result.Identifier(), decryption); got != (protocol.NameIdentifier{}) || !errors.Is(err, context.Canceled) {
+			t.Errorf("canceled standalone %s identifier: %+v, %v", id.Root().Name().Local, got, err)
+		}
 		options.ExpectedRequestID = "_different"
 		if _, err = protocol.VerifyNameIDMappingResponse(t.Context(), response, keys, options); err == nil {
 			t.Fatal("uncorrelated mapping accepted")
@@ -106,9 +117,29 @@ func TestLimitedUseMappedIdentifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider := &decryptCounter{PrivateKey: recipient}
+	o.Decryption = &protocol.DecryptionOptions{Keys: []crypto.Decrypter{provider}}
 	limited, err := protocol.DecryptMappedAssertion(t.Context(), encrypted, keys, o)
-	if err != nil || limited.ID() != "_limited" || len(limited.Statements()) != 0 {
-		t.Fatalf("limited identifier: %v", err)
+	if err != nil || limited == nil || limited.ID() != "_limited" || len(limited.Statements()) != 0 || provider.calls != 1 {
+		t.Fatalf("limited identifier: private calls %d, %v", provider.calls, err)
+	}
+	for _, tc := range []struct {
+		name string
+		set  func(*protocol.AssertionOptions)
+	}{
+		{"zero verification time", func(o *protocol.AssertionOptions) { o.At = time.Time{} }},
+		{"relative issuer", func(o *protocol.AssertionOptions) { o.Issuer = "relative" }},
+		{"negative limit", func(o *protocol.AssertionOptions) { o.Limits.MaxAttributes = -1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := o
+			tc.set(&invalid)
+			provider.calls = 0
+			got, err := protocol.DecryptMappedAssertion(t.Context(), encrypted, keys, invalid)
+			if got != nil || !errors.Is(err, protocol.ErrProfile) || provider.calls != 0 {
+				t.Errorf("invalid assertion options: result %t, private calls %d, %v", got != nil, provider.calls, err)
+			}
+		})
 	}
 	bad := o
 	bad.Audience = idp

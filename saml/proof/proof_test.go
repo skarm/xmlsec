@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"errors"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,6 +128,37 @@ func TestProofExclusivePrefixList(t *testing.T) {
 	}
 }
 
+func TestXMLProofPreservesCertificateWithRelativeDistributionPoint(t *testing.T) {
+	t.Parallel()
+	c := testcert.New(t)
+	encodings := testcert.CertificateEncodings(t, c)
+	i := slices.IndexFunc(encodings, func(encoding testcert.CertificateEncoding) bool {
+		return encoding.Valid && encoding.Name == "relative distribution point"
+	})
+	if i < 0 {
+		t.Fatal("missing relative CRL distribution-point certificate")
+	}
+	certificate := encodings[i].DER
+	d, err := document.Parse(t.Context(), []byte(`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><p:AuthnRequest xmlns:p="urn:oasis:names:tc:SAML:2.0:protocol"/></s:Body></s:Envelope>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := proof.SignEnvelopedXML(t.Context(), d, proof.Signing{Key: c.LeafKey, Certificate: certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := signed.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range [][]byte{nil, certificate} {
+		verified, err := proof.VerifyEnvelopedXML(t.Context(), raw, proof.Options{Certificate: expected})
+		if err != nil || verified == nil || !bytes.Equal(verified.Certificate(), certificate) {
+			t.Fatalf("verified certificate snapshot: %v", err)
+		}
+	}
+}
+
 func TestSeparateXMLProofAPIs(t *testing.T) {
 	c := testcert.New(t)
 	d, err := document.Parse(t.Context(), []byte(`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><p:AuthnRequest xmlns:p="urn:oasis:names:tc:SAML:2.0:protocol"/></s:Body></s:Envelope>`), document.DefaultLimits())
@@ -201,6 +234,10 @@ func FuzzECPXMLProof(f *testing.F) {
 	})
 }
 
+type unavailablePublicKey struct{ crypto.Signer }
+
+func (unavailablePublicKey) Public() crypto.PublicKey { return (*ecdsa.PublicKey)(nil) }
+
 func TestRSAProofAndKeyMismatch(t *testing.T) {
 	c := testcert.New(t)
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -247,6 +284,9 @@ func TestRSAProofAndKeyMismatch(t *testing.T) {
 	}
 	if _, err := proof.SignCS01CompatXML(t.Context(), d, proof.Signing{Key: c.LeafKey, Certificate: cert.Raw}); err == nil {
 		t.Fatal("mismatched key signed")
+	}
+	if _, err := proof.SignCS01CompatXML(t.Context(), d, proof.Signing{Key: unavailablePublicKey{c.LeafKey}, Certificate: c.Leaf.Raw}); !errors.Is(err, proof.ErrProof) {
+		t.Fatal("signer without a usable public key did not return ErrProof", err)
 	}
 	var zero proof.Verified
 	if zero.Covers(d) || zero.Envelope() != nil || zero.Certificate() != nil {

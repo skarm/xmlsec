@@ -15,10 +15,13 @@ import (
 )
 
 func TestAssertionURIBinding(t *testing.T) {
-	for _, endpoint := range []string{"https://authority.test/assertion?other=x", "https://authority.test/assertion?", "https://authority.test/assertion#fragment"} {
+	for _, endpoint := range []string{"https://authority.test/assertion?other=x", "https://authority.test/assertion?", "https://authority.test/assertion#fragment", "https://authority.test/assertion#"} {
 		if _, err := binding.AssertionURL(endpoint, "_held", false); err == nil {
 			t.Fatalf("invalid endpoint accepted: %s", endpoint)
 		}
+	}
+	if got, err := binding.AssertionURL("https://authority.test/assertion%23archive", "_held", false); err != nil || got != "https://authority.test/assertion%23archive?ID=_held" {
+		t.Errorf("AssertionURL with escaped hash in path = %q, %v", got, err)
 	}
 	for _, query := range []string{"ID=_held&ID=_other", "ID=_held&extra=value", "id=_held", "ID=*", "ID=%ZZ"} {
 		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://authority.test/assertion?"+query, nil)

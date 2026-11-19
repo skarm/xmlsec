@@ -57,8 +57,8 @@ func (d *xmlTokenizer) RawToken() (xml.Token, error) {
 	case bytes.HasPrefix(unit, []byte(dtdCommentOpen)):
 		d.comment = unit[4 : len(unit)-3]
 		return &d.comment, nil
-	case bytes.HasPrefix(unit, []byte("<![CDATA[")):
-		d.text = unit[9 : len(unit)-3]
+	case bytes.HasPrefix(unit, []byte(lexicon.CDATAStart)):
+		d.text = unit[len(lexicon.CDATAStart) : len(unit)-len(lexicon.CDATAEnd)]
 		return &d.text, nil
 	case bytes.HasPrefix(unit, []byte(dtdPIOpen)):
 		content := unit[2 : len(unit)-2]

@@ -69,7 +69,11 @@ func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *str
 		t.Fatal(err)
 	}
 
-	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, xmldsig.Signatures(d)[tc.SignatureIndex], key, xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{tc.Canonicalization}, AllowUnspecifiedCoverage: true})
+	signatures := xmldsig.Signatures(d)
+	if tc.SignatureIndex < 0 || tc.SignatureIndex >= len(signatures) {
+		t.Fatalf("fixture selected signature %d from %d signatures", tc.SignatureIndex, len(signatures))
+	}
+	result, report, err := xmldsig.VerifySignatureDetailed(t.Context(), d, signatures[tc.SignatureIndex], key, xmldsig.SignatureOptions{AllowedCanonicalizationMethods: []string{tc.Canonicalization}, AllowUnspecifiedCoverage: true})
 	if tc.Valid {
 		if err != nil || result == nil || report.Status != xmldsig.Valid || len(result.References()) != tc.References {
 			t.Fatal(err, report)
@@ -81,7 +85,7 @@ func testCoreIndependentFixturesCase(t *testing.T, tc *coreFixtureCase, dir *str
 	var re *xmldsig.ReferenceError
 	// Verification reports retain diagnostics on failure.
 	//noinspection GoDfaErrorMayBeNotNil
-	if result != nil || !errors.Is(err, xmldsig.ErrDigest) || !errors.As(err, &re) || re.Index != tc.FailedReference || report.SignatureValue != xmldsig.Valid {
+	if result != nil || !errors.Is(err, xmldsig.ErrDigest) || !errors.As(err, &re) || re.Index != tc.FailedReference || report == nil || report.SignatureValue != xmldsig.Valid || len(report.References) != tc.References {
 		t.Fatal(err, report)
 	}
 

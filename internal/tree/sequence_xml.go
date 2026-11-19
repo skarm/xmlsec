@@ -49,8 +49,12 @@ func WriteXMLCharacters(ctx context.Context, dst io.Writer, text string, mode XM
 // WriteXMLSequence writes independent nodes without constructing a result tree.
 // Each top-level element preserves its original in-scope namespace bindings.
 func WriteXMLSequence(ctx context.Context, dst io.Writer, nodes iter.Seq2[*Node, error], maximum int, options XMLWriteOptions) (int64, error) {
-	if ctx == nil || dst == nil || maximum <= 0 {
+	if ctx == nil || nilcheck.IsNil(dst) || nodes == nil || maximum <= 0 {
 		return 0, ErrMalformed
+	}
+
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 
 	bindings := maps.Clone(options.InheritedNamespaces)
@@ -88,7 +92,11 @@ func WriteXMLSequence(ctx context.Context, dst io.Writer, nodes iter.Seq2[*Node,
 		if w.err != nil {
 			return w.output.Written, w.err
 		}
+
+		if err := ctx.Err(); err != nil {
+			return w.output.Written, err
+		}
 	}
 
-	return w.output.Written, nil
+	return w.output.Written, ctx.Err()
 }

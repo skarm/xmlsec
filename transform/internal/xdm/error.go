@@ -93,5 +93,5 @@ func (e *Error) displayCode() string {
 		return qv.Prefix + ":" + qv.Local
 	}
 
-	return "Q{" + qv.URI + "}" + qv.Local
+	return lexicon.EQNamePrefix + qv.URI + "}" + qv.Local
 }

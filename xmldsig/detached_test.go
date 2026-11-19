@@ -255,6 +255,24 @@ func wrongSecondDigest(t testing.TB, doc *document.Document, key *ecdsa.PrivateK
 	return parse(t, src[:start]+base64.StdEncoding.EncodeToString(value)+src[end:])
 }
 
+func TestDetachedResultOwnsTransformPolicy(t *testing.T) {
+	key := coreEC(t)
+	resolver := sourceMap(map[string][]byte{uriUrnA: []byte("aGVsbG8=")})
+	refs := []xmldsig.DetachedReference{{URI: uriUrnA, Transforms: []reference.Transform{{Algorithm: reference.Base64}}}}
+	signed := signDetached(t, key, refs, resolver, xmldsig.DetachedSignOptions{})
+	options := xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnA}, Processing: reference.Options{AllowedTransforms: []string{reference.Base64}}}
+
+	result, err := xmldsig.VerifyDetached(t.Context(), signed, key.Public(), resolver, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	options.Processing.AllowedTransforms[0] = c14n.Exclusive
+	if got := string(digestInput(t, result.References()[0])); got != "hello" {
+		t.Fatalf("replayed digest input = %q, want hello", got)
+	}
+}
+
 func TestZeroResolverFunc(t *testing.T) {
 	var resolver xmldsig.ResolverFunc
 	if reader, err := resolver.Resolve(t.Context(), uriUrnA); reader != nil || !errors.Is(err, resource.ErrResource) {
@@ -599,7 +617,8 @@ func TestDetachedDamagedProgramParameters(t *testing.T) {
 			})
 
 			result, err := xmldsig.VerifyDetached(t.Context(), changed, key.Public(), resolver, xmldsig.DetachedVerifyOptions{ExpectedURIs: []string{uriUrnData}, Processing: processing})
-			if result != nil || err == nil || calls != 0 {
+			detail, ok := errors.AsType[*xmldsig.ReferenceError](err)
+			if result != nil || !errors.Is(err, xmldsig.ErrStructure) || !ok || detail.Index != 0 || detail.URI != uriUrnData || detail.Stage != "transform" || calls != 0 {
 				t.Fatalf("result=%v error=%v calls=%d", result, err, calls)
 			}
 		})
@@ -659,6 +678,110 @@ func TestDetachedProgramParameters(t *testing.T) {
 			testDetachedProgramParameters(t, program)
 		})
 	}
+}
+
+func TestDetachedExtensionSignatureContext(t *testing.T) {
+	t.Parallel()
+
+	program := serializedProgramContext(reference.Transform{
+		Algorithm: reference.XPath,
+		XPath:     []reference.XPathExpression{{Expression: programTrueXPath}},
+	})
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unrelated := parse(t, `<ds:Signature xmlns:ds="`+xmldsig.Namespace+`"/>`).Root()
+	element := document.Name{Local: "invoice"}
+	attribute := document.Name{Local: "record-id"}
+	processing := reference.DefaultOptions()
+	processing.Signature = unrelated
+	processing.AllowedTransforms = append(processing.AllowedTransforms, reference.XPath)
+	processing.IDRules = []reference.IDAttributeRule{{Attribute: attribute, Elements: []document.Name{element}}}
+	phase := "sign"
+	var expected document.Element
+	var draft document.Element
+	calls := 0
+	processing.Extension = observingDetachedExtension{ExtensionProcessor: engine, observe: func(tr reference.Transform, scope reference.ExtensionContext) {
+		referenceIndex := calls % 2
+		calls++
+		if !scope.Signature.Valid() || scope.Signature.Same(unrelated) || expected.Valid() && !scope.Signature.Same(expected) {
+			t.Errorf("%s extension received the wrong containing signature", phase)
+		} else {
+			references := scope.Signature.Children()[0].Children()[2:]
+			xpath := findImportElement(t, references[referenceIndex], document.Name{Space: xmldsig.Namespace, Local: "XPath"})
+			if len(tr.XPath) != 1 || !tr.XPath[0].Here.Same(xpath) {
+				t.Errorf("%s extension signature does not contain the exact parameter handle", phase)
+			}
+			if phase == "sign" {
+				if draft.Valid() && !scope.Signature.Same(draft) {
+					t.Error("signing passed different snapshot handles to the two references")
+				}
+
+				draft = scope.Signature
+				assertDetachedExtensionDraft(t, draft)
+			}
+		}
+		if len(scope.IDRules) != 1 || scope.IDRules[0].Attribute != attribute || len(scope.IDRules[0].Elements) != 1 || scope.IDRules[0].Elements[0] != element {
+			t.Errorf("%s extension ID rules = %v, want the configured invoice record ID", phase, scope.IDRules)
+		}
+	}}
+
+	const payload = `<invoice record-id="sample">42</invoice>`
+	const receipt = `<invoice record-id="receipt">43</invoice>`
+	resolver := sourceMap(map[string][]byte{uriUrnData: []byte(payload), uriUrnAttachment: []byte(receipt)})
+	transforms := []reference.Transform{program, {Algorithm: c14n.Exclusive}}
+	refs := []xmldsig.DetachedReference{{URI: uriUrnData, Transforms: transforms}, {URI: uriUrnAttachment, Transforms: transforms}}
+	key := coreEC(t)
+	signed := signDetached(t, key, refs, resolver, xmldsig.DetachedSignOptions{Processing: processing})
+	if draft.Valid() {
+		assertDetachedExtensionDraft(t, draft)
+	}
+
+	phase, expected = "verify", signed.Root()
+	result, err := xmldsig.VerifyDetached(t.Context(), signed, key.Public(), resolver, xmldsig.DetachedVerifyOptions{
+		ExpectedURIs: []string{uriUrnData, uriUrnAttachment}, Processing: processing,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	phase = "replay"
+	processing.IDRules[0].Elements[0] = document.Name{Local: "other"}
+	for i, ref := range result.References() {
+		if got, want := string(digestInput(t, ref)), []string{payload, receipt}[i]; got != want {
+			t.Errorf("digest replay = %q, want %q", got, want)
+		}
+	}
+	if calls != 6 {
+		t.Errorf("extension calls = %d, want one per reference in each phase", calls)
+	}
+}
+
+func assertDetachedExtensionDraft(t *testing.T, draft document.Element) {
+	t.Helper()
+
+	children := draft.Children()
+	if len(children) != 1 {
+		t.Errorf("extension draft has %d child elements, want only SignedInfo", len(children))
+	}
+	for _, ref := range children[0].Children()[2:] {
+		digest := findImportElement(t, ref, document.Name{Space: xmldsig.Namespace, Local: "DigestValue"})
+		if digest.Text() != "" {
+			t.Error("extension draft acquired a digest after publication")
+		}
+	}
+}
+
+type observingDetachedExtension struct {
+	reference.ExtensionProcessor
+	observe func(reference.Transform, reference.ExtensionContext)
+}
+
+func (e observingDetachedExtension) Apply(ctx context.Context, tr reference.Transform, data reference.Data, scope reference.ExtensionContext) (reference.Data, error) {
+	e.observe(tr, scope)
+	return e.ExtensionProcessor.Apply(ctx, tr, data, scope)
 }
 
 func testDetachedProgramParameters(t *testing.T, program reference.Transform) {

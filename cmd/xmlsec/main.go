@@ -35,9 +35,22 @@ func main() {
 
 	err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, stderr)
 
+	if err == nil && diagnostics.Len() > 0 {
+		if writeErr := writeOutputContext(ctx, stdioPath, os.Stderr, diagnostics.Bytes()); writeErr != nil {
+			stop()
+			os.Exit(exitCode(writeErr))
+		}
+	}
+
 	stop()
 
 	if err != nil {
+		// Retrying the same blocked diagnostics stream here could hang after
+		// cancellation interrupted its first write.
+		if errors.Is(err, errDiagnosticOutput) {
+			os.Exit(exitCode(err))
+		}
+
 		if jsonErrors {
 			report := map[string]any{"schema_version": cliReportSchemaVersion, fieldStatus: "error", "error": err.Error(), "exit_code": exitCode(err)}
 			if diagnostics.Len() > 0 {
@@ -51,10 +64,6 @@ func main() {
 
 		os.Exit(exitCode(err))
 	}
-
-	if jsonErrors && diagnostics.Len() > 0 {
-		_, _ = os.Stderr.Write(diagnostics.Bytes())
-	}
 }
 
 func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -63,11 +72,11 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "input XML file; - reads stdin")
-	output := fs.String("out", "-", "output file; - writes stdout")
-	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "ID attribute local name (not guessed)")
-	idNS := fs.String("id-ns", "", "ID attribute namespace URI")
-	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
+	input := fs.String(flagNameIn, stdioPath, "input XML file; - reads stdin")
+	output := fs.String(flagNameOut, stdioPath, "output file; - writes stdout")
+	idAttr := fs.String(flagNameIDAttr, cliDefaultIDAttribute, "ID attribute local name (not guessed)")
+	idNS := fs.String(flagNameIDNS, "", "ID attribute namespace URI")
+	modern := fs.Bool(flagNameModernAlgorithms, false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
 
 	var (
 		xpathExpression                        string
@@ -82,28 +91,31 @@ func runXML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	switch cmd {
 	case nameSign:
 		keyFlags = registerPrivateKeyFlags(fs)
-		fs.StringVar(&keyFile, "key", "", "private key file; -key-format selects plain, encrypted PKCS#8 or PKCS#12")
-		fs.StringVar(&method, "method", "", "signature method URI; default selected from key type")
+		fs.StringVar(&keyFile, flagNameKey, "", "private key file; -key-format selects plain, encrypted PKCS#8 or PKCS#12")
+		fs.StringVar(&method, flagNameMethod, "", "signature method URI; default selected from key type")
 		fs.StringVar(&digest, "digest", xmldsig.SHA256, "reference digest method URI")
 		fs.StringVar(&refs, "refs", "", "comma-separated reference IDs; default root ID")
-		fs.StringVar(&inclusive, "inclusive-prefixes", "", "space-separated inclusive namespace prefixes")
+		fs.StringVar(&inclusive, flagNameInclusivePrefixes, "", "space-separated inclusive namespace prefixes")
 	case nameVerify:
-		fs.StringVar(&keyFile, "key", "", "externally trusted public key or pinned certificate, PEM/DER")
+		fs.StringVar(&keyFile, flagNameKey, "", "externally trusted public key or pinned certificate, PEM/DER")
 		fs.StringVar(&rootLocal, "root-local", "", "expected root local name")
 		fs.StringVar(&rootNS, "root-ns", "", "expected root namespace URI")
 	case nameC14N:
-		fs.StringVar(&xpathExpression, nameXPath, "", "XPath 1.0 node-set filter (evaluated for each node)")
-		fs.Var(&xpathNamespaces, "namespace", "PREFIX=URI for -xpath; repeatable")
-		fs.StringVar(&canonicalAlgorithm, "algorithm", c14n.Exclusive, "canonicalization URI: Exclusive, C14N 1.0 or C14N 1.1")
-		fs.BoolVar(&comments, "comments", false, "include comments")
-		fs.StringVar(&inclusive, "inclusive-prefixes", "", "space-separated inclusive namespace prefixes")
-		fs.StringVar(&selectID, "id", "", "canonicalize the unique element with this ID; default whole document")
+		fs.StringVar(&xpathExpression, flagNameXPath, "", "XPath 1.0 node-set filter (evaluated for each node)")
+		fs.Var(&xpathNamespaces, flagNameNamespace, "PREFIX=URI for -xpath; repeatable")
+		fs.StringVar(&canonicalAlgorithm, flagNameAlgorithm, c14n.Exclusive, "canonicalization URI: Exclusive, C14N 1.0 or C14N 1.1")
+		fs.BoolVar(&comments, flagNameComments, false, "include comments")
+		fs.StringVar(&inclusive, flagNameInclusivePrefixes, "", "space-separated inclusive namespace prefixes")
+		fs.StringVar(&selectID, flagNameID, "", "canonicalize the unique element with this ID; default whole document")
 	}
 
 	if cmd == nameC14N {
-		fs = commandFlags(fs, "in out id-attr id-ns algorithm comments inclusive-prefixes id xpath namespace max-node-visits", false)
+		fs = commandFlags(fs, false,
+			flagNameIn, flagNameOut, flagNameIDAttr, flagNameIDNS, flagNameAlgorithm, flagNameComments,
+			flagNameInclusivePrefixes, flagNameID, flagNameXPath, flagNameNamespace, flagNameMaxNodeVisits,
+		)
 	} else {
-		fs = withoutFlags(fs, "allowed-programs max-node-visits max-transforms")
+		fs = withoutFlags(fs, flagNameAllowedPrograms, flagNameMaxNodeVisits, flagNameMaxTransforms)
 	}
 
 	if done, err := parseFlags(fs, args[1:]); done || err != nil {
@@ -206,7 +218,7 @@ func writeAtomicOutputFunc(ctx context.Context, path string, w io.Writer, produc
 		return err
 	}
 
-	if path == "-" {
+	if path == stdioPath {
 		return produce(w)
 	}
 	// Same-directory temporary output; rename atomicity depends on the OS.
@@ -279,7 +291,7 @@ func verifyCLI(ctx context.Context, doc *document.Document, key crypto.PublicKey
 
 	result, err := xmldsig.Verify(ctx, doc, key, xmldsig.VerifyOptions{Policy: policy, IDAttribute: idName, ExpectedRoot: expectedRoot})
 	if err != nil {
-		raw, marshalErr := json.MarshalIndent(resultReport("signature verify", "externally-supplied-key", nil, err), "", "  ")
+		raw, marshalErr := json.MarshalIndent(resultReport("signature verify", trustExternallySuppliedKey, nil, err), "", "  ")
 		if marshalErr != nil {
 			return nil, errors.Join(err, marshalErr)
 		}
@@ -299,9 +311,9 @@ func verifyCLI(ctx context.Context, doc *document.Document, key crypto.PublicKey
 		SignatureMethod string   `json:"signature_method"`
 		KeyFingerprint  string   `json:"key_fingerprint_sha256"`
 		References      []string `json:"references"`
-	}{statusValid, "root-enveloped-v0", "externally-supplied-key", result.SignatureMethod(), result.KeyFingerprintSHA256(), uris}
+	}{statusValid, "root-enveloped-v0", trustExternallySuppliedKey, result.SignatureMethod(), result.KeyFingerprintSHA256(), uris}
 
-	out, err := json.MarshalIndent(resultReport("signature verify", "externally-supplied-key", report, nil), "", "  ")
+	out, err := json.MarshalIndent(resultReport("signature verify", trustExternallySuppliedKey, report, nil), "", "  ")
 	if err != nil {
 		return nil, err
 	}

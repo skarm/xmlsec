@@ -236,13 +236,14 @@ func signing(k SigningKey) (xmlsig.SigningKey, error) {
 		return xmlsig.SigningKey{}, ErrSignature
 	}
 
-	if e := signature.Key(k.Key.Public()); e != nil {
+	public := signature.SignerPublic(k.Key)
+	if e := signature.Key(public); e != nil {
 		return xmlsig.SigningKey{}, e
 	}
 
 	method := k.SignatureMethod
 	if method == "" {
-		switch k.Key.Public().(type) {
+		switch public.(type) {
 		case *rsa.PublicKey:
 			method = xmldsig.RSASHA256
 		case *ecdsa.PublicKey:
@@ -255,12 +256,22 @@ func signing(k SigningKey) (xmlsig.SigningKey, error) {
 	return xmlsig.SigningKey{Key: k.Key, CertificateDER: k.CertificateDER, Method: method, DigestMethod: k.DigestMethod, Canonicalization: k.Canonicalization, InclusivePrefixes: slices.Clone(k.InclusivePrefixes), PreserveKeys: k.PreserveKeys, Policy: k.Policy}, nil
 }
 
+// verifiedResult publishes a checked protocol value only while the operation
+// is still active, including after its last potentially expensive check.
+func verifiedResult[T any](ctx context.Context, result *T) (*T, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func verificationKey(k SigningKey) crypto.PublicKey {
 	if k.Secret != nil {
 		return *k.Secret
 	}
 
-	return k.Key.Public()
+	return signature.SignerPublic(k.Key)
 }
 
 func signingCount(d *document.Document, n int) error {

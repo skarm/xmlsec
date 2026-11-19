@@ -463,12 +463,16 @@ func NewVerifier(config Config) (*Verifier, error) {
 		return nil, e
 	}
 
-	ks, e := xmlsig.CloneKeys(config.TrustedKeys)
+	return newVerifier(config.TrustedKeys, o)
+}
+
+func newVerifier(keys []crypto.PublicKey, options Options) (*Verifier, error) {
+	ks, e := xmlsig.CloneKeys(keys)
 	if e != nil {
 		return nil, e
 	}
 
-	return &Verifier{keys: ks, o: o}, nil
+	return &Verifier{keys: ks, o: options}, nil
 }
 
 // Verify authenticates root coverage with an explicitly trusted key, then parses metadata
@@ -845,7 +849,16 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 			return err
 		}
 
-		if child.Name().Space != Namespace && child.Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) {
+		name := child.Name()
+		if name == xmlutil.Name(xmlutil.DS, lexicon.DSigElementSignature) {
+			continue
+		}
+
+		if name == xmlutil.Name(xmlutil.Assertion, xmlNameAttribute) && (role.kind == IdentityProvider || role.kind == AttributeAuthority) {
+			continue
+		}
+
+		if name.Space != Namespace {
 			return ErrMetadata
 		}
 
@@ -867,7 +880,7 @@ func readRoleContent(ctx context.Context, role *Role, children []document.Elemen
 			if err := appendRoleEndpoint(role, child, o); err != nil {
 				return err
 			}
-		case lexicon.DSigElementSignature, xmlNameExtensions, xmlNameOrganization, xmlNameContactPerson, xmlNameAttributeConsumingService, xmlNameAttributeProfile, xmlNameAttribute:
+		case xmlNameExtensions, xmlNameOrganization, xmlNameContactPerson, xmlNameAttributeConsumingService, xmlNameAttributeProfile:
 			// Protected role content is not interpreted.
 		default:
 			return ErrMetadata
@@ -986,8 +999,8 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 		return nil, ErrMetadata
 	}
 
-	use := xmlutil.Attr(c, lexicon.AttrUse)
-	if use != "" && use != keyUseSigning && use != keyUseEncryption {
+	use, present := c.Attribute(document.Name{Local: lexicon.AttrUse})
+	if present && use != keyUseSigning && use != keyUseEncryption {
 		return nil, ErrMetadata
 	}
 
@@ -1012,13 +1025,15 @@ func parseKey(ctx context.Context, c document.Element) ([]key, error) {
 	}
 
 	var out []key
+
 	// This profile requires one certificate per descriptor. It must not silently
 	// authorize every CA key from a supplied certificate-chain bag.
-	if len(ks[0].Children()) != 1 {
+	data, err := xmlutil.Children(ks[0])
+	if err != nil || len(data) != 1 {
 		return nil, ErrMetadata
 	}
 
-	for _, x := range ks[0].Children() {
+	for _, x := range data {
 		if x.Name() != xmlutil.Name(xmlutil.DS, lexicon.DSigElementX509Certificate) {
 			return nil, ErrMetadata
 		}

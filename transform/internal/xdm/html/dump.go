@@ -20,6 +20,7 @@ import (
 	norm "github.com/skarm/xmlsec/internal/normalization"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
+	"github.com/skarm/xmlsec/internal/xmloutput"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -198,8 +199,13 @@ func (w Writer) WriteTo(out io.Writer, node xdm.Node) error {
 
 // WriteSequence serializes borrowed nodes and text without constructing a DOM.
 func (w Writer) WriteSequence(ctx context.Context, out io.Writer, items iter.Seq2[xdm.XMLItem, error]) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	d := w.dumper()
 	d.ctx = ctx
+	out = contextWriter{ctx: ctx, out: out}
 
 	for item, err := range items {
 		if err != nil {
@@ -219,7 +225,28 @@ func (w Writer) WriteSequence(ctx context.Context, out io.Writer, items iter.Seq
 		}
 	}
 
-	return d.err
+	return ctx.Err()
+}
+
+type contextWriter struct {
+	ctx context.Context
+	out io.Writer
+}
+
+func (w contextWriter) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	return w.out.Write(p)
+}
+
+func (w contextWriter) WriteString(s string) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	return io.WriteString(w.out, s)
 }
 
 func (w Writer) dumper() htmlDumper {
@@ -452,6 +479,12 @@ func (d *htmlDumper) checkElementName(name string) {
 }
 
 func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
+	d.check(d.ctx.Err())
+
+	if d.err != nil {
+		return d.err
+	}
+
 	switch n.Type() {
 	case xdm.DocumentNode:
 		doc, ok := xdm.AsNode[*xdm.Document](n)
@@ -475,11 +508,11 @@ func (d *htmlDumper) dumpNode(out io.Writer, n xdm.Node) error {
 		return d.err
 	case xdm.ProcessingInstructionNode:
 		if d.doeMarkers {
-			switch n.Name() {
-			case lexicon.DisableOutputEscapingPITarget:
+			switch xdm.DOEMarkerOf(n) {
+			case tree.DOEStart:
 				d.doeActive = true
 				return d.err
-			case lexicon.EnableOutputEscapingPITarget:
+			case tree.DOEEnd:
 				d.doeActive = false
 				return d.err
 			}
@@ -549,29 +582,17 @@ func (d *htmlDumper) checkXMLMarkup(node xdm.Node) error {
 
 // dumpDTD outputs <!DOCTYPE name PUBLIC "extID" "sysID">\n
 func (d *htmlDumper) dumpDTD(out io.Writer, dtd *xdm.Doctype) {
-	d.writeString(out, "<!DOCTYPE ")
-	d.writeString(out, dtd.Name)
-
-	extID := dtd.PublicID
-
-	sysID := dtd.SystemID
-	if extID != "" {
-		d.writeString(out, " PUBLIC \"")
-		d.writeString(out, extID)
-		d.writeString(out, "\"")
-
-		if sysID != "" {
-			d.writeString(out, " \"")
-			d.writeString(out, sysID)
-			d.writeString(out, "\"")
-		}
-	} else if sysID != "" && sysID != htmlLegacyCompatSystemID {
-		d.writeString(out, " SYSTEM \"")
-		d.writeString(out, sysID)
-		d.writeString(out, "\"")
+	if d.err != nil {
+		return
 	}
 
-	d.writeString(out, ">\n")
+	sysID := dtd.SystemID
+	if dtd.PublicID == "" && sysID == htmlLegacyCompatSystemID {
+		sysID = ""
+	}
+
+	d.check(xmloutput.WriteHTMLDoctype(out, dtd.Name, dtd.PublicID, sysID))
+	d.writeString(out, "\n")
 }
 
 // normalizedContent applies character maps before normalization. Replacements

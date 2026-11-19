@@ -64,7 +64,7 @@ func TestXPath10CoreConformance(t *testing.T) {
 		{`number(' +1')`, math.NaN()},
 		{nameNumber1e2, math.NaN()},
 		{`number('Inf')`, math.NaN()},
-		{`number('\u00a01')`, math.NaN()},
+		{"number('\u00a01')", math.NaN()},
 		{`number(' -.5 ')`, -0.5},
 		{`sum(/r/a/@n)`, 6.0},
 		{`5 mod 2`, 1.0},
@@ -112,9 +112,9 @@ func testXPath10CoreConformanceCase(t *testing.T, e **transform.Engine, ctx *con
 		t.Fatal(err)
 	}
 
-	v, ok := seq.At(0)
-	if !ok {
-		t.Fatal("empty result")
+	v, err := seq.Single()
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	switch want := tt.want.(type) {

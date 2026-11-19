@@ -183,12 +183,12 @@ func decryptMappedAssertion(ctx context.Context, d *document.Document, keys []cr
 		return nil, err
 	}
 
-	plain, err := s.decryptSAML(ctx, d, d.Root(), nameAssertion, authenticated)
+	l, err := normalizeAssertionOptions(o)
 	if err != nil {
 		return nil, err
 	}
 
-	l, err := normalize(o.Limits)
+	plain, err := s.decryptSAML(ctx, d, d.Root(), nameAssertion, authenticated)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +265,7 @@ func VerifyNameIDMappingRequest(ctx context.Context, d *document.Document, keys 
 		return nil, err
 	}
 
-	return &VerifiedNameIDMappingRequest{request: NameIDMappingRequest{MessageHeader: h, NameID: id, Policy: p}, originalIdentifier: original}, ctx.Err()
+	return verifiedResult(ctx, &VerifiedNameIDMappingRequest{request: NameIDMappingRequest{MessageHeader: h, NameID: id, Policy: p}, originalIdentifier: original})
 }
 
 // SignNameIDMappingResponse signs success or error. Core 3.8.2 requires exactly
@@ -366,6 +366,10 @@ func decryptMappedNameID(ctx context.Context, d *document.Document, o *Decryptio
 	}
 
 	if d.Root().Name() == xmlutil.Name(AssertionNamespace, xmlNameNameID) {
+		if err := ctx.Err(); err != nil {
+			return NameIdentifier{}, err
+		}
+
 		return readNameID(d.Root())
 	}
 

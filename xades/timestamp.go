@@ -121,8 +121,10 @@ type AddTimestampOptions struct {
 }
 
 // AddSignatureTimestamp verifies the original XML and every prior timestamp,
-// obtains a nonce-bound response through Transport, and appends a timestamp in a
-// NEW snapshot. SignatureValue is canonicalized as an ELEMENT, not decoded.
+// obtains a response through Transport, and appends a timestamp in a new
+// snapshot. The response is nonce-bound by default. Set Request.OmitNonce
+// to request a token without a nonce. SignatureValue is canonicalized as an
+// element.
 // All XML and timestamps are reverified after serialization. External TSA work
 // cannot be rolled back if subsequent local verification fails.
 func AddSignatureTimestamp(ctx context.Context, doc *document.Document, selected document.Element, certificateDER []byte, transport timestamp.Transport, o AddTimestampOptions) (*document.Document, *TimedResult, error) {

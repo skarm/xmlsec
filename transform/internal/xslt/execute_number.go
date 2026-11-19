@@ -29,6 +29,10 @@ const (
 	numberDecimalPicture = "1"
 )
 
+// Unary numbering is an optional alphabetic extension. Cap the representation
+// at 64 symbols; larger values use the decimal picture.
+const maxUnaryNumberingLength = 64
+
 // Exact xsl:number picture selector; the selected formatting algorithm and fallback behavior remain unchanged.
 const (
 	numberPictureLowerAlpha = "a"
@@ -103,7 +107,12 @@ func (ec *execContext) execNumber(ctx context.Context, inst *numberInst) error {
 			return ec.addNode(ec.resultDoc.CreateText(lexicon.FloatNaN))
 		}
 	} else {
-		for _, n := range ec.numberNodeValues(ctx, inst, node) {
+		values := ec.numberNodeValues(ctx, inst, node)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		for _, n := range values {
 			numbers = append(numbers, big.NewInt(int64(n)))
 		}
 	}
@@ -665,12 +674,6 @@ func formatSingleNumber(num int, token string, groupSep string, groupSize int, l
 		if firstRune > utf8.RuneSelf-1 && unicode.IsNumber(firstRune) {
 			return formatWithOrdinalSystem(num, firstRune)
 		}
-		// Non-ASCII letter: alphabetic numbering from that codepoint
-		// (e.g., α = U+03B1 for Greek lowercase: α, β, γ, ..., ω, αα, αβ, ...)
-		if firstRune > utf8.RuneSelf-1 && unicode.IsLetter(firstRune) {
-			return formatWithAlphaSystem(int64(num), firstRune)
-		}
-
 		// ASCII numeric format: determine minimum width from token (e.g., "001" = width 3)
 		minWidth := len(token)
 
@@ -719,11 +722,6 @@ func formatAlphabeticNumber(num int64, token string) (string, bool) {
 		return toUpperAlpha(num), true
 	}
 
-	runes := []rune(token)
-	if len(runes) > 0 && runes[0] > utf8.RuneSelf-1 && unicode.IsLetter(runes[0]) {
-		return formatWithAlphaSystem(num, runes[0]), true
-	}
-
 	return "", false
 }
 
@@ -765,49 +763,29 @@ func numericOrdinalSuffixBig(num *big.Int, _ string) string {
 	}
 }
 
-// lookupAlphabetLength maps the start character of well-known alphabets to their
-// standard length, preventing over-counting into diacritical variants.
-func lookupAlphabetLength(key rune) (int, bool) {
-	switch key {
-	case 'а', 'А':
-		return 32, true
-	}
-
-	var zero int
-
-	return zero, false
-}
-
-// formatWithAlphaSystem formats using alphabetic numbering (like a-z but with
-// non-ASCII letters). Wraps at the end of the alphabet:
-// Greek numbering uses the shared 24-letter alphabet; other alphabets use
-// their configured contiguous range.
-func formatWithAlphaSystem(num int64, start rune) string {
+// numberingAlphabetLength counts the available letters for a non-Greek
+// alphabetic picture, with a configured bound for Cyrillic.
+func numberingAlphabetLength(start rune) int {
 	const (
-		alphabetDetectionStopThreshold = 100
+		alphabetDetectionStopThreshold = 101
 	)
 
-	if start == 'α' || start == 'Α' {
-		return xpath.FormatGreekAlphabetic(big.NewInt(num), start == 'Α')
+	switch start {
+	case 'а', 'А':
+		return 32
 	}
 
+	length := 0
+	for r := start; length < alphabetDetectionStopThreshold && unicode.IsLetter(r); r++ {
+		length++
+	}
+
+	return length
+}
+
+// formatWithAlphaSystem formats using a detected alphabet of at least two letters.
+func formatWithAlphaSystem(num int64, start rune, length int) string {
 	if num <= 0 {
-		return strconv.FormatInt(num, numberDecimalRadix)
-	}
-
-	// Use known alphabet length if available, otherwise detect
-	seqLen, ok := lookupAlphabetLength(start)
-	if !ok {
-		seqLen = 0
-		for r := start; unicode.IsLetter(r); r++ {
-			seqLen++
-			if seqLen > alphabetDetectionStopThreshold {
-				break // safety cap
-			}
-		}
-	}
-
-	if seqLen == 0 {
 		return strconv.FormatInt(num, numberDecimalRadix)
 	}
 
@@ -817,8 +795,8 @@ func formatWithAlphaSystem(num int64, start rune) string {
 	n := num
 	for n > 0 {
 		n--                                                               // convert to 0-based
-		result = append([]rune{start + rune(n%int64(seqLen))}, result...) // #nosec G115 -- The positive remainder is smaller than the selected Unicode alphabet length.
-		n /= int64(seqLen)
+		result = append([]rune{start + rune(n%int64(length))}, result...) // #nosec G115 -- The positive remainder is smaller than the selected Unicode alphabet length.
+		n /= int64(length)
 	}
 
 	return string(result)
@@ -910,13 +888,31 @@ func parseNumberListPicture(format string) numberListPicture {
 }
 
 func formatNumberListToken(num *big.Int, token, groupSep string, groupSize int, lang, ordinal string) string {
-	const (
-		numberPictureLowerGreek = "\u03b1"
-		numberPictureUpperGreek = "\u0391"
-	)
+	first, width := utf8.DecodeRuneInString(token)
+	if first > utf8.RuneSelf-1 && unicode.IsLetter(first) {
+		if first == 'α' || first == 'Α' {
+			if width == len(token) || num.IsInt64() {
+				return xpath.FormatGreekAlphabetic(num, first == 'Α')
+			}
+		} else {
+			length := numberingAlphabetLength(first)
 
-	if token == numberPictureLowerGreek || token == numberPictureUpperGreek {
-		return xpath.FormatGreekAlphabetic(num, token == numberPictureUpperGreek)
+			if num.IsInt64() {
+				value := num.Int64()
+				switch {
+				case length > 1:
+					return formatWithAlphaSystem(value, first, length)
+				case value <= 0:
+					return num.String()
+				case value <= maxUnaryNumberingLength:
+					return strings.Repeat(string(first), int(value))
+				}
+			}
+
+			if length == 1 {
+				token = numberDecimalPicture
+			}
+		}
 	}
 	// Word and alphabetic formats support all int64 values on any architecture.
 	// Other non-decimal formats require a native int.

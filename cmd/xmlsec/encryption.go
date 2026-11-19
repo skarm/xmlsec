@@ -27,36 +27,44 @@ func runEncryption(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	fs := flag.NewFlagSet("encryption "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "input XML or plaintext bytes")
-	output := fs.String("out", "-", "output XML or decrypted plaintext (CBC is unauthenticated)")
-	keyFile := fs.String("key", "", "RSA public/private key or raw symmetric key file")
-	transport := fs.String("transport", nameRSA, "key transport: rsa, wrap or direct")
-	scope := fs.String("scope", scopeBytes, "plaintext scope: bytes, document, element or content")
-	algorithm := fs.String("algorithm", xmlenc.AES256GCM, "data encryption algorithm URI")
-	allowLegacy := fs.Bool("allow-legacy-data", false, "explicitly permit unauthenticated CBC and legacy TripleDES key wrap; denied in FIPS mode")
-	wrap := fs.String("wrap-algorithm", xmlenc.AES256KeyWrap, "symmetric key wrap algorithm URI")
-	name := fs.String("key-name", "", "exact untrusted KeyName hint for direct-key mode")
-	oaepHash := fs.String("oaep-hash", cliDefaultHashName, "RSA-OAEP digest and MGF1 hash")
-	labelFile := fs.String("oaep-label-file", "", "optional exact OAEP label bytes")
-	maximum := fs.Int("max-plaintext-bytes", cliDefaultPlaintextBytes, "maximum plaintext bytes (up to 32 MiB)")
-	id := fs.String("id", "", "exact selected element ID (element/content encryption or EncryptedData selection)")
-	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "selection ID attribute local name")
-	idNS := fs.String("id-ns", "", "selection ID namespace")
-	index := fs.Int("index", -1, "explicit zero-based EncryptedData index for decrypt/externalize")
-	resources := fs.String("resources", "", "trusted URI/path-only manifest containing one external ciphertext")
-	uri := fs.String("uri", "", "absolute URI for externalize")
-	cipherOut := fs.String("cipher-out", "", "raw ciphertext output path for externalize (required)")
+	input := fs.String(flagNameIn, stdioPath, "input XML or plaintext bytes")
+	output := fs.String(flagNameOut, stdioPath, "output XML or decrypted plaintext (CBC is unauthenticated)")
+	keyFile := fs.String(flagNameKey, "", "RSA public/private key or raw symmetric key file")
+	transport := fs.String(flagNameTransport, nameRSA, "key transport: rsa, wrap or direct")
+	scope := fs.String(flagNameScope, scopeBytes, "plaintext scope: bytes, document, element or content")
+	algorithm := fs.String(flagNameAlgorithm, xmlenc.AES256GCM, "data encryption algorithm URI")
+	allowLegacy := fs.Bool(flagNameAllowLegacyData, false, "explicitly permit unauthenticated CBC and legacy TripleDES key wrap; denied in FIPS mode")
+	wrap := fs.String(flagNameWrapAlgorithm, xmlenc.AES256KeyWrap, "symmetric key wrap algorithm URI")
+	name := fs.String(flagNameKeyName, "", "exact untrusted KeyName hint for direct-key mode")
+	oaepHash := fs.String(flagNameOAEPHash, cliDefaultHashName, "RSA-OAEP digest and MGF1 hash")
+	labelFile := fs.String(flagNameOAEPLabelFile, "", "optional exact OAEP label bytes")
+	maximum := fs.Int(flagNameMaxPlaintextBytes, cliDefaultPlaintextBytes, "maximum plaintext bytes (up to 32 MiB)")
+	id := fs.String(flagNameID, "", "exact selected element ID (element/content encryption or EncryptedData selection)")
+	idAttr := fs.String(flagNameIDAttr, cliDefaultIDAttribute, "selection ID attribute local name")
+	idNS := fs.String(flagNameIDNS, "", "selection ID namespace")
+	index := fs.Int(flagNameIndex, -1, "explicit zero-based EncryptedData index for decrypt/externalize")
+	resources := fs.String(flagNameResources, "", "trusted URI/path-only manifest containing one external ciphertext")
+	uri := fs.String(flagNameURI, "", "absolute URI for externalize")
+	cipherOut := fs.String(flagNameCipherOut, "", "raw ciphertext output path for externalize (required)")
 	keyFlags := registerPrivateKeyFlags(fs)
 
-	specific := "in out id id-attr id-ns index uri cipher-out"
+	specific := []string{
+		flagNameIn, flagNameOut, flagNameID, flagNameIDAttr, flagNameIDNS, flagNameIndex, flagNameURI,
+		flagNameCipherOut,
+	}
 	if cmd != "externalize" {
-		specific = "in out key transport scope algorithm allow-legacy-data wrap-algorithm key-name oaep-hash oaep-label-file max-plaintext-bytes id id-attr id-ns"
+		specific = []string{
+			flagNameIn, flagNameOut, flagNameKey, flagNameTransport, flagNameScope, flagNameAlgorithm,
+			flagNameAllowLegacyData, flagNameWrapAlgorithm, flagNameKeyName, flagNameOAEPHash, flagNameOAEPLabelFile,
+			flagNameMaxPlaintextBytes, flagNameID, flagNameIDAttr, flagNameIDNS,
+		}
 		if cmd == nameDecrypt {
-			specific += " index resources" + privateKeyFlagNames
+			specific = append(specific, flagNameIndex, flagNameResources)
+			specific = append(specific, privateKeyFlagNames()...)
 		}
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -143,6 +151,11 @@ func (c encryptionCommand) run(ctx context.Context, stdin io.Reader, stdout io.W
 		return c.externalize(ctx, stdin, stdout)
 	}
 
+	wholeInput := c.scope == scopeBytes || c.scope == scopeDocument
+	if wholeInput && c.command == nameEncrypt && c.id != "" {
+		return usageError("-id requires -scope element or content for encryption")
+	}
+
 	opt, err := c.options(ctx)
 	if err != nil {
 		return err
@@ -173,6 +186,17 @@ func (c encryptionCommand) run(ctx context.Context, stdin io.Reader, stdout io.W
 		return err
 	}
 
+	if wholeInput && c.command == nameDecrypt && (c.id != "" || c.index >= 0) {
+		selected, err := c.selection(doc)
+		if err != nil {
+			return err
+		}
+
+		if !selected.Same(doc.Root()) {
+			return usageError("-scope %s requires selecting the root EncryptedData element", c.scope)
+		}
+	}
+
 	if c.command == nameDecrypt && c.scope == scopeBytes {
 		raw, err := operations.decryptBytes(doc)
 		if err != nil {
@@ -198,7 +222,7 @@ func (c encryptionCommand) options(ctx context.Context) (encryptionOptions, erro
 		decryption: xmlenc.DecryptOptions{XMLLimits: execution(ctx).xml},
 	}
 
-	if c.scope != scopeBytes && c.scope != "document" && c.scope != scopeElement && c.scope != "content" {
+	if c.scope != scopeBytes && c.scope != scopeDocument && c.scope != scopeElement && c.scope != "content" {
 		return opt, usageError("-scope must be bytes, document, element or content")
 	}
 
@@ -337,15 +361,15 @@ func (c encryptionCommand) operations(ctx context.Context, opt encryptionOptions
 }
 
 func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
-	if c.uri == "" || c.cipherOut == "" || c.cipherOut == "-" {
+	if c.uri == "" || c.cipherOut == "" || c.cipherOut == stdioPath {
 		return usageError("externalize requires -uri and a local -cipher-out")
 	}
 
-	if c.output != "-" && samePath(c.cipherOut, c.output) {
+	if c.output != stdioPath && samePath(c.cipherOut, c.output) {
 		return usageError("ciphertext and XML outputs must be distinct")
 	}
 
-	if c.input != "-" && samePath(c.input, c.cipherOut) {
+	if c.input != stdioPath && samePath(c.input, c.cipherOut) {
 		return usageError("ciphertext output must not overwrite the input XML")
 	}
 
@@ -379,7 +403,7 @@ func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, std
 
 	// A new ciphertext file exposes case aliases that had no file identity
 	// during the initial check. Never replace it with the XML output.
-	if c.output != "-" && samePath(c.cipherOut, c.output) {
+	if c.output != stdioPath && samePath(c.cipherOut, c.output) {
 		return usageError("ciphertext and XML outputs must be distinct")
 	}
 
@@ -387,7 +411,7 @@ func (c encryptionCommand) externalize(ctx context.Context, stdin io.Reader, std
 }
 
 func (c encryptionCommand) xmlOperation(doc *document.Document, operations encryptionOperations) (*document.Document, error) {
-	if c.scope == "document" {
+	if c.scope == scopeDocument {
 		if c.command == nameEncrypt {
 			return operations.encryptDocument(doc)
 		}

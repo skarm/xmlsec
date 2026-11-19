@@ -288,7 +288,7 @@ func (p *dtdContentParser) step() error {
 		return p.doctype()
 	case strings.HasPrefix(p.text, dtdCommentOpen):
 		return p.comment()
-	case strings.HasPrefix(p.text, "<![CDATA["):
+	case strings.HasPrefix(p.text, lexicon.CDATAStart):
 		return p.cdata()
 	case strings.HasPrefix(p.text, dtdPIOpen):
 		return p.processingInstruction()
@@ -348,16 +348,18 @@ func (p *dtdContentParser) cdata() error {
 		return fmt.Errorf("%w: CDATA outside document element", ErrMalformed)
 	}
 
-	end := strings.Index(p.text[9:], "]]>")
-	if end < 0 {
+	content := p.text[len(lexicon.CDATAStart):]
+	before, after, ok := strings.Cut(content, lexicon.CDATAEnd)
+
+	if !ok {
 		return fmt.Errorf("%w: CDATA terminator", ErrMalformed)
 	}
 
-	if err := p.output.writeEscaped(p.text[9:9+end], false); err != nil {
+	if err := p.output.writeEscaped(before, false); err != nil {
 		return err
 	}
 
-	p.text = p.text[end+12:]
+	p.text = after
 
 	return nil
 }
@@ -575,7 +577,7 @@ func (p *dtdContentParser) characters() error {
 	}
 
 	value := p.text[:end]
-	if strings.Contains(value, "]]>") {
+	if strings.Contains(value, lexicon.CDATAEnd) {
 		return fmt.Errorf("%w: CDATA terminator in text", ErrMalformed)
 	}
 

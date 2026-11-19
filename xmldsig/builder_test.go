@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
+	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -134,4 +136,43 @@ func TestBuildTemplateRejectsOversizedEncodedObjectsAndCancellation(t *testing.T
 	if result != nil || selected.Valid() || !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled build = (%v, valid=%t, %v), want no draft and cancellation", result, selected.Valid(), err)
 	}
+}
+
+func TestBuildTemplateTransformLimit(t *testing.T) {
+	t.Parallel()
+
+	const maximum = 64
+	payload := "payload"
+	transforms := slices.Repeat([]reference.Transform{{Algorithm: c14n.Exclusive}}, maximum+1)
+	spec := xmldsig.SignatureTemplate{
+		SignatureMethod: xmldsig.ECDSASHA256,
+		References:      []xmldsig.ReferenceTemplate{{URI: "#data", Transforms: transforms}},
+		Objects:         []xmldsig.ObjectTemplate{{ID: "data", Text: &payload}},
+	}
+
+	t.Run("above hard limit", func(t *testing.T) {
+		t.Parallel()
+
+		draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, spec)
+		if draft != nil || selected.Valid() || !errors.Is(err, xmldsig.ErrPolicy) {
+			t.Fatalf("build above hard transform limit = (%t, %t, %v)", draft != nil, selected.Valid(), err)
+		}
+	})
+	t.Run("configured at hard limit", func(t *testing.T) {
+		t.Parallel()
+
+		atLimit := spec
+		atLimit.References = []xmldsig.ReferenceTemplate{{URI: "#data", Transforms: transforms[:maximum]}}
+		draft, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, atLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		key := coreEC(t)
+		if _, err := xmldsig.SignTemplate(t.Context(), draft, selected, key, xmldsig.TemplateSignOptions{
+			Validation: xmldsig.SignatureOptions{Processing: reference.Options{MaxTransforms: maximum}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

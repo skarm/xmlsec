@@ -3,7 +3,6 @@ package ecp
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
 	"net/http"
 	"slices"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 	"github.com/skarm/xmlsec/saml/proof"
@@ -57,7 +57,7 @@ func HoKChallenge(ctx context.Context, request protocol.AuthnRequest, key protoc
 // ParseHoKChallenge selects HoK and the client's exact attesting certificate.
 // channels, when requested by the SP, come from the actual client/SP TLS channel.
 func ParseHoKChallenge(ctx context.Context, raw []byte, resourceURL string, certificate []byte, channels []protocol.ChannelBinding, limits binding.SOAPOptions) (*Exchange, error) {
-	if _, err := x509.ParseCertificate(certificate); err != nil {
+	if _, err := x509cert.ParseDefault(certificate); err != nil {
 		return nil, ErrECP
 	}
 

@@ -4,10 +4,11 @@
 package xslt
 
 import (
+	"cmp"
 	"context"
 	"maps"
 	"slices"
-	"sort"
+	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -115,7 +116,7 @@ func (c *compiler) collectTopLevelNamespaceAliases(_ context.Context, root *xdm.
 }
 
 // collectLocalComponentNames precedes package imports so package conflict checks
-// see declarations from the current module, including implicitly declared modes.
+// see explicit declarations from the current module.
 func (c *compiler) collectLocalComponentNames(ctx context.Context, root *xdm.Element) error {
 	c.localTemplateNames = make(map[string]struct{})
 	c.localVarNames = make(map[string]struct{})
@@ -153,24 +154,14 @@ func (c *compiler) collectModuleComponentNames(ctx context.Context, root *xdm.El
 
 func (c *compiler) collectLocalComponentName(elem *xdm.Element) {
 	name := getAttr(elem, xslAttrName)
-
-	mode := getAttr(elem, lexicon.AttrMode)
-	if name == "" && (elem.LocalName() != nameTemplate || c.stylesheet.declaredModes || mode == "") {
+	if name == "" {
 		return
 	}
 
 	namespaces := inScopeNamespaces(elem)
 	switch elem.LocalName() {
 	case lexicon.XSLTElementTemplate:
-		if n := getAttr(elem, xslAttrName); n != "" {
-			c.localTemplateNames[resolveQName(n, namespaces)] = struct{}{}
-		}
-
-		if !c.stylesheet.declaredModes {
-			if m := getAttr(elem, lexicon.AttrMode); m != "" && m != lexicon.ModeDefault && m != lexicon.ModeAll && m != modeUnnamed {
-				c.localModeNames[resolveQName(m, namespaces)] = struct{}{}
-			}
-		}
+		c.localTemplateNames[resolveQName(name, namespaces)] = struct{}{}
 	case lexicon.XSLTElementFunction:
 		qualified, err := functionName(name, namespaces)
 		if err != nil {
@@ -745,6 +736,11 @@ func (c *compiler) compileNamespaceAlias(ctx context.Context, elem *xdm.Element)
 	stylesheetPrefix, hasStylesheetPrefix := elem.GetAttribute(nameStylesheetPrefix)
 	resultPrefix, hasResultPrefix := elem.GetAttribute(nameResultPrefix)
 
+	if c.stylesheet.processorLanguage() >= processorXSLT20 {
+		stylesheetPrefix = strings.Trim(stylesheetPrefix, lexicon.XMLWhitespace)
+		resultPrefix = strings.Trim(resultPrefix, lexicon.XMLWhitespace)
+	}
+
 	if !hasStylesheetPrefix {
 		return staticError(errCodeXTSE0010, "xsl:namespace-alias requires stylesheet-prefix attribute")
 	}
@@ -811,53 +807,64 @@ func (c *compiler) compileNamespaceAlias(ctx context.Context, elem *xdm.Element)
 }
 
 func (c *compiler) sortTemplates(_ context.Context) {
-	// Ensure #all templates are registered in every mode (including modes
-	// that were created after the #all template was compiled).
-	allTemplates := c.stylesheet.modeTemplates[modeAll]
-	if len(allTemplates) > 0 {
-		for mode := range c.stylesheet.modeTemplates {
-			if mode == modeAll {
-				continue
+	ss := c.stylesheet
+	ss.modeIndex = make(map[string]*templateIndex, len(ss.modeTemplates))
+
+	for mode, templates := range ss.modeTemplates {
+		// Reverse declaration order so equally ranked rules keep the later
+		// declaration (or the later union alternative) first.
+		slices.Reverse(templates)
+		slices.SortStableFunc(templates, func(a, b *template) int {
+			if precedence := cmp.Compare(b.ImportPrec, a.ImportPrec); precedence != 0 {
+				return precedence
 			}
 
-			existing := c.stylesheet.modeTemplates[mode]
-			for _, at := range allTemplates {
-				if !slices.Contains(existing, at) {
-					c.stylesheet.modeTemplates[mode] = append(c.stylesheet.modeTemplates[mode], at)
-				}
-			}
-		}
-	}
-
-	for mode := range c.stylesheet.modeTemplates {
-		templates := c.stylesheet.modeTemplates[mode]
-		sort.SliceStable(templates, func(i, j int) bool {
-			// Higher import precedence first
-			if templates[i].ImportPrec != templates[j].ImportPrec {
-				return templates[i].ImportPrec > templates[j].ImportPrec
-			}
-			// Higher priority first
-			if templates[i].Priority != templates[j].Priority {
-				return templates[i].Priority > templates[j].Priority
-			}
-			// Same priority: later declaration order wins (XSLT spec §6.4)
-			return i > j
+			return cmp.Compare(b.Priority, a.Priority)
 		})
+
+		// The dispatch index records positions in the final sorted list.
+		if idx := buildTemplateIndex(templates); idx != nil {
+			ss.modeIndex[mode] = idx
+		}
 	}
 
-	// Build the dispatch index from the now-final sorted order. This must run
-	// AFTER every mode list above is fully sorted: buildTemplateIndex records
-	// each template's POSITION in the sorted slice, and that position is the
-	// only thing a dispatch-time merge (dispatch_index.go candidates) can use
-	// to recover the original scan order — the tiebreak above compares live
-	// slice indices, not a well-defined ordering over the templates
-	// themselves, so the index can only ever inherit the sort's result, never
-	// re-derive it.
-	c.stylesheet.modeIndex = make(map[string]*templateIndex, len(c.stylesheet.modeTemplates))
-	for mode, templates := range c.stylesheet.modeTemplates {
-		if idx := buildTemplateIndex(templates); idx != nil {
-			c.stylesheet.modeIndex[mode] = idx
+	c.completeAllModeRules()
+}
+
+func (c *compiler) completeAllModeRules() {
+	ss := c.stylesheet
+	rules := ss.modeTemplates[modeAll]
+
+	if len(rules) == 0 {
+		return
+	}
+
+	// A local mode with no rules of its own can share the final #all order
+	// and index. A used-package override replaces its mode list separately.
+	assign := func(name string) {
+		switch name {
+		case "", modeDefault, modeUnnamed, modeAll, modeCurrent:
+			return
 		}
+
+		if definition := ss.modeDefs[name]; definition != nil && definition.OwnerPackage != nil {
+			return
+		}
+
+		if _, exists := ss.modeTemplates[name]; !exists {
+			ss.modeTemplates[name] = rules
+			if idx := ss.modeIndex[modeAll]; idx != nil {
+				ss.modeIndex[name] = idx
+			}
+		}
+	}
+
+	for name := range ss.modeDefs {
+		assign(name)
+	}
+
+	for name := range c.usedModes {
+		assign(name)
 	}
 }
 

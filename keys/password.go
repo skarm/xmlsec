@@ -30,6 +30,8 @@ const (
 	maximumSaltBytes = 64
 	// Minimum accepted salt length for the supported password-based KDF profiles, in bytes.
 	minimumSaltBytes = 8
+	// The strict Go FIPS backend enforces a 112-bit minimum HMAC key length.
+	minimumFIPSOnlyHMACKeyBytes = 112 / 8
 )
 
 var (
@@ -110,6 +112,10 @@ func (p *passwordState) derive(hash crypto.Hash, salt []byte, iterations, size i
 	blocks := (size + hash.Size() - 1) / hash.Size()
 	if err := p.charge(iterations, blocks); err != nil {
 		return nil, err
+	}
+
+	if fips140.Enforced() && len(p.password) < minimumFIPSOnlyHMACKeyBytes {
+		return nil, ErrPolicy
 	}
 
 	prf := hmac.New(hash.New, p.password)

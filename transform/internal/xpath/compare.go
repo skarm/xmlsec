@@ -345,66 +345,62 @@ func evalGeneralComparison(evalFn exprEvaluator, ctx context.Context, ec *evalCo
 
 func evalGeneralComparisonAgainstRange(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e BinaryExpr) (bool, bool, error) {
 	if re, ok := e.Right.(RangeExpr); ok {
-		return compareSingletonAgainstRange(evalFn, ctx, ec, e.Op, e.Left, re, comparisonRangeOnRight)
+		matched, err := compareAgainstRange(evalFn, ctx, ec, e.Op, e.Left, re, comparisonRangeOnRight)
+		return matched, true, err
 	}
 
 	if re, ok := e.Left.(RangeExpr); ok {
-		return compareSingletonAgainstRange(evalFn, ctx, ec, e.Op, e.Right, re, comparisonRangeOnLeft)
+		matched, err := compareAgainstRange(evalFn, ctx, ec, e.Op, e.Right, re, comparisonRangeOnLeft)
+		return matched, true, err
 	}
 
 	return false, false, nil
 }
 
-func compareSingletonAgainstRange(evalFn exprEvaluator, ctx context.Context, ec *evalContext, op TokenType, singletonExpr Expr, rangeExpr RangeExpr, rangeOnLeft bool) (bool, bool, error) {
-	singletonSeq, err := evalFn(ctx, ec, singletonExpr)
+func compareAgainstRange(evalFn exprEvaluator, ctx context.Context, ec *evalContext, op TokenType, operand Expr, rangeExpr RangeExpr, rangeOnLeft bool) (bool, error) {
+	sequence, err := evalFn(ctx, ec, operand)
 	if err != nil {
-		return false, true, err
+		return false, err
 	}
 
-	if xdm.SequenceLen(singletonSeq) == 0 {
-		return false, true, nil
+	if xdm.SequenceLen(sequence) == 0 {
+		return false, nil
 	}
-	// Atomize with an early stop (cap 2): the range fast-path only applies when
-	// the non-range side is a singleton, so a multi-item or unbounded-lazy operand
-	// (e.g. another large range) must be detected WITHOUT materializing/draining
-	// the whole sequence. When more than one atom is produced, fall back to the
-	// general O(N*M) path, which honors OpLimit / context cancellation.
-	singletonAtoms, err := atomizeSingletonOperand(singletonSeq)
+	// Only a singleton integer atom can use the bound check. General comparison
+	// promotes an untyped item to double, and a multi-item operand needs the
+	// ordinary existential scan. Reuse the evaluated operand on both paths.
+	atoms, err := atomizeSingletonOperand(sequence)
 	if err != nil {
-		return false, true, err
+		return false, err
 	}
 
-	if len(singletonAtoms) != singleComparisonOperand {
-		return false, false, nil
-	}
+	if len(atoms) != singleComparisonOperand || !xdm.IsIntegerDerived(atoms[0].TypeName) {
+		rangeSequence, err := evalFn(ctx, ec, rangeExpr)
+		if err != nil {
+			return false, err
+		}
 
-	// An untyped singleton in a general comparison promotes to double, not
-	// integer. Leave it to the ordinary path, avoiding an unbounded integer
-	// parse merely to decide whether this optimization applies.
-	if !xdm.IsIntegerDerived(singletonAtoms[0].TypeName) {
-		return false, false, nil
-	}
+		left, right := sequence, rangeSequence
+		if rangeOnLeft {
+			left, right = rangeSequence, sequence
+		}
 
-	singletonInt, err := coerceToInteger(ctx, singletonAtoms[0])
-	if err != nil {
-		return false, false, nil //nolint:nilerr // non-integer subscript means no match
+		return generalCompareWithCollation(ctx, op, left, right, ec.resolveDefaultCollation(), ec)
 	}
 
 	start, end, empty, err := evalRangeBounds(evalFn, ctx, ec, rangeExpr)
-	if err != nil {
-		return false, true, err
+	if err != nil || empty {
+		return false, err
 	}
 
-	if empty {
-		return false, true, nil
-	}
+	singletonInt := atoms[0]
 
 	sv, sok := singletonInt.Int64Val()
 	if sok && start.IsInt64() && end.IsInt64() {
-		return compareRangeBoundsInt64(op, sv, start.Int64(), end.Int64(), rangeOnLeft), true, nil
+		return compareRangeBoundsInt64(op, sv, start.Int64(), end.Int64(), rangeOnLeft), nil
 	}
 
-	return compareRangeBounds(op, singletonInt.BigInt(), start, end, rangeOnLeft), true, nil
+	return compareRangeBounds(op, singletonInt.BigInt(), start, end, rangeOnLeft), nil
 }
 
 func evalRangeBounds(evalFn exprEvaluator, ctx context.Context, ec *evalContext, e RangeExpr) (*big.Int, *big.Int, bool, error) {
@@ -422,14 +418,19 @@ func evalRangeBounds(evalFn exprEvaluator, ctx context.Context, ec *evalContext,
 		return nil, nil, true, nil
 	}
 
-	startAtoms, err := AtomizeSequence(startSeq)
+	startAtoms, err := atomizeSingletonOperand(startSeq)
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	endAtoms, err := AtomizeSequence(endSeq)
+	endAtoms, err := atomizeSingletonOperand(endSeq)
 	if err != nil {
 		return nil, nil, false, err
+	}
+
+	// Arrays can atomize to an empty sequence even when the input item exists.
+	if len(startAtoms) == 0 || len(endAtoms) == 0 {
+		return nil, nil, true, nil
 	}
 
 	if len(startAtoms) != singleComparisonOperand || len(endAtoms) != singleComparisonOperand {

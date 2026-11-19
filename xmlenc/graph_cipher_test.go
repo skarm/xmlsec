@@ -3,8 +3,10 @@ package xmlenc //nolint:testpackage // Exercises cipher planning and byte accoun
 import (
 	"bytes"
 	"errors"
+	"io"
 	"slices"
 	"testing"
+	"testing/iotest"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
@@ -31,9 +33,20 @@ func TestGraphCipherPlansLocalReferencesAndInclusivePrefixes(t *testing.T) {
 		},
 		{
 			name:    "exclusive_canonicalization_keeps_prefix",
-			cipher:  referenceStart + `<ds:Transform Algorithm="` + c14n.Exclusive + `"><ec:InclusiveNamespaces PrefixList="p"/></ds:Transform>` + referenceEnd,
+			cipher:  referenceStart + `<ds:Transform Algorithm="` + c14n.Exclusive + `"><ec:InclusiveNamespaces PrefixList="&#9;p&#10;"/></ds:Transform>` + referenceEnd,
 			allowed: []string{c14n.Exclusive},
 			want:    []byte(`<payload xmlns:p="urn:prefix" xml:id="cipher">YQBi</payload>`),
+		},
+		{
+			name:    "non_xml_whitespace_in_prefix_list",
+			cipher:  referenceStart + `<ds:Transform Algorithm="` + c14n.Exclusive + `"><ec:InclusiveNamespaces PrefixList="p&#160;"/></ds:Transform>` + referenceEnd,
+			allowed: []string{c14n.Exclusive},
+			wantErr: ErrPolicy,
+		},
+		{
+			name:    "base64_does_not_accept_inclusive_namespaces",
+			cipher:  referenceStart + `<ds:Transform Algorithm="` + reference.Base64 + `"><ec:InclusiveNamespaces PrefixList=""/></ds:Transform>` + referenceEnd,
+			wantErr: ErrFormat,
 		},
 		{
 			name:    "empty_transform_list",
@@ -112,5 +125,22 @@ func TestGraphCipherChargesInlineBytesOnce(t *testing.T) {
 	}
 	if got, err := graph.readCipher(plan); got != nil || !errors.Is(err, document.ErrLimit) {
 		t.Errorf("readCipher with exhausted budget = (%q, %v), want no bytes and ErrLimit", got, err)
+	}
+}
+
+func TestReadCiphertextDistinguishesEOFAndUnexpectedEOF(t *testing.T) {
+	t.Parallel()
+
+	body := []byte("ordinary resource bytes")
+	if got, err := readCiphertext(t.Context(), bytes.NewReader(body), 1024); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("ordinary EOF: got %q, %v", got, err)
+	}
+
+	for _, size := range []int{len(body), externalCipherChunkBytes} {
+		reader := io.MultiReader(bytes.NewReader(bytes.Repeat([]byte{'x'}, size)), iotest.ErrReader(io.ErrUnexpectedEOF))
+		got, err := readCiphertext(t.Context(), reader, size)
+		if got != nil || !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("unexpected EOF after %d bytes: got %d bytes, %v", size, len(got), err)
+		}
 	}
 }

@@ -7,13 +7,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 )
-
-// Local absolute POSIX entity bases retain the file URI authority prefix.
-const localFileURIPrefix = lexicon.SchemeFile + "://"
 
 // ParseOptions configures XML-to-XDM construction through internal/tree.
 // DTD resources can only use the explicitly supplied invocation opener.
@@ -111,10 +107,8 @@ func (o ParseOptions) parserOptions() tree.ParseOptions {
 	options := tree.ParseOptions{Limits: o.limits(), AllowSingleByteEncodings: o.AllowSingleByteEncodings, AllowRelativeNamespaces: o.AllowRelativeNamespaces, AllowDTD: o.AllowDTD, BaseURI: o.BaseURI}
 	// XSLT's resolver also accepts portable absolute file paths. Entity bases
 	// are absolute URIs, independently of that resolver's path spelling.
-	if uripath.IsWindowsAbsolute(options.BaseURI) {
-		options.BaseURI = uripath.WindowsToFileURI(options.BaseURI)
-	} else if strings.HasPrefix(options.BaseURI, "/") {
-		options.BaseURI = localFileURIPrefix + options.BaseURI
+	if uripath.IsAbsolutePath(options.BaseURI) {
+		options.BaseURI = uripath.FileURIFromPath(options.BaseURI)
 	}
 
 	if o.DTDOpen != nil {

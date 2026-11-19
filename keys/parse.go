@@ -97,11 +97,21 @@ func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
 	}
 
 	certificate := label == certificatePEMType || label == "" && len(fields) == certificateOuterFields
-	if !certificate && len(raw) > limits.MaxKeyBytes {
+	if certificate {
+		return certificateKey(raw, limits)
+	}
+
+	// The standard key parsers can ignore extra SEQUENCE fields. Keep key
+	// structures distinct from certificates before choosing their byte budget.
+	if len(fields) != 2 {
+		return nil, ErrFormat
+	}
+
+	if len(raw) > limits.MaxKeyBytes {
 		return nil, ErrLimit
 	}
 
-	if !certificate && !decoded.owned {
+	if !decoded.owned {
 		// Some x509 public-key models borrow SPKI bytes. Keep that small key
 		// encoding owned, while certificate extraction owns only its SPKI.
 		raw = bytes.Clone(raw)
@@ -114,16 +124,10 @@ func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
 		key, err = x509.ParsePKIXPublicKey(raw)
 	case rsaPublicKeyPEMType:
 		key, err = x509.ParsePKCS1PublicKey(raw)
-	case certificatePEMType:
-		return certificateKey(raw, limits)
 	case "":
 		key, err = x509.ParsePKIXPublicKey(raw)
 		if err != nil {
 			key, err = x509.ParsePKCS1PublicKey(raw)
-		}
-
-		if err != nil {
-			return certificateKey(raw, limits)
 		}
 	default:
 		return nil, ErrFormat
@@ -131,6 +135,12 @@ func ParsePublic(data []byte, limits Limits) (crypto.PublicKey, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("%w: public key: %w", ErrFormat, err)
+	}
+
+	if der.Is(fields[0], asn1.ClassUniversal, asn1.TagSequence, true) {
+		if err := x509cert.ValidatePublicKeyInfo(value, key, x509cert.Limits{Bytes: limits.MaxKeyBytes, Depth: limits.MaxASN1Depth, Nodes: limits.MaxASN1Nodes}); err != nil {
+			return nil, derError(err)
+		}
 	}
 
 	if err := publicBudget(key, limits); err != nil {

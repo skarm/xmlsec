@@ -167,21 +167,25 @@ type HTTPResolver struct {
 
 // NewHTTPResolver requires an explicit client and at least one allowed origin.
 func NewHTTPResolver(config HTTPConfig) (*HTTPResolver, error) {
-	if config.Client == nil || config.Client.Transport != nil && nilcheck.IsNil(config.Client.Transport) || len(config.AllowedOrigins) == 0 {
+	if config.Client == nil || len(config.AllowedOrigins) == 0 {
+		return nil, ErrInput
+	}
+
+	client := *config.Client
+	if client.Transport != nil && nilcheck.IsNil(client.Transport) || client.Jar != nil && nilcheck.IsNil(client.Jar) {
 		return nil, ErrInput
 	}
 
 	r := &HTTPResolver{origins: make(map[string]struct{}, len(config.AllowedOrigins))}
 	for _, origin := range config.AllowedOrigins {
 		u, err := parseURI(origin)
-		if err != nil || u.Scheme != lexicon.SchemeHTTP && u.Scheme != lexicon.SchemeHTTPS || u.Host == "" || u.Path != "" && u.Path != "/" {
+		if err != nil || u.Scheme != lexicon.SchemeHTTP && u.Scheme != lexicon.SchemeHTTPS || u.Hostname() == "" || u.Path != "" && u.Path != "/" {
 			return nil, ErrInput
 		}
 
 		r.origins[u.Scheme+"://"+u.Host] = struct{}{}
 	}
 
-	client := *config.Client
 	client.Transport = &httpTransport{base: client.Transport}
 	redirect := client.CheckRedirect
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -291,6 +295,17 @@ func (t *httpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	return response, err
+}
+
+func (t *httpTransport) CancelRequest(req *http.Request) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	if legacy, ok := base.(interface{ CancelRequest(*http.Request) }); ok {
+		legacy.CancelRequest(req)
+	}
 }
 
 func parseURI(value string) (*url.URL, error) {

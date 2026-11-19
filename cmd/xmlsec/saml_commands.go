@@ -35,46 +35,54 @@ func runSAML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fs := flag.NewFlagSet("saml "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "XML, POST form or raw Redirect query input")
-	out := fs.String("out", "-", "XML, encoded binding or diagnostic JSON output")
-	configFile := fs.String("config", "", "trusted JSON metadata.EntityDescriptor/protocol request/response options")
-	keyFile := fs.String("key", "", "private key for signing; public key for redirect verification")
-	certificate := fs.String("certificate", "", "certificate for XML signatures")
-	method := fs.String("method", "", "signature URI; selected from signing key if omitted")
-	atValue := fs.String("at", "", "explicit metadata verification/build time, RFC3339")
-	kindValue := fs.String(fieldKind, nameRequest, "binding message kind: request or response")
-	relayValue := fs.String("relay-state", "", "optional RelayState (absent and empty are distinct)")
-	extract := fs.String("extract", "", "write authenticated Redirect XML to this local file")
-	pin := fs.String("document-sha256", "", "explicit SHA-256 pin for trusted unsigned metadata bytes")
-	allowHTTP := fs.Bool("allow-http", false, "explicitly permit HTTP endpoints in metadata")
-	lifetime := fs.Duration("max-lifetime", cliDefaultMetadataLifetime, "maximum metadata lifetime; 0 uses library default")
+	input := fs.String(flagNameIn, stdioPath, "XML, POST form or raw Redirect query input")
+	out := fs.String(flagNameOut, stdioPath, "XML, encoded binding or diagnostic JSON output")
+	configFile := fs.String(flagNameConfig, "", "trusted JSON metadata.EntityDescriptor/protocol request/response options")
+	keyFile := fs.String(flagNameKey, "", "private key for signing; public key for redirect verification")
+	certificate := fs.String(flagNameCertificate, "", "certificate for XML signatures")
+	method := fs.String(flagNameMethod, "", "signature URI; selected from signing key if omitted")
+	atValue := fs.String(flagNameAt, "", "explicit metadata verification/build time, RFC3339")
+	kindValue := fs.String(flagNameKind, nameRequest, "binding message kind: request or response")
+	relayValue := fs.String(flagNameRelayState, "", "optional RelayState (absent and empty are distinct)")
+	extract := fs.String(flagNameExtract, "", "write authenticated Redirect XML to this local file")
+	pin := fs.String(flagNameDocumentSHA256, "", "explicit SHA-256 pin for trusted unsigned metadata bytes")
+	allowHTTP := fs.Bool(flagNameAllowHTTP, false, "explicitly permit HTTP endpoints in metadata")
+	lifetime := fs.Duration(flagNameMaxLifetime, cliDefaultMetadataLifetime, "maximum metadata lifetime; 0 uses library default")
 
 	var trusted repeatedFlag
-	fs.Var(&trusted, "trust-key", "explicit trusted metadata/protocol signer key; repeatable")
+	fs.Var(&trusted, flagNameTrustKey, "explicit trusted metadata/protocol signer key; repeatable")
 	flags := registerPrivateKeyFlags(fs)
 
-	specific := ioFlagNames
+	specific := []string{flagNameIn, flagNameOut}
 
 	switch cmd {
 	case namePostEncode:
-		specific += " kind relay-state"
+		specific = append(specific, flagNameKind, flagNameRelayState)
 	case "post-decode":
-		specific += " kind"
+		specific = append(specific, flagNameKind)
 	case nameRedirectSign:
-		specific += " key certificate method kind relay-state" + privateKeyFlagNames
+		specific = append(specific, flagNameKey, flagNameCertificate, flagNameMethod, flagNameKind, flagNameRelayState)
+		specific = append(specific, privateKeyFlagNames()...)
 	case nameRedirectVerify:
-		specific += " key trust-key extract"
+		specific = append(specific, flagNameKey, flagNameTrustKey, flagNameExtract)
 	case nameMetadataBuild:
-		specific = "out config at allow-http max-lifetime key certificate method" + privateKeyFlagNames
+		specific = append([]string{
+			flagNameOut, flagNameConfig, flagNameAt, flagNameAllowHTTP, flagNameMaxLifetime, flagNameKey,
+			flagNameCertificate, flagNameMethod,
+		}, privateKeyFlagNames()...)
 	case "metadata-verify":
-		specific += " at allow-http max-lifetime trust-key document-sha256"
+		specific = append(specific,
+			flagNameAt, flagNameAllowHTTP, flagNameMaxLifetime, flagNameTrustKey, flagNameDocumentSHA256,
+		)
 	case "request-build", "response-build":
-		specific = "out config key certificate method" + privateKeyFlagNames
+		specific = append([]string{
+			flagNameOut, flagNameConfig, flagNameKey, flagNameCertificate, flagNameMethod,
+		}, privateKeyFlagNames()...)
 	case "request-verify", "response-verify", nameRedirectRequestVerify:
-		specific += " config trust-key"
+		specific = append(specific, flagNameConfig, flagNameTrustKey)
 	}
 
-	fs = commandFlags(fs, specific, true)
+	fs = commandFlags(fs, true, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -90,7 +98,7 @@ func runSAML(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	var relay *string
 
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "relay-state" {
+		if f.Name == flagNameRelayState {
 			relay = relayValue
 		}
 	})
@@ -329,7 +337,7 @@ func (c samlCommand) redirect(ctx context.Context, stdin io.Reader, stdout io.Wr
 		detail = map[string]any{fieldKind: result.Kind(), "signature_method": result.SignatureMethod(), "relay_state": relay, "relay_state_present": present, "protocol_checked": false}
 
 		if c.extract != "" {
-			if err := separateOutput(c.extract, c.output, "extract"); err != nil {
+			if err := separateOutput(c.extract, c.output, flagNameExtract); err != nil {
 				return err
 			}
 
@@ -337,7 +345,7 @@ func (c samlCommand) redirect(ctx context.Context, stdin io.Reader, stdout io.Wr
 				return err
 			}
 
-			if err := separateOutput(c.extract, c.output, "extract"); err != nil {
+			if err := separateOutput(c.extract, c.output, flagNameExtract); err != nil {
 				return err
 			}
 		}

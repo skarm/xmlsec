@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -20,6 +19,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/x509cert"
@@ -184,11 +184,7 @@ func SignBasicEnveloped(ctx context.Context, doc *document.Document, signer cryp
 		return nil, nil, ErrProfile
 	}
 	// Use a DER pin rather than relying on a provider-specific key representation.
-	if key, ok := signer.(ed25519.PrivateKey); ok && len(key) != ed25519.PrivateKeySize {
-		return nil, nil, ErrCertificate
-	}
-
-	pin, err := pki.NewKeyPin(signer.Public())
+	pin, err := pki.NewKeyPin(signature.SignerPublic(signer))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", ErrCertificate, err)
 	}
@@ -835,9 +831,9 @@ func validMime(s string) bool {
 		return false
 	}
 
-	_, _, err := mime.ParseMediaType(s)
+	value, _, err := mime.ParseMediaType(s)
 
-	return err == nil && !strings.ContainsAny(s, "\r\n")
+	return err == nil && strings.ContainsRune(value, '/') && !strings.ContainsAny(s, "\r\n")
 }
 
 func profileOptions(id document.Name, policy xmldsig.Policy, root, props document.Element, rootID, propsID string) xmldsig.SignatureOptions {

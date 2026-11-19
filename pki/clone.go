@@ -7,11 +7,15 @@ import (
 )
 
 // WithIntermediateCertificates retains roots, usage, algorithm and revocation
-// rules, replacing ONLY untrusted path-building certificates. It is useful for
-// checking that a document supplies its own validation material.
+// rules, replacing ONLY untrusted path-building certificates. The original
+// configured certificate budget applies to the replacement and retained material.
 func (v *Verifier) WithIntermediateCertificates(raw [][]byte) (*Verifier, error) {
-	if v == nil || len(raw) > maxIntermediateCertificates {
+	if v == nil || v.roots == nil || v.intermediates == nil || len(raw) > maxIntermediateCertificates {
 		return nil, ErrPolicy
+	}
+
+	if err := validateConfiguredCertificateBytes(v.maxBytes, v.anchorCertificates, raw, v.ocspOptions.Authorities); err != nil {
+		return nil, err
 	}
 
 	out := *v
@@ -25,14 +29,7 @@ func (v *Verifier) WithIntermediateCertificates(raw [][]byte) (*Verifier, error)
 		out.originalCertificates[digest] = v.originalCertificates[digest]
 	}
 
-	remaining := v.maxBytes
 	for _, b := range raw {
-		if len(b) > remaining {
-			return nil, ErrPolicy
-		}
-
-		remaining -= len(b)
-
 		c, e := parseCertificate(b)
 		if e != nil {
 			return nil, e

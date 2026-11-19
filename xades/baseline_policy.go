@@ -554,7 +554,7 @@ func baselineSpecifiedPolicyDigest(ctx context.Context, policy SignaturePolicy, 
 	var result []byte
 
 	for _, specification := range specifications {
-		sum, err := options.PolicySpecificationDigest(ctx, specification, slices.Clone(source), h)
+		sum, err := options.PolicySpecificationDigest(ctx, cloneObjectIdentifier(specification), slices.Clone(source), h)
 		if err != nil {
 			return nil, err
 		}

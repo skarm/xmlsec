@@ -3,6 +3,7 @@ package pki
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"fmt"
 	"math/big"
 	"sort"
@@ -16,7 +17,7 @@ const (
 	revocationCancellationMask = 255
 )
 
-func constructCRLViews(ctx context.Context, group []*authenticatedCRL, at time.Time, o CRLOptions) ([]completeCRLView, error) {
+func constructCRLViews(ctx context.Context, group []*authenticatedCRL, target *x509.Certificate, at time.Time, o CRLOptions) ([]completeCRLView, error) {
 	if err := checkCRLSequence(group); err != nil {
 		return nil, err
 	}
@@ -53,7 +54,7 @@ func constructCRLViews(ctx context.Context, group []*authenticatedCRL, at time.T
 		}
 	}
 
-	if err := checkEquivalentCRLViews(ctx, views); err != nil {
+	if err := checkEquivalentCRLViews(ctx, views, target); err != nil {
 		return nil, err
 	}
 
@@ -82,7 +83,7 @@ func (view completeCRLView) source() *parsedCRL {
 	return view.base.list
 }
 
-func checkEquivalentCRLViews(ctx context.Context, views []completeCRLView) error {
+func checkEquivalentCRLViews(ctx context.Context, views []completeCRLView, target *x509.Certificate) error {
 	// RFC5280§5.2.3 permits simultaneous complete/delta CRLs with one number
 	// only when their effective revocation information is identical.
 	byNumber := make(map[string]completeCRLView)
@@ -101,7 +102,7 @@ func checkEquivalentCRLViews(ctx context.Context, views []completeCRLView) error
 
 		old, exists := byNumber[key]
 		if exists && ((old.delta == nil) != (view.delta == nil)) {
-			same, err := equalCRLViewState(ctx, old, view)
+			same, err := equalCRLViewState(ctx, old, view, target)
 			if err != nil {
 				return err
 			}
@@ -191,7 +192,7 @@ func crlViewState(ctx context.Context, view completeCRLView) (crlState, error) {
 	return state, nil
 }
 
-func equalCRLViewState(ctx context.Context, a, b completeCRLView) (bool, error) {
+func equalCRLViewState(ctx context.Context, a, b completeCRLView, target *x509.Certificate) (bool, error) {
 	left, err := crlViewState(ctx, a)
 	if err != nil {
 		return false, err
@@ -207,11 +208,30 @@ func equalCRLViewState(ctx context.Context, a, b completeCRLView) (bool, error) 
 	}
 
 	for item := range left.entries {
-		other := right.find(item)
-		if other == nil || item.reason != other.reason || !item.revoked.Equal(other.revoked) || !item.invalidity.Equal(other.invalidity) {
+		if !sameCRLRevocation(item, right.find(item)) {
 			return false, nil
 		}
 	}
 
-	return true, ctx.Err()
+	// Optional issuer aliases can overlap without identifying the same target.
+	// Compare the effective entries using the lookup used for validation.
+	entryA, err := viewCRLEntry(ctx, a, target)
+	if err != nil {
+		return false, err
+	}
+
+	entryB, err := viewCRLEntry(ctx, b, target)
+	if err != nil {
+		return false, err
+	}
+
+	return sameCRLRevocation(entryA, entryB), ctx.Err()
+}
+
+func sameCRLRevocation(a, b *crlEntry) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+
+	return a.reason == b.reason && a.revoked.Equal(b.revoked) && a.invalidity.Equal(b.invalidity)
 }

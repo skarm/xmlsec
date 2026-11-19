@@ -121,3 +121,29 @@ func TestDecodeSuiteNodeRespectsCatalogEncoding(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeSuiteNodeChecksTrailingInput(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "catalog.xml")
+	for _, tc := range []struct {
+		name, tail string
+		valid      bool
+	}{
+		{"empty", "", true},
+		{"XML Misc", "\t\n <!-- trailing comment --> <?catalog declared?>\r\n", true},
+		{"additional root", "<extra/>", false},
+		{"trailing text", "extra", false},
+		{"truncated comment", "<!--", false},
+		{"second declaration", `<?xml version="1.0"?>`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			node, _, err := decodeSuiteNode([]byte("<catalog/>"+tc.tail), path)
+			if tc.valid && (err != nil || node == nil) || !tc.valid && (err == nil || node != nil) {
+				t.Fatalf("catalog tail %q: node=%v, error=%v; valid=%t", tc.tail, node, err, tc.valid)
+			}
+		})
+	}
+}

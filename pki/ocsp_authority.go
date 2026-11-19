@@ -16,10 +16,11 @@ const (
 )
 
 // OCSPAuthority pins one OCSP signing certificate for one exact issuer certificate.
-// The application establishes this trust out of band. Verification still checks
-// certificate validity and signing usage. Received names or certificates cannot
-// create a grant, imply an issuer or delegation path, or exempt the signer from
-// revocation checks.
+// The application establishes this trust out of band and must remove the pin
+// when the responder is no longer trusted. Verification checks the responder's
+// certificate validity and signing usage when present. An exact configured pin
+// replaces separate responder path and revocation checks. Received names or
+// certificates cannot create a pin.
 type OCSPAuthority struct {
 	// ResponderCertificateDER is the exact DER certificate explicitly trusted to sign OCSP
 	// responses.

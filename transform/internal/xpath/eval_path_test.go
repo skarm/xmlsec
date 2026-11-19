@@ -208,6 +208,10 @@ func TestEvalLocationPathErrorsASTAndVM(t *testing.T) {
 	for _, test := range []struct{ name, expression, code string }{
 		{"mixed node and atomic path result", `parse-xml('<r/>')/(r,1)`, "XPTY0018"},
 		{"atomic path step input", `(1,2)/r`, "XPTY0019"},
+		{"attribute value comparison requires singleton", `parse-xml('<r a="1" b="2"/>')/r[@* eq '1']`, "XPTY0004"},
+		{"descendant attribute value comparison requires singleton", `parse-xml('<r a="1" b="2"/>')//r['1' eq @*]`, "XPTY0004"},
+		{"namespace wildcard value comparison requires singleton", `parse-xml('<r xmlns:p="urn:p" a="1" p:a="2"/>')/r[@*:a eq '1']`, "XPTY0004"},
+		{"existence probe retains attribute value cardinality", `exists(parse-xml('<r a="1" b="2"/>')//r[@* eq '1'])`, "XPTY0004"},
 	} {
 		for _, mode := range []string{runtimeASTMode, "VM"} {
 			t.Run(test.name+"/"+mode, func(t *testing.T) {
@@ -228,10 +232,19 @@ func TestMatchNodeTest(t *testing.T) {
 		{"element kind test matches the expanded name", doc + `($d/r/element(Q{urn:test}v)/@id, $d/r/element(v)/@id)`, "plain|other"},
 		{"element type distinguishes untyped input", doc + `(count($d/r/element(*, xs:untyped)), count($d/r/element(*, xs:string)))`, "3|0"},
 		{"attribute names and namespaces stay distinct", doc + `($d//v/attribute(id), $d/r/element(Q{urn:test}v)/attribute(Q{urn:test}id))`, "other|p"},
+		{
+			"namespace node names have no namespace URI",
+			doc + `(count($d/r/namespace::Q{urn:test}p), count($d/r/namespace::Q{}p), count($d/r/namespace::*:p),
+			        count($d/r/namespace::Q{urn:test}*), count($d/r/namespace::Q{}*), count($d/r/namespace::p))`,
+			"0|1|1|0|2|1",
+		},
+		{"empty URI wildcard retains default namespace binding", `count(parse-xml('<r xmlns="urn:default" xmlns:p="urn:test"/>')/*/namespace::Q{}*)`, "3"},
+		{"keyword PI target uses the literal name", `string(parse-xml('<r><?map hello?></r>')/r/processing-instruction(map))`, "hello"},
 		{"attribute type distinguishes untyped atomic input", doc + `($d/r/*/attribute(*, xs:untypedAtomic), count($d/r/*/attribute(*, xs:integer)))`, "p|plain|other|0"},
 		{"document kind test checks the root element", doc + `($d instance of document-node(element(r)), $d instance of document-node(element(v)), $d/r instance of document-node())`, "true|false|false"},
 		{"document kind test rejects text and multiple elements", `let $d := parse-xml-fragment('text<r/>'), $e := parse-xml-fragment('<r/><r/>'), $c := parse-xml-fragment('<!--comment-->') return ($d instance of document-node(element(r)), $e instance of document-node(element(r)), $c instance of document-node(element(r)))`, "false|false|false"},
 		{"attribute presence filters preserve document order", doc + `($d/r/*[@id]/@id, $d/r/*[@Q{urn:test}id]/@id, $d/r/*[@missing]/@id)`, "plain|other|plain"},
+		{"attribute comparison retains general and singleton semantics", doc + `(count($d/r/*[@* = 'plain']), count($d/r/*[@id eq 'plain']), count($d/r/*['p' eq @Q{urn:test}id]), count($d/r/*[@missing eq 'plain']))`, "1|1|1|0"},
 		{"numeric position tests share one-based focus", doc + `($d/r/*[position() eq 2]/@id, $d/r/*[2 = position()]/@id, $d/r/*[2.0]/@id, count($d/r/*[2.5]))`, "other|other|other|0"},
 	})
 }

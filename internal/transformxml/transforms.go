@@ -17,10 +17,7 @@ import (
 	"github.com/skarm/xmlsec/reference"
 )
 
-const (
-	attrFilter               = "Filter"
-	maximumInclusivePrefixes = 128
-)
+const attrFilter = "Filter"
 
 const (
 	nameXPath         = "XPath"
@@ -31,6 +28,13 @@ const Namespace = lexicon.NamespaceDSig
 
 func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (reference.Transform, error) {
 	var t reference.Transform
+	if ctx == nil {
+		return t, reference.ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return t, err
+	}
 
 	children, err := structure(n, lexicon.DSigElementTransform, lexicon.SecurityAttrAlgorithm)
 	if err != nil {
@@ -54,6 +58,14 @@ func ParseProgram(ctx context.Context, n *tree.Node, doc *document.Document) (re
 }
 
 func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) error {
+	if ctx == nil || n == nil {
+		return reference.ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := reference.ValidateTransformParameters(t); err != nil {
 		return err
 	}
@@ -69,6 +81,7 @@ func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) err
 		return nil
 	}
 
+	children := make([]*tree.Node, 0, len(t.XPath))
 	for _, x := range t.XPath {
 		ns, prefix := Namespace, lexicon.PrefixDSig
 		if t.Algorithm == reference.XPathFilter2 {
@@ -102,8 +115,15 @@ func AppendProgram(ctx context.Context, n *tree.Node, t reference.Transform) err
 		}
 
 		text(child, x.Expression)
-		add(n, child)
+		child.Parent = n
+		children = append(children, child)
 	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	n.Children = append(n.Children, children...)
 
 	return nil
 }
@@ -155,17 +175,13 @@ func ParseCanonical(n *tree.Node, local string) (reference.Transform, error) {
 	}
 
 	prefixes := strings.FieldsFunc(list, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' })
-	if len(prefixes) > maximumInclusivePrefixes {
-		return reference.Transform{}, fmt.Errorf("%w: too many inclusive prefixes", reference.ErrLimit)
+	transform := reference.Transform{Algorithm: uri, InclusivePrefixes: prefixes}
+
+	if err := reference.ValidateTransformParameters(transform); err != nil {
+		return reference.Transform{}, err
 	}
 
-	for _, p := range prefixes {
-		if p != lexicon.C14NDefaultPrefixToken && (!tree.NCName(p) || p == lexicon.PrefixXMLNS) {
-			return reference.Transform{}, fmt.Errorf("%w: inclusive prefix", reference.ErrInput)
-		}
-	}
-
-	return reference.Transform{Algorithm: uri, InclusivePrefixes: prefixes}, nil
+	return transform, nil
 }
 
 // Parse reads a complete ds:Transform without executing an application program.
@@ -205,12 +221,20 @@ func Parse(ctx context.Context, doc *document.Document, n *tree.Node) (reference
 
 // AppendParameters emits supported canonicalization or program parameters.
 func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) error {
+	if ctx == nil || n == nil {
+		return reference.ErrInput
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := reference.ValidateTransformParameters(t); err != nil {
 		return err
 	}
 
 	if len(t.InclusivePrefixes) != 0 {
-		if t.Algorithm != c14n.Exclusive && t.Algorithm != c14n.ExclusiveWithComments {
+		if !isDS(n, lexicon.DSigElementTransform) && !isDS(n, lexicon.DSigElementCanonicalizationMethod) {
 			return reference.ErrInput
 		}
 
@@ -223,10 +247,6 @@ func AppendParameters(ctx context.Context, n *tree.Node, t reference.Transform) 
 
 		setAttr(child, lexicon.C14NAttrPrefixList, strings.Join(t.InclusivePrefixes, " "))
 		add(n, child)
-
-		if _, err := ParseCanonical(n, lexicon.DSigElementTransform); err != nil {
-			return err
-		}
 	}
 
 	if reference.IsExtension(t.Algorithm) {

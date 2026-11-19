@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -98,7 +99,7 @@ func verifyESS(ctx context.Context, attrs []Attribute, cert *x509.Certificate, l
 			continue
 		}
 
-		if !v2 && !legacy {
+		if !v2 && (!legacy || fips140.Enforced()) {
 			return false, ErrPolicy
 		}
 

@@ -18,7 +18,12 @@ func SerializeValue(ctx context.Context, w io.Writer, result ValueResult) error 
 		definition = defaultOutputDef()
 	}
 
-	definition.Method = effectiveStreamMethod(result, definition)
+	method, err := effectiveStreamMethod(ctx, result, definition)
+	if err != nil {
+		return err
+	}
+
+	definition.Method = method
 	if err := validateSerializationParams(ctx, definition, result.Document); err != nil {
 		return err
 	}

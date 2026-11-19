@@ -159,11 +159,8 @@ func (c *compiler) compileElement(ctx context.Context, elem *xdm.Element) (*elem
 		inst.InheritNamespaces = xsdBoolTrue(inAttr)
 	}
 
-	// Capture compile-time namespace bindings for runtime name resolution.
-	if len(c.nsBindings) > 0 {
-		inst.NSBindings = make(map[string]string, len(c.nsBindings))
-		maps.Copy(inst.NSBindings, c.nsBindings)
-	}
+	// Resolve computed names against the instruction's lexical namespace scope.
+	inst.NSBindings = inScopeNamespaces(elem)
 
 	typeAttr := getAttr(elem, lexicon.AttrType)
 	validation := getAttr(elem, nameValidation)
@@ -377,6 +374,7 @@ func (c *compiler) compileCopy(ctx context.Context, elem *xdm.Element) (*copyIns
 	}
 
 	inst := &copyInst{
+		sourceInfo:        sourceInfo{StaticBaseURI: stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)},
 		CopyNamespaces:    true,
 		InheritNamespaces: true,
 	}
@@ -471,6 +469,7 @@ func (c *compiler) compileCopyOf(_ context.Context, elem *xdm.Element) (*copyOfI
 	}
 
 	inst := &copyOfInst{
+		sourceInfo:     sourceInfo{StaticBaseURI: stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)},
 		Select:         expr,
 		CopyNamespaces: true,
 	}
@@ -950,7 +949,9 @@ func (c *compiler) literalResultNamespaces(elem *xdm.Element) map[string]string 
 	// and never c.stylesheet.namespaces (which accumulates globally and
 	// leaks namespaces from sibling variable trees).
 	for prefix, uri := range c.nsBindings {
-		if uri == lexicon.NamespaceXSLT || prefix == "" {
+		// Unprefixed element names get their default binding from namespace
+		// fixup. A prefixed element can carry a separate default binding.
+		if uri == lexicon.NamespaceXSLT || prefix == "" && (uri == "" || elem.Prefix() == "") {
 			continue
 		}
 
@@ -960,10 +961,7 @@ func (c *compiler) literalResultNamespaces(elem *xdm.Element) map[string]string 
 
 		namespaces[prefix] = uri
 	}
-	// Override/add from directly declared namespaces on this element.
-	// Include default namespace declarations (prefix="") when they have a
-	// non-empty URI — these are explicit xmlns="..." on the LRE and must
-	// be propagated to the result tree.
+	// Add or override namespaces explicitly declared on the literal element.
 	for _, ns := range elem.Namespaces() {
 		uri := ns.URI()
 		prefix := ns.Prefix()

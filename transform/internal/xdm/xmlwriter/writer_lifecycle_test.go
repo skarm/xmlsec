@@ -210,9 +210,20 @@ func TestAttributeNamespaceConflictRejectsOnlyTheCurrentScope(t *testing.T) {
 		func() error { return w.StartElementNS("p", "child", "urn:child") },
 		func() error { return w.WriteAttributeNS("p", "same", "urn:child", "ok") },
 		w.EndElement,
-		func() error { return w.StartElementNS("p", "sibling", "urn:root") }, w.EndElement, w.EndElement,
+		func() error { return w.StartElementNS("p", "sibling", "urn:root") },
 	)
-	want := `<p:root p:same="ok" xml:lang="en" q:other="ok" xmlns:p="urn:root" xmlns:q="urn:other"><p:child p:same="ok" xmlns:p="urn:child"/><p:sibling/></p:root>`
+	before = output.String()
+	if err := w.WriteAttributeNS("p", "bad", "urn:other", "value"); err == nil || output.String() != before {
+		t.Error("attribute changed the inherited namespace of its element", err, output.String())
+	}
+	writeSteps(t, w.EndElement, func() error { return w.StartElement("plain") },
+		func() error { return w.WriteAttributeNS("p", "first", "urn:root", "ok") })
+	before = output.String()
+	if err := w.WriteAttributeNS("p", "bad", "urn:other", "value"); err == nil || output.String() != before {
+		t.Fatal("attribute changed the inherited namespace of an earlier attribute", err, output.String())
+	}
+	writeSteps(t, func() error { return w.WriteAttributeNS("p", "second", "urn:root", "ok") }, w.EndElement, w.EndElement)
+	want := `<p:root p:same="ok" xml:lang="en" q:other="ok" xmlns:p="urn:root" xmlns:q="urn:other"><p:child p:same="ok" xmlns:p="urn:child"/><p:sibling/><plain p:first="ok" p:second="ok"/></p:root>`
 	if output.String() != want {
 		t.Fatalf("namespace conflict recovery or scope restoration=%q; want %q", output.String(), want)
 	}
@@ -282,5 +293,42 @@ func TestStickyDestinationErrorsPrecedeEmptyNames(t *testing.T) {
 				t.Fatal("healthy writer did not recover", healthyOutput.String())
 			}
 		})
+	}
+}
+
+func TestWriterCopyRebuildsItsOwnNamespaceBindings(t *testing.T) {
+	t.Parallel()
+
+	var output strings.Builder
+	original := stream.NewWriter(&output)
+	writeSteps(t, func() error { return original.StartElementNS("p", "root", "urn:root") }, func() error { return original.WriteString("") })
+	rootPrefix := output.String()
+	copyWriter := original
+
+	// A nested scope changes the shared binding index but not the copy's
+	// open root scope. The copy must still declare urn:child on its own child.
+	writeSteps(t, func() error { return original.StartElementNS("p", "branch", "urn:child") }, func() error { return original.WriteString("") })
+	branchPrefix := output.String()
+
+	// Both writers borrow this destination. Replay the saved prefix to observe
+	// each branch as a separate document, without interleaving their output.
+	output.Reset()
+	output.WriteString(rootPrefix)
+	writeSteps(t, func() error { return copyWriter.WriteElementNS("p", "child", "urn:child", "") }, copyWriter.EndElement)
+	decoder := xml.NewDecoder(strings.NewReader(output.String()))
+	for _, want := range []xml.Name{{Space: "urn:root", Local: "root"}, {Space: "urn:child", Local: "child"}} {
+		token, err := decoder.Token()
+		start, ok := token.(xml.StartElement)
+		if err != nil || !ok || start.Name != want {
+			t.Fatalf("copy resolved its name through another writer's scope: %q, %#v, %v; want %v", output.String(), token, err, want)
+		}
+	}
+
+	// Completing the copy must not remove the original branch's binding.
+	output.Reset()
+	output.WriteString(branchPrefix)
+	writeSteps(t, func() error { return original.WriteElementNS("p", "leaf", "urn:child", "") }, original.EndElement, original.EndElement)
+	if got, want := output.String(), `<p:root xmlns:p="urn:root"><p:branch xmlns:p="urn:child"><p:leaf></p:leaf></p:branch></p:root>`; got != want {
+		t.Fatalf("original binding changed after completing the copy: %q; want %q", got, want)
 	}
 }

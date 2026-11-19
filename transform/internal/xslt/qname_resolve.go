@@ -92,7 +92,7 @@ func resolveSequenceTypeQName(qname string, kind qnameKind, resolve nsResolver, 
 	}
 
 	// EQName form: Q{uri}local — already fully expanded.
-	if strings.HasPrefix(qname, "Q{") {
+	if strings.HasPrefix(qname, lexicon.EQNamePrefix) {
 		if closeIdx := strings.IndexByte(qname, '}'); closeIdx > 0 {
 			return qname[closeIdx+1:], qname[2:closeIdx]
 		}

@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/keyinfo"
 	"github.com/skarm/xmlsec/reference"
@@ -150,6 +152,26 @@ func TestLegacyDSAKeyInfo(t *testing.T) {
 			testLegacyDSAParameterContext(t, d, key.(*dsa.PublicKey))
 		}
 	}
+
+	t.Run("builder_visit_budget_without_certificate_groups", func(t *testing.T) {
+		template := keyinfo.Template{
+			Names: slices.Repeat([]string{"label"}, 31),
+			Keys:  slices.Repeat([]keyinfo.PublicKeyValue{{Key: key}}, 32),
+		}
+		doc, err := keyinfo.Build(t.Context(), template)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{})
+		if err != nil || len(result.Candidates()) != 32 || !slices.Equal(result.KeyNames(), template.Names) {
+			t.Fatalf("default Parse did not retain the 255-visit document: %v", err)
+		}
+
+		template.Names = append(template.Names, "one more label")
+		if got, err := keyinfo.Build(t.Context(), template); got != nil || !errors.Is(err, keyinfo.ErrLimit) {
+			t.Errorf("Build for 257 visits = (%v, %v), want no document and ErrLimit", got != nil, err)
+		}
+	})
 }
 
 func testLegacyDSAParameterContext(t *testing.T, full *document.Document, key *dsa.PublicKey) {
@@ -334,7 +356,14 @@ func TestReturnedDataCannotChangeHints(t *testing.T) {
 	info.KeyNames()[0] = "edited"
 
 	info.Candidates()[1] = keyinfo.Candidate{}
-	if c.FingerprintSHA256() != fp || info.KeyNames()[0] != "original" || asXML(t, d) != original {
+	info.X509Groups()[0] = keyinfo.X509Group{}
+	if retained := info.Candidates()[1]; !retained.Valid() || retained.FingerprintSHA256() != fp {
+		t.Fatal("candidate mutation escaped")
+	}
+	if retained := info.X509Groups()[0].CertificatesDER(); len(retained) != 1 || !bytes.Equal(retained[0], der) {
+		t.Fatal("certificate group mutation escaped")
+	}
+	if info.KeyNames()[0] != "original" || asXML(t, d) != original {
 		t.Fatal("mutation escaped")
 	}
 
@@ -850,3 +879,59 @@ type reader struct {
 func (r *reader) Read(b []byte) (int, error) { return r.read(b) }
 
 func (r *reader) Close() error { r.closed = true; return r.closeErr }
+
+func TestDEREncodedKeyValueRejectsIgnoredFields(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki := mustSPKI(t, key.Public())
+	value, err := der.Read(spki, len(spki))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(value, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	algorithm, err := der.Sequence(fields[0], 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedRSA := x509.MarshalPKCS1PublicKey(&key.PublicKey)
+	rsaValue, err := der.Read(encodedRSA, len(encodedRSA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits := func(raw []byte) []byte {
+		t.Helper()
+		encoded, err := asn1.Marshal(asn1.BitString{Bytes: raw, BitLength: len(raw) * 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	for name, encoded := range map[string][]byte{
+		"outer field":      der.Seq(fields[0].FullBytes, fields[1].FullBytes, der.Int(0)),
+		"algorithm field":  der.Seq(der.Seq(algorithm[0].FullBytes, algorithm[1].FullBytes, der.Int(0)), fields[1].FullBytes),
+		"RSA field":        der.Seq(fields[0].FullBytes, bits(der.Wrap(0, asn1.TagSequence, true, append(bytes.Clone(rsaValue.Bytes), der.Int(0)...)))),
+		"RSA trailing DER": der.Seq(fields[0].FullBytes, bits(append(bytes.Clone(encodedRSA), der.Int(0)...))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			doc := parseXML(t, wrap(`<k:DEREncodedKeyValue>`+enc(encoded)+`</k:DEREncodedKeyValue>`))
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{})
+			if result != nil || !errors.Is(err, keyinfo.ErrKey) {
+				t.Fatalf("malformed key produced candidates: result=%t err=%v", result != nil, err)
+			}
+		})
+	}
+	// The canonical key continues to produce its exact canonical public identity.
+	doc := parseXML(t, wrap(`<k:DEREncodedKeyValue>`+enc(spki)+`</k:DEREncodedKeyValue>`))
+	result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{})
+	if err != nil || result == nil || len(result.Candidates()) != 1 || !bytes.Equal(result.Candidates()[0].SPKI(), spki) {
+		t.Fatalf("valid key control: result=%t err=%v", result != nil, err)
+	}
+}

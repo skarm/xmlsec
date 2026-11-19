@@ -72,18 +72,22 @@ func allowsAutomaticResultDoctype(doc *xdm.Document) bool {
 
 // XHTML uses the common XML writer, with structural rules applied to owned
 // nodes and original attribute values rather than to serialized markup.
-func serializeXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+func serializeXHTML(ctx context.Context, w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	owned, err := xdm.CopyDoc(doc)
 	if err != nil {
 		return err
 	}
 
-	return serializeOwnedXHTML(w, owned, definition, charMap)
+	return serializeOwnedXHTML(ctx, w, owned, definition, charMap)
 }
 
 // The caller transfers a private normalized tree; namespace and metadata edits
 // must never reach nodes retained by a reusable Result or borrowed document.
-func serializeOwnedXHTML(w io.Writer, owned *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+func serializeOwnedXHTML(ctx context.Context, w io.Writer, owned *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
 	html5 := isHTMLVersion5(definition.HTMLVersion)
 	contentType := ""
 
@@ -100,7 +104,7 @@ func serializeOwnedXHTML(w io.Writer, owned *xdm.Document, definition *OutputDef
 		contentType = media + contentTypeCharsetParameter + encoding
 	}
 
-	if err := htmlpkg.PrepareXHTML(context.Background(), owned, html5, contentType); err != nil {
+	if err := htmlpkg.PrepareXHTML(ctx, owned, html5, contentType); err != nil {
 		return err
 	}
 
@@ -123,16 +127,16 @@ func serializeOwnedXHTML(w io.Writer, owned *xdm.Document, definition *OutputDef
 		writer.Standalone = definition.Standalone
 	}
 
-	return xmlInvalidCharError(writer.WriteTo(w, owned))
+	return xmlInvalidCharError(writer.WriteToContext(ctx, w, owned))
 }
 
-func serializeEncodedXHTML(w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
-	output, finish, err := encodedOutput(context.Background(), w, definition)
+func serializeEncodedXHTML(ctx context.Context, w io.Writer, doc *xdm.Document, definition *OutputDef, charMap map[rune]string) error {
+	output, finish, err := encodedOutput(ctx, w, definition)
 	if err != nil {
 		return err
 	}
 
-	if err = serializeXHTML(output, doc, definition, charMap); err != nil {
+	if err = serializeXHTML(ctx, output, doc, definition, charMap); err != nil {
 		return err
 	}
 
@@ -149,7 +153,7 @@ func serializeEncodedOwnedXHTML(ctx context.Context, w io.Writer, owned *xdm.Doc
 		return err
 	}
 
-	if err := serializeOwnedXHTML(output, owned, definition, definition.ResolvedCharMap); err != nil {
+	if err := serializeOwnedXHTML(ctx, output, owned, definition, definition.ResolvedCharMap); err != nil {
 		return err
 	}
 

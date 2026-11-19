@@ -144,6 +144,11 @@ func (c *compiler) compileTemplate(ctx context.Context, elem *xdm.Element) error
 	tmpl.As = tmplAs
 
 	tmpl.signatureTypeKey = c.declarationTypeKey(elem, tmplAs)
+	if tmpl.As != "" {
+		tmpl.returnNamespaces = inScopeNamespaces(elem)
+		tmpl.returnDefaultNS, tmpl.hasReturnDefaultNS = c.declarationDefaultNamespace(elem)
+	}
+
 	if ctxDecl == nil {
 		tmpl.contextTypeKey = c.declarationTypeKey(elem, lexicon.NodeTestItem)
 	}
@@ -307,41 +312,27 @@ func (c *compiler) checkDefaultModeAttribute(ctx context.Context, elem *xdm.Elem
 
 // registerTemplateInModes adds a template to the appropriate mode template lists.
 func (c *compiler) registerTemplateInModes(_ context.Context, tmpl *template, mode string) {
+	templates := c.stylesheet.modeTemplates
 	if mode == modeAll {
-		// Register in all existing modes plus default
-		for m := range c.stylesheet.modeTemplates {
-			c.stylesheet.modeTemplates[m] = append(c.stylesheet.modeTemplates[m], tmpl)
-		}
+		templates[modeAll] = append(templates[modeAll], tmpl)
+		templates[""] = append(templates[""], tmpl)
 
-		c.stylesheet.modeTemplates[""] = append(c.stylesheet.modeTemplates[""], tmpl)
-		// Also store under the modeAll key so findBestTemplate's fallback
-		// can find these templates for modes that don't exist yet.
-		c.stylesheet.modeTemplates[modeAll] = append(c.stylesheet.modeTemplates[modeAll], tmpl)
+		for name := range templates {
+			if name != modeAll && name != "" {
+				templates[name] = append(templates[name], tmpl)
+			}
+		}
 
 		return
 	}
-	// XSLT 2.0+: mode can be a whitespace-separated list of mode names.
-	// Each mode name can be a QName, "#default", "#unnamed", or lexicon.ModeAll.
-	modes := strings.Fields(mode)
-	if len(modes) <= 1 {
-		// Single mode (or empty = default mode)
-		if mode == modeDefault || mode == modeUnnamed {
-			mode = ""
+
+	for _, name := range resolveTemplateModes(mode) {
+		if _, exists := templates[name]; !exists {
+			// Earlier #all rules precede the first rule naming this mode.
+			templates[name] = slices.Clone(templates[modeAll])
 		}
 
-		c.stylesheet.modeTemplates[mode] = append(c.stylesheet.modeTemplates[mode], tmpl)
-	} else {
-		for _, m := range modes {
-			if m == modeDefault || m == modeUnnamed {
-				m = ""
-			} else if m == modeAll {
-				// In a mode list, #all means register in all modes
-				c.stylesheet.modeTemplates[modeAll] = append(c.stylesheet.modeTemplates[modeAll], tmpl)
-				continue
-			}
-
-			c.stylesheet.modeTemplates[m] = append(c.stylesheet.modeTemplates[m], tmpl)
-		}
+		templates[name] = append(templates[name], tmpl)
 	}
 }
 
@@ -858,7 +849,7 @@ func modeQName(name string, elem *xdm.Element, code string) (string, error) {
 	}
 
 	ns := inScopeNamespaces(elem)
-	if !strings.HasPrefix(name, "Q{") {
+	if !strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if prefix, _, found := strings.Cut(name, ":"); found && ns[prefix] == "" {
 			return "", staticError(errCodeXTSE0280, "undeclared prefix %q in mode name", prefix)
 		}

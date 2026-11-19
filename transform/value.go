@@ -115,11 +115,11 @@ func Map(entries ...MapEntry) (Value, error) {
 	for _, entry := range entries {
 		key, ok := entry.Key.item.(xdm.AtomicValue)
 		if !ok {
-			return Value{}, wrap("map", ErrInput)
+			return Value{}, wrap(opMap, ErrInput)
 		}
 
 		if err := builder.Add(key, entry.Value.items); err != nil {
-			return Value{}, wrap("map", err)
+			return Value{}, wrap(opMap, err)
 		}
 	}
 
@@ -238,12 +238,12 @@ func (v Value) Lookup(key Value) (Sequence, bool) {
 func (v Value) Member(index int) (Sequence, error) {
 	a, ok := v.item.(xdm.ArrayItem)
 	if !ok || index < 0 {
-		return Sequence{}, wrap("array member", ErrInput)
+		return Sequence{}, wrap(opArrayMember, ErrInput)
 	}
 
 	seq, err := a.GetView(index + 1)
 
-	return Sequence{items: seq}, wrap("array member", err)
+	return Sequence{items: seq}, wrap(opArrayMember, err)
 }
 
 // Size reports a map's entry count or an array's member count.

@@ -613,7 +613,9 @@ func TestKeyGraphRelationships(t *testing.T) {
 		inner := graphWrap(t, secret, intermediate, "", "", "inner", nil)
 		data := graphData(t, secret, `<ds:RetrievalMethod URI="#inner"/>`)
 		doc := parse(t, []byte("<r>"+graphXML(t, data)+graphXML(t, inner)+graphXML(t, outer)+"</r>"))
-		graphAssert(t, doc, doc.Root().Children()[0], options)
+		opts := options
+		opts.Limits.MaxDepth = 2
+		graphAssert(t, doc, doc.Root().Children()[0], opts)
 	})
 	t.Run("consistent paths", func(t *testing.T) {
 		info := `<ds:KeyName>direct</ds:KeyName>` + graphXML(t, wrapped)
@@ -624,6 +626,16 @@ func TestKeyGraphRelationships(t *testing.T) {
 		opts.Keys[1].Secret = bytes.Repeat([]byte{0x11}, 32)
 		if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), opts); got != nil || !errors.Is(err, xmlenc.ErrDecrypt) {
 			t.Fatal("conflicting authorized paths accepted", err)
+		}
+	})
+	t.Run("concurrent reads", func(t *testing.T) {
+		data := graphData(t, secret, graphXML(t, wrapped))
+		for range 8 {
+			t.Run("reader", func(t *testing.T) {
+				t.Parallel()
+
+				graphAssert(t, data, data.Root(), options)
+			})
 		}
 	})
 }
@@ -772,6 +784,31 @@ func TestKeyGraphExternalResources(t *testing.T) {
 	calls = 0
 	if got, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), data, data.Root(), options); got != nil || !errors.Is(err, xmlenc.ErrPolicy) || calls != 0 {
 		t.Fatal("unapproved key I/O", err, calls)
+	}
+}
+
+func TestKeyGraphPreservesAbsoluteResourceSpelling(t *testing.T) {
+	t.Parallel()
+
+	const keyURI = "https://example.test/clés.xml"
+	secret, kek := bytes.Repeat([]byte{0x40}, 32), bytes.Repeat([]byte{0x41}, 32)
+	data := graphData(t, secret, `<ds:RetrievalMethod URI="`+keyURI+`#key"/>`)
+	keydoc := graphWrap(t, secret, kek, "kek", "", "key", nil)
+	keyWire := graphXML(t, keydoc)
+	calls := 0
+	options := xmlenc.KeyGraphOptions{
+		Keys: []xmlenc.KeyGraphKey{{Name: "kek", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}},
+		External: &xmlenc.KeyGraphResources{AllowedURIs: []string{keyURI}, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+			calls++
+			if uri != keyURI {
+				t.Fatalf("resource URI = %q, want %q", uri, keyURI)
+			}
+			return io.NopCloser(strings.NewReader(keyWire)), nil
+		})},
+	}
+	graphAssert(t, data, data.Root(), options)
+	if calls != 1 {
+		t.Fatalf("resource resolver called %d times, want 1", calls)
 	}
 }
 
@@ -1330,8 +1367,13 @@ func TestExternalKeyBacklinksRespectPrincipalURI(t *testing.T) {
 			// A second key must participate, and conflict, only when its reference
 			// resolves to this principal document. Unrelated backlinks are ignored.
 			discovery := graphWrap(t, secret, kek, "master", "", "discovery", nil)
-			wrapped := graphWrap(t, bytes.Repeat([]byte{0x99}, 32), kek, "master", "", "key", []xmlenc.KeyGraphReference{{URI: tc.reference}})
-			external := "<keys>" + graphXML(t, discovery) + graphXML(t, wrapped) + "</keys>"
+			const producerURI = "https://example.test/producer/reference"
+			wrapped := graphWrap(t, bytes.Repeat([]byte{0x99}, 32), kek, "master", "", "key", []xmlenc.KeyGraphReference{{URI: producerURI}})
+			wrappedWire := graphXML(t, wrapped)
+			if !strings.Contains(wrappedWire, producerURI) {
+				t.Fatal("missing generated reference")
+			}
+			external := "<keys>" + graphXML(t, discovery) + strings.Replace(wrappedWire, producerURI, tc.reference, 1) + "</keys>"
 			data := graphData(t, secret, "")
 			calls := 0
 			options := xmlenc.KeyGraphOptions{Keys: []xmlenc.KeyGraphKey{{Name: "master", Algorithm: xmlenc.AES256KeyWrap, Secret: kek}}, KeyURIs: []string{keyURI + "#discovery"}, External: &xmlenc.KeyGraphResources{BaseURI: principalURI, AllowedURIs: []string{keyURI}, Resolver: xmlenc.CipherResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
@@ -1353,6 +1395,26 @@ func TestExternalKeyBacklinksRespectPrincipalURI(t *testing.T) {
 				t.Fatal("unexpected external reads", calls)
 			}
 		})
+	}
+}
+
+func TestGraphGenerationValidatesReferenceURI(t *testing.T) {
+	t.Parallel()
+
+	build := func(uri string) (*document.Document, error) {
+		return xmlenc.BuildDerivedKey(t.Context(), xmlenc.DerivedKeyOptions{References: []xmlenc.KeyGraphReference{{URI: uri}}})
+	}
+	const valid = "keys.xml?label=%20#key"
+	generated, err := build(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := generated.Root().Children()[1].Children()[0]
+	if uri, ok := reference.Attribute(document.Name{Local: "URI"}); !ok || uri != valid {
+		t.Errorf("generated URI = %q, want %q", uri, valid)
+	}
+	if generated, err := build("keys.xml?label=%zz#key"); generated != nil || !errors.Is(err, xmlenc.ErrPolicy) {
+		t.Errorf("malformed URI produced document=%t, error=%v, want ErrPolicy", generated != nil, err)
 	}
 }
 
@@ -1477,6 +1539,42 @@ func TestSizedCiphertextVerifiesActualStream(t *testing.T) {
 				t.Fatal(string(out), err)
 			}
 		})
+	}
+}
+
+func TestKeyGraphVerifiesSizedCiphertext(t *testing.T) {
+	t.Parallel()
+
+	secret := make([]byte, 32)
+	data := graphData(t, secret, "")
+	const uri = "urn:test:key-graph-sized-ciphertext"
+	external, selected, ciphertext, err := xmlenc.ExternalizeCiphertext(t.Context(), data, data.Root(), uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, size := range []int64{int64(len(ciphertext)), int64(len(ciphertext)) + 1} {
+		source := &resourceReader{Reader: bytes.NewReader(ciphertext)}
+		options := xmlenc.KeyGraphOptions{
+			Keys: []xmlenc.KeyGraphKey{{Algorithm: xmlenc.AES256GCM, Secret: secret}},
+			Decryption: xmlenc.DecryptOptions{External: &xmlenc.ExternalCipherReference{
+				URI: uri,
+				Resolver: xmlenc.CipherResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					return sizedCipherReader{source, size}, nil
+				}),
+			}},
+		}
+		out, err := xmlenc.DecryptBytesWithKeyGraph(t.Context(), external, selected, options)
+		if !source.closed {
+			t.Fatal("ciphertext resource remained open")
+		}
+		if size == int64(len(ciphertext)) {
+			if err != nil || string(out) != "graph payload\x00\xff" {
+				t.Fatalf("exact resource size: got %q, %v", out, err)
+			}
+		} else if out != nil || !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("short resource: got %q, %v, want no plaintext and ErrUnexpectedEOF", out, err)
+		}
 	}
 }
 

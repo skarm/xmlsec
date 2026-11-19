@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -40,7 +41,7 @@ const (
 
 type parsedCRL struct {
 	work               *crlWorkBudget
-	authentication     map[crlAuthenticationKey]*x509.Certificate
+	authentication     map[[sha256.Size]byte]*x509.Certificate
 	sources            []*evidence.Observation
 	authenticated      []*VerifiedEvidence
 	used               []*VerifiedEvidence

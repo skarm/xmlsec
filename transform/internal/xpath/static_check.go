@@ -96,7 +96,7 @@ func validateAtomicTypeRequirement(req atomicTypeRequirement, namespaces map[str
 	lexical := joinQName(req.prefix, req.name)
 
 	prefix, local := splitEQName(lexical)
-	if !strings.HasPrefix(lexical, "Q{") {
+	if !strings.HasPrefix(lexical, lexicon.EQNamePrefix) {
 		if err := validatePrefix(prefix, namespaces, strict); err != nil {
 			return err
 		}
@@ -189,7 +189,7 @@ func validateCastTarget(target AtomicTypeName, namespaces map[string]string, dec
 	lexical := joinQName(target.Prefix, target.Name)
 
 	prefix, local := splitEQName(lexical)
-	if !strings.HasPrefix(lexical, "Q{") {
+	if !strings.HasPrefix(lexical, lexicon.EQNamePrefix) {
 		if err := validatePrefix(prefix, namespaces, strict); err != nil {
 			return err
 		}
@@ -546,7 +546,7 @@ func addPrefixCheck(plan *prefixPlanBuilder, prefix string) {
 }
 
 func addVarNamePrefixCheck(plan *prefixPlanBuilder, varName string) {
-	if strings.HasPrefix(varName, "Q{") {
+	if strings.HasPrefix(varName, lexicon.EQNamePrefix) {
 		return
 	}
 
@@ -581,7 +581,7 @@ func addCatchCodePrefixCheck(plan *prefixPlanBuilder, code string) {
 		return
 	}
 
-	if strings.HasPrefix(code, "Q{") {
+	if strings.HasPrefix(code, lexicon.EQNamePrefix) {
 		return // URIQualifiedName, no prefix to validate
 	}
 

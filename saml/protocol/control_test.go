@@ -2,9 +2,11 @@ package protocol_test
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,44 @@ import (
 	"github.com/skarm/xmlsec/saml/protocol"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+// The first verification measures its cancellation checkpoints. The second
+// cancels at the last one, independent of the number of earlier checks.
+type verificationContext struct {
+	context.Context
+	checks   atomic.Int64
+	cancelAt int64
+	cancel   context.CancelFunc
+}
+
+func (c *verificationContext) Err() error {
+	if c.checks.Add(1) == c.cancelAt {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func TestVerifyLogoutRequestCanceledAtCompletion(t *testing.T) {
+	t.Parallel()
+	key := testcert.Key(t)
+	header := protocol.MessageHeader{ID: "_canceled", Issuer: idp, Destination: acs, IssueInstant: testcert.Now()}
+	doc, err := protocol.SignLogoutRequest(t.Context(), protocol.LogoutRequest{MessageHeader: header, NameID: protocol.NameIdentifier{Value: "alice"}}, protocol.SigningKey{Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []crypto.PublicKey{key.Public()}
+	options := protocol.ExchangeOptions{Issuer: idp, Destination: acs, At: testcert.Now()}
+	measured := &verificationContext{Context: t.Context()}
+	if result, err := protocol.VerifyLogoutRequest(measured, doc, keys, options); result == nil || err != nil {
+		t.Fatalf("initial verification failed: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	late := &verificationContext{Context: ctx, cancelAt: measured.checks.Load(), cancel: cancel}
+	if result, err := protocol.VerifyLogoutRequest(late, doc, keys, options); result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("late cancellation returned verified request=%t, err=%v", result != nil, err)
+	}
+}
 
 // Core 3.6 / Errata E12: formats do not change; SPProvidedID is retained.
 // Core 3.7 / Profiles 4.4: signatures cover the identifier and session indices.

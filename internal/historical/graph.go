@@ -3,6 +3,7 @@ package historical
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/sha256"
 	"fmt"
 	"slices"
@@ -138,10 +139,15 @@ func (g *graph) checkHashReference(ref HashReference) error {
 		return ErrInput
 	}
 
-	h := ref.Hash.New()
+	// Admission indexes the immutable object bytes by their SHA-256.
+	digest := ref.Target[:]
+	if ref.Hash != crypto.SHA256 {
+		h := ref.Hash.New()
+		_, _ = h.Write(target.Bytes)
+		digest = h.Sum(nil)
+	}
 
-	_, _ = h.Write(target.Bytes)
-	if !bytes.Equal(h.Sum(nil), ref.Digest) {
+	if !bytes.Equal(digest, ref.Digest) {
 		return fmt.Errorf("%w: unbound object hash", ErrInput)
 	}
 

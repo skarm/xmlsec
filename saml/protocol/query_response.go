@@ -197,14 +197,14 @@ func SignAuthorityAssertion(ctx context.Context, s AuthorityAssertion, key Signi
 	return d, nil
 }
 
-// VerifyAuthorityAssertion verifies a standalone assertion, including the
-// unencrypted or encrypted representation returned by the URI binding.
+// VerifyAuthorityAssertion verifies a standalone assertion. Encrypted
+// assertions require Decryption options.
 func VerifyAuthorityAssertion(ctx context.Context, d *document.Document, keys []crypto.PublicKey, o AssertionOptions) (*VerifiedAuthorityAssertion, error) {
-	if ctx == nil || d == nil || o.At.IsZero() || !profile.URI(o.Issuer) {
+	if ctx == nil || d == nil {
 		return nil, ErrProfile
 	}
 
-	l, err := normalize(o.Limits)
+	l, err := normalizeAssertionOptions(o)
 	if err != nil {
 		return nil, err
 	}
@@ -217,11 +217,15 @@ func VerifyAuthorityAssertion(ctx context.Context, d *document.Document, keys []
 	return verifyAuthorityAssertion(ctx, d, keys, o, l, state)
 }
 
-func verifyAuthorityAssertion(ctx context.Context, d *document.Document, keys []crypto.PublicKey, o AssertionOptions, l Limits, state *decryptionState) (*VerifiedAuthorityAssertion, error) {
-	if ctx == nil || d == nil || o.At.IsZero() || !profile.URI(o.Issuer) {
-		return nil, ErrProfile
+func normalizeAssertionOptions(o AssertionOptions) (Limits, error) {
+	if o.At.IsZero() || !profile.URI(o.Issuer) {
+		return Limits{}, ErrProfile
 	}
 
+	return normalize(o.Limits)
+}
+
+func verifyAuthorityAssertion(ctx context.Context, d *document.Document, keys []crypto.PublicKey, o AssertionOptions, l Limits, state *decryptionState) (*VerifiedAuthorityAssertion, error) {
 	var err error
 	if d.Root().Name() == xmlutil.Name(AssertionNamespace, xmlNameEncryptedAssertion) {
 		d, err = state.decryptSAML(ctx, d, d.Root(), nameAssertion, false)
@@ -324,7 +328,7 @@ func parseAuthorityAssertion(ctx context.Context, d *document.Document, o Assert
 		return nil, err
 	}
 
-	return a, ctx.Err()
+	return verifiedResult(ctx, a)
 }
 
 func authorityConditions(e document.Element, o AssertionOptions, l Limits, a *VerifiedAuthorityAssertion) error {
@@ -513,7 +517,7 @@ func VerifyQueryResponse(ctx context.Context, d *document.Document, keys []crypt
 			return nil, ErrProfile
 		}
 
-		return result, nil
+		return verifiedResult(ctx, result)
 	}
 
 	state, err := newDecryptionState(o.Decryption)
@@ -546,7 +550,7 @@ func VerifyQueryResponse(ctx context.Context, d *document.Document, keys []crypt
 		return nil, err
 	}
 
-	return result, ctx.Err()
+	return verifiedResult(ctx, result)
 }
 
 // MatchQueryResponse enforces the query's subject and result filters across the
@@ -742,7 +746,7 @@ func matchAttributes(ctx context.Context, st document.Element, wants []*document
 }
 
 func authorityAssertionNode(s AuthorityAssertion) (*tree.Node, error) {
-	if !profile.ID(s.ID) || !profile.URI(s.Issuer) || s.IssueInstant.IsZero() || len(s.Statements) > maximumAuthorityStatements {
+	if !profile.ID(s.ID) || !profile.URI(s.Issuer) || !profile.ValidTime(s.IssueInstant) || len(s.Statements) > maximumAuthorityStatements {
 		return nil, ErrProfile
 	}
 

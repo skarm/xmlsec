@@ -148,9 +148,11 @@ func (p *ietfDateParser) parseRFC() (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	p.skipWS()
+	if !p.skipWS() {
+		return time.Time{}, fmt.Errorf("expected whitespace after year")
+	}
 
-	hour, minute, sec, frac, err := p.parseTime()
+	hour, minute, sec, ns, err := p.parseTime()
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -161,10 +163,10 @@ func (p *ietfDateParser) parseRFC() (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	return p.finishDate(year, month, day, hour, minute, sec, frac, loc)
+	return p.finishDate(year, month, day, hour, minute, sec, ns, loc)
 }
 
-// parseAsctime parses: month day time year [timezone]
+// parseAsctime parses: month day time [timezone] year
 // Also handles: month[-]day time year
 func (p *ietfDateParser) parseAsctime() (time.Time, error) {
 	monthStr, err := p.readAlpha()
@@ -188,48 +190,40 @@ func (p *ietfDateParser) parseAsctime() (time.Time, error) {
 		return time.Time{}, fmt.Errorf("expected day (1-2 digits): %w", err)
 	}
 
-	p.skipWS()
+	if !p.skipWS() {
+		return time.Time{}, fmt.Errorf("expected whitespace after day")
+	}
 
-	hour, minute, sec, frac, err := p.parseTime()
+	hour, minute, sec, ns, err := p.parseTime()
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	p.skipWS()
+	separated := p.skipWS()
 
-	var (
-		loc  *time.Location
-		year int
-	)
-
+	loc := time.UTC
 	if p.peekTZ() {
-		// timezone first, then year
 		loc, err = p.parseTZ()
 		if err != nil {
 			return time.Time{}, err
 		}
 
-		p.skipWS()
-
-		year, err = p.readYear()
-		if err != nil {
-			return time.Time{}, fmt.Errorf("expected year: %w", err)
-		}
-	} else {
-		year, err = p.readYear()
-		if err != nil {
-			return time.Time{}, fmt.Errorf("expected year: %w", err)
-		}
-
-		p.skipWS()
-
-		loc = time.UTC
+		separated = p.skipWS()
 	}
 
-	return p.finishDate(year, month, day, hour, minute, sec, frac, loc)
+	if !separated {
+		return time.Time{}, fmt.Errorf("expected whitespace before year")
+	}
+
+	year, err := p.readYear()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expected year: %w", err)
+	}
+
+	return p.finishDate(year, month, day, hour, minute, sec, ns, loc)
 }
 
-func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, frac float64, loc *time.Location) (time.Time, error) {
+func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec, ns int, loc *time.Location) (time.Time, error) {
 	const ietfMidnightHour = 0 // 24:00 normalizes to midnight on the next civil day
 
 	p.skipWS()
@@ -241,8 +235,6 @@ func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, fra
 	if err := validateIETFDate(year, month, day, hour, minute, sec); err != nil {
 		return time.Time{}, err
 	}
-
-	ns := int(frac * float64(nanosecondsPerSecond))
 
 	if hour == ietfEndOfDayHour {
 		hour = ietfMidnightHour
@@ -257,7 +249,7 @@ func (p *ietfDateParser) finishDate(year, month, day, hour, minute, sec int, fra
 	return t, nil
 }
 
-func (p *ietfDateParser) parseTime() (hour, minute, sec int, frac float64, err error) {
+func (p *ietfDateParser) parseTime() (hour, minute, sec, ns int, err error) {
 	hour, err = p.readIntN(ietfMinimumComponentDigits)
 	if err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("expected hour (1-2 digits): %w", err)
@@ -286,20 +278,46 @@ func (p *ietfDateParser) parseTime() (hour, minute, sec int, frac float64, err e
 		if p.pos < len(p.input) && p.input[p.pos] == '.' {
 			p.pos++ // skip '.'
 
-			fracStart := p.pos
-			for p.pos < len(p.input) && p.input[p.pos] >= '0' && p.input[p.pos] <= '9' {
-				p.pos++
+			ns, err = p.parseSecondFraction(hour)
+			if err != nil {
+				return 0, 0, 0, 0, err
 			}
-
-			if p.pos == fracStart {
-				return 0, 0, 0, 0, fmt.Errorf("expected digits after decimal point")
-			}
-
-			frac, _ = strconv.ParseFloat("0."+p.input[fracStart:p.pos], doubleFloatBits)
 		}
 	}
 
-	return hour, minute, sec, frac, nil
+	return hour, minute, sec, ns, nil
+}
+
+func (p *ietfDateParser) parseSecondFraction(hour int) (int, error) {
+	const nanosecondDigits = 9
+
+	start := p.pos
+
+	var ns int
+
+	for p.pos < len(p.input) && p.input[p.pos] >= '0' && p.input[p.pos] <= '9' {
+		digit := int(p.input[p.pos] - '0')
+		if hour == ietfEndOfDayHour && digit != 0 {
+			return 0, fmt.Errorf("end of day requires zero fractional seconds")
+		}
+
+		// Truncate to time.Time precision without rounding into the next second.
+		if p.pos-start < nanosecondDigits {
+			ns = ns*numericDecimalRadix + digit
+		}
+
+		p.pos++
+	}
+
+	if p.pos == start {
+		return 0, fmt.Errorf("expected digits after decimal point")
+	}
+
+	for digits := p.pos - start; digits < nanosecondDigits; digits++ {
+		ns *= numericDecimalRadix
+	}
+
+	return ns, nil
 }
 
 func (p *ietfDateParser) parseTZ() (*time.Location, error) {
@@ -320,9 +338,12 @@ func (p *ietfDateParser) parseTZ() (*time.Location, error) {
 // skipComment consumes an optional timezone-name suffix after a numeric offset.
 // Only names from the XPath grammar, such as "(EST)", are accepted.
 func (p *ietfDateParser) skipComment() error {
+	beforeSpace := p.pos
 	p.skipWS()
 
-	if p.pos < len(p.input) && p.input[p.pos] == '(' {
+	if p.pos >= len(p.input) || p.input[p.pos] != '(' {
+		p.pos = beforeSpace // The enclosing production may require this separator.
+	} else {
 		start := p.pos
 		depth := 1
 		p.pos++
@@ -445,10 +466,13 @@ func (p *ietfDateParser) readAlpha() (string, error) {
 	return p.input[start:p.pos], nil
 }
 
-func (p *ietfDateParser) skipWS() {
+func (p *ietfDateParser) skipWS() bool {
+	start := p.pos
 	for p.pos < len(p.input) && xmlchar.IsSpace(rune(p.input[p.pos])) {
 		p.pos++
 	}
+
+	return p.pos != start
 }
 
 func (p *ietfDateParser) hasSep() bool {
@@ -549,7 +573,6 @@ func (p *ietfDateParser) parseNumericTimezone() (*time.Location, error) {
 	}
 
 	offsetStr := p.input[numStart:p.pos]
-	offsetStr = strings.TrimSuffix(offsetStr, ":")
 
 	var h, m int
 
@@ -560,12 +583,13 @@ func (p *ietfDateParser) parseNumericTimezone() (*time.Location, error) {
 
 		h, _ = strconv.Atoi(hPart)
 
-		if len(mPart) != 0 && len(mPart) != ietfTimezoneMinuteDigits {
-			return nil, fmt.Errorf("timezone offset minutes must be 2 digits, got %d", len(mPart))
-		}
+		if mPart != "" {
+			minute, err := strconv.Atoi(mPart)
+			if err != nil || len(mPart) != ietfTimezoneMinuteDigits {
+				return nil, fmt.Errorf("timezone offset minutes must be 2 digits")
+			}
 
-		if len(mPart) != 0 {
-			m, _ = strconv.Atoi(mPart)
+			m = minute
 		}
 	} else {
 		// Compact format without colon: H, HH, HMM, HHMM
@@ -625,10 +649,7 @@ func parseMonth(s string) (int, error) {
 }
 
 func validateIETFDate(year, month, day, hour, minute, sec int) error {
-	const (
-		ietfMinimumCalendarDay = 1
-		ietfMaximumLeapSecond  = 60 // seconds permit a leap second, unlike minutes
-	)
+	const ietfMinimumCalendarDay = 1
 
 	if month < int(time.January) || month > int(time.December) {
 		return fmt.Errorf("month %d out of range", month)
@@ -651,7 +672,7 @@ func validateIETFDate(year, month, day, hour, minute, sec int) error {
 		return fmt.Errorf("minute %d out of range", minute)
 	}
 
-	if sec < 0 || sec > ietfMaximumLeapSecond { // 60 for leap seconds
+	if sec < 0 || sec >= calendarSecondsPerMinute { // xs:dateTime cannot represent leap seconds.
 		return fmt.Errorf("second %d out of range", sec)
 	}
 
@@ -716,11 +737,11 @@ func lookupMonthNumber(key string) (int, bool) {
 	return zero, false
 }
 
-// lookupIETFTimezone maps timezone abbreviations to UTC offsets in seconds.
-// Per the XPath spec, only the US military-origin abbreviations are recognized.
+// lookupIETFTimezone maps the timezone names in the fn:parse-ietf-date grammar
+// to UTC offsets in seconds.
 func lookupIETFTimezone(key string) (int, bool) {
 	switch key {
-	case "UT", "UTC", "GMT", "Z":
+	case "UT", "UTC", "GMT":
 		return 0, true
 	case "EST", "CDT":
 		return -5 * calendarSecondsPerHour, true

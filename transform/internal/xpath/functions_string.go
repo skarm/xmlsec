@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -578,7 +579,7 @@ func fnNormalizeSpace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 }
 
 func fnNormalizeUnicode(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	s, err := coerceArgToString(ctx, args[0])
+	s, empty, err := coerceAtomizedString(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +599,7 @@ func fnNormalizeUnicode(ctx context.Context, args []xdm.Sequence) (xdm.Sequence,
 		}
 	}
 
-	if s == "" {
+	if empty {
 		return xdm.SingleString(""), nil
 	}
 
@@ -762,7 +763,10 @@ func fnContains(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		return xdm.SingleBoolean(true), nil
 	}
 
-	pos, _ := coll.indexOf(s, sub)
+	pos, _, err := coll.indexOf(ctx, s, sub)
+	if err != nil {
+		return nil, err
+	}
 
 	return xdm.SingleBoolean(pos >= 0), nil
 }
@@ -777,7 +781,10 @@ func fnStartsWith(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		return xdm.SingleBoolean(true), nil
 	}
 
-	ok, _ := coll.hasPrefix(s, prefix)
+	ok, _, err := coll.hasPrefix(ctx, s, prefix)
+	if err != nil {
+		return nil, err
+	}
 
 	return xdm.SingleBoolean(ok), nil
 }
@@ -792,7 +799,10 @@ func fnEndsWith(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		return xdm.SingleBoolean(true), nil
 	}
 
-	ok, _ := coll.hasSuffix(s, suffix)
+	ok, _, err := coll.hasSuffix(ctx, s, suffix)
+	if err != nil {
+		return nil, err
+	}
 
 	return xdm.SingleBoolean(ok), nil
 }
@@ -807,7 +817,11 @@ func fnSubstringBefore(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, 
 		return xdm.SingleString(""), nil
 	}
 
-	pos, _ := coll.indexOf(s, sep)
+	pos, _, err := coll.indexOf(ctx, s, sep)
+	if err != nil {
+		return nil, err
+	}
+
 	if pos < 0 {
 		return xdm.SingleString(""), nil
 	}
@@ -825,7 +839,11 @@ func fnSubstringAfter(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 		return xdm.SingleString(s), nil
 	}
 
-	pos, matchLen := coll.indexOf(s, sep)
+	pos, matchLen, err := coll.indexOf(ctx, s, sep)
+	if err != nil {
+		return nil, err
+	}
+
 	if pos < 0 {
 		return xdm.SingleString(""), nil
 	}
@@ -860,10 +878,6 @@ func fnMatches(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 		if err != nil {
 			return nil, err
 		}
-	}
-
-	if err := checkVersionRegex(ctx, required, flags); err != nil {
-		return nil, err
 	}
 
 	re, err := compileXPathRegex(ctx, required, flags)
@@ -908,10 +922,6 @@ func fnCollationKey(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 }
 
 func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xdm.SequenceLen(args[0]) == 0 {
-		return xdm.SingleString(""), nil // input is xs:string? — empty yields ""
-	}
-
 	s, err := coerceArgToString(ctx, args[0])
 	if err != nil {
 		return nil, err
@@ -949,10 +959,6 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	}
 
 	isLiteral := strings.Contains(flags, regexLiteralFlag)
-
-	if err := checkVersionRegex(ctx, required, flags); err != nil {
-		return nil, err
-	}
 
 	re, err := compileXPathRegex(ctx, required, flags)
 	if err != nil {
@@ -992,8 +998,8 @@ func fnReplace(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 // translateXPathReplacement normalizes replacement tokens for the shared engine.
 // XPath uses: $N for backrefs, \$ for literal $, \\ for literal \.
 // The engine uses ${N} for captures and $$ for a literal dollar sign.
-// numGroups is the number of capture groups in the pattern — $N consumes the
-// maximum number of digits that form a valid group reference (≤ numGroups).
+// numGroups is the number of capture groups in the pattern. An absent group
+// up to 9 contributes no text and can still consume a digit prefix.
 func translateXPathReplacement(repl string, numGroups int) (string, error) {
 	var b strings.Builder
 
@@ -1034,40 +1040,32 @@ func translateXPathReplacement(repl string, numGroups int) (string, error) {
 	return b.String(), nil
 }
 
-// appendXPathReplacementGroup consumes the longest valid capture number and
-// retains following digits as literals. A nonexistent group contributes no text.
+// appendXPathReplacementGroup consumes the longest decimal prefix that either
+// names a group or has a value at most 9. The caller emits the remaining literal digits.
 func appendXPathReplacementGroup(builder *strings.Builder, repl string, i, numGroups int) int {
-	start := i
-	num := 0
-	validEnd := start // end of the longest valid group number
+	const (
+		largestOptionalGroup = 9
+		replacementBase      = 10
+	)
+
+	limit := max(numGroups, largestOptionalGroup)
+	group := 0
 
 	for i < len(repl) && repl[i] >= '0' && repl[i] <= '9' {
-		// Stop accumulating once num exceeds numGroups: more digits only
-		// grow it, and accumulating a long digit run would wrap int
-		// (past 2^31-1 where int is 32 bits) back into the group range.
-		if num <= numGroups {
-			num = num*10 + int(repl[i]-'0')
+		digit := int(repl[i] - '0')
+		if group > (limit-digit)/replacementBase {
+			break
 		}
 
+		group = group*replacementBase + digit
 		i++
-		if num > 0 && num <= numGroups {
-			validEnd = i
-		}
-	}
-	// $0 always refers to the whole match.
-	if validEnd == start && i > start && repl[start] == '0' {
-		validEnd = start + 1
 	}
 
-	if validEnd == start {
-		// References to nonexistent groups contribute no text.
-		return i
+	if group <= numGroups {
+		builder.WriteString("${")
+		builder.WriteString(strconv.Itoa(group))
+		builder.WriteByte('}')
 	}
-
-	builder.WriteString("${")
-	builder.WriteString(repl[start:validEnd])
-	builder.WriteByte('}')
-	builder.WriteString(repl[validEnd:i])
 
 	return i
 }
@@ -1123,10 +1121,6 @@ func fnTokenize(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) 
 		if err != nil {
 			return nil, err
 		}
-	}
-
-	if err := checkVersionRegex(ctx, required, flags); err != nil {
-		return nil, err
 	}
 
 	re, err := compileXPathRegex(ctx, required, flags)
@@ -1233,10 +1227,6 @@ func fnAnalyzeString(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, er
 		if err != nil {
 			return nil, err
 		}
-	}
-
-	if err := checkVersionRegex(ctx, required, flags); err != nil {
-		return nil, err
 	}
 
 	re, err := compileXPathRegex(ctx, required, flags)
@@ -1830,6 +1820,15 @@ func patternWork(ctx context.Context) pattern.Work {
 
 // compileXPathRegex reuses immutable programs within the owning runtime.
 func compileXPathRegex(ctx context.Context, source, flags string) (*compiledXPathRegex, error) {
+	version := xpathVersion31
+	if ec := getFnContext(ctx); ec != nil {
+		version = ec.version
+	}
+
+	return compileXPathRegexForVersion(ctx, source, flags, version)
+}
+
+func compileXPathRegexForVersion(ctx context.Context, source, flags string, version int) (*compiledXPathRegex, error) {
 	// Retained source+flag key bytes have an independent cap; larger valid
 	// keys remain usable uncached. This is not the regex source acceptance cap.
 	const xpathRegexCacheKeyBytes = 64 << 10
@@ -1840,6 +1839,10 @@ func compileXPathRegex(ctx context.Context, source, flags string) (*compiledXPat
 
 	if len(source) > xpathRegexSourceBytes {
 		return nil, pattern.ErrLimit
+	}
+
+	if err := checkVersionRegex(ctx, source, flags, version); err != nil {
+		return nil, err
 	}
 
 	if XMLSchemaVersion(ctx) == schemaEdition10 && !strings.ContainsRune(flags, regexLiteralRune) {

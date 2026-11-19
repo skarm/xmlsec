@@ -12,6 +12,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/reference"
 )
@@ -67,7 +68,7 @@ func SignEnveloped(ctx context.Context, d *document.Document, signer crypto.Sign
 		return nil, err
 	}
 
-	pub := signer.Public()
+	pub := signature.SignerPublic(signer)
 	if err := validateKey(pub, p); err != nil {
 		return nil, err
 	}

@@ -167,13 +167,8 @@ func (ec *execContext) execForEach(ctx context.Context, inst *forEachInst) error
 	}
 
 	savedFocus := ec.captureExecutionFocus()
-	savedTemplate := ec.currentTemplate
-	// XSLT spec: inside xsl:for-each, the current template rule is absent.
-	ec.setCurrentTemplate(nil)
-	defer func() {
-		ec.restoreExecutionFocus(savedFocus)
-		ec.setCurrentTemplate(savedTemplate)
-	}()
+	defer ec.restoreExecutionFocus(savedFocus)
+	defer ec.withoutTemplateRule()()
 
 	ec.size = xdm.SequenceLen(seq)
 	if isNodes {
@@ -278,9 +273,9 @@ func (ec *execContext) execForEachGroup(ctx context.Context, inst *forEachGroupI
 	case inst.GroupAdjacent != nil:
 		groups, err = ec.groupAdjacent(ctx, seq, inst.GroupAdjacent, inst.Composite, collationKeyFn)
 	case inst.GroupStartingWith != nil:
-		groups = ec.groupStartingWith(ctx, seq, inst.GroupStartingWith)
+		groups, err = ec.groupStartingWith(ctx, seq, inst.GroupStartingWith)
 	case inst.GroupEndingWith != nil:
-		groups = ec.groupEndingWith(ctx, seq, inst.GroupEndingWith)
+		groups, err = ec.groupEndingWith(ctx, seq, inst.GroupEndingWith)
 	default:
 		// No grouping attribute — treat entire sequence as one group
 		groups = []fegGroup{{items: xdm.Materialize(seq)}}
@@ -310,6 +305,7 @@ func (ec *execContext) execForEachGroup(ctx context.Context, inst *forEachGroupI
 	ec.inGroupContext = true
 
 	ec.groupHasKey = inst.GroupBy != nil || inst.GroupAdjacent != nil
+	defer ec.withoutTemplateRule()()
 	defer func() {
 		ec.currentNode = savedCurrent
 		ec.contextNode = savedContext
@@ -562,27 +558,22 @@ func (ec *execContext) groupingAtomicEqual(a, b xdm.AtomicValue, collationKey fu
 
 // groupStartingWith implements group-starting-with: a new group starts
 // whenever an item matches the pattern.
-func (ec *execContext) groupStartingWith(ctx context.Context, seq xdm.Sequence, pat *pattern) []fegGroup {
-	// Materialize the population so positional predicates in the pattern
-	// (e.g. .[position()=3]) see the per-item focus of the population
-	// sequence, and never the stale outer focus (ENG-005).
+func (ec *execContext) groupStartingWith(ctx context.Context, seq xdm.Sequence, pat *pattern) ([]fegGroup, error) {
 	pop := xdm.Materialize(seq)
-	savedPos := ec.position
-	savedSize := ec.size
 
-	ec.size = len(pop)
-	defer func() {
-		ec.position = savedPos
-		ec.size = savedSize
-	}()
+	defer ec.useSingletonPatternFocus()()
 
 	var groups []fegGroup
 
 	currentItems := make(xdm.ItemSlice, 0, len(pop))
 
-	for i, item := range pop {
-		ec.position = i + 1
-		if pat.matchPatternItem(ctx, ec, item) && len(currentItems) > 0 {
+	for _, item := range pop {
+		matched := pat.matchPatternItem(ctx, ec, item)
+		if err := ec.takePatternError(); err != nil {
+			return nil, err
+		}
+
+		if matched && len(currentItems) > 0 {
 			groups = append(groups, fegGroup{items: currentItems})
 			currentItems = nil
 		}
@@ -594,34 +585,29 @@ func (ec *execContext) groupStartingWith(ctx context.Context, seq xdm.Sequence, 
 		groups = append(groups, fegGroup{items: currentItems})
 	}
 
-	return groups
+	return groups, nil
 }
 
 // groupEndingWith implements group-ending-with: a group ends whenever
 // an item matches the pattern.
-func (ec *execContext) groupEndingWith(ctx context.Context, seq xdm.Sequence, pat *pattern) []fegGroup {
-	// Materialize the population so positional predicates in the pattern
-	// (e.g. .[position()=3]) see the per-item focus of the population
-	// sequence, and never the stale outer focus (ENG-005).
+func (ec *execContext) groupEndingWith(ctx context.Context, seq xdm.Sequence, pat *pattern) ([]fegGroup, error) {
 	pop := xdm.Materialize(seq)
-	savedPos := ec.position
-	savedSize := ec.size
 
-	ec.size = len(pop)
-	defer func() {
-		ec.position = savedPos
-		ec.size = savedSize
-	}()
+	defer ec.useSingletonPatternFocus()()
 
 	var groups []fegGroup
 
 	currentItems := make(xdm.ItemSlice, 0, len(pop))
 
-	for i, item := range pop {
-		ec.position = i + 1
-
+	for _, item := range pop {
 		currentItems = append(currentItems, item)
-		if pat.matchPatternItem(ctx, ec, item) {
+
+		matched := pat.matchPatternItem(ctx, ec, item)
+		if err := ec.takePatternError(); err != nil {
+			return nil, err
+		}
+
+		if matched {
 			groups = append(groups, fegGroup{items: currentItems})
 			currentItems = nil
 		}
@@ -631,7 +617,17 @@ func (ec *execContext) groupEndingWith(ctx context.Context, seq xdm.Sequence, pa
 		groups = append(groups, fegGroup{items: currentItems})
 	}
 
-	return groups
+	return groups, nil
+}
+
+// Predicate patterns on grouping boundaries see one item at a time
+// (XSLT 3.0 §5.5.3). Positional predicates on steps in selection patterns
+// still establish their own focus.
+func (ec *execContext) useSingletonPatternFocus() func() {
+	position, size := ec.position, ec.size
+	ec.position, ec.size = 1, 1
+
+	return func() { ec.position, ec.size = position, size }
 }
 
 func (ec *execContext) execVariable(ctx context.Context, inst *variableInst) error {
@@ -647,6 +643,13 @@ func (ec *execContext) execVariable(ctx context.Context, inst *variableInst) err
 	}
 
 	if inst.As != "" {
+		if inst.TypeNamespaces != nil {
+			savedNS, savedDefault, savedHas := ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS
+
+			ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = inst.TypeNamespaces, inst.XPathDefaultNS, inst.HasXPathDefaultNS
+			defer func() { ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = savedNS, savedDefault, savedHas }()
+		}
+
 		val, err = checkSequenceType(ctx, val, parseSequenceType(inst.As), errCodeXTTE0570, "variable $"+inst.Name, ec)
 		if err != nil {
 			return err

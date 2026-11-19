@@ -306,6 +306,56 @@ func TestBuildX509DataBudgetBoundaries(t *testing.T) {
 	})
 }
 
+func TestBuildKeyNamesAndKeysShareDefaultParseBudget(t *testing.T) {
+	t.Parallel()
+
+	const blobLimit = 1 << 20
+	maxName := strings.Repeat("n", blobLimit)
+	if doc, err := keyinfo.Build(t.Context(), keyinfo.Template{Names: []string{maxName + "n"}}); doc != nil || !errors.Is(err, keyinfo.ErrLimit) {
+		t.Errorf("Build with an oversized name = (%v, %v), want limit error", doc != nil, err)
+	}
+
+	key := &ec(t, elliptic.P256()).PublicKey
+	xmlPoint, err := key.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		format keyinfo.KeyFormat
+		bytes  int
+	}{
+		{keyinfo.XMLKeyValue, len(xmlPoint)},
+		{keyinfo.DERKeyValue, len(spki)},
+	} {
+		t.Run(string(tc.format), func(t *testing.T) {
+			t.Parallel()
+
+			last := maxName[:blobLimit-tc.bytes]
+			template := keyinfo.Template{
+				Names: []string{maxName, maxName, maxName, last},
+				Keys:  []keyinfo.PublicKeyValue{{Key: key, Format: tc.format}},
+			}
+			doc, err := keyinfo.Build(t.Context(), template)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := keyinfo.Parse(t.Context(), doc, doc.Root(), keyinfo.Options{})
+			if err != nil || len(result.Candidates()) != 1 || !slices.Equal(result.KeyNames(), template.Names) {
+				t.Fatalf("default Parse rejected or changed the boundary document: %v", err)
+			}
+
+			template.Names[3] += "n"
+			if doc, err := keyinfo.Build(t.Context(), template); doc != nil || !errors.Is(err, keyinfo.ErrLimit) {
+				t.Errorf("Build with excess key material = (%v, %v), want limit error", doc != nil, err)
+			}
+		})
+	}
+}
+
 func TestBuildX509CertificateDigests(t *testing.T) {
 	chain := testcert.New(t)
 

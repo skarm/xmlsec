@@ -102,7 +102,7 @@ func SignLogoutRequest(ctx context.Context, s LogoutRequest, key SigningKey) (*d
 		maximumLogoutSessionIndexes = 128
 	)
 
-	if len(s.SessionIndexes) > maximumLogoutSessionIndexes || !logoutReason(s.Reason) || !s.NotOnOrAfter.IsZero() && !s.IssueInstant.Before(s.NotOnOrAfter) {
+	if len(s.SessionIndexes) > maximumLogoutSessionIndexes || !logoutReason(s.Reason) {
 		return nil, ErrProfile
 	}
 
@@ -116,6 +116,10 @@ func SignLogoutRequest(ctx context.Context, s LogoutRequest, key SigningKey) (*d
 	}
 
 	if !s.NotOnOrAfter.IsZero() {
+		if !profile.ValidTime(s.NotOnOrAfter) || !s.IssueInstant.Before(s.NotOnOrAfter) {
+			return nil, ErrProfile
+		}
+
 		xmlutil.Set(n, nameNotOnOrAfter, profile.Time(s.NotOnOrAfter))
 	}
 
@@ -200,12 +204,12 @@ func VerifyLogoutRequest(ctx context.Context, d *document.Document, keys []crypt
 		s.SessionIndexes = append(s.SessionIndexes, v)
 	}
 
-	return &VerifiedLogoutRequest{request: s}, ctx.Err()
+	return verifiedResult(ctx, &VerifiedLogoutRequest{request: s})
 }
 
 // VerifyRedirectLogoutRequest validates a signed HTTP-Redirect logout request.
 func VerifyRedirectLogoutRequest(ctx context.Context, query string, keys []crypto.PublicKey, o ExchangeOptions, limits binding.Options) (*VerifiedLogoutRequest, *string, error) {
-	d, relay, err := exchangeRedirect(ctx, query, keys, o, limits, binding.Request)
+	d, relay, err := exchangeRedirect(ctx, query, keys, o.Policy, limits, binding.Request)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -301,12 +305,12 @@ func VerifyManageNameIDRequest(ctx context.Context, d *document.Document, keys [
 		return nil, ErrProfile
 	}
 
-	return &VerifiedManageNameIDRequest{request: s}, ctx.Err()
+	return verifiedResult(ctx, &VerifiedManageNameIDRequest{request: s})
 }
 
 // VerifyRedirectManageNameIDRequest validates the exact Redirect signature.
 func VerifyRedirectManageNameIDRequest(ctx context.Context, query string, keys []crypto.PublicKey, o ExchangeOptions, limits binding.Options) (*VerifiedManageNameIDRequest, *string, error) {
-	d, relay, err := exchangeRedirect(ctx, query, keys, o, limits, binding.Request)
+	d, relay, err := exchangeRedirect(ctx, query, keys, o.Policy, limits, binding.Request)
 	if err != nil {
 		return nil, nil, err
 	}

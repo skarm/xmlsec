@@ -538,6 +538,13 @@ func arithmeticDateTimeDatetime(ec *evalContext, la, ra xdm.AtomicValue) (xdm.Se
 		tb = attachTimezone(tb, implicitTZ)
 	}
 
+	// F&O 3.1 §9.7.4 subtracts times on the same reference date, ignoring
+	// any date carried by a clock calculation across midnight.
+	if la.TypeName == xdm.TypeTime {
+		ta = timeToReferenceDateTime(ta)
+		tb = timeToReferenceDateTime(tb)
+	}
+
 	// Compute the difference as an EXACT rational of total seconds so that two
 	// dateTimes one second (or one nanosecond) apart never collapse to the same
 	// value via float64 rounding. Build:

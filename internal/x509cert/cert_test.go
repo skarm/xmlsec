@@ -2,7 +2,9 @@ package x509cert_test
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -44,6 +46,54 @@ func TestParseCRLDistributionPointsWithReasonAndIssuer(t *testing.T) {
 		}
 	}
 	t.Error("parsed certificate lost its CRL distribution point extension")
+}
+
+func TestParseFullNameCRLDistributionPointURIs(t *testing.T) {
+	t.Parallel()
+
+	const uri = "https://example.test/root.crl"
+	chain := testcert.New(t)
+	uriName := der.Wrap(asn1.ClassContextSpecific, 6, false, []byte(uri))
+	dnsName := der.Wrap(asn1.ClassContextSpecific, 2, false, []byte("example.test"))
+	point := func(names ...[]byte) []byte {
+		return der.Seq(der.Ctx(0, der.Ctx(0, names...)))
+	}
+	// GeneralNames and DistributionPoints allow multiple entries. When a
+	// valid input exceeds the supplemental parser's fixed point count, the
+	// successful standard-library view is still available.
+	const beyondSupplementalPointLimit = 257
+	singleNamePoint := point(uriName)
+	manyPoints := der.Wrap(asn1.ClassUniversal, asn1.TagSequence, true, bytes.Repeat(singleNamePoint, beyondSupplementalPointLimit))
+	for _, tc := range []struct {
+		name  string
+		point []byte
+		count int
+	}{
+		{"uri_first", der.Seq(point(uriName, dnsName)), 1},
+		{"dns_first", der.Seq(point(dnsName, uriName)), 1},
+		{"standard_library_view_above_supplemental_limit", manyPoints, beyondSupplementalPointLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			encoded := issueWithCRLPoints(t, chain, tc.point)
+			certificate, err := x509cert.ParseDefault(encoded)
+			if err != nil {
+				t.Fatalf("parse fullName distribution points: %v", err)
+			}
+			if len(certificate.CRLDistributionPoints) != tc.count {
+				t.Fatalf("found %d distribution point URIs, want %d", len(certificate.CRLDistributionPoints), tc.count)
+			}
+			for _, got := range certificate.CRLDistributionPoints {
+				if got != uri {
+					t.Errorf("distribution point URI %q, want %q", got, uri)
+				}
+			}
+			if err := certificate.CheckSignatureFrom(chain.Root); err != nil {
+				t.Fatalf("original certificate signature: %v", err)
+			}
+		})
+	}
 }
 
 func TestParseRejectsIncompleteCRLDistributionPoints(t *testing.T) {
@@ -185,4 +235,61 @@ func BenchmarkParseCertificate(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestParseRejectsTrailingPublicKeyInfoFields(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	for _, relative := range []bool{false, true} {
+		raw := chain.Leaf.Raw
+		if relative {
+			raw = issueWithCRLPoints(t, chain, der.Seq(relativeCRLPoint()))
+		}
+		outer := publicStructureFields(t, raw)
+		body := publicStructureFields(t, outer[0])
+		spki := publicStructureFields(t, body[6])
+		algorithm := publicStructureFields(t, spki[0])
+		for name, malformed := range map[string][]byte{
+			"outer":     der.Seq(append(spki, der.Int(0))...),
+			"algorithm": der.Seq(der.Seq(append(algorithm, der.Int(0))...), spki[1]),
+		} {
+			changed := append([][]byte(nil), body...)
+			changed[6] = malformed
+			tbs := der.Seq(changed...)
+			digest := sha256.Sum256(tbs)
+			signed, err := ecdsa.SignASN1(rand.Reader, chain.RootKey, digest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := chain.Root.CheckSignature(x509.ECDSAWithSHA256, tbs, signed); err != nil {
+				t.Fatalf("malformed-schema fixture must retain a valid issuer signature: %v", err)
+			}
+			bits, err := asn1.Marshal(asn1.BitString{Bytes: signed, BitLength: len(signed) * 8})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded := der.Seq(tbs, outer[1], bits)
+			if parsed, err := x509cert.ParseDefault(encoded); parsed != nil || !errors.Is(err, der.ErrInvalidDER) {
+				t.Errorf("%s relative=%t accepted trailing SPKI fields: certificate=%t err=%v", name, relative, parsed != nil, err)
+			}
+		}
+	}
+}
+
+func publicStructureFields(t *testing.T, raw []byte) [][]byte {
+	t.Helper()
+	value, err := der.Read(raw, len(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := der.Sequence(value, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := make([][]byte, len(fields))
+	for index, field := range fields {
+		parts[index] = field.FullBytes
+	}
+	return parts
 }

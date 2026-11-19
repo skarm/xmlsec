@@ -72,9 +72,9 @@ func DecryptElementWithKeyGraph(ctx context.Context, doc *document.Document, sel
 // DecryptContentWithKeyGraph replaces exactly selected Type #Content with its
 // decrypted content in a new snapshot and returns the restored parent handle.
 func DecryptContentWithKeyGraph(ctx context.Context, doc *document.Document, selected document.Element, options KeyGraphOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil || node.Parent == nil {
-		return nil, document.Element{}, ErrFormat
+	node, err := selectedContent(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
 	}
 
 	raw, p, err := decryptGraph(ctx, doc, selected, options, ContentType)

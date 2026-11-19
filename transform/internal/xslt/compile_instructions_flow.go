@@ -150,7 +150,7 @@ func (c *compiler) compileCallTemplate(ctx context.Context, elem *xdm.Element) (
 	}
 
 	namespaces := inScopeNamespaces(elem)
-	if prefix, _, qualified := strings.Cut(name, ":"); qualified && !strings.HasPrefix(name, "Q{") && namespaces[prefix] == "" {
+	if prefix, _, qualified := strings.Cut(name, ":"); qualified && !strings.HasPrefix(name, lexicon.EQNamePrefix) && namespaces[prefix] == "" {
 		return nil, staticError(errCodeXTSE0280, "undeclared prefix %q in xsl:call-template name", prefix)
 	}
 
@@ -380,6 +380,7 @@ func (c *compiler) collectForEachSorts(ctx context.Context, elem *xdm.Element, i
 	for child := range xdm.Children(elem) {
 		element, ok := child.(*xdm.Element)
 		if !ok {
+			pastContent = pastContent || isStylesheetTextNode(child)
 			continue
 		}
 
@@ -515,6 +516,10 @@ func (c *compiler) compileSortKey(ctx context.Context, elem *xdm.Element) (*sort
 }
 
 func (c *compiler) compileSortKeyOptions(elem *xdm.Element, key *sortKey) error {
+	if _, present := elem.GetAttribute(nameDataType); present {
+		key.dataTypeNamespaces = inScopeNamespaces(elem)
+	}
+
 	for _, option := range []struct {
 		name   string
 		target **avt
@@ -537,7 +542,7 @@ func (c *compiler) compileSortKeyOptions(elem *xdm.Element, key *sortKey) error 
 		}
 
 		if literal, static := compiled.staticValue(); static && c.stylesheet.processorLanguage() >= processorXSLT20 {
-			if err := validateLiteralSortOption(option.name, literal); err != nil {
+			if err := validateLiteralSortOption(option.name, literal, key.dataTypeNamespaces); err != nil {
 				return err
 			}
 		}
@@ -987,17 +992,24 @@ func (c *compiler) compileGroupingOptions(elem *xdm.Element, inst *forEachGroupI
 }
 
 func (c *compiler) compileGroupingBody(ctx context.Context, elem *xdm.Element, inst *forEachGroupInst) error {
-	// Compile body (skip sort elements)
+	pastContent := false
+
 	for child := range xdm.Children(elem) {
 		switch v := child.(type) {
 		case *xdm.Element:
 			if v.URI() == lexicon.NamespaceXSLT && v.LocalName() == lexicon.XSLTElementSort {
+				if pastContent {
+					return staticError(errCodeXTSE0010, "xsl:sort must come before other content in xsl:for-each-group")
+				}
+
 				if err := c.appendCompiledSortKey(ctx, v, &inst.Sort); err != nil {
 					return err
 				}
 
 				continue
 			}
+
+			pastContent = true
 
 			childInst, childErr := c.compileInstruction(ctx, v)
 			if childErr != nil {
@@ -1010,6 +1022,8 @@ func (c *compiler) compileGroupingBody(ctx context.Context, elem *xdm.Element, i
 		case *xdm.Text, *xdm.CDATASection:
 			text := xdm.CharacterData(v)
 			if !c.shouldStripText(ctx, text) {
+				pastContent = true
+
 				lit, err := c.compileLiteralTextAt(v, text)
 				if err != nil {
 					return err

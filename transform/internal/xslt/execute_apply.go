@@ -76,19 +76,6 @@ func (ec *execContext) execApplyTemplates(ctx context.Context, inst *applyTempla
 
 	restoreTunnel := ec.pushTunnelArguments(newTunnelParams)
 
-	// Filter whitespace-only text nodes per xsl:strip-space before
-	// setting position/size, so position()/last() reflect the filtered list.
-	filtered := items[:0]
-	for _, item := range items {
-		if ni, ok := item.(xdm.NodeItem); ok && ec.shouldStripWhitespace(ni.Node) {
-			continue
-		}
-
-		filtered = append(filtered, item)
-	}
-
-	items = filtered
-
 	savedPos := ec.position
 	savedSize := ec.size
 	savedInMerge := ec.inMergeAction
@@ -177,7 +164,8 @@ func (ec *execContext) sortApplyTemplateItems(ctx context.Context, items xdm.Ite
 			return nil, err
 		}
 
-		items = items[:0]
+		// The selected sequence may borrow storage from a variable binding.
+		items = make(xdm.ItemSlice, 0, len(sorted))
 		for _, node := range sorted {
 			items = append(items, xdm.NodeItem{Node: node})
 		}
@@ -302,16 +290,6 @@ func (ec *execContext) applyBuiltinArray(ctx context.Context, array xdm.ArrayIte
 func (ec *execContext) applyTemplatesToSequence(ctx context.Context, seq xdm.Sequence, mode string, params map[string]xdm.Sequence) error {
 	items := xdm.Materialize(seq)
 
-	filtered := items[:0]
-	for _, item := range items {
-		if node, ok := item.(xdm.NodeItem); ok && ec.shouldStripWhitespace(node.Node) {
-			continue
-		}
-
-		filtered = append(filtered, item)
-	}
-
-	items = filtered
 	savedPos, savedSize, savedMerge := ec.position, ec.size, ec.inMergeAction
 
 	ec.inMergeAction = false
@@ -422,12 +400,6 @@ func (ec *execContext) execCallTemplate(ctx context.Context, inst *callTemplateI
 	}
 	defer func() { ec.depth-- }()
 
-	// XTDE3480/XTDE3510: clear merge-action context across template boundaries.
-	savedInMerge := ec.inMergeAction
-
-	ec.inMergeAction = false
-	defer func() { ec.inMergeAction = savedInMerge }()
-
 	tmpl, ok := ec.resolveNamedTemplate(inst.Name)
 	if !ok {
 		return dynamicError(errCodeXTSE0650, "named template %q not found", inst.Name)
@@ -456,6 +428,13 @@ func (ec *execContext) execCallTemplate(ctx context.Context, inst *callTemplateI
 		return err
 	}
 
+	// Arguments run in the caller's merge context. Clear it for the
+	// called template's defaults and body (XTDE3480/XTDE3510).
+	savedInMerge := ec.inMergeAction
+
+	ec.inMergeAction = false
+	defer func() { ec.inMergeAction = savedInMerge }()
+
 	defer ec.pushTunnelArguments(newTunnelParams)()
 
 	// Switch package function scope if the template belongs to a different package.
@@ -477,34 +456,17 @@ func (ec *execContext) execCallTemplate(ctx context.Context, inst *callTemplateI
 		ec.overridingTemplate = tmpl
 	}
 
-	// xsl:context-item use="absent": make the context item absent within the
-	// called template's body. This means xsl:next-match will fail with
-	// XTDE0560 because there is no context node to match against.
-	// The current group is independent of the focus and remains available
-	// across ordinary template calls (XSLT 3.0 section 14.2).
-	savedContextNode := ec.contextNode
-	savedContextItem := ec.contextItem
-
-	savedCurrentNode := ec.currentNode
-
-	savedCurrentTemplate := ec.currentTemplate
+	// The callee may discard its focus; argument expressions above still
+	// use the caller's focus. The current group is independent of focus.
 	if tmpl.ContextItemUse == ctxItemAbsent {
-		ec.contextNode = nil
-		ec.contextItem = nil
-		ec.currentNode = nil
-		ec.setCurrentTemplate(nil)
+		defer ec.withAbsentTemplateFocus()()
 	}
+
 	defer func() {
 		ec.cachedFnsNS = savedFnsNS
 		ec.currentPackage = savedPackage
 
 		ec.overridingTemplate = savedOverridingTemplate
-		if tmpl.ContextItemUse == ctxItemAbsent {
-			ec.contextNode = savedContextNode
-			ec.contextItem = savedContextItem
-			ec.currentNode = savedCurrentNode
-			ec.setCurrentTemplate(savedCurrentTemplate)
-		}
 	}()
 
 	ec.pushVarScope()
@@ -545,7 +507,7 @@ func (ec *execContext) bindCalledTemplateParams(ctx context.Context, params []*p
 
 func (ec *execContext) execNextMatch(ctx context.Context, inst *nextMatchInst) error {
 	// XTDE0560: xsl:next-match when the current template rule is absent.
-	if ec.currentTemplate == nil || ec.currentTemplate.Match == nil {
+	if ec.templateRuleAbsent || ec.currentTemplate == nil || ec.currentTemplate.Match == nil {
 		return dynamicError(errCodeXTDE0560, "xsl:next-match: no current template rule")
 	}
 	// xsl:next-match: find the next matching template after the current one
@@ -585,12 +547,17 @@ func (ec *execContext) execNextMatch(ctx context.Context, inst *nextMatchInst) e
 			continue
 		}
 
-		if !ec.matchTemplatePattern(ctx, tmpl, node, false) {
+		matched := ec.matchTemplatePattern(ctx, tmpl, node, false)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if !matched {
 			continue
 		}
 
 		if failOnMultiple {
-			if err := ec.checkNextMatchConflicts(ctx, templates[i+1:], tmpl, node, mode); err != nil {
+			if err := ec.checkTemplateConflicts(ctx, templates[i+1:], tmpl, node, mode); err != nil {
 				return err
 			}
 		}
@@ -602,7 +569,7 @@ func (ec *execContext) execNextMatch(ctx context.Context, inst *nextMatchInst) e
 	return ec.applyBuiltinRules(ctx, node, mode, pv)
 }
 
-func (ec *execContext) checkNextMatchConflicts(ctx context.Context, candidates []*template, tmpl *template, node xdm.Node, mode string) error {
+func (ec *execContext) checkTemplateConflicts(ctx context.Context, candidates []*template, tmpl *template, node xdm.Node, mode string) error {
 	for _, other := range candidates {
 		if other.ImportPrec < tmpl.ImportPrec || (other.ImportPrec == tmpl.ImportPrec && other.Priority < tmpl.Priority) {
 			break
@@ -619,7 +586,12 @@ func (ec *execContext) checkNextMatchConflicts(ctx context.Context, candidates [
 			continue
 		}
 
-		if ec.matchTemplatePattern(ctx, other, node, false) {
+		matched := ec.matchTemplatePattern(ctx, other, node, false)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if matched {
 			return dynamicError(errCodeXTDE0540,
 				"ambiguous rule match for node %v in mode %q (on-multiple-match=fail)",
 				node, mode)
@@ -640,9 +612,14 @@ func (ec *execContext) execNextAtomicMatch(ctx context.Context, mode string, pv 
 			continue
 		}
 
-		if foundCurrent && tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, ec.contextItem) {
+		matched := foundCurrent && tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, ec.contextItem)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if matched {
 			if failOnMultiple {
-				if err := ec.checkNextAtomicMatchConflicts(ctx, templates[i+1:], tmpl, mode); err != nil {
+				if err := ec.checkAtomicTemplateConflicts(ctx, templates[i+1:], tmpl, mode); err != nil {
 					return err
 				}
 			}
@@ -654,7 +631,7 @@ func (ec *execContext) execNextAtomicMatch(ctx context.Context, mode string, pv 
 	return ec.applyBuiltinTemplateItem(ctx, ec.contextItem, mode, pv)
 }
 
-func (ec *execContext) checkNextAtomicMatchConflicts(ctx context.Context, candidates []*template, best *template, mode string) error {
+func (ec *execContext) checkAtomicTemplateConflicts(ctx context.Context, candidates []*template, best *template, mode string) error {
 	for _, other := range candidates {
 		if other.ImportPrec < best.ImportPrec || (other.ImportPrec == best.ImportPrec && other.Priority < best.Priority) {
 			break
@@ -664,7 +641,12 @@ func (ec *execContext) checkNextAtomicMatchConflicts(ctx context.Context, candid
 			continue
 		}
 
-		if other.Match != nil && ec.matchAtomicTemplate(ctx, other, ec.contextItem) {
+		matched := other.Match != nil && ec.matchAtomicTemplate(ctx, other, ec.contextItem)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if matched {
 			return dynamicError(errCodeXTDE0540,
 				"ambiguous rule match for atomic item in mode %q (on-multiple-match=fail)", mode)
 		}
@@ -679,7 +661,7 @@ func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsI
 	// XTDE0560: xsl:apply-imports when the current template rule is absent.
 	// A template rule is a template with a match pattern; named templates
 	// invoked via call-template or initial-template don't count.
-	if ec.currentTemplate == nil || ec.currentTemplate.Match == nil {
+	if ec.templateRuleAbsent || ec.currentTemplate == nil || ec.currentTemplate.Match == nil {
 		return dynamicError(errCodeXTDE0560, "xsl:apply-imports: no current template rule")
 	}
 
@@ -706,39 +688,70 @@ func (ec *execContext) execApplyImports(ctx context.Context, inst *applyImportsI
 	// tree. MinImportPrec marks the lowest precedence among the module's
 	// (transitive) imports, so we restrict the search to [minPrec, maxPrec).
 	minPrec := ec.currentTemplate.MinImportPrec
+	templates := ec.activeModePackage().modeTemplates[mode]
 
 	// XSLT 3.0: when the context item is an atomic value (e.g. from
 	// xsl:apply-templates select="1 to 5"), search for matching atomic
 	// templates with lower import precedence, then use the current mode
 	// for the built-in rule on the original item.
 	if ec.contextItem != nil {
-		templates := ec.activeModePackage().modeTemplates[mode]
-		for _, tmpl := range templates {
-			if tmpl.ImportPrec >= maxPrec || tmpl.ImportPrec < minPrec {
-				continue
-			}
-
-			if tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, ec.contextItem) {
-				return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, pv)
-			}
-		}
-
-		return ec.applyBuiltinTemplateItem(ctx, ec.contextItem, mode, pv)
+		return ec.execImportedAtomicMatch(ctx, templates, minPrec, maxPrec, mode, pv)
 	}
 
-	templates := ec.activeModePackage().modeTemplates[mode]
-	for _, tmpl := range templates {
+	failOnMultiple := ec.onMultipleMatchFail(mode)
+
+	for i, tmpl := range templates {
 		if tmpl.ImportPrec >= maxPrec || tmpl.ImportPrec < minPrec {
 			continue
 		}
 
-		if ec.matchTemplatePattern(ctx, tmpl, node, false) {
+		matched := ec.matchTemplatePattern(ctx, tmpl, node, false)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if matched {
+			if failOnMultiple {
+				if err := ec.checkTemplateConflicts(ctx, templates[i+1:], tmpl, node, mode); err != nil {
+					return err
+				}
+			}
+
 			return ec.executeTemplate(ctx, tmpl, node, mode, pv)
 		}
 	}
 
 	// No imported template found, use built-in rules
 	return ec.applyBuiltinRules(ctx, node, mode, pv)
+}
+
+func (ec *execContext) execImportedAtomicMatch(ctx context.Context, templates []*template, minPrec, maxPrec int, mode string, params map[string]xdm.Sequence) error {
+	failOnMultiple := ec.onMultipleMatchFail(mode)
+
+	for i, tmpl := range templates {
+		if tmpl.ImportPrec >= maxPrec || tmpl.ImportPrec < minPrec {
+			continue
+		}
+
+		matched := tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, ec.contextItem)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if !matched {
+			continue
+		}
+
+		if failOnMultiple {
+			if err := ec.checkAtomicTemplateConflicts(ctx, templates[i+1:], tmpl, mode); err != nil {
+				return err
+			}
+		}
+
+		return ec.executeAtomicTemplate(ctx, tmpl, ec.contextItem, mode, params)
+	}
+
+	return ec.applyBuiltinTemplateItem(ctx, ec.contextItem, mode, params)
 }
 
 // checkContextItemType validates the context item against the template's
@@ -779,45 +792,79 @@ func (ec *execContext) checkContextItemType(tmpl *template) error {
 	return nil
 }
 
-// stripXPathComments removes XPath 2.0+ comments (: ... :) from a string
-// and normalizes whitespace (collapses runs of whitespace into single spaces,
-// removes spaces adjacent to parentheses).
+// stripXPathComments normalizes sequence-type syntax outside URIQualifiedNames.
+// A braced URI can contain comment delimiters and punctuation that belong to
+// the namespace name.
 func stripXPathComments(s string) string {
-	// First pass: remove comments
 	var buf strings.Builder
 
 	depth := 0
+	space := false
 
-	for i := 0; i < len(s); i++ {
-		if i+1 < len(s) && s[i] == '(' && s[i+1] == ':' {
+	var previous byte
+
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], "(:") {
 			depth++
-			i++ // skip ':'
+			space = true
+			i += 2
 
 			continue
 		}
 
-		if i+1 < len(s) && s[i] == ':' && s[i+1] == ')' {
+		if strings.HasPrefix(s[i:], ":)") {
 			if depth > 0 {
 				depth--
 			}
 
-			i++ // skip ')'
+			i += 2
 
 			continue
 		}
 
-		if depth == 0 {
-			buf.WriteByte(s[i])
+		if depth > 0 {
+			i++
+			continue
 		}
-	}
-	// Normalize whitespace: collapse runs into single space, trim
-	result := strings.Join(strings.Fields(buf.String()), " ")
-	result = strings.ReplaceAll(result, " (", "(")
-	result = strings.ReplaceAll(result, "( ", "(")
-	result = strings.ReplaceAll(result, " )", ")")
-	result = strings.ReplaceAll(result, ") ", ")")
-	result = strings.ReplaceAll(result, " ,", ",")
-	result = strings.ReplaceAll(result, ", ", ",")
 
-	return result
+		ch := s[i]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			space = true
+			i++
+
+			continue
+		}
+
+		if space && buf.Len() != 0 && !typeSyntaxPunctuation(previous) && !typeSyntaxPunctuation(ch) {
+			buf.WriteByte(' ')
+		}
+
+		space = false
+
+		if strings.HasPrefix(s[i:], lexicon.EQNamePrefix) {
+			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 {
+				buf.WriteString(s[i:])
+				break
+			}
+
+			end += i + 3
+			buf.WriteString(s[i:end])
+
+			previous = '}'
+			i = end
+
+			continue
+		}
+
+		buf.WriteByte(ch)
+		previous = ch
+		i++
+	}
+
+	return buf.String()
+}
+
+func typeSyntaxPunctuation(ch byte) bool {
+	return ch == '(' || ch == ')' || ch == ','
 }

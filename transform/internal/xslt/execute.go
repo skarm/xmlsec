@@ -5,6 +5,7 @@ package xslt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -124,6 +125,7 @@ type execContext struct {
 	currentMode                  string
 	currentModePackage           *Stylesheet             // bound mode identity, independent of the current component's lexical scope
 	currentTemplate              *template               // use setCurrentTemplate(); do not assign directly
+	templateRuleAbsent           bool                    // lexical template metadata remains available with changed focus
 	currentPackage               *Stylesheet             // owning package of currently executing template/function
 	xpathDefaultNS               string                  // current xpath-default-namespace
 	hasXPathDefaultNS            bool                    // true when xpathDefaultNS is explicitly set
@@ -157,10 +159,12 @@ type execContext struct {
 	accumulatorAfterByNode       map[xdm.Node]map[string]xdm.Sequence
 	accumulatorBeforeErrorByNode map[xdm.Node]map[string]error // deferred errors for accumulator-before
 	accumulatorAfterErrorByNode  map[xdm.Node]map[string]error // deferred errors for accumulator-after
-	accumulatorComputedDocs      map[xdm.Node]struct{}         // document roots for which accumulator states have been computed
-	accumulatorComputedPkgs      map[string]struct{}           // package-scoped accumulator computation tracking
-	activeAccumulators           map[string]struct{}           // accumulator names allowed in current source-document context
-	evaluatingAccumulator        bool
+	accumulatorTreeErrors        map[accumulatorTreeKey]error  // cached computation result for each tree and stylesheet package
+	accumulatorComputationFailed bool
+	accumulatorGrants            map[xdm.Node]map[*accumulatorDef]struct{} // absent root means unrestricted
+	accumulatorResourceDocs      map[accumulatorResourceKey]*xdm.Document
+	accumulatorCopies            map[xdm.Node]accumulatorCopy
+	accumulatorEvaluationTree    accumulatorTreeKey
 	evaluatingMergeKey           bool
 	regexGroups                  []string                // captured groups for regex-group() inside xsl:matching-substring
 	breakValue                   xdm.Sequence            // value produced by xsl:break
@@ -207,6 +211,7 @@ type execContext struct {
 	primaryCharacterMaps         []string                                 // character map names from xsl:result-document targeting primary output
 	primaryResolvedCharMap       map[rune]string                          // resolved character map from parameter-document for primary output
 	primaryOutputOverrides       *OutputDef                               // serialization param overrides from primary xsl:result-document
+	primaryOutputUsesNamedFormat bool                                     // the explicit definition replaces the unnamed output definition
 	rawResultSequence            xdm.Sequence                             // raw XDM result sequence (set when initial template has as="...")
 	nsFixupAllowed               map[*xdm.Element]struct{}                // elements whose prefix namespace is eligible for fixup
 	overridingTemplate           *template                                // currently executing overriding template (for xsl:original)
@@ -359,6 +364,28 @@ func (ec *execContext) pushAbsentGroupingContext() func() {
 
 func (ec *execContext) setCurrentTemplate(tmpl *template) {
 	ec.currentTemplate = tmpl
+}
+
+// withTemplateRule activates a selected rule for its own focus, including
+// when it was reached from inside another instruction with changed focus.
+func (ec *execContext) withTemplateRule(tmpl *template) func() {
+	previous, absent := ec.currentTemplate, ec.templateRuleAbsent
+	ec.setCurrentTemplate(tmpl)
+	ec.templateRuleAbsent = false
+
+	return func() {
+		ec.setCurrentTemplate(previous)
+		ec.templateRuleAbsent = absent
+	}
+}
+
+// withoutTemplateRule clears dynamic rule visibility without discarding the
+// enclosing template's lexical metadata, such as its module base URI.
+func (ec *execContext) withoutTemplateRule() func() {
+	previous := ec.templateRuleAbsent
+	ec.templateRuleAbsent = true
+
+	return func() { ec.templateRuleAbsent = previous }
 }
 
 // baseDir returns the base directory for resolving relative URIs in the
@@ -934,22 +961,7 @@ func (ec *execContext) addNodeUntracked(node xdm.Node) error {
 		return err
 	}
 
-	out := ec.currentOutput()
-	if err := out.current.AddChild(node); err != nil {
-		return err
-	}
-	// Record text nodes in the active conditional scope so that separator
-	// artifacts can be removed when on-empty fires (separators between
-	// zero-length strings must not make content non-empty per XSLT 3.0).
-	// Comment nodes (used as on-empty/on-non-empty placeholders) are
-	// excluded — they are managed by resolveConditionalScope directly.
-	if node.Type() == xdm.TextNode {
-		if n := len(out.conditionalScopes); n > 0 {
-			out.conditionalScopes[n-1].untrackedNodes = append(out.conditionalScopes[n-1].untrackedNodes, node.(xdm.MutableNode)) //nolint:forcetypeassert // The selected output-tree node implements MutableNode.
-		}
-	}
-
-	return nil
+	return ec.currentOutput().current.AddChild(node)
 }
 
 // addNode adds a node to the current output insertion point.
@@ -1053,8 +1065,8 @@ func (ec *execContext) prepareNodeSeparators(out *outputFrame, node xdm.Node, no
 	// xsl:processing-instruction that don't go through execXSLSequence.
 	// Only non-text nodes trigger this; text nodes from xsl:text/xsl:value-of
 	// are not separate "items" in the serialization sense.
-	if out.itemSeparator != nil && out.prevHadOutput && !isText && nodeType != xdm.AttributeNode {
-		sepStr := *out.itemSeparator
+	if separator := out.serializationItemSeparator(); separator != nil && out.prevHadOutput && !isText && nodeType != xdm.AttributeNode {
+		sepStr := *separator
 		if sepStr != "" && !ec.deferAdaptiveMarkupSeparator(out, node, sepStr) {
 			sep := ec.resultDoc.CreateText(sepStr)
 			if err := out.current.AddChild(sep); err != nil {
@@ -1102,9 +1114,26 @@ func (ec *execContext) executeSequenceConstructor(ctx context.Context, body []in
 	defer ec.popVarScope()
 
 	out := ec.currentOutput()
-	out.seqConstructorGen++
 	scopeIdx := len(out.conditionalScopes)
-	out.conditionalScopes = append(out.conditionalScopes, conditionalScope{pendingStart: len(out.pendingItems)})
+	scope := conditionalScope{pendingStart: len(out.pendingItems)}
+	// The compiler requires xsl:on-empty to end its sequence constructor.
+	last := body[len(body)-1]
+	for {
+		lexicalScope, wrapped := last.(*collationScopeInst)
+		if !wrapped {
+			break
+		}
+
+		last = lexicalScope.Inner
+	}
+
+	if _, preparesOnEmpty := last.(*onEmptyInst); preparesOnEmpty && !out.sequenceMode {
+		scope.onEmptyTarget = out.current
+		scope.outputStart = out.outputSerial
+		scope.prevWasAtomic = out.prevWasAtomic
+	}
+
+	out.conditionalScopes = append(out.conditionalScopes, scope)
 
 	for _, inst := range body {
 		_, isOnEmpty := inst.(*onEmptyInst)
@@ -1112,7 +1141,15 @@ func (ec *execContext) executeSequenceConstructor(ctx context.Context, body []in
 
 		snap := out.outputSerial
 		if err := ec.executeInstruction(ctx, inst); err != nil {
+			failed := out.conditionalScopes[scopeIdx]
+			out.releaseConditionalAttributePositions(failed.actions)
 			out.conditionalScopes = out.conditionalScopes[:scopeIdx]
+
+			keep := errors.Is(err, errBreak) || errors.Is(err, errNextIter)
+			if err := ec.resolveConditionalSeparators(out, failed.separators, keep); err != nil {
+				return err
+			}
+
 			return err
 		}
 
@@ -1121,25 +1158,39 @@ func (ec *execContext) executeSequenceConstructor(ctx context.Context, body []in
 		}
 	}
 
-	scope := out.conditionalScopes[scopeIdx]
+	scope = out.conditionalScopes[scopeIdx]
 	out.conditionalScopes = out.conditionalScopes[:scopeIdx]
+
+	defer out.releaseConditionalAttributePositions(scope.actions)
 
 	return ec.resolveConditionalScope(ctx, scope)
 }
 
+// A separator for an empty atomic belongs to the nearest constructor that
+// might still discard it at this insertion point.
+func (out *outputFrame) vacuousOnEmptyScope() *conditionalScope {
+	for i := len(out.conditionalScopes) - 1; i >= 0; i-- {
+		scope := &out.conditionalScopes[i]
+		if scope.onEmptyTarget != nil && scope.onEmptyTarget == out.current && scope.outputStart == out.outputSerial {
+			return scope
+		}
+	}
+
+	return nil
+}
+
 func (ec *execContext) resolveConditionalScope(ctx context.Context, scope conditionalScope) error {
-	if ec.currentOutput().sequenceMode && len(scope.actions) > 0 {
+	out := ec.currentOutput()
+	if out.sequenceMode && len(scope.actions) > 0 {
 		return ec.resolveConditionalItems(ctx, scope)
 	}
-	// When on-empty fires (!scope.hasOutput), remove nodes that were added
-	// via addNodeUntracked. These are separator artifacts inserted between
-	// zero-length atomic values and must not appear in the output (XSLT 3.0:
-	// "Separators between zero-length strings do not make the content
-	// non-empty").
-	if !scope.hasOutput {
-		for _, n := range scope.untrackedNodes {
-			xdm.UnlinkNode(n)
-		}
+
+	if err := ec.resolveConditionalSeparators(out, scope.separators, scope.hasOutput); err != nil {
+		return err
+	}
+
+	if scope.onEmptyTarget != nil && !scope.hasOutput {
+		out.prevWasAtomic = scope.prevWasAtomic
 	}
 
 	for _, action := range scope.actions {
@@ -1158,8 +1209,64 @@ func (ec *execContext) resolveConditionalScope(ctx context.Context, scope condit
 			return err
 		}
 
-		if err := ec.spliceConditionalSequence(action.placeholder, content, action.prevWasAtomic); err != nil {
+		if action.kind == conditionalOnEmpty && scope.onEmptyTarget == out.current {
+			// xsl:on-empty is the last instruction in its constructor. Write
+			// its replacement against the state preceding discarded items.
+			xdm.UnlinkNode(action.placeholder)
+
+			if err := ec.writeXSLSequence(content); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		if err := ec.spliceConditionalSequence(action, content); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+func (ec *execContext) resolveConditionalSeparators(out *outputFrame, separators []*xdm.Comment, keep bool) error {
+	for _, marker := range separators {
+		if !keep {
+			xdm.UnlinkNode(marker)
+
+			continue
+		}
+
+		text := xdm.CharacterData(marker)
+		prev, prevText := marker.PrevSibling().(*xdm.Text)
+		next, nextText := marker.NextSibling().(*xdm.Text)
+
+		switch {
+		case prevText:
+			if err := prev.AppendText(text); err != nil {
+				return err
+			}
+
+			if nextText {
+				if err := prev.AppendText(xdm.CharacterData(next)); err != nil {
+					return err
+				}
+
+				ec.clearAtomicTextNode(prev)
+				xdm.UnlinkNode(next)
+			}
+
+			xdm.UnlinkNode(marker)
+		case nextText:
+			if err := marker.Replace(out.doc.CreateText(text + xdm.CharacterData(next))); err != nil {
+				return err
+			}
+
+			xdm.UnlinkNode(next)
+		default:
+			if err := marker.Replace(out.doc.CreateText(text)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1236,7 +1343,8 @@ func (ec *execContext) resolveConditionalItems(ctx context.Context, scope condit
 	return nil
 }
 
-func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, seq xdm.Sequence, prevWasAtomic bool) error {
+func (ec *execContext) spliceConditionalSequence(action conditionalAction, seq xdm.Sequence) error {
+	placeholder := action.placeholder
 	if placeholder == nil {
 		return ec.outputSequence(seq)
 	}
@@ -1262,7 +1370,7 @@ func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, se
 	//   (b) isAtomicTextNode on the placeholder's previous DOM sibling
 	//       (reflects spliced atomic text that hasn't been merged away)
 	// Either being true means we need an inter-atomic space separator.
-	prevAtomic := prevWasAtomic || ec.isAtomicTextNode(placeholder.PrevSibling())
+	prevAtomic := action.prevWasAtomic || ec.isAtomicTextNode(placeholder.PrevSibling())
 
 	for item := range xdm.SequenceItems(seq) {
 		var err error
@@ -1270,7 +1378,7 @@ func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, se
 		switch value := item.(type) {
 		case xdm.NodeItem:
 			prevAtomic = false
-			nodes, err = ec.appendConditionalNode(nodes, value.Node, parent)
+			nodes, err = ec.appendConditionalNode(nodes, value.Node, action)
 		case xdm.AtomicValue:
 			nodes, err = ec.appendConditionalAtomic(nodes, value, prevAtomic)
 			prevAtomic = true
@@ -1315,7 +1423,7 @@ func (ec *execContext) spliceConditionalSequence(placeholder xdm.MutableNode, se
 	return nil
 }
 
-func (ec *execContext) appendConditionalNode(nodes []xdm.Node, node, parent xdm.Node) ([]xdm.Node, error) {
+func (ec *execContext) appendConditionalNode(nodes []xdm.Node, node xdm.Node, action conditionalAction) ([]xdm.Node, error) {
 	switch node.Type() {
 	case xdm.DocumentNode:
 		for child := range xdm.Children(node) {
@@ -1331,14 +1439,22 @@ func (ec *execContext) appendConditionalNode(nodes []xdm.Node, node, parent xdm.
 			nodes = append(nodes, copied)
 		}
 	case xdm.AttributeNode:
-		elem, ok := parent.(*xdm.Element)
-		if !ok {
+		elem := action.attributeParent
+		if elem == nil {
 			return nil, dynamicError(errCodeXTDE0410, "cannot add attribute to a non-element node")
 		}
 
+		out := ec.currentOutput()
+		if out.hasPrecedingConditionalChild(action.placeholder, nodes) {
+			return nil, dynamicError(errCodeXTDE0410, "cannot add attribute after child content")
+		}
+
 		attr, _ := xdm.AsNode[*xdm.Attribute](node)
-		copyAttributeToElement(elem, attr)
-		ec.currentOutput().noteOutput()
+		if out.canAttachConditionalAttribute(action, attr) {
+			copyAttributeToElement(elem, attr)
+		}
+
+		out.noteOutput()
 	default:
 		copied, err := xdm.CopyNode(node, ec.resultDoc)
 		if err != nil {
@@ -1349,6 +1465,40 @@ func (ec *execContext) appendConditionalNode(nodes []xdm.Node, node, parent xdm.
 	}
 
 	return nodes, nil
+}
+
+func (out *outputFrame) canAttachConditionalAttribute(action conditionalAction, attr *xdm.Attribute) bool {
+	order := out.conditionalAttrs[action.attributeParent]
+	name := xdm.QNameValue{URI: attr.URI(), Local: attr.LocalName()}
+
+	if order.last[name] > action.attributePosition {
+		return false
+	}
+
+	order.record(name, action.attributePosition)
+
+	return true
+}
+
+// Conditional results belong at their placeholder, which can precede children
+// already present in the result tree. Include children from this action itself.
+func (out *outputFrame) hasPrecedingConditionalChild(placeholder xdm.Node, nodes []xdm.Node) bool {
+	for child := placeholder.PrevSibling(); child != nil; child = child.PrevSibling() {
+		if isConditionalChildContent(child) && !out.isConditionalPlaceholder(child) {
+			return true
+		}
+	}
+
+	return slices.ContainsFunc(nodes, isConditionalChildContent)
+}
+
+func isConditionalChildContent(node xdm.Node) bool {
+	switch node.Type() {
+	case xdm.TextNode, xdm.CDATASectionNode:
+		return xdm.CharacterData(node) != ""
+	default:
+		return true
+	}
 }
 
 func (ec *execContext) appendConditionalAtomic(nodes []xdm.Node, value xdm.AtomicValue, previousAtomic bool) ([]xdm.Node, error) {

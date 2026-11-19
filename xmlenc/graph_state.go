@@ -566,10 +566,9 @@ func (g *keyGraph) referenceTarget(source *graphDocument, element document.Eleme
 		return graphNode{}, err
 	}
 
-	fragment := uri.EscapedFragment()
-	uri.Fragment, uri.RawFragment = "", ""
+	resourceURI, fragment, _ := strings.Cut(uri, "#")
 
-	doc, err := g.externalDocument(uri.String())
+	doc, err := g.externalDocument(resourceURI)
 	if err != nil {
 		return graphNode{}, err
 	}

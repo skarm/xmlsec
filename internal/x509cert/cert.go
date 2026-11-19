@@ -105,6 +105,16 @@ func Parse(raw []byte, limits Limits) (*x509.Certificate, error) {
 
 	certificate, originalError := x509.ParseCertificate(raw)
 	if originalError == nil {
+		if err := validateCertificatePublicKey(body, certificate, limits); err != nil {
+			return nil, err
+		}
+		// The standard parser stops at the first non-URI GeneralName in a
+		// fullName point. Recover all URIs within our supplemental parsing
+		// bounds, preserving the standard view when those bounds are exceeded.
+		if uris, err := originalCRLURIs(certificate.Extensions); err == nil {
+			certificate.CRLDistributionPoints = uris
+		}
+
 		return certificate, nil
 	}
 
@@ -149,6 +159,10 @@ func Parse(raw []byte, limits Limits) (*x509.Certificate, error) {
 	certificate.RawSubjectPublicKeyInfo = body[offset+5].FullBytes
 	certificate.RawSignatureAlgorithm, certificate.Extensions = body[offset+1].FullBytes, original
 
+	if err := validateCertificatePublicKey(body, certificate, limits); err != nil {
+		return nil, err
+	}
+
 	certificate.CRLDistributionPoints, err = originalCRLURIs(original)
 	if err != nil {
 		return nil, err
@@ -181,25 +195,37 @@ func validateCertificateDefaults(body []asn1.RawValue) error {
 		}
 
 		previous = field.Tag
-		if field.Tag == certificateExtensionsTag {
-			value, err := checkedExplicit(field, certificateExtensionsTag)
-			if err != nil || !der.Is(value, asn1.ClassUniversal, asn1.TagSequence, true) || len(value.Bytes) == 0 {
+		if field.Tag != certificateExtensionsTag {
+			// issuerUniqueID and subjectUniqueID are implicitly tagged BIT STRINGs.
+			if field.IsCompound {
 				return der.ErrInvalidDER
 			}
 
-			count := 0
-			for content := value.Bytes; len(content) > 0; count++ {
-				if count == maximumExtensions {
-					return errors.Join(der.ErrInvalidDER, der.ErrLimit)
-				}
-
-				extension, rest := checkedValue(content)
-				if err := validateExtensionDefault(extension); err != nil {
-					return err
-				}
-
-				content = rest
+			bitString := der.Wrap(asn1.ClassUniversal, asn1.TagBitString, false, field.Bytes)
+			if _, err := der.Read(bitString, len(bitString)); err != nil {
+				return err
 			}
+
+			continue
+		}
+
+		value, err := checkedExplicit(field, certificateExtensionsTag)
+		if err != nil || !der.Is(value, asn1.ClassUniversal, asn1.TagSequence, true) || len(value.Bytes) == 0 {
+			return der.ErrInvalidDER
+		}
+
+		count := 0
+		for content := value.Bytes; len(content) > 0; count++ {
+			if count == maximumExtensions {
+				return errors.Join(der.ErrInvalidDER, der.ErrLimit)
+			}
+
+			extension, rest := checkedValue(content)
+			if err := validateExtensionDefault(extension); err != nil {
+				return err
+			}
+
+			content = rest
 		}
 	}
 
@@ -491,7 +517,7 @@ func fullCRLPointURIs(point asn1.RawValue) ([]string, error) {
 		var uris []string
 
 		for _, name := range names {
-			if name.Class == asn1.ClassContextSpecific && name.Tag == lexicon.GeneralNameURI {
+			if der.Is(name, asn1.ClassContextSpecific, lexicon.GeneralNameURI, false) {
 				uris = append(uris, string(name.Bytes))
 			}
 		}

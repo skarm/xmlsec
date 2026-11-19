@@ -51,8 +51,8 @@ type Config struct {
 	Limits protocol.Limits
 	// POSTLimits bounds POST binding messages and generated forms.
 	POSTLimits binding.POSTLimits
-	// RedirectLimits sets Redirect binding signature policy and query, inflation and XML
-	// limits.
+	// RedirectLimits sets the query, inflation and XML limits for Redirect. Its
+	// policy, when configured, further restricts VerificationPolicy.
 	RedirectLimits binding.Options
 	// AssertionLifetime defaults to five minutes and must be at least one second
 	// and no greater than Limits.MaxAssertionLifetime.
@@ -79,7 +79,7 @@ func NewIdentityProvider(c Config) (*IdentityProvider, error) {
 		return nil, ErrPolicy
 	}
 
-	if e := signature.Key(c.Signing.Key.Public()); e != nil {
+	if e := signature.Key(signature.SignerPublic(c.Signing.Key)); e != nil {
 		return nil, e
 	}
 
@@ -96,6 +96,7 @@ func NewIdentityProvider(c Config) (*IdentityProvider, error) {
 	c.Signing.InclusivePrefixes = append([]string(nil), c.Signing.InclusivePrefixes...)
 	c.Signing.Policy = xmlsig.ClonePolicy(c.Signing.Policy)
 	c.VerificationPolicy = xmlsig.ClonePolicy(c.VerificationPolicy)
+	c.RedirectLimits.Policy = xmlsig.ClonePolicy(c.RedirectLimits.Policy)
 
 	c.Encryption, e = protocol.CloneEncryption(c.Encryption)
 	if e != nil {
@@ -178,7 +179,7 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 		return nil, e
 	}
 
-	if !keyAllowed(i.c.Signing.Key.Public(), own) {
+	if !keyAllowed(signature.SignerPublic(i.c.Signing.Key), own) {
 		return nil, ErrPolicy
 	}
 
@@ -186,15 +187,7 @@ func (i *IdentityProvider) Issue(ctx context.Context, request *Request, a Authen
 		return nil, ErrPolicy
 	}
 
-	found := false
-
-	for _, ep := range other.Endpoints(metadata.AssertionConsumerService) {
-		if ep.AcceptsTransport(r.ResponseBinding(), request.proof != nil) && ep.Location == r.ACS() {
-			found = true
-		}
-	}
-
-	if !found {
+	if !requestACSAllowed(other, r, request.proof != nil) {
 		return nil, ErrPolicy
 	}
 
@@ -267,15 +260,15 @@ func (i *IdentityProvider) finishIssue(ctx context.Context, request *Request, d 
 
 	r := request.verified
 
-	var relay *string
-	if request.relayPresent {
-		s := request.relay
-		relay = &s
-	}
+	if r.ResponseBinding() == metadata.HTTPPost {
+		var relay *string
+		if request.relayPresent {
+			relay = &request.relay
+		}
 
-	_, e := binding.WritePOST(ctx, io.Discard, d, binding.Response, relay, i.c.POSTLimits)
-	if e != nil {
-		return nil, e
+		if _, err := binding.WritePOST(ctx, io.Discard, d, binding.Response, relay, i.c.POSTLimits); err != nil {
+			return nil, err
+		}
 	}
 
 	sum := sha256.Sum256([]byte(i.c.EntityID + scopeSeparator + r.Issuer()))
@@ -301,20 +294,25 @@ func (i *IdentityProvider) finishIssue(ctx context.Context, request *Request, d 
 // Reject returns an authenticated SAML authentication-error response and consumes
 // the request exactly once. Use a Requester/Responder status and a relevant SAML
 // subcode (for example AuthnFailed or InvalidNameIDPolicy). It supports the same
-// POST, Artifact and ECP delivery as a successful Issue operation.
+// POST, Artifact and ECP delivery as a successful Issue operation and requires
+// that the request's selected ACS is still authorized by the SP's metadata.
 func (i *IdentityProvider) Reject(ctx context.Context, request *Request, status protocol.Status, at time.Time) (*Issued, error) {
 	if !i.acceptsIssueRequest(ctx, request, at) || status.Code != protocol.Requester && status.Code != protocol.Responder {
 		return nil, ErrPolicy
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	r := request.verified
 
-	own, _, err := i.roles(ctx, r.Issuer(), at)
+	own, other, err := i.roles(ctx, r.Issuer(), at)
 	if err != nil {
 		return nil, err
 	}
 
-	if !keyAllowed(i.c.Signing.Key.Public(), own) {
+	if !keyAllowed(signature.SignerPublic(i.c.Signing.Key), own) || !requestACSAllowed(other, r, request.allowHolderOfKeyACS) {
 		return nil, ErrPolicy
 	}
 
@@ -326,7 +324,17 @@ func (i *IdentityProvider) Reject(ctx context.Context, request *Request, status 
 	return i.finishIssue(ctx, request, d, at, at)
 }
 
+func requestACSAllowed(role *metadata.Role, r *protocol.VerifiedRequest, allowHolderOfKeyACS bool) bool {
+	return slices.ContainsFunc(role.Endpoints(metadata.AssertionConsumerService), func(ep metadata.Endpoint) bool {
+		return ep.Location == r.ACS() && ep.AcceptsTransport(r.ResponseBinding(), allowHolderOfKeyACS)
+	})
+}
+
 func (i *IdentityProvider) roles(ctx context.Context, sp string, at time.Time) (*metadata.Role, *metadata.Role, error) {
+	if i.c.Metadata == nil {
+		return nil, nil, ErrPolicy
+	}
+
 	own, e := i.c.Metadata.Lookup(ctx, i.c.EntityID, at)
 	if e != nil {
 		return nil, nil, e
@@ -430,6 +438,10 @@ func (i *IdentityProvider) acceptSOAPMessage(ctx context.Context, m *binding.SOA
 		return nil, err
 	}
 
+	// Channel comparison can return an authenticated request for Reject before
+	// AcceptECP attaches proof. Its accepted ACS policy still applies.
+	request.allowHolderOfKeyACS = opt.AllowHolderOfKeyACS
+
 	channels, err := ecp.ReadChannelHeaders(m.Headers(), false)
 	if err == nil {
 		request.channels, err = ecp.MatchChannelBindings(r.ChannelBindings(), channels)
@@ -504,6 +516,10 @@ func (i *IdentityProvider) AcceptArtifact(ctx context.Context, message *document
 		return nil, err
 	}
 
+	if r.ResponseBinding() == metadata.PAOS {
+		return nil, ErrPolicy
+	}
+
 	if relay == nil {
 		return i.wrap(r, "", false, at)
 	}
@@ -536,14 +552,15 @@ func (i *IdentityProvider) acceptsIssueRequest(ctx context.Context, request *Req
 // Request retains an authenticated request bound to the IdentityProvider that accepted
 // it.
 type Request struct {
-	owner        *IdentityProvider
-	verified     *protocol.VerifiedRequest
-	relay        string
-	relayPresent bool
-	expires      time.Time
-	channels     []protocol.ChannelBinding
-	channelErr   error
-	proof        *proof.Verified
+	expires             time.Time
+	channelErr          error
+	owner               *IdentityProvider
+	verified            *protocol.VerifiedRequest
+	proof               *proof.Verified
+	relay               string
+	channels            []protocol.ChannelBinding
+	relayPresent        bool
+	allowHolderOfKeyACS bool
 }
 
 // HolderOfKeyCertificate returns the proven certificate. Before Issue the

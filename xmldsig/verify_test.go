@@ -129,6 +129,10 @@ func TestVerifiedReferenceReplaysExactOctets(t *testing.T) {
 		t.Errorf("reference digest = %s, want %x", hex.EncodeToString(got), digest)
 	} else {
 		clear(got)
+
+		if again := ref.Digest(); !bytes.Equal(again, digest[:]) {
+			t.Errorf("reference digest changed after clearing returned bytes: got %x, want %x", again, digest)
+		}
 	}
 	var replay bytes.Buffer
 	method := reference.Transform{Algorithm: c14n.Exclusive}

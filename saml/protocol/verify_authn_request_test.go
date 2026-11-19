@@ -83,6 +83,58 @@ func TestAuthnRequestBooleanLexicalValues(t *testing.T) {
 	}
 }
 
+func TestAuthnRequestAllowsFreshPassiveAuthentication(t *testing.T) {
+	t.Parallel()
+
+	t.Run("build", func(t *testing.T) {
+		t.Parallel()
+
+		doc, err := protocol.BuildAuthnRequest(t.Context(), protocol.AuthnRequest{
+			ID: nameRequest, Issuer: sp, Destination: sso, ACS: acs, IssueInstant: testcert.Now(),
+			ForceAuthn: true, IsPassive: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"ForceAuthn", "IsPassive"} {
+			if value, present := doc.Root().Attribute(document.Name{Local: name}); !present || value != "true" {
+				t.Errorf("%s = %q, want true", name, value)
+			}
+		}
+	})
+
+	key := testcert.Key(t)
+	doc := parseLexicalAuthnRequest(t, ` ForceAuthn="true" IsPassive="1"`, "")
+	options := protocol.RequestOptions{Issuer: sp, Destination: sso, At: testcert.Now(), ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: acs}}}
+	keys := []crypto.PublicKey{key.Public()}
+	check := func(t *testing.T, got *protocol.VerifiedRequest, err error) {
+		t.Helper()
+		if err != nil || got == nil || !got.ForceAuthn() || !got.IsPassive() {
+			t.Fatalf("verifying the fresh passive request = %v, %v; want both flags", got, err)
+		}
+	}
+	t.Run("POST", func(t *testing.T) {
+		t.Parallel()
+
+		signed, err := xmlsig.Sign(t.Context(), doc, doc.Root(), xmlsig.SigningKey{Key: key, Method: xmldsig.ECDSASHA256}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := protocol.VerifyAuthnRequest(t.Context(), signed, keys, options)
+		check(t, got, err)
+	})
+	t.Run("Redirect", func(t *testing.T) {
+		t.Parallel()
+
+		query, err := binding.SignRedirect(t.Context(), doc, binding.Request, nil, key, binding.Options{SignatureMethod: xmldsig.ECDSASHA256})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := protocol.VerifyRedirectRequest(t.Context(), query, keys, options, binding.Options{})
+		check(t, got, err)
+	})
+}
+
 func TestAuthnRequestIndexLexicalValues(t *testing.T) {
 	t.Parallel()
 
@@ -123,9 +175,31 @@ func TestAuthnRequestIndexLexicalValues(t *testing.T) {
 				t.Run(transport, func(t *testing.T) {
 					t.Parallel()
 
-					checkACSSelection(t, t.Context(), doc, key, options, transport, want)
+					checkACSSelection(t, t.Context(), doc, key, options, transport, want, metadata.HTTPPost)
 				})
 			}
+		})
+	}
+}
+
+func TestAuthnRequestIndexIgnoresUnindexedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	doc := parseLexicalAuthnRequest(t, ` AssertionConsumerServiceIndex="0"`, "")
+	key := testcert.Key(t)
+	options := protocol.RequestOptions{Issuer: sp, Destination: sso, At: testcert.Now(), ACS: []metadata.Endpoint{
+		{Binding: metadata.HTTPPost, Location: "https://sp.example.test/default-acs", Default: true},
+		{Binding: metadata.HTTPArtifact, Location: acs, Indexed: true, Index: 0},
+	}}
+	for _, transport := range []string{"POST", "Redirect"} {
+		t.Run(transport, func(t *testing.T) {
+			t.Parallel()
+
+			checkACSSelection(t, t.Context(), doc, key, options, transport, acs, metadata.HTTPArtifact)
+
+			fixed := options
+			fixed.ResponseBinding = metadata.HTTPPost
+			checkACSSelection(t, t.Context(), doc, key, fixed, transport, "", "")
 		})
 	}
 }

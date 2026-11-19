@@ -71,12 +71,12 @@ func TestXHTMLNameAwareMarkupRules(t *testing.T) {
 			t.Fatal("version precedence", got, test.want)
 		}
 	}
-	for _, version := range []string{"4", "4.01", "5", "5.0"} {
+	for _, version := range []string{"4", "4.01", "5", "5.0", "+004.0100", "05."} {
 		if !html.SupportedVersion(version) {
 			t.Fatal("supported version rejected", version)
 		}
 	}
-	for _, version := range []string{"3.2", "NaN", "+Inf", "not a number"} {
+	for _, version := range []string{"3.2", "4.0100000000000000000000001", "4.9999999999999999999999999", "NaN", "+Inf", "not a number"} {
 		if html.SupportedVersion(version) {
 			t.Fatal("unsupported version accepted", version)
 		}
@@ -169,5 +169,22 @@ func TestPrepareXHTMLReplacesOnlyRecognizedMetadata(t *testing.T) {
 	cancel()
 	if err := html.PrepareXHTML(ctx, doc, true, "text/html"); !errors.Is(err, context.Canceled) {
 		t.Fatal("canceled metadata preparation succeeded", err)
+	}
+}
+
+func TestPrepareXHTMLCancellationBeforeNamespaceChanges(t *testing.T) {
+	t.Parallel()
+
+	for _, html5 := range []bool{false, true} {
+		doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<h:html xmlns:h="http://www.w3.org/1999/xhtml"/>`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		err = html.PrepareXHTML(ctx, doc, html5, "")
+		if !errors.Is(err, context.Canceled) || doc.DocumentElement().Prefix() != "h" {
+			t.Errorf("html5=%v, canceled preparation prefix=%q, err=%v", html5, doc.DocumentElement().Prefix(), err)
+		}
 	}
 }

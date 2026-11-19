@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -279,17 +280,15 @@ func TestManifestProfiles(t *testing.T) {
 		java(t, fixture, "ManifestOracle", "sign-bad", key.private, bad, attachment, key.method)
 
 		v := verifyJava(t, java(t, fixture, "ManifestOracle", nameVerify, key.public, bad, attachment), false)
-		for _, r := range v.References {
-			if !r {
-				t.Fatal("direct Reference invalid in nested control")
-			}
+		if !slices.Equal(v.References, []bool{true}) {
+			t.Fatalf("JDK direct Reference check in nested control: %v", v.References)
 		}
 
 		raw, _ = command(t, fixture, false, nil, cli, append([]string{"verify-core", flagIn, bad, flagKey, key.public}, opts...)...)
 
 		r := verifyReport(t, raw, false)
-		if r.References[0].Status != nameValid {
-			t.Fatal("nested failure leaked into direct reference status")
+		if r.FailureStage != "manifests" || r.ManifestValidation != "invalid" || len(r.References) != 1 || r.References[0].Status != nameValid {
+			t.Fatalf("Go nested failure report: %s", raw)
 		}
 	}
 	// Independently signed EdDSA and nested controls also run in the public
@@ -379,16 +378,27 @@ func referenceInput(t *testing.T, fixture *interopFixture, d *tree.Document, sig
 func checkReferences(t *testing.T, fixture *interopFixture, d *tree.Document, sig *tree.Node) bool {
 	t.Helper()
 
+	refs := nodes(sig, ds, "Reference")
+	if len(refs) == 0 {
+		return false
+	}
+
 	valid := true
 
-	for _, ref := range nodes(sig, ds, "Reference") {
+	for _, ref := range refs {
 		alg := attr(one(t, ref, ds, "DigestMethod"), "Algorithm")
 
-		bits := 256
-		if strings.HasSuffix(alg, "384") {
+		var bits int
+
+		switch alg {
+		case enc + nameSHA256:
+			bits = 256
+		case more + "sha384":
 			bits = 384
-		} else if strings.HasSuffix(alg, "512") {
+		case enc + "sha512":
 			bits = 512
+		default:
+			t.Fatalf("unsupported digest method for reference oracle: %q", alg)
 		}
 
 		input := referenceInput(t, fixture, d, sig, ref, nil)
@@ -400,6 +410,13 @@ func checkReferences(t *testing.T, fixture *interopFixture, d *tree.Document, si
 	}
 
 	return valid
+}
+
+func TestCheckReferencesRequiresReferences(t *testing.T) {
+	doc := xmlDoc(t, []byte(`<Signature xmlns="`+ds+`"><SignedInfo/></Signature>`))
+	if checkReferences(t, nil, doc, tree.Root(doc)) {
+		t.Fatal("reference checks succeeded with no references")
+	}
 }
 
 func testreferenceInputCase(n *tree.Node, ident *string, target **tree.Node, t **testing.T, walk *func(*tree.Node)) {

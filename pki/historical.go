@@ -102,8 +102,10 @@ type HistoricalSession struct {
 	evidence Evidence
 	// paths caches prospective paths by exact target certificate digest.
 	paths map[[sha256.Size]byte][]*HistoricalPath
-	// certificates indexes parsed certificates by exact DER digest.
+	// certificates indexes configured and submitted issuer candidates by DER digest.
 	certificates map[[sha256.Size]byte]*x509.Certificate
+	// targetCertificates owns parsed targets that were supplied only for lookup.
+	targetCertificates map[[sha256.Size]byte]*x509.Certificate
 	// targetBytes accounts for target certificate input charged to the session.
 	targetBytes int
 	// pathWork accounts for cumulative prospective-path search work.
@@ -132,8 +134,9 @@ func NewHistoricalSession(ctx context.Context, config HistoricalConfig, now time
 	return verifier.NewHistoricalSession(ctx, config.HistoricalOptions, now, input)
 }
 
-// Paths discovers bounded prospective exact paths without rejecting current
-// expiration. Discovery is not historical authentication or trust acceptance.
+// Paths discovers bounded prospective exact paths using configured and submitted
+// issuer candidates without rejecting current expiration. Discovery is not
+// historical authentication or trust acceptance.
 func (s *HistoricalSession) Paths(ctx context.Context, targetDER []byte) ([]*HistoricalPath, error) {
 	if err := s.request(ctx); err != nil {
 		return nil, err

@@ -224,8 +224,8 @@ func TestPolicyAndID(t *testing.T) {
 		t.Fatal("ID attribute was guessed")
 	}
 
-	if _, err := xmldsig.SignEnveloped(t.Context(), signed, key, xmldsig.SignOptions{}); err == nil {
-		t.Fatal("existing signature accepted")
+	if repeated, err := xmldsig.SignEnveloped(t.Context(), signed, key, xmldsig.SignOptions{IDAttribute: id}); repeated != nil || !errors.Is(err, xmldsig.ErrStructure) {
+		t.Fatalf("document with existing signature returned result=%t, error=%v; want no result and ErrStructure", repeated != nil, err)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -549,6 +549,18 @@ func TestModernTemplate(t *testing.T) {
 	}
 }
 
+func TestEd25519PrivateKeyLength(t *testing.T) {
+	for _, size := range []int{0, ed25519.SeedSize, ed25519.PrivateKeySize - 1, ed25519.PrivateKeySize + 1} {
+		key := make(ed25519.PrivateKey, size)
+		for _, signer := range []crypto.Signer{key, &key} {
+			value, err := xmldsig.SignMessage(t.Context(), []byte("message"), signer, xmldsig.Ed25519, xmldsig.ModernPolicy())
+			if value != nil || !errors.Is(err, xmldsig.ErrKey) {
+				t.Errorf("signer %T, length %d: signature length %d, error %v", signer, size, len(value), err)
+			}
+		}
+	}
+}
+
 func TestEd25519phRFC8032(t *testing.T) {
 	// RFC 8032 section 7.3: the prehashed "abc" test vector.
 	seed, err := hex.DecodeString("833fe62409237b9d62ec77587520911e9a759cec1d19755b7da901b96dca3d42")
@@ -575,6 +587,9 @@ func TestEd25519phRFC8032(t *testing.T) {
 		}},
 		{"reader", func() ([]byte, error) {
 			return xmldsig.SignMessageReader(t.Context(), iotest.OneByteReader(strings.NewReader("abc")), key, xmldsig.Ed25519ph, policy)
+		}},
+		{"pointer", func() ([]byte, error) {
+			return xmldsig.SignMessage(t.Context(), message, &key, xmldsig.Ed25519ph, policy)
 		}},
 		{"parameters bytes", func() ([]byte, error) {
 			return xmldsig.SignMessageWithParameters(t.Context(), message, key, xmldsig.Ed25519ph, xmldsig.SignatureParameters{}, policy)

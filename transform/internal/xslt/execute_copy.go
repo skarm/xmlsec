@@ -6,7 +6,6 @@ package xslt
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -16,35 +15,9 @@ import (
 type copyNodeOpts struct {
 	body              []instruction
 	useAttrSets       []string
+	baseURI           string
 	copyNamespaces    bool
 	inheritNamespaces bool
-}
-
-// emitAtomicText appends an atomic value to the current output as a text node.
-// Adjacent atomic values are separated by a single space per XSLT 3.0 §5.7.2;
-// prevWasAtomic tracks whether the previously emitted item was atomic and is
-// updated to true on success.
-func (ec *execContext) emitAtomicText(v xdm.AtomicValue, prevWasAtomic *bool) error {
-	s, err := xpath.AtomicToString(v)
-	if err != nil {
-		return err
-	}
-
-	if *prevWasAtomic {
-		sep := ec.resultDoc.CreateText(" ")
-		if err := ec.addNode(sep); err != nil {
-			return err
-		}
-	}
-
-	text := ec.resultDoc.CreateText(s)
-	if err := ec.addNode(text); err != nil {
-		return err
-	}
-
-	*prevWasAtomic = true
-
-	return nil
 }
 
 func (ec *execContext) execCopy(ctx context.Context, inst *copyInst) error {
@@ -63,6 +36,7 @@ func (ec *execContext) execCopy(ctx context.Context, inst *copyInst) error {
 	opts := copyNodeOpts{
 		body:              inst.Body,
 		useAttrSets:       inst.UseAttrSets,
+		baseURI:           inst.StaticBaseURI,
 		copyNamespaces:    copyNS,
 		inheritNamespaces: inheritNS,
 	}
@@ -274,8 +248,12 @@ func (ec *execContext) execCopyNode(ctx context.Context, node xdm.Node, opts cop
 	case xdm.CommentNode:
 		return ec.addNode(ec.resultDoc.CreateComment(xdm.CharacterData(node)))
 	case xdm.ProcessingInstructionNode:
-		pi, _ := xdm.AsNode[*xdm.ProcessingInstruction](node)
-		return ec.addNode(ec.resultDoc.CreatePI(pi.Name(), xdm.CharacterData(pi)))
+		copied, err := xdm.CopyNode(node, ec.resultDoc)
+		if err != nil {
+			return err
+		}
+
+		return ec.addCopiedNode(node, copied)
 	case xdm.DocumentNode:
 		return ec.execCopyDocument(ctx, node, opts.body)
 	case xdm.AttributeNode:
@@ -304,13 +282,6 @@ func (ec *execContext) execCopyElement(ctx context.Context, src *xdm.Element, op
 		return err
 	}
 
-	// Orphan copies retain the source's base URI (XSLT 3.0 §11.9.4).
-	if elem.Parent() == nil {
-		if srcBase := xdm.NodeGetBase(src.OwnerDocument(), src); srcBase != "" {
-			xdm.SetNodeBaseURI(elem, srcBase)
-		}
-	}
-
 	out := ec.currentOutput()
 	savedCurrent, savedPrevAtomic, savedSeqMode, savedCapture := out.current, out.prevWasAtomic, out.sequenceMode, out.captureItems
 
@@ -329,6 +300,8 @@ func (ec *execContext) execCopyElement(ctx context.Context, src *xdm.Element, op
 	if err := ec.executeSequenceConstructor(ctx, opts.body); err != nil {
 		return err
 	}
+
+	setOrphanCopyBase(src, elem, opts.baseURI)
 
 	if err := finishConstructedNamespaces(ctx, elem, opts.inheritNamespaces); err != nil {
 		return err
@@ -428,12 +401,14 @@ func (ec *execContext) copyAttributeNodeToOutput(attr *xdm.Attribute) error {
 	}
 
 	copyAttributeToElement(elem, attr)
-	out.noteOutput()
+	out.noteAttributeOutput(elem, attr.URI(), attr.LocalName())
 
 	return nil
 }
 
 func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
+	defer ec.pushDeclarationBaseURI(inst.StaticBaseURI)()
+
 	result, err := ec.evalXPath(ctx, inst.Select, ec.contextNode)
 	if err != nil {
 		return err
@@ -446,7 +421,7 @@ func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
 
 	effectiveVal := ec.effectiveValidation(inst.Validation)
 	out := ec.currentOutput()
-	prevWasAtomic := out.prevWasAtomic
+	state := sequenceOutputState{prevWasAtomic: out.prevWasAtomic, prevHadOutput: out.prevHadOutput}
 
 	seq := result.Sequence()
 
@@ -467,13 +442,15 @@ func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
 
 		switch value := item.(type) {
 		case xdm.NodeItem:
-			prevWasAtomic = false
+			state.prevWasAtomic = false
 
 			if err := ec.execCopyOfNode(ctx, inst, value.Node, copyNS, effectiveVal); err != nil {
 				return err
 			}
+
+			state.prevHadOutput = out.prevHadOutput
 		case xdm.AtomicValue:
-			if err := ec.emitAtomicText(value, &prevWasAtomic); err != nil {
+			if err := ec.writeXSLSequenceAtomic(out, &state, value); err != nil {
 				return err
 			}
 		default:
@@ -483,7 +460,8 @@ func (ec *execContext) execCopyOf(ctx context.Context, inst *copyOfInst) error {
 		}
 	}
 
-	out.prevWasAtomic = prevWasAtomic
+	out.prevWasAtomic = state.prevWasAtomic
+	out.prevHadOutput = state.prevHadOutput
 
 	return nil
 }
@@ -629,12 +607,9 @@ func (ec *execContext) validateCopyOfElement(ctx context.Context, source xdm.Nod
 }
 
 func (ec *execContext) transferCopyOfAccumulators(ctx context.Context, source xdm.Node, out *outputFrame, lastBefore xdm.Node, pendingBefore int) error {
-	// XTDE3362 requires use-accumulators on the source processing mode.
-	if err := ec.checkCopyAccumulators(source); err != nil {
+	if err := ec.ensureAccumulatorStates(ctx, source); err != nil {
 		return err
 	}
-
-	_ = ec.ensureAccumulatorStates(ctx, source)
 
 	var copiedNode xdm.Node
 	if lastBefore == nil {
@@ -653,13 +628,12 @@ func (ec *execContext) transferCopyOfAccumulators(ctx context.Context, source xd
 		return nil
 	}
 
-	ec.transferAccumulatorStates(source, copiedNode)
-
-	if ec.accumulatorComputedDocs == nil {
-		ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
+	// Attaching a copy to an existing result tree does not change the
+	// applicability of accumulators to that containing tree.
+	if copiedNode.Parent() == nil {
+		ec.transferAccumulatorStates(source, copiedNode)
+		ec.recordCopiedAccumulatorTree(accumulatorCopy{source: source, target: copiedNode})
 	}
-
-	ec.accumulatorComputedDocs[documentRoot(copiedNode)] = struct{}{}
 
 	return nil
 }
@@ -742,7 +716,7 @@ func (ec *execContext) copyNodeToOutput(node xdm.Node, copyNamespaces ...bool) e
 			return err
 		}
 
-		if err := ec.addNode(copied); err != nil {
+		if err := ec.addCopiedNode(node, copied); err != nil {
 			return err
 		}
 
@@ -753,6 +727,37 @@ func (ec *execContext) copyNodeToOutput(node xdm.Node, copyNamespaces ...bool) e
 
 		return nil
 	}
+}
+
+func (ec *execContext) addCopiedNode(source, copied xdm.Node) error {
+	if err := ec.addNode(copied); err != nil {
+		return err
+	}
+
+	setOrphanCopyBase(source, copied, ec.effectiveStaticBaseURI())
+
+	return nil
+}
+
+// A parentless element resolves its own xml:base against the copying
+// instruction. Without that attribute, elements and PIs retain the source URI.
+func setOrphanCopyBase(source, copied xdm.Node, instructionBase string) {
+	if copied.Parent() != nil {
+		return
+	}
+
+	switch node := copied.(type) {
+	case *xdm.Element:
+		if _, present := node.GetAttributeNS(lexicon.AttrBase, lexicon.NamespaceXML); present {
+			xdm.SetNodeBaseURI(node, instructionBase)
+			return
+		}
+	case *xdm.ProcessingInstruction:
+	default:
+		return
+	}
+
+	xdm.SetNodeBaseURI(copied, xpath.NodeBaseURI(source))
 }
 
 func (ec *execContext) copyDocumentToOutput(node xdm.Node, copyNS bool) error {
@@ -875,7 +880,7 @@ func (ec *execContext) copyNamespaceNodeToOutput(ns *xdm.NamespaceNodeWrapper) e
 		return err
 	}
 
-	out.noteOutput()
+	out.noteNamespaceOutput(elem, ns.Name())
 
 	return nil
 }
@@ -932,7 +937,7 @@ func (ec *execContext) copyElementNoNamespaces(src *xdm.Element) error {
 	// require them.
 	undeclareParentCopyNS(elem)
 
-	if err := ec.addNode(elem); err != nil {
+	if err := ec.addCopiedNode(src, elem); err != nil {
 		return err
 	}
 	// After inserting the element into the result tree, fix namespace
@@ -940,79 +945,6 @@ func (ec *execContext) copyElementNoNamespaces(src *xdm.Element) error {
 	// undeclarations to prevent inheriting the parent's default namespace
 	// when the element is not in that namespace).
 	ec.fixNamespacesAfterCopy(elem)
-
-	return nil
-}
-
-// checkCopyAccumulators verifies that all accumulators declared in the
-// stylesheet are applicable to the tree containing node. This implements
-// the XTDE3362 check for xsl:copy-of/@copy-accumulators="yes".
-// An accumulator is applicable to a source document only if the initial
-// mode explicitly lists it via use-accumulators.
-func (ec *execContext) checkCopyAccumulators(node xdm.Node) error {
-	accumulators := ec.effectiveAccumulators()
-	if len(accumulators) == 0 {
-		return nil
-	}
-
-	// When there is an activeAccumulators set (e.g. from xsl:source-document),
-	// the document-level applicability already restricts access.
-	if ec.activeAccumulators != nil {
-		for name := range accumulators {
-			if _, ok := ec.activeAccumulators[name]; !ok {
-				return dynamicError(errCodeXTDE3362,
-					"accumulator %q is not applicable to the source document (copy-accumulators)", name)
-			}
-		}
-
-		return nil
-	}
-
-	// Only check mode-level use-accumulators for nodes from the initial
-	// source document. variable/RTF trees have accumulators computed
-	// lazily and are always accessible.
-	root := documentRoot(node)
-	if root != ec.sourceDoc {
-		return nil
-	}
-
-	// Determine the mode definition for the initial mode.
-	modeDefs := ec.effectiveModeDefs()
-
-	md := modeDefs[ec.currentMode]
-	if md == nil {
-		md = modeDefs[modeDefault]
-	}
-
-	// When no explicit xsl:mode declaration exists, the mode has no
-	// use-accumulators attribute. For the initial source document,
-	// accumulators are only applicable if the mode declares them.
-	if md == nil {
-		return dynamicError(errCodeXTDE3362,
-			"copy-accumulators requires use-accumulators on the processing mode")
-	}
-	// When use-accumulators attribute is absent (nil), the default is
-	// lexicon.ModeAll per XSLT 3.0 spec — all accumulators are applicable.
-	if md.UseAccumulators == nil {
-		return nil
-	}
-
-	ua := *md.UseAccumulators
-	if ua == lexicon.ModeAll {
-		return nil
-	}
-
-	allowed := make(map[string]struct{})
-	for n := range strings.FieldsSeq(ua) {
-		allowed[n] = struct{}{}
-	}
-
-	for name := range accumulators {
-		if _, ok := allowed[name]; !ok {
-			return dynamicError(errCodeXTDE3362,
-				"accumulator %q is not applicable to the source document (copy-accumulators)", name)
-		}
-	}
 
 	return nil
 }
@@ -1223,8 +1155,8 @@ func undeclareParentCopyNS(parent *xdm.Element) {
 func isNamespaceSensitiveType(typeName string) bool {
 	switch typeName {
 	case xdm.TypeQName, xdm.TypeNOTATION,
-		"Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeQName,
-		"Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeNotation:
+		lexicon.EQNamePrefix + lexicon.NamespaceXSD + "}" + lexicon.TypeQName,
+		lexicon.EQNamePrefix + lexicon.NamespaceXSD + "}" + lexicon.TypeNotation:
 		return true
 	}
 
@@ -1268,8 +1200,8 @@ func newCopyDocument(source xdm.Node) *xdm.Document {
 // output by a copy-of operation. It checks the DOM tree first, then pending
 // items in sequence mode. When the copied node is a document, the document
 // element is returned so that validation can be applied.
-func findCopiedElement(out *outputFrame, _ xdm.Node, pendingBefore int) *xdm.Element {
-	if copied := out.current.LastChild(); copied != nil {
+func findCopiedElement(out *outputFrame, lastBefore xdm.Node, pendingBefore int) *xdm.Element {
+	if copied := out.current.LastChild(); copied != nil && copied != lastBefore {
 		if elem, ok := copied.(*xdm.Element); ok {
 			return elem
 		}

@@ -11,6 +11,7 @@ func TestFnFormatDateTime(t *testing.T) {
 	t.Parallel()
 	assertFunctionResults(t, []functionResultCase{
 		{"weekday names and ISO day numbers", `(format-dateTime(xs:dateTime('2024-03-03T00:00:00'), '[FNn] [F1] [d1]','en','ISO',()), format-dateTime(xs:dateTime('2024-03-04T00:00:00'), '[FNn] [F1]','de','ISO',()))`, "Sunday 7 63|Montag 1"},
+		{"implicit weekday picture is a name", `format-dateTime(xs:dateTime('2024-03-03T00:00:00'), '[F]/[Fn]/[F1]', 'en', (), ())`, "sunday/sunday/7"},
 		{"midnight and noon in a twelve-hour clock", `(format-dateTime(xs:dateTime('2024-01-01T00:00:00'), '[h1] [PN]'), format-dateTime(xs:dateTime('2024-01-01T12:00:00'), '[h1] [PN]'))`, "12 AM|12 PM"},
 		{"time-zone pictures preserve sign and minutes", `format-dateTime(xs:dateTime('2024-01-01T12:00:00-03:30'),'[Z0000] [z01:01] [Z01]')`, "-0330 GMT-03:30 -03:30"},
 		{"military time zones and absence", `(format-dateTime(xs:dateTime('2024-01-01T12:00:00+02:00'),'[ZZ]'), format-dateTime(xs:dateTime('2024-01-01T12:00:00-02:00'),'[ZZ]'), format-dateTime(xs:dateTime('2024-01-01T12:00:00Z'),'[ZZ]'), format-dateTime(xs:dateTime('2024-01-01T12:00:00'),'[[[ZZ]]]'))`, "B|O|Z|[J]"},
@@ -27,6 +28,7 @@ func TestFnFormatDateTimeErrors(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, expr, code string }{
 		{"unclosed component", `format-dateTime(xs:dateTime('2024-01-01T00:00:00'), '[Y0001')`, "FOFD1340"},
+		{"literal closing bracket must be doubled", `format-date(xs:date('2024-02-29'), 'day]')`, "FOFD1340"},
 		{"empty component", `format-dateTime(xs:dateTime('2024-01-01T00:00:00'), '[]')`, "FOFD1340"},
 		{"undeclared calendar prefix", `format-dateTime(xs:dateTime('2024-01-01T00:00:00'), '[Y1]', 'en', 'missing:calendar', ())`, "FOFD1340"},
 	} {
@@ -46,6 +48,8 @@ func TestFnFormatDatePicturesASTAndVM(t *testing.T) {
 	t.Parallel()
 	assertFunctionResults(t, []functionResultCase{
 		{"calendar fields and literal brackets", `format-date(xs:date('2024-02-29'),'[[[D01] [MNn] [Y0001]]]','en','ISO',())`, "[29 February 2024]"},
+		{"doubled closing bracket is literal", `format-date(xs:date('2024-02-29'), 'day]]')`, "day]"},
+		{"decimal day grouping repeats with no explicit width", `format-date(xs:date('2024-12-31'), '[d0.0]|[d000]')`, "3.6.6|366"},
 	})
 }
 

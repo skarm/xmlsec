@@ -121,3 +121,52 @@ func TestCheckArchiveStatusTimeEnforcesEvidenceWindow(t *testing.T) {
 		})
 	}
 }
+
+func TestLatestHistoricalOCSPConflictsDependOnlyOnLatestUpdate(t *testing.T) {
+	t.Parallel()
+
+	at := testcert.Now()
+	earlier := at.Add(-time.Minute)
+	revokedAt := earlier.Add(-time.Minute)
+	claim := func(at time.Time, status OCSPStatus, revoked time.Time) historicalClaim {
+		return historicalClaim{
+			ocsp: &singleResponse{this: at, status: status, revoked: revoked},
+			fact: &VerifiedEvidence{this: at, status: string(status), revoked: revoked},
+		}
+	}
+	oldGood := claim(earlier, OCSPGood, time.Time{})
+	good := claim(at, OCSPGood, time.Time{})
+	revoked := claim(at, OCSPRevoked, revokedAt)
+	changedRevocation := claim(at, OCSPRevoked, revokedAt.Add(time.Second))
+	orders := [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+	for _, tc := range []struct {
+		name       string
+		claims     [3]historicalClaim
+		wantStatus OCSPStatus
+		wantErr    error
+	}{
+		{"superseded_status_conflict", [3]historicalClaim{oldGood, claim(earlier, OCSPUnknown, time.Time{}), good}, OCSPGood, nil},
+		{"latest_status_conflict", [3]historicalClaim{oldGood, good, claim(at, OCSPUnknown, time.Time{})}, "", ErrEvidence},
+		{"superseded_revocation_time_conflict", [3]historicalClaim{claim(earlier, OCSPRevoked, revokedAt), claim(earlier, OCSPRevoked, revokedAt.Add(time.Second)), good}, OCSPGood, nil},
+		{"latest_revocation_time_conflict", [3]historicalClaim{oldGood, revoked, changedRevocation}, "", ErrEvidence},
+		{"latest_revocation_time_agreement", [3]historicalClaim{oldGood, revoked, claim(at, OCSPRevoked, revokedAt.In(time.FixedZone("other offset", 3600)))}, OCSPRevoked, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, order := range orders {
+				claims := []historicalClaim{tc.claims[order[0]], tc.claims[order[1]], tc.claims[order[2]]}
+				got, err := latestHistoricalOCSP(claims)
+				if !errors.Is(err, tc.wantErr) || (got == nil) != (tc.wantErr != nil) {
+					t.Errorf("claim order %v: latest present %t, error %v, want %v", order, got != nil, err, tc.wantErr)
+				}
+				if got != nil && (!got.fact.this.Equal(at) || got.fact.status != string(tc.wantStatus)) {
+					t.Errorf("claim order %v: selected status %q at %v, want %q at %v", order, got.fact.status, got.fact.this, tc.wantStatus, at)
+				}
+				if got != nil && tc.wantStatus == OCSPRevoked && !got.fact.revoked.Equal(revokedAt) {
+					t.Errorf("claim order %v: selected revocation at %v, want %v", order, got.fact.revoked, revokedAt)
+				}
+			}
+		})
+	}
+}

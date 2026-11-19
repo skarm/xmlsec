@@ -45,6 +45,16 @@ func IsASCII(name string) bool {
 	return asciiEncodingNames(normalizeEncodingName(name))
 }
 
+// IsUTF8 reports whether Load recognizes name as a UTF-8 label.
+func IsUTF8(name string) bool {
+	return utf8EncodingNames(normalizeEncodingName(name))
+}
+
+// IsISO88591 reports whether Load recognizes name as an ISO-8859-1 label.
+func IsISO88591(name string) bool {
+	return iso88591EncodingNames(normalizeEncodingName(name))
+}
+
 // Repertoire returns a character probe using a dedicated encoder. The closure
 // reuses its buffers and must not be shared across concurrent serializations.
 func Repertoire(encoder *enc.Encoder) func(rune) bool {
@@ -111,35 +121,49 @@ func asciiEncodingNames(key string) bool {
 	return false
 }
 
-func loadUnicodeEncoding(norm string) enc.Encoding {
-	// These normalized aliases preserve the exact recognized codec vocabulary.
+func utf8EncodingNames(norm string) bool {
 	const (
 		aliasUNICODE11UTF8  = "unicode11utf8"
 		aliasUNICODE20UTF8  = "unicode20utf8"
 		aliasXUNICODE20UTF8 = "xunicode20utf8"
-		aliasUTF16LE        = "utf16le"
-		aliasUNICODEFEFF    = "unicodefeff"
-		aliasUTF16BE        = "utf16be"
-		aliasUNICODEFFFE    = "unicodefffe"
-		aliasUTF16          = "utf16"
-		aliasUNICODE        = "unicode"
-		aliasCSUNICODE      = "csunicode"
-		aliasUCS4BE         = "ucs4be"
-		aliasUTF32BE        = "utf32be"
-		aliasISO10646UCS4   = "iso10646ucs4"
-		aliasUCS4LE         = "ucs4le"
-		aliasUTF32LE        = "utf32le"
-		aliasUCS4           = "ucs4"
-		aliasUTF32          = "utf32"
-		aliasUCS42143       = "ucs42143"
-		aliasUCS43412       = "ucs43412"
-		aliasUCS2           = "ucs2"
-		aliasISO10646UCS2   = "iso10646ucs2"
 	)
 
 	switch norm {
 	case lexicon.EncodingUTF8Alt, aliasUNICODE11UTF8, aliasUNICODE20UTF8, aliasXUNICODE20UTF8:
+		return true
+	}
+
+	return false
+}
+
+func loadUnicodeEncoding(norm string) enc.Encoding {
+	// These normalized aliases preserve the exact recognized codec vocabulary.
+	const (
+		aliasUTF16LE      = "utf16le"
+		aliasUNICODEFEFF  = "unicodefeff"
+		aliasUTF16BE      = "utf16be"
+		aliasUNICODEFFFE  = "unicodefffe"
+		aliasUTF16        = "utf16"
+		aliasUNICODE      = "unicode"
+		aliasCSUNICODE    = "csunicode"
+		aliasUCS4BE       = "ucs4be"
+		aliasUTF32BE      = "utf32be"
+		aliasISO10646UCS4 = "iso10646ucs4"
+		aliasUCS4LE       = "ucs4le"
+		aliasUTF32LE      = "utf32le"
+		aliasUCS4         = "ucs4"
+		aliasUTF32        = "utf32"
+		aliasUCS42143     = "ucs42143"
+		aliasUCS43412     = "ucs43412"
+		aliasUCS2         = "ucs2"
+		aliasISO10646UCS2 = "iso10646ucs2"
+	)
+
+	if utf8EncodingNames(norm) {
 		return unicode.UTF8
+	}
+
+	switch norm {
 	case aliasUTF16LE, aliasUNICODEFEFF:
 		return withStrictDecode(unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM), utf16CodeUnitBytes, orderLE2, ignoreLeadingBOM)
 	case aliasUTF16BE, aliasUNICODEFFFE:
@@ -163,7 +187,7 @@ func loadUnicodeEncoding(norm string) enc.Encoding {
 	case aliasUCS43412:
 		return withStrictDecode(&ucs4SwapEncoding{swap: swap3412}, utf32CodeUnitBytes, order3412, ignoreLeadingBOM)
 	case aliasUCS2, aliasISO10646UCS2:
-		return withStrictDecode(unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM), utf16CodeUnitBytes, orderBE2, ignoreLeadingBOM)
+		return ucs2Encoding{}
 	}
 
 	return nil
@@ -211,6 +235,27 @@ func loadEastAsianEncoding(norm string) enc.Encoding {
 	}
 
 	return nil
+}
+
+func iso88591EncodingNames(norm string) bool {
+	const (
+		aliasISO88591     = "iso88591"
+		aliasISO885911987 = "iso885911987"
+		aliasISOIR100     = "isoir100"
+		aliasLATIN1       = "latin1"
+		aliasL1           = "l1"
+		aliasIBM819       = "ibm819"
+		aliasCP819        = "cp819"
+		aliasCSISOLATIN1  = "csisolatin1"
+		aliasISOLATIN1    = "isolatin1"
+	)
+
+	switch norm {
+	case aliasISO88591, aliasISO885911987, aliasISOIR100, aliasLATIN1, aliasL1, aliasIBM819, aliasCP819, aliasCSISOLATIN1, aliasISOLATIN1:
+		return true
+	}
+
+	return false
 }
 
 func loadISOEncoding(norm string) enc.Encoding {
@@ -293,16 +338,12 @@ func loadISOEncoding(norm string) enc.Encoding {
 		aliasCSISOLATIN5        = "csisolatin5"
 		aliasISO885911          = "iso885911"
 		aliasTIS620             = "tis620"
-		aliasISO88591           = "iso88591"
-		aliasISO885911987       = "iso885911987"
-		aliasISOIR100           = "isoir100"
-		aliasLATIN1             = "latin1"
-		aliasL1                 = "l1"
-		aliasIBM819             = "ibm819"
-		aliasCP819              = "cp819"
-		aliasCSISOLATIN1        = "csisolatin1"
-		aliasISOLATIN1          = "isolatin1"
 	)
+
+	if iso88591EncodingNames(norm) {
+		// ISO-8859-1 maps bytes 0x80–0x9F to the C1 controls U+0080–U+009F.
+		return withC1Fallback(charmap.ISO8859_1)
+	}
 
 	switch norm {
 	case aliasISO885910, aliasLATIN6, aliasL6, aliasISOIR157, aliasCSISOLATIN6:
@@ -331,16 +372,10 @@ func loadISOEncoding(norm string) enc.Encoding {
 		return withC1Fallback(charmap.ISO8859_8)
 	case aliasISO88599, aliasISO885991989, aliasISOIR148, aliasLATIN5, aliasL5, aliasCSISOLATIN5:
 		return withC1Fallback(charmap.ISO8859_9)
-	case aliasISO885911, aliasTIS620:
-		// x/text/charmap does not expose ISO8859_11 directly; Windows-874 is
-		// the closest Thai code page used in practice.
-		return withC1Fallback(charmap.Windows874)
-	case aliasISO88591, aliasISO885911987, aliasISOIR100, aliasLATIN1, aliasL1, aliasIBM819, aliasCP819, aliasCSISOLATIN1, aliasISOLATIN1:
-		// True ISO-8859-1: bytes 0x80-0x9F map to the C1 controls
-		// U+0080-U+009F, consistent with iso-8859-2..16 above. libxml2's XML
-		// path uses the IANA/ISO codec here, not the Windows-1252 alias the
-		// WHATWG HTML spec mandates (that leniency stays in the html/ package).
-		return withC1Fallback(charmap.ISO8859_1)
+	case aliasISO885911:
+		return newThaiEncoding("ISO-8859-11", true)
+	case aliasTIS620:
+		return newThaiEncoding("TIS-620", false)
 	}
 
 	return nil

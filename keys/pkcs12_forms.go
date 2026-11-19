@@ -50,7 +50,11 @@ func normalizePKCS12BER(state *passwordState, input []byte, form pkcs12Form) ([]
 
 		result = der.Seq(root.Children[0].Full, info, root.Children[2].Full)
 	case authenticatedForm:
-		if len(root.Children) == 0 || len(root.Children) > state.limits.MaxContentInfos {
+		if len(root.Children) == 0 {
+			return nil, ErrFormat
+		}
+
+		if len(root.Children) > state.limits.MaxContentInfos {
 			return nil, ErrLimit
 		}
 

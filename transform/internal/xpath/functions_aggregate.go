@@ -163,7 +163,8 @@ func fnAvg(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	allDecOrInt := true
 	sumRat := new(big.Rat)
 
-	var sumFloat float64
+	// An IEEE sum starts at -0 so adding the first operand preserves its zero sign.
+	sumFloat := math.Copysign(0, -1)
 
 	widest, err := prepareAggregateNumericValues(ctx, atoms)
 	if err != nil {
@@ -389,30 +390,34 @@ func promoteForAggregate(ctx context.Context, a xdm.AtomicValue) (xdm.AtomicValu
 		return f, nil
 	}
 
+	return aggregateBaseValue(a), nil
+}
+
+func aggregateBaseValue(a xdm.AtomicValue) xdm.AtomicValue {
 	if xdm.IsIntegerDerived(a.TypeName) && a.TypeName != xdm.TypeInteger {
-		return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: a.Value}, nil
+		return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: a.Value}
 	}
 	// User-defined schema types: prefer the value's built-in BaseType when it
 	// names a known XSD type (so e.g. xs:float width is preserved), otherwise
 	// promote based on the underlying Go value.
 	if !xdm.IsKnownXSDType(a.TypeName) && a.TypeName != "" {
 		if a.BaseType != "" && xdm.IsKnownXSDType(a.BaseType) {
-			return xdm.PromoteSchemaType(a), nil
+			return xdm.PromoteSchemaType(a)
 		}
 
 		switch a.Value.(type) {
 		case int64, *big.Int:
-			return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: a.Value}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeInteger, Value: a.Value}
 		case *big.Rat:
-			return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: a.BigRat()}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeDecimal, Value: a.BigRat()}
 		case float64, *xdm.FloatValue:
-			return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: a.Value}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeDouble, Value: a.Value}
 		case float32:
-			return xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: a.Value}, nil
+			return xdm.AtomicValue{TypeName: xdm.TypeFloat, Value: a.Value}
 		}
 	}
 
-	return a, nil
+	return a
 }
 
 func numericTypeWidth(typeName string) int {
@@ -468,7 +473,12 @@ func maxMinCommon(ctx context.Context, atoms []xdm.AtomicValue, isMax bool, coll
 		return maxMinSingle(ctx, atoms[0], fnName)
 	}
 
-	state := maxMinAccumulator{fnName: fnName, isMax: isMax, coll: coll, widest: xdm.TypeInteger, first: true}
+	widest, err := extremaNumericType(ctx, atoms)
+	if err != nil {
+		return nil, err
+	}
+
+	state := maxMinAccumulator{fnName: fnName, isMax: isMax, coll: coll, widest: widest, first: true}
 	if ec := getFnContext(ctx); ec != nil {
 		state.implicitTZ = ec.getImplicitTimezone()
 	}
@@ -480,6 +490,33 @@ func maxMinCommon(ctx context.Context, atoms []xdm.AtomicValue, isMax bool, coll
 	}
 
 	return state.result(), nil
+}
+
+// Determine the common numeric type before comparing any pair. Value conversion
+// and family validation still happen in sequence order in add.
+func extremaNumericType(ctx context.Context, atoms []xdm.AtomicValue) (string, error) {
+	widest := xdm.TypeInteger
+
+	for _, value := range atoms {
+		if err := Charge(ctx, 1); err != nil {
+			return "", err
+		}
+
+		if value.TypeName == xdm.TypeUntypedAtomic {
+			return xdm.TypeDouble, nil
+		}
+
+		typeName := aggregateBaseValue(value).TypeName
+		if typeName == xdm.TypeDouble {
+			return typeName, nil
+		}
+
+		if numericTypeWidth(typeName) > numericTypeWidth(widest) {
+			widest = typeName
+		}
+	}
+
+	return widest, nil
 }
 
 func maxMinSingle(ctx context.Context, value xdm.AtomicValue, fnName string) (xdm.Sequence, error) {
@@ -515,6 +552,10 @@ type maxMinAccumulator struct {
 }
 
 func (s *maxMinAccumulator) add(ctx context.Context, original xdm.AtomicValue) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	value, err := promoteForAggregate(ctx, original)
 	if err != nil {
 		return err
@@ -539,8 +580,8 @@ func (s *maxMinAccumulator) add(ctx context.Context, original xdm.AtomicValue) e
 		s.sawNonURIString = true
 	}
 
-	if family == xdm.FamilyNumeric && numericTypeWidth(value.TypeName) > numericTypeWidth(s.widest) {
-		s.widest = value.TypeName
+	if family == xdm.FamilyNumeric && (s.widest == xdm.TypeFloat || s.widest == xdm.TypeDouble) {
+		value = promoteExtremaNumber(value, s.widest)
 	}
 
 	if (value.TypeName == xdm.TypeDouble || value.TypeName == xdm.TypeFloat) && value.FloatVal().IsNaN() {
@@ -595,7 +636,13 @@ func (s *maxMinAccumulator) result() xdm.Sequence {
 			return xdm.SingleAtomic(s.bestOrig)
 		}
 
-		return xdm.SingleAtomic(promoteResult(s.best, s.widest))
+		// Integer and decimal comparisons are exact. Only the chosen item needs
+		// promotion for the decimal case.
+		if s.widest == xdm.TypeDecimal {
+			return xdm.SingleAtomic(promoteExtremaNumber(s.best, s.widest))
+		}
+
+		return xdm.SingleAtomic(s.best)
 	}
 
 	// Only a selected anyURI is converted; selected string subtypes are retained.
@@ -624,8 +671,8 @@ func maxMinTypeFamily(ctx context.Context, value xdm.AtomicValue, fnName string)
 	return family, nil
 }
 
-// promoteResult promotes the result of fn:max/fn:min to the widest numeric type.
-func promoteResult(best xdm.AtomicValue, widest string) xdm.AtomicValue {
+// promoteExtremaNumber promotes an operand of fn:max/fn:min to the widest numeric type.
+func promoteExtremaNumber(best xdm.AtomicValue, widest string) xdm.AtomicValue {
 	// Always rebuild an xs:float result through NewFloat, even when best is already
 	// typed xs:float: a schema-derived xs:float can be backed by a double-precision
 	// FloatValue that must be narrowed to single precision.
@@ -680,6 +727,8 @@ func fnSum(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	sum := aggregateSum{
 		allInt: true, allDecOrInt: true, widest: widest,
 		sumInt: new(big.Int), sumRat: new(big.Rat),
+		// Like avg, preserve the zero sign of the first floating-point operand.
+		sumFloat: math.Copysign(0, -1),
 	}
 
 	for i, value := range atoms {
@@ -970,8 +1019,13 @@ func fnDistinctValues(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, e
 	}
 
 	values := distinctValueAccumulator{coll: coll, implicitTZ: implicitTZ, seenFast: make(map[string]struct{})}
+
 	for _, atom := range atoms {
-		if err := values.add(atom); err != nil {
+		if err := Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		if err := values.add(ctx, atom); err != nil {
 			return nil, err
 		}
 	}
@@ -1006,12 +1060,7 @@ type distinctValueAccumulator struct {
 	seenNaN       bool
 }
 
-func (s *distinctValueAccumulator) add(value xdm.AtomicValue) error {
-	// Untyped atomic values compare as strings.
-	if value.TypeName == xdm.TypeUntypedAtomic {
-		value = xdm.AtomicValue{TypeName: xdm.TypeString, Value: value.StringVal()}
-	}
-
+func (s *distinctValueAccumulator) add(ctx context.Context, value xdm.AtomicValue) error {
 	// op:is-same-key treats every NaN as equal.
 	if isAtomicNaN(value) {
 		if !s.seenNaN {
@@ -1023,17 +1072,22 @@ func (s *distinctValueAccumulator) add(value xdm.AtomicValue) error {
 	}
 
 	if group, key, ok := distinctValueFastKey(value); ok {
-		return s.addFast(value, group, key)
+		return s.addFast(ctx, value, group, key)
 	}
 
-	if !s.seenByValue(value) {
+	seen, err := distinctValueSeenInSet(ctx, value, s.coll, s.implicitTZ, s.result)
+	if err != nil {
+		return err
+	}
+
+	if !seen {
 		s.result = append(s.result, value)
 	}
 
 	return nil
 }
 
-func (s *distinctValueAccumulator) addFast(value xdm.AtomicValue, group distinctGroup, key string) error {
+func (s *distinctValueAccumulator) addFast(ctx context.Context, value xdm.AtomicValue, group distinctGroup, key string) error {
 	// Collation-equal strings must share their bucket.
 	if s.coll != nil && group == distinctGroupString {
 		key = distinctStringKeyPrefix + string(s.coll.key(value.StringVal()))
@@ -1044,7 +1098,7 @@ func (s *distinctValueAccumulator) addFast(value xdm.AtomicValue, group distinct
 	}
 
 	found, err := distinctValueSeenInOtherNumericGroups(
-		value, group, s.coll, s.implicitTZ, s.numericDecInt, s.numericFloat, s.numericDouble,
+		ctx, value, group, s.coll, s.implicitTZ, s.numericDecInt, s.numericFloat, s.numericDouble,
 	)
 	if err != nil {
 		return err
@@ -1069,25 +1123,6 @@ func (s *distinctValueAccumulator) addFast(value xdm.AtomicValue, group distinct
 	return nil
 }
 
-func (s *distinctValueAccumulator) seenByValue(value xdm.AtomicValue) bool {
-	for _, existing := range s.result {
-		if isAtomicNaN(existing) {
-			continue
-		}
-
-		equal, err := distinctValueEqual(value, existing, s.coll, s.implicitTZ)
-		if err != nil {
-			continue // Incomparable values remain distinct.
-		}
-
-		if equal {
-			return true
-		}
-	}
-
-	return false
-}
-
 func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 	// Classify on the effective built-in type so a schema-derived value (custom
 	// TypeName whose BaseType names the built-in ancestor) shares a fast-key
@@ -1095,7 +1130,8 @@ func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 	// and an equal xs:string would land in different buckets and never collapse.
 	et := distinctEffectiveType(a)
 	switch {
-	case xdm.IsStringDerived(et):
+	case xdm.IsStringDerived(et), et == xdm.TypeUntypedAtomic:
+		// Untyped atomics compare as strings but retain their input type in the result.
 		return distinctGroupString, distinctStringKeyPrefix + a.StringVal(), true
 	case et == xdm.TypeAnyURI:
 		return distinctGroupString, distinctStringKeyPrefix + stringFromAtomic(a), true
@@ -1129,6 +1165,7 @@ func distinctValueFastKey(a xdm.AtomicValue) (distinctGroup, string, bool) {
 }
 
 func distinctValueSeenInOtherNumericGroups(
+	ctx context.Context,
 	a xdm.AtomicValue,
 	group distinctGroup,
 	coll *collationImpl,
@@ -1139,17 +1176,18 @@ func distinctValueSeenInOtherNumericGroups(
 ) (bool, error) {
 	switch group {
 	case distinctGroupDecimalInt:
-		return distinctValueSeenInSet(a, coll, implicitTZ, floats, doubles)
+		return distinctValueSeenInSet(ctx, a, coll, implicitTZ, floats, doubles)
 	case distinctGroupFloat:
-		return distinctValueSeenInSet(a, coll, implicitTZ, decimalInts, doubles)
+		return distinctValueSeenInSet(ctx, a, coll, implicitTZ, decimalInts, doubles)
 	case distinctGroupDouble:
-		return distinctValueSeenInSet(a, coll, implicitTZ, decimalInts, floats)
+		return distinctValueSeenInSet(ctx, a, coll, implicitTZ, decimalInts, floats)
 	default:
 		return false, nil
 	}
 }
 
 func distinctValueSeenInSet(
+	ctx context.Context,
 	a xdm.AtomicValue,
 	coll *collationImpl,
 	implicitTZ *time.Location,
@@ -1157,9 +1195,17 @@ func distinctValueSeenInSet(
 ) (bool, error) {
 	for _, set := range sets {
 		for _, existing := range set {
+			if err := Charge(ctx, 1); err != nil {
+				return false, err
+			}
+
+			if isAtomicNaN(existing) {
+				continue
+			}
+
 			eq, err := distinctValueEqual(a, existing, coll, implicitTZ)
 			if err != nil {
-				continue
+				continue // Incomparable values remain distinct.
 			}
 
 			if eq {

@@ -326,7 +326,7 @@ func (p *Program) emit(node btNode, next int) (int, error) {
 		return p.append(instruction{op: opAnchor, end: n.end, absolute: n.absolute, multiline: n.multiline, x: next})
 	case *btBackref:
 		p.backrefs = true
-		return p.append(instruction{op: opReference, index: n.group, text: n.literal, fold: n.fold, x: next})
+		return p.append(instruction{op: opReference, index: n.group, fold: n.fold, x: next})
 	case *btSeq:
 		return p.emitSequence(n, next)
 	case *btAlt:
@@ -660,7 +660,8 @@ func (m *machine) execute(s *state, i instruction, stack *stateStack) (bool, err
 
 		return advance, nil
 	case opReference:
-		return m.reference(s, i)
+		s.pc = i.x
+		return m.captured(s, i)
 	case opInitialize:
 		s.counters[i.index] = counter{prior: -1}
 		s.pc = i.x
@@ -702,27 +703,6 @@ func (m *machine) anchor(pos int, i instruction) bool {
 	}
 
 	return pos == 0 || !i.absolute && i.multiline && pos > 0 && m.source[pos-1] == '\n' && (!m.program.xpathAnchors || pos < len(m.source))
-}
-
-func (m *machine) reference(s *state, i instruction) (bool, error) {
-	advance, err := m.captured(s, i)
-	if err != nil {
-		return false, err
-	}
-
-	if advance {
-		pos, ok, err := m.literal(s.pos, i.text, i.fold)
-		if err != nil {
-			return false, err
-		}
-
-		s.pos = pos
-		advance = ok
-	}
-
-	s.pc = i.x
-
-	return advance, nil
 }
 
 func (m *machine) captured(s *state, i instruction) (bool, error) {

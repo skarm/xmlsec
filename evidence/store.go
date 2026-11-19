@@ -46,9 +46,28 @@ type Store struct {
 // NewStore creates a private child directory in directory (empty uses the OS
 // temporary directory). maximum bounds committed plus reserved input bytes and
 // must be 1..64 MiB. At most 64 records, including active writes, may coexist.
+// Relative paths are resolved when the store is created.
 func NewStore(directory string, maximum int64) (*Store, error) {
 	if maximum < 1 || maximum > maximumRecordBytes {
 		return nil, ErrLimit
+	}
+
+	if directory == "" {
+		directory = os.TempDir()
+	}
+
+	if !filepath.IsAbs(directory) {
+		// Resolve symlinks before Abs cleans the path, so a component followed
+		// by ".." keeps its filesystem meaning.
+		resolved, err := filepath.EvalSymlinks(directory)
+		if err != nil {
+			return nil, errors.Join(ErrResource, err)
+		}
+
+		directory, err = filepath.Abs(resolved)
+		if err != nil {
+			return nil, errors.Join(ErrResource, err)
+		}
 	}
 
 	root, err := os.MkdirTemp(directory, spoolDirectoryPrefix)
@@ -217,7 +236,7 @@ func (r *Record) Open(ctx context.Context) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	file, err := os.Open(filepath.Clean(r.file.path))
+	file, err := os.Open(r.file.path) // #nosec G304 -- Use the exact path returned by os.CreateTemp in the store's private directory.
 	if err != nil {
 		return nil, errors.Join(ErrResource, err)
 	}
@@ -314,7 +333,7 @@ type recordReader struct {
 func (r *recordReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 
-	if canceled := r.reader.Context.Err(); canceled != nil {
+	if canceled := r.reader.Context.Err(); canceled != nil && !errors.Is(err, canceled) {
 		return n, errors.Join(err, canceled)
 	}
 

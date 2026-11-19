@@ -19,6 +19,7 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -131,7 +132,7 @@ func VerifyTLSRequest(ctx context.Context, r *http.Request, o Options) (*Verifie
 		maximumSOAPBytes = 16 << 20
 	)
 
-	if ctx == nil || r == nil || r.TLS == nil || !r.TLS.HandshakeComplete || len(r.TLS.PeerCertificates) == 0 || r.Method != http.MethodPost || r.Body == nil {
+	if ctx == nil || r == nil || r.TLS == nil || !r.TLS.HandshakeComplete || len(r.TLS.PeerCertificates) == 0 || r.Method != http.MethodPost || nilcheck.IsNil(r.Body) {
 		return nil, ErrProof
 	}
 
@@ -140,7 +141,7 @@ func VerifyTLSRequest(ctx context.Context, r *http.Request, o Options) (*Verifie
 		return nil, ErrProof
 	}
 
-	cert, err := certificate(r.TLS.PeerCertificates[0].Raw)
+	cert, err := certificate(r.TLS.PeerCertificates[0].Raw, x509.ParseCertificate)
 	if err != nil || len(o.Certificate) != 0 && !bytes.Equal(o.Certificate, cert.Raw) {
 		return nil, ErrProof
 	}
@@ -167,12 +168,12 @@ func VerifyTLSRequest(ctx context.Context, r *http.Request, o Options) (*Verifie
 	return &Verified{message: m, certificate: bytes.Clone(cert.Raw)}, nil
 }
 
-func certificate(raw []byte) (*x509.Certificate, error) {
+func certificate(raw []byte, parse func([]byte) (*x509.Certificate, error)) (*x509.Certificate, error) {
 	if len(raw) == 0 || len(raw) > maximumCertificateBytes {
 		return nil, ErrProof
 	}
 
-	cert, err := x509.ParseCertificate(raw)
+	cert, err := parse(raw)
 	if err != nil || signature.Key(cert.PublicKey) != nil {
 		return nil, ErrProof
 	}

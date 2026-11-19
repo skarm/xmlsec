@@ -21,6 +21,9 @@ func TestValidateCertificateDefaultsVersionAndOptionalFields(t *testing.T) {
 	mandatory := [][]byte{der.Int(1), der.Seq(), der.Seq(), der.Seq(), der.Seq(), der.Seq()}
 	version2, version3 := der.Ctx(0, der.Int(1)), der.Ctx(0, der.Int(2))
 	ext := der.Ctx(3, der.Seq(der.Seq(der.OID(asn1.ObjectIdentifier{1, 2, 3, 4}), der.Octets([]byte{5, 0}))))
+	uniqueID := func(tag int, content ...byte) []byte {
+		return der.Wrap(asn1.ClassContextSpecific, tag, false, content)
+	}
 	for _, tc := range []struct {
 		name     string
 		version  []byte
@@ -32,6 +35,14 @@ func TestValidateCertificateDefaultsVersionAndOptionalFields(t *testing.T) {
 		{"unknown_version", der.Ctx(0, der.Int(3)), nil, der.ErrInvalidDER},
 		{"wrong_version_type", der.Ctx(0, der.Octets([]byte{2})), nil, der.ErrInvalidDER},
 		{"extra_child_in_version", der.Ctx(0, der.Int(2), der.Int(2)), nil, der.ErrInvalidDER},
+		{"version_one_cannot_have_id", nil, [][]byte{uniqueID(1, 0, 0xff)}, der.ErrInvalidDER},
+		{"version_two_unique_ids", version2, [][]byte{uniqueID(1, 0, 0xff), uniqueID(2, 3, 0xa0)}, nil},
+		{"version_three_subject_id_and_extension", version3, [][]byte{uniqueID(2, 0), ext}, nil},
+		{"constructed_unique_id", version2, [][]byte{der.Ctx(1, der.Wrap(asn1.ClassUniversal, asn1.TagBitString, false, []byte{0, 1}))}, der.ErrInvalidDER},
+		{"unique_id_missing_unused_count", version2, [][]byte{uniqueID(1)}, der.ErrInvalidDER},
+		{"unique_id_bad_unused_count", version3, [][]byte{uniqueID(2, 8, 0x80)}, der.ErrInvalidDER},
+		{"unique_id_without_bits_has_unused_count", version2, [][]byte{uniqueID(1, 1)}, der.ErrInvalidDER},
+		{"unique_id_nonzero_padding", version3, [][]byte{uniqueID(2, 3, 0xa1)}, der.ErrInvalidDER},
 		{"version_two_cannot_have_extensions", version2, [][]byte{ext}, der.ErrInvalidDER},
 		{"version_three_extension", version3, [][]byte{ext}, nil},
 		{"empty_extension_sequence", version3, [][]byte{der.Ctx(3, der.Seq())}, der.ErrInvalidDER},

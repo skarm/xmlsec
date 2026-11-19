@@ -691,8 +691,9 @@ func TestProgramFingerprintWorkingStorage(t *testing.T) {
 func TestExternalTransformExecutionAndResultOwnership(t *testing.T) {
 	key, _ := nativeIOSigner(t)
 	const uri = "urn:cache:source"
-	var refs []xmldsig.ReferenceTemplate
-	for _, marker := range []string{"one", "two", "one"} {
+	markers := []string{"one", "two", "one"}
+	refs := make([]xmldsig.ReferenceTemplate, 0, len(markers))
+	for _, marker := range markers {
 		style := []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"><xsl:template match="/"><xsl:text>` + marker + `</xsl:text></xsl:template></xsl:stylesheet>`)
 		refs = append(refs, xmldsig.ReferenceTemplate{URI: uri, Transforms: []reference.Transform{{Algorithm: reference.XSLT, Stylesheet: style}}})
 	}

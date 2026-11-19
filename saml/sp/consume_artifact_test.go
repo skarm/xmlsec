@@ -97,11 +97,14 @@ func TestArtifactWebSSOBothRoles(t *testing.T) {
 	requests, _ := state.NewMemoryStore(state.Config{})
 	spReplay, _ := replay.NewMemoryStore(replay.Config{})
 	idpReplay, _ := replay.NewMemoryStore(replay.Config{})
-	service, err := sp.NewServiceProvider(sp.Config{EntityID: spID, Metadata: partners, Signing: spKey, Requests: requests, Replay: spReplay})
+	// The POST form budget is deliberately too small for XML form delivery.
+	// Neither side of the Artifact exchange uses that binding.
+	postLimits := binding.POSTLimits{MaxFormBytes: 1}
+	service, err := sp.NewServiceProvider(sp.Config{EntityID: spID, Metadata: partners, Signing: spKey, Requests: requests, Replay: spReplay, POSTLimits: postLimits})
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := idp.NewIdentityProvider(idp.Config{EntityID: idpID, Metadata: partners, Signing: idpKey, Replay: idpReplay})
+	identity, err := idp.NewIdentityProvider(idp.Config{EntityID: idpID, Metadata: partners, Signing: idpKey, Replay: idpReplay, POSTLimits: postLimits})
 	if err != nil {
 		t.Fatal(err)
 	}

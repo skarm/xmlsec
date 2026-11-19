@@ -417,7 +417,7 @@ func normalizeOwnedLexical(data []byte) ([]byte, error) {
 	out := normalizeLineEndings(data)
 	for i := 0; i < len(out); {
 		if out[i] != '<' {
-			if bytes.HasPrefix(out[i:], []byte("]]>")) {
+			if bytes.HasPrefix(out[i:], []byte(lexicon.CDATAEnd)) {
 				return nil, fmt.Errorf("%w: CDATA terminator in character data", ErrMalformed)
 			}
 
@@ -500,8 +500,8 @@ func normalizeMarkup(out []byte, offset int) (int, error) {
 	case bytes.HasPrefix(tail, []byte(dtdCommentOpen)):
 		end = []byte("-->")
 		prefix = 4
-	case bytes.HasPrefix(tail, []byte("<![CDATA[")):
-		end = []byte("]]>")
+	case bytes.HasPrefix(tail, []byte(lexicon.CDATAStart)):
+		end = []byte(lexicon.CDATAEnd)
 		prefix = 9
 	case bytes.HasPrefix(tail, []byte(dtdPIOpen)):
 		end = []byte("?>")

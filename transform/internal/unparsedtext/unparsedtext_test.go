@@ -19,6 +19,21 @@ import (
 
 const textUTF8 = "utf-8"
 
+func TestResolveTextURIPreservesEmptyPathSegment(t *testing.T) {
+	t.Parallel()
+
+	cfg := &unparsedtext.Config{BaseURI: "https://example.test/a/b/main.xml"}
+	for _, tc := range []struct{ reference, want string }{
+		{"../..//value.txt", "https://example.test//value.txt"},
+		{"../../value.txt", "https://example.test/value.txt"},
+	} {
+		got, err := unparsedtext.ResolveURI(t.Context(), cfg, tc.reference)
+		if err != nil || got != tc.want {
+			t.Errorf("ResolveURI(%q) = %q, %v; want %q", tc.reference, got, err, tc.want)
+		}
+	}
+}
+
 func TestLoadTextResourceBoundsAndOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		input    string
@@ -69,10 +84,15 @@ func TestDecodeText(t *testing.T) {
 		{[]byte{0xef, 0xbb, 0xbf, 'x'}, "", textUTF8, "x"},
 		{[]byte{0xff, 0xfe, 'x', 0}, "utf-16", "", "x"},
 		{[]byte{0xe9}, "", "iso-8859-1", "é"},
+		{[]byte("\x00\x00\xfe\xff\x00\x00\x00x"), "", "", "x"},
+		{[]byte("\x00\x00\xfe\xff\x00\x00\x00x"), "utf-32be", "", "x"},
+		{[]byte("\xff\xfe\x00\x00x\x00\x00\x00"), "utf-32le", "", "x"},
+		{[]byte("\xff\xfe\x00\x00x\x00\x00\x00"), "utf-32", "", "x"},
+		{[]byte("\xff\xfe\x00\x00x\x00\x00\x00"), "", "application/json; charset=utf-32", "x"},
 	} {
 		got, err := unparsedtext.DecodeText(tc.input, tc.encoding, tc.hint)
 		if err != nil || got != tc.want {
-			t.Fatalf("decoded %q, %v; want %q", got, err, tc.want)
+			t.Errorf("decode % x with encoding %q and metadata %q = %q, %v; want %q", tc.input, tc.encoding, tc.hint, got, err, tc.want)
 		}
 	}
 
@@ -82,6 +102,8 @@ func TestDecodeText(t *testing.T) {
 	}{
 		{[]byte{0xff}, textUTF8},
 		{[]byte{0xff, 0xfe, 'x', 0}, textUTF8},
+		{[]byte("\xff\xfe\x00\x00x\x00\x00\x00"), "utf-32be"},
+		{[]byte("\xff\xfe\x00\x00x\x00\x00\x00"), "utf-16le"},
 		{[]byte{0xd8, 0}, "utf-16be"},
 		{[]byte("x"), "not-an-encoding"},
 		{[]byte{0xff}, "euc-jp"},
@@ -94,6 +116,26 @@ func TestDecodeText(t *testing.T) {
 		var detail *unparsedtext.Error
 		if _, err := unparsedtext.DecodeText(tc.input, tc.encoding); !errors.As(err, &detail) || detail.Code != unparsedtext.ErrCodeEncoding {
 			t.Fatalf("malformed encoding accepted: %v", err)
+		}
+	}
+}
+
+func TestDecodeXMLTextDoesNotTreatStylesheetPIAsDeclaration(t *testing.T) {
+	const xml = "<?xml-stylesheet encoding='invalid-but-legal-PI-data'?>\n<doc/>"
+	got, err := unparsedtext.DecodeText([]byte(xml), "", "application/xml")
+	if err != nil || got != xml {
+		t.Fatalf("decode XML = %q, %v; want %q", got, err, xml)
+	}
+}
+
+func TestDecodeTextAcceptsUTF8AliasesWithBOM(t *testing.T) {
+	const want = "café\ufffd"
+	for _, label := range []string{"unicode-1-1-utf-8", "unicode-2-0-utf-8", "x-unicode-2-0-utf-8"} {
+		for _, config := range []struct{ encoding, hint string }{{label, ""}, {"", "text/plain; charset=" + label}} {
+			got, err := unparsedtext.DecodeText([]byte("\xef\xbb\xbf"+want), config.encoding, config.hint)
+			if err != nil || got != want {
+				t.Errorf("encoding %q, metadata %q = %q, %v; want %q", config.encoding, config.hint, got, err, want)
+			}
 		}
 	}
 }
@@ -153,6 +195,33 @@ func TestTextReaderRejectsDecodedExpansion(t *testing.T) {
 	}
 }
 
+func TestTextValidationPreservesSimultaneousReadFailure(t *testing.T) {
+	readFailure := errors.New("read failed")
+	for _, tc := range []struct {
+		name, tail, encoding, wantCode string
+		maxBytes                       int64
+		wantLimit                      bool
+	}{
+		{name: "malformed UTF-8", tail: "\xff", encoding: textUTF8, wantCode: unparsedtext.ErrCodeEncoding},
+		{name: "decoded byte cap", tail: "\xe9\xe9", encoding: "iso-8859-1", wantCode: unparsedtext.ErrCodeRetrieval, maxBytes: 8, wantLimit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &trackedReader{Reader: io.MultiReader(
+				strings.NewReader("prefix"),
+				iotest.DataErrReader(io.MultiReader(strings.NewReader(tc.tail), iotest.ErrReader(readFailure))),
+			)}
+			cfg := &unparsedtext.Config{MaxBytes: tc.maxBytes, URIResolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return body, nil
+			})}
+			text, err := unparsedtext.LoadText(t.Context(), cfg, textResourceURI, tc.encoding)
+			var detail *unparsedtext.Error
+			if text != "" || !body.closed || !errors.As(err, &detail) || detail.Code != tc.wantCode || !errors.Is(err, readFailure) || errors.Is(err, tree.ErrLimit) != tc.wantLimit {
+				t.Fatalf("LoadText = (%q, %v), closed=%t; want %s retaining read failure and limit=%t", text, err, body.closed, tc.wantCode, tc.wantLimit)
+			}
+		})
+	}
+}
+
 func TestLineLimitDoesNotHideCloseFailure(t *testing.T) {
 	failure := errors.New("close failed")
 
@@ -161,6 +230,21 @@ func TestLineLimitDoesNotHideCloseFailure(t *testing.T) {
 	})}
 	if _, _, err := unparsedtext.LoadTextLinesBounded(t.Context(), cfg, "urn:text", "", 1); !errors.Is(err, failure) {
 		t.Fatal(err)
+	}
+}
+
+func TestLineLimitDoesNotHideReadFailure(t *testing.T) {
+	failure := errors.New("read failed")
+	body := &trackedReader{Reader: io.MultiReader(
+		strings.NewReader("first "),
+		iotest.DataErrReader(io.MultiReader(strings.NewReader("line\nsecond line\n"), iotest.ErrReader(failure))),
+	)}
+	cfg := &unparsedtext.Config{URIResolver: resolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+		return body, nil
+	})}
+	lines, truncated, err := unparsedtext.LoadTextLinesBounded(t.Context(), cfg, "urn:text", "", 1)
+	if lines != nil || truncated || !errors.Is(err, failure) || !body.closed {
+		t.Fatalf("lines = %q, truncated = %t, closed = %t, error = %v; want read failure and closed stream", lines, truncated, body.closed, err)
 	}
 }
 
@@ -326,4 +410,20 @@ func (r closeFailure) Close() error {
 	}
 
 	return r.err
+}
+
+func TestReviewXMLMediaDetectsDeclaredUTF16WithoutBOM(t *testing.T) {
+	for _, name := range []string{"UTF-16BE", "UTF-16LE"} {
+		t.Run(name, func(t *testing.T) {
+			want := `<?xml version="1.0" encoding="` + name + `"?><root>é</root>`
+			input, err := encoding.Load(name).NewEncoder().Bytes([]byte(want))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := unparsedtext.DecodeText(input, "", "application/xml")
+			if err != nil || got != want {
+				t.Fatalf("DecodeText = (%q, %v), want (%q, nil)", got, err, want)
+			}
+		})
+	}
 }

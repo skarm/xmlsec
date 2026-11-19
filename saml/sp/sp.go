@@ -74,8 +74,8 @@ type Config struct {
 	// requires authentication.
 	AllowUnsignedResponse bool
 	// AllowUnsignedAssertion accepts an unsigned assertion only under an
-	// authenticated Response. A present assertion signature is still required
-	// to validate.
+	// authenticated Response when the local SP metadata permits it. A present
+	// assertion signature must validate.
 	AllowUnsignedAssertion bool
 	// Decryption selects explicit local RSA providers and exact algorithms.
 	// Only providers authorized by this SP's trusted encryption metadata are used.
@@ -94,7 +94,7 @@ type BeginOptions struct {
 	ACSIndex *uint16
 	// IDP selects the trusted identity provider by its metadata entity identifier.
 	IDP string
-	// Binding selects HTTP-Redirect (default), HTTP-POST or PAOS (ECP).
+	// Binding selects HTTP-Redirect (default), HTTP-POST, HTTP-Artifact or PAOS (ECP).
 	Binding string
 	// ResponseBinding selects HTTP-POST (default), HTTP-Artifact or PAOS.
 	// PAOS initiation always selects PAOS responses.
@@ -155,12 +155,13 @@ func NewServiceProvider(c Config) (*ServiceProvider, error) {
 		return nil, ErrPolicy
 	}
 
-	if e := signature.Key(c.Signing.Key.Public()); e != nil {
+	public := signature.SignerPublic(c.Signing.Key)
+	if e := signature.Key(public); e != nil {
 		return nil, e
 	}
 
 	if c.Signing.SignatureMethod == "" {
-		switch c.Signing.Key.Public().(type) {
+		switch public.(type) {
 		case *rsa.PublicKey:
 			c.Signing.SignatureMethod = xmldsig.RSASHA256
 		case *ecdsa.PublicKey:
@@ -221,7 +222,7 @@ func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound,
 		return nil, e
 	}
 
-	if !keyAllowed(s.c.Signing.Key.Public(), own) {
+	if !keyAllowed(signature.SignerPublic(s.c.Signing.Key), own) {
 		return nil, ErrPolicy
 	}
 
@@ -230,18 +231,13 @@ func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound,
 		return nil, e
 	}
 
-	if returned1, matched := s.beginNameIDFormat(&o, own, other); matched {
-		return nil, returned1
+	if err := s.checkNameIDFormat(o.NameIDFormat, own, other); err != nil {
+		return nil, err
 	}
 
-	destination := ""
-
-	if returned1Value, matchedBranch := beginEndpoints(other, &o, &destination); matchedBranch {
-		return nil, returned1Value
-	}
-
-	if destination == "" {
-		return nil, ErrPolicy
+	destination, e := beginEndpoint(other, o)
+	if e != nil {
+		return nil, e
 	}
 
 	u, e := url.Parse(destination)
@@ -309,9 +305,10 @@ func (s *ServiceProvider) Begin(ctx context.Context, o BeginOptions) (*Outbound,
 	out.issuer = s.c.EntityID
 
 	out.recipient = o.IDP
-	if o.Binding == metadata.HTTPRedirect {
+	switch o.Binding {
+	case metadata.HTTPRedirect:
 		out.query, e = s.signRedirect(ctx, signed, &relay)
-	} else if o.Binding != metadata.PAOS {
+	case metadata.HTTPPost:
 		_, e = binding.WritePOST(ctx, io.Discard, signed, binding.Request, &relay, s.c.POSTLimits)
 	}
 
@@ -359,23 +356,24 @@ func pendingNameID(s string) string {
 	return s
 }
 
-func (s *ServiceProvider) beginNameIDFormat(o *BeginOptions, own *metadata.Role, other *metadata.Role) (returned1 error, matched bool) {
-	if o.NameIDFormat == protocol.NameIDEncrypted {
+func (s *ServiceProvider) checkNameIDFormat(format string, own, other *metadata.Role) error {
+	if format == protocol.NameIDEncrypted {
 		decryption, err := s.decryptionFor(own)
 		if err != nil || decryption == nil {
-			return ErrPolicy, true
+			return ErrPolicy
 		}
 
-		return nil, false
+		return nil
 	}
 
-	if o.NameIDFormat != "" && o.NameIDFormat != protocol.NameIDUnspecified {
-		if len(own.NameIDFormats()) > 0 && !contains(own.NameIDFormats(), o.NameIDFormat) || len(other.NameIDFormats()) > 0 && !contains(other.NameIDFormats(), o.NameIDFormat) {
-			return ErrPolicy, true
+	if format != "" && format != protocol.NameIDUnspecified {
+		ownFormats, otherFormats := own.NameIDFormats(), other.NameIDFormats()
+		if len(ownFormats) > 0 && !contains(ownFormats, format) || len(otherFormats) > 0 && !contains(otherFormats, format) {
+			return ErrPolicy
 		}
 	}
 
-	return
+	return nil
 }
 
 func beginACS(own *metadata.Role, o BeginOptions) (metadata.Endpoint, error) {
@@ -388,7 +386,7 @@ func beginACS(own *metadata.Role, o BeginOptions) (metadata.Endpoint, error) {
 	return own.ACS(o.ResponseBinding, o.ACSIndex)
 }
 
-func beginEndpoints(other *metadata.Role, o *BeginOptions, destination *string) (returned1Value error, matchedBranch bool) {
+func beginEndpoint(other *metadata.Role, o BeginOptions) (string, error) {
 	requestBinding := o.Binding
 	if requestBinding == metadata.PAOS {
 		requestBinding = metadata.SOAP
@@ -396,18 +394,24 @@ func beginEndpoints(other *metadata.Role, o *BeginOptions, destination *string) 
 
 	endpoints := other.Endpoints(metadata.SingleSignOnService)
 
+	var destination string
+
 	preferHoK := o.HolderOfKey && slices.ContainsFunc(endpoints, func(ep metadata.Endpoint) bool { return ep.HolderOfKey() && ep.TransportBinding() == requestBinding })
 	for _, ep := range endpoints {
 		if ep.HolderOfKey() == preferHoK && ep.TransportBinding() == requestBinding {
-			if (*destination) != "" {
-				return ErrPolicy, true
+			if destination != "" {
+				return "", ErrPolicy
 			}
 
-			*destination = ep.Location
+			destination = ep.Location
 		}
 	}
 
-	return
+	if destination == "" {
+		return "", ErrPolicy
+	}
+
+	return destination, nil
 }
 
 // ConsumePOST returns an assertion only AFTER browser correlation, metadata,
@@ -490,7 +494,7 @@ func (s *ServiceProvider) consumeDocument(ctx context.Context, message *document
 		scopeResponseKind      = "response"
 	)
 
-	if s == nil || ctx == nil || o.At.IsZero() || message == nil {
+	if s == nil || s.c.Requests == nil || ctx == nil || o.At.IsZero() || message == nil {
 		return nil, ErrPolicy
 	}
 
@@ -555,7 +559,7 @@ func (s *ServiceProvider) consumeDocument(ctx context.Context, message *document
 		return nil, e
 	}
 
-	responseNameIDPolicy(pending.NameIDFormat, own, &opt)
+	responseMetadataPolicy(pending.NameIDFormat, own, &opt)
 
 	result, e := protocol.VerifyResponse(ctx, message, other.SigningKeys(), opt)
 	if e != nil {
@@ -589,6 +593,10 @@ func (s *ServiceProvider) consumeDocument(ctx context.Context, message *document
 }
 
 func (s *ServiceProvider) roles(ctx context.Context, idp string, at time.Time) (*metadata.Role, *metadata.Role, error) {
+	if s.c.Metadata == nil {
+		return nil, nil, ErrPolicy
+	}
+
 	a, e := s.c.Metadata.Lookup(ctx, s.c.EntityID, at)
 	if e != nil {
 		return nil, nil, e
@@ -835,7 +843,11 @@ func normalizeBeginBindings(o *BeginOptions) error {
 	return nil
 }
 
-func responseNameIDPolicy(nameIDFormat string, own *metadata.Role, options *protocol.ResponseOptions) {
+func responseMetadataPolicy(nameIDFormat string, own *metadata.Role, options *protocol.ResponseOptions) {
+	if own.WantAssertionsSigned() {
+		options.AllowUnsignedAssertion = false
+	}
+
 	if nameIDFormat == protocol.NameIDEncrypted {
 		options.RequireEncryption |= protocol.EncryptNameID
 		options.AllowedNameIDFormats = own.NameIDFormats()

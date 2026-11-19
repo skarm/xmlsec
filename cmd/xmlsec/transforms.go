@@ -12,6 +12,7 @@ import (
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/transform"
 )
@@ -116,36 +117,49 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	fs := flag.NewFlagSet("transform "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "source XML; empty string for a context-free expression/template")
-	output := fs.String("out", "-", "output path")
-	expression := fs.String("expression", "", "XPath expression")
-	sheetFile := fs.String("stylesheet", "", "local XSLT stylesheet")
-	version := fs.String("version", "", "XPath 1.0/2.0/3.0/3.1 or XSLT 1.0/2.0/3.0; empty uses library default")
-	format := fs.String("format", cliOutputText, "XPath output: text (singleton) or json (typed sequence); XSLT: text or json (all result documents)")
-	variables := fs.String("bindings", "", "trusted JSON typed variable/parameter array")
-	static := fs.String("static-bindings", "", "trusted JSON XSLT 3.0 static parameter array")
-	resources := fs.String("resources", "", "trusted URI/path allowlist for imports and URI functions")
-	baseURI := fs.String("base-uri", "", "explicit base URI")
-	template := fs.String("template", "", "named XSLT template, Clark name {URI}local or local")
-	mode := fs.String("mode", "", "XSLT mode, Clark name {URI}local or local")
-	programBytes := fs.Int("max-program-bytes", transform.DefaultLimits().MaxProgramBytes, "maximum expression/stylesheet bytes")
-	operations := fs.Int("max-operations", transform.DefaultLimits().MaxOperations, "XPath/XSLT operation budget")
-	engineTimeout := fs.Duration("engine-timeout", transform.DefaultLimits().Timeout, "maximum duration per engine invocation")
+	input := fs.String(flagNameIn, stdioPath, "source XML; empty string for a context-free expression/template")
+	output := fs.String(flagNameOut, stdioPath, "output path")
+	expression := fs.String(flagNameExpression, "", "XPath expression")
+	sheetFile := fs.String(flagNameStylesheet, "", "local XSLT stylesheet")
+	version := fs.String(flagNameVersion, "", "XPath 1.0/2.0/3.0/3.1 or XSLT 1.0/2.0/3.0; empty uses library default")
+	format := fs.String(flagNameFormat, cliOutputText, "XPath output: text (singleton) or json (typed sequence); XSLT: text or json (all result documents)")
+	variables := fs.String(flagNameBindings, "", "trusted JSON typed variable/parameter array")
+	static := fs.String(flagNameStaticBindings, "", "trusted JSON XSLT 3.0 static parameter array")
+	resources := fs.String(flagNameResources, "", "trusted URI/path allowlist for imports and URI functions")
+	baseURI := fs.String(flagNameBaseURI, "", "explicit base URI")
+	template := fs.String(flagNameTemplate, "", "named XSLT template, Clark name {URI}local or local")
+	mode := fs.String(flagNameMode, "", "XSLT mode, Clark name {URI}local or local")
+	programBytes := fs.Int(flagNameMaxProgramBytes, transform.DefaultLimits().MaxProgramBytes, "maximum expression/stylesheet bytes")
+	operations := fs.Int(flagNameMaxOperations, transform.DefaultLimits().MaxOperations, "XPath/XSLT operation budget")
+	engineTimeout := fs.Duration(flagNameEngineTimeout, transform.DefaultLimits().Timeout, "maximum duration per engine invocation")
 
 	var nsFlags repeatedFlag
-	fs.Var(&nsFlags, "namespace", "PREFIX=URI static namespace; repeatable")
+	fs.Var(&nsFlags, flagNameNamespace, "PREFIX=URI static namespace; repeatable")
 
-	specific := "in out version format bindings resources base-uri max-program-bytes max-operations engine-timeout"
+	specific := []string{
+		flagNameIn, flagNameOut, flagNameVersion, flagNameFormat, flagNameBindings, flagNameResources, flagNameBaseURI,
+		flagNameMaxProgramBytes, flagNameMaxOperations, flagNameEngineTimeout,
+	}
 	if cmd == nameXPath {
-		specific += " expression namespace"
+		specific = append(specific, flagNameExpression, flagNameNamespace)
 	} else {
-		specific += " stylesheet static-bindings template mode"
+		specific = append(specific, flagNameStylesheet, flagNameStaticBindings, flagNameTemplate, flagNameMode)
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
+		return err
+	}
+
+	templateName, err := parseQName("template", *template)
+	if err != nil {
+		return err
+	}
+
+	modeName, err := parseQName("mode", *mode)
+	if err != nil {
 		return err
 	}
 
@@ -251,7 +265,7 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return err
 	}
 
-	options := transform.XSLTContext{Parameters: bindings, Template: parseQName(*template), Mode: parseQName(*mode), BaseOutputURI: *baseURI}
+	options := transform.XSLTContext{Parameters: bindings, Template: templateName, Mode: modeName, BaseOutputURI: *baseURI}
 
 	switch *format {
 	case cliOutputJSON:
@@ -271,15 +285,21 @@ func runTransform(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	}
 }
 
-func parseQName(s string) transform.Name {
-	if strings.HasPrefix(s, "{") {
-		uri, local, ok := strings.Cut(s[1:], "}")
-		if ok {
-			return document.Name{Space: uri, Local: local}
-		}
+func parseQName(flagName, s string) (transform.Name, error) {
+	if s == "" {
+		return transform.Name{}, nil
 	}
 
-	return document.Name{Local: s}
+	name := transform.Name{Local: s}
+	if strings.HasPrefix(s, "{") {
+		name.Space, name.Local, _ = strings.Cut(s[1:], "}")
+	}
+
+	if !xmlchar.IsValidNCName(name.Local) {
+		return transform.Name{}, usageError("-%s requires a local name or {URI}local name", flagName)
+	}
+
+	return name, nil
 }
 
 func canonicalizeXPath(ctx context.Context, w io.Writer, doc *document.Document, expression string, ns map[string]string, opt c14n.Options) error {

@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
+	"github.com/skarm/xmlsec/xmldsig"
 )
 
 func TestHashSelectorsAndSignerLoading(t *testing.T) {
@@ -78,5 +80,40 @@ func TestHashSelectorsAndSignerLoading(t *testing.T) {
 	}
 	if _, err := loadSigner(filepath.Join(directory, "missing")); err == nil {
 		t.Fatal("missing signer ignored")
+	}
+}
+
+func TestSingleSignatureAndSignatureValue(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, body                string
+		signature, signatureValue bool
+	}{
+		{"absent", "<document/>", false, false},
+		{"ambiguous", "<ds:Signature/><ds:Signature/>", false, false},
+		{"missing_value", "<ds:Signature><ds:SignedInfo/></ds:Signature>", true, false},
+		{"wrong_namespace", "<ds:Signature><ds:SignedInfo/><SignatureValue/></ds:Signature>", true, false},
+		{"valid", "<ds:Signature><ds:SignedInfo/><ds:SignatureValue>AQ==</ds:SignatureValue></ds:Signature>", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			doc, err := document.Parse(t.Context(), []byte(`<root xmlns:ds="`+xmldsig.Namespace+`">`+tc.body+`</root>`), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			signature, err := singleSignature(doc)
+			if signature.Valid() != tc.signature || (err == nil) != tc.signature {
+				t.Fatalf("selected signature present = %t, error = %v, want present %t", signature.Valid(), err, tc.signature)
+			}
+			if !tc.signature {
+				return
+			}
+			value, err := signatureValue(signature)
+			if value.Valid() != tc.signatureValue || (err == nil) != tc.signatureValue || tc.signatureValue && value.Text() != "AQ==" {
+				t.Errorf("selected value present = %t, error = %v, want present %t", value.Valid(), err, tc.signatureValue)
+			}
+		})
 	}
 }

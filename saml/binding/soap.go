@@ -10,14 +10,13 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
-
-	"github.com/skarm/xmlsec/internal/lexicon"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/saml/internal/httpclient"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
@@ -172,21 +171,37 @@ func WrapSOAP(ctx context.Context, payload *document.Document, headers ...docume
 	}
 
 	b := xmlutil.Node(prefix, SOAPNamespace, xmlNameBody)
-	seen := map[document.Name]bool{}
-
-	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
-		for _, attr := range ancestor.Attrs {
-			if attr.Name.Space == tree.XMLNamespace && !seen[attr.Name] {
-				b.Attrs = append(b.Attrs, attr)
-				seen[attr.Name] = true
-			}
-		}
-	}
-
+	inheritSOAPXMLAttributes(n, b, node.Parent)
 	xmlutil.Add(b, tree.ImportSubtree(node))
 	xmlutil.Add(n, b)
 
 	return xmlutil.Document(ctx, n)
+}
+
+func inheritSOAPXMLAttributes(envelope, body, source *tree.Node) {
+	var originalEnvelope *tree.Node
+	if source != nil && source.Name == body.Name && source.Parent != nil && source.Parent.Name == envelope.Name && source.Parent.Parent == nil {
+		originalEnvelope = source.Parent
+	}
+
+	seen := map[document.Name]bool{}
+
+	for ancestor := source; ancestor != nil; ancestor = ancestor.Parent {
+		for _, attr := range ancestor.Attrs {
+			if attr.Name.Space != tree.XMLNamespace {
+				continue
+			}
+
+			if !seen[attr.Name] {
+				body.Attrs = append(body.Attrs, attr)
+				seen[attr.Name] = true
+			} else if ancestor == originalEnvelope && attr.Name.Local == "base" {
+				// Resolve a relative Body base against the same Envelope base.
+				// Keep both declarations for inclusive canonicalization.
+				envelope.Attrs = append(envelope.Attrs, attr)
+			}
+		}
+	}
 }
 
 func soapPrefix(node *tree.Node) string {
@@ -312,7 +327,8 @@ func FaultSOAP(ctx context.Context, f SOAPFault) (*document.Document, error) {
 // a 30 second timeout. AllowHTTP is intended for explicitly trusted local links.
 type SOAPClient struct {
 	// Client supplies the HTTP transport and timeout. Nil selects a 30-second
-	// timeout. The client is copied and redirects are disabled.
+	// timeout. The client is copied and redirects are disabled. A typed-nil
+	// Transport or Jar returns ErrBinding.
 	Client *http.Client
 	// Options bounds outgoing envelopes and parsing of incoming SOAP messages.
 	Options SOAPOptions
@@ -338,6 +354,11 @@ func (c SOAPClient) RoundTrip(ctx context.Context, endpoint string, envelope *do
 		return nil, err
 	}
 
+	client, err := httpclient.WithoutRedirects(c.Client, ErrBinding)
+	if err != nil {
+		return nil, err
+	}
+
 	raw, err := envelope.XML(ctx)
 	if err != nil {
 		return nil, err
@@ -357,16 +378,14 @@ func (c SOAPClient) RoundTrip(ctx context.Context, endpoint string, envelope *do
 	req.Header.Set(headerCacheControl, cacheControlNoStore)
 	req.Header.Set(headerPragma, cachePragma)
 
-	client := soapHTTPClient(c.Client)
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
+		if completionErr := errors.Join(resp.Body.Close(), ctx.Err()); completionErr != nil {
 			message = nil
-			err = errors.Join(err, closeErr)
+			err = errors.Join(err, completionErr)
 		}
 	}()
 
@@ -492,21 +511,6 @@ func soapMaximum(o SOAPOptions) (int, error) {
 	return n, nil
 }
 
-func soapHTTPClient(source *http.Client) *http.Client {
-	const (
-		defaultHTTPTimeout = 30 * time.Second
-	)
-
-	client := http.Client{Timeout: defaultHTTPTimeout}
-	if source != nil {
-		client = *source
-	}
-
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-
-	return &client
-}
-
 func soapFault(code, message string) *SOAPFault {
 	return &SOAPFault{Code: xmlutil.Name(SOAPNamespace, code), Message: message}
 }
@@ -535,13 +539,13 @@ func readSOAPFault(e document.Element) error {
 		return ErrBinding
 	}
 
-	prefix, local, ok := strings.Cut(strings.TrimSpace(code), ":")
-	if !ok {
+	prefix, local, qualified := strings.Cut(strings.Trim(code, lexicon.XMLWhitespace), ":")
+	if !qualified {
 		local = prefix
 		prefix = ""
 	}
 
-	if !tree.NCName(local) || prefix != "" && !tree.NCName(prefix) {
+	if !tree.NCName(local) || qualified && !tree.NCName(prefix) {
 		return ErrBinding
 	}
 
@@ -590,7 +594,7 @@ func validateSOAPHeaders(headers []document.Element, o SOAPOptions) error {
 		}
 
 		actor, _ := h.Attribute(xmlutil.Name(SOAPNamespace, soapActorAttribute))
-		if must != soapBooleanTrue || actor != "" && actor != SOAPNext && actor != o.Actor {
+		if must != soapBooleanTrue || actor != SOAPNext && actor != o.Actor {
 			continue
 		}
 

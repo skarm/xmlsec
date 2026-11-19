@@ -1,11 +1,14 @@
 package xslt //nolint:testpackage // Exercises the serializer with XDM documents and output definitions.
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
 func TestSerializeResultValidatesOutputParametersBeforeWriting(t *testing.T) {
@@ -14,12 +17,15 @@ func TestSerializeResultValidatesOutputParametersBeforeWriting(t *testing.T) {
 		name       string
 		definition OutputDef
 		multiple   bool
+		text       bool
 		code       string
 	}{
 		{name: "unknown_method", definition: OutputDef{Method: "Q{urn:app}custom"}, code: "SEPM0016"},
 		{name: "unsupported_xml_version", definition: OutputDef{Method: "xml", Version: "1.2"}, code: "SESU0013"},
 		{name: "standalone_requires_single_root", definition: OutputDef{Method: "xml", Standalone: "no"}, multiple: true, code: "SEPM0004"},
 		{name: "doctype_requires_single_root", definition: OutputDef{Method: "xhtml", DoctypeSystem: "example.dtd"}, multiple: true, code: "SEPM0004"},
+		{name: "standalone_rejects_top_level_text", definition: OutputDef{Method: "xml", Standalone: "yes"}, text: true, code: "SEPM0004"},
+		{name: "doctype_rejects_top_level_text", definition: OutputDef{Method: "xhtml", DoctypeSystem: "example.dtd"}, text: true, code: "SEPM0004"},
 		{name: "standalone_conflicts_with_omitted_declaration", definition: OutputDef{Method: "xml", Standalone: "yes", OmitDeclaration: true}, code: "SEPM0009"},
 		{name: "xml_11_doctype_conflicts_with_omitted_declaration", definition: OutputDef{Method: "xml", Version: "1.1", DoctypeSystem: "example.dtd", OmitDeclaration: true}, code: "SEPM0009"},
 		{name: "xml_10_disallows_prefix_undeclaration", definition: OutputDef{Method: "xml", UndeclarePrefixes: true}, code: "SEPM0010"},
@@ -41,12 +47,48 @@ func TestSerializeResultValidatesOutputParametersBeforeWriting(t *testing.T) {
 					t.Fatalf("add second result element: %v", err)
 				}
 			}
+			if tc.text {
+				if err := doc.AddChild(doc.CreateText("trailing text")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			tc.definition.ByteOrderMark = true
 			var output strings.Builder
 			err := SerializeResult(&output, doc, &tc.definition)
 			requireSerialization(t, output.String(), err, "", tc.code)
 		})
 	}
+
+	t.Run("implicit method selection bounds examination before writing", func(t *testing.T) {
+		t.Parallel()
+		prefixed := parseTestDocument(t, `<!--one--><!--two--><html/>`)
+		first := parseTestDocument(t, `<html><body><br/></body></html>`)
+		zeroWork := xpath.WithBudget(t.Context(), 0, 100, 100, 32)
+		if root, err := firstDocumentSerializationElement(zeroWork, first); err != nil || root != first.DocumentElement() {
+			t.Fatalf("root-first selection returned %v, %v", root, err)
+		}
+
+		canceled, cancel := context.WithCancel(t.Context())
+		cancel()
+		for _, tc := range []struct {
+			ctx  context.Context
+			want error
+		}{
+			{xpath.WithBudget(t.Context(), 1, 100, 100, 32), xpath.ErrBudget},
+			{canceled, context.Canceled},
+		} {
+			var output strings.Builder
+			err := serializeResult(tc.ctx, &output, prefixed, nil)
+			if !errors.Is(err, tc.want) || output.Len() != 0 {
+				t.Errorf("document serialization wrote %q with %v; want %v before writing", output.String(), err, tc.want)
+			}
+		}
+
+		whitespace := xdm.XMLItem{Text: strings.Repeat(" ", 32<<10)}
+		if _, err := leadingSerializationText(xpath.WithBudget(t.Context(), 1, 100, 100, 32), whitespace); !errors.Is(err, xpath.ErrBudget) {
+			t.Errorf("large whitespace scan returned %v; want budget error", err)
+		}
+	})
 }
 
 func TestSerializeResultFullyNormalizedUsesOutputBoundaries(t *testing.T) {
@@ -134,6 +176,70 @@ func TestSerializeResultEncodesNormalizedTextAndByteOrderMark(t *testing.T) {
 	}
 }
 
+func TestSerializeValueUsesEncodingLabelForMarkup(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		method, label, want string
+	}{
+		{method: "xml", label: "latin1", want: "&#8364;\xe9</p>"},
+		{method: "xhtml", label: "L1", want: "&#8364;\xe9</p>"},
+		{method: "xml", label: "ISO-8859-1", want: "&#8364;\xe9</p>"},
+		{method: "xml", label: "windows-1252", want: "\x80\xe9</p>"},
+		{method: "html", label: "latin1", want: "\x80\xe9</p>"},
+		{method: "text", label: "windows-1252", want: "\x80\xe9"},
+	} {
+		t.Run(tc.method+"/"+tc.label, func(t *testing.T) {
+			t.Parallel()
+			doc := parseTestDocument(t, `<p xmlns="http://www.w3.org/1999/xhtml">€é</p>`)
+			result := ValueResult{
+				Document: doc,
+				Items:    xdm.ItemSlice{xdm.NodeItem{Node: doc}},
+				Output:   &OutputDef{Method: tc.method, Encoding: tc.label},
+			}
+			var output strings.Builder
+			if err := SerializeValue(t.Context(), &output, result); err != nil {
+				t.Fatal(err)
+			}
+			got := output.String()
+			if !strings.HasSuffix(got, tc.want) {
+				t.Errorf("serialized bytes %q, want suffix %q", got, tc.want)
+			}
+			if (tc.method == "xml" || tc.method == "xhtml") && !strings.Contains(got, `encoding="`+tc.label+`"`) {
+				t.Errorf("serialized declaration %q, want encoding %q", got, tc.label)
+			}
+			if tc.method == "text" && got != tc.want {
+				t.Errorf("serialized text bytes %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCharacterMapExpansionUsesLastMapping(t *testing.T) {
+	t.Parallel()
+	const declarations = `
+	<xsl:character-map name="shared">
+		<xsl:output-character character="a" string="shared"/>
+		<xsl:output-character character="b" string="base"/>
+	</xsl:character-map>
+	<xsl:character-map name="override" use-character-maps="shared"><xsl:output-character character="a" string="override"/></xsl:character-map>
+	<xsl:character-map name="later" use-character-maps="shared"/>
+	<xsl:character-map name="composite" use-character-maps="override later"><xsl:output-character character="b" string="top"/></xsl:character-map>
+	`
+	for _, tc := range []struct{ maps, want string }{
+		{"shared override", "override|base"},
+		{"shared override shared", "shared|base"},
+		{"override later", "shared|base"},
+		{"composite", "shared|top"},
+	} {
+		t.Run(tc.maps, func(t *testing.T) {
+			t.Parallel()
+			ss := compileTestStylesheet(t, declarations+`<xsl:output use-character-maps="`+tc.maps+`"/>`, `<xsl:text>a|b</xsl:text>`)
+			got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
 func TestSerializeItemsUsesRequestedSeparator(t *testing.T) {
 	t.Parallel()
 	const delimiter = "|"
@@ -154,6 +260,20 @@ func TestSerializeItemsUsesRequestedSeparator(t *testing.T) {
 			var output strings.Builder
 			err := SerializeItems(t.Context(), &output, items, doc, &definition)
 			requireSerialization(t, output.String(), err, tc.want, "")
+		})
+	}
+}
+
+func TestReviewReturnedSequencePreservesEmptyAtomicSpacing(t *testing.T) {
+	for _, tc := range []struct{ name, declarations, body string }{
+		{"typed template", `<xsl:template name="values" as="xs:string*"><xsl:sequence select="('a', '')"/></xsl:template>`, `<xsl:call-template name="values"/>`},
+		{"try select", "", `<xsl:try select="('a', '')"><xsl:catch/></xsl:try>`},
+		{"direct sequence", "", `<xsl:sequence select="('a', '')"/>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := compileTestStylesheet(t, tc.declarations, tc.body)
+			got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, "a ", "")
 		})
 	}
 }

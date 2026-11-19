@@ -50,30 +50,35 @@ type reply struct {
 }
 
 func main() {
-	in := json.NewDecoder(os.Stdin)
-	out := json.NewEncoder(os.Stdout)
+	if err := serve(os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func serve(input io.Reader, output io.Writer) error {
+	decoder := json.NewDecoder(input)
+	encoder := json.NewEncoder(output)
 
 	for {
 		var t task
-		if err := in.Decode(&t); err != nil {
-			if err != io.EOF {
-				fmt.Fprintln(os.Stderr, err)
+		if err := decoder.Decode(&t); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
 			}
 
-			return
+			return err
 		}
 
-		a := reply{}
+		result, err := run(t)
 
-		var err error
-
-		a.answer, err = run(t)
+		response := reply{answer: result}
 		if err != nil {
-			a.Error = err.Error()
+			response.Error = err.Error()
 		}
 
-		if err = out.Encode(a); err != nil {
-			return
+		if err := encoder.Encode(response); err != nil {
+			return err
 		}
 	}
 }

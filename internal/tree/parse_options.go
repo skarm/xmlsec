@@ -30,7 +30,7 @@ func (o ParseOptions) ParseReader(ctx context.Context, src io.Reader) (*Document
 
 func (o ParseOptions) ParseText(ctx context.Context, text string) (*Document, error) {
 	if o.AllowDTD && strings.Contains(text, "<!DOCTYPE") {
-		return o.parseDTDText(ctx, text)
+		return o.parseDTDText(ctx, text, len(text))
 	}
 
 	if o.AllowDTD {

@@ -275,7 +275,7 @@ var (
 
 // XSLTError is a structured error with an XSLT error code.
 type XSLTError struct {
-	// QualifiedCode retains an expanded application error name when supplied.
+	// QualifiedCode retains an explicitly signaled expanded error name.
 	QualifiedCode xdm.QNameValue
 	// Code is the local spelling used by Error and the fallback name used by CodeQName.
 	Code string

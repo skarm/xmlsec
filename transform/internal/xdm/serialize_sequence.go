@@ -48,6 +48,10 @@ func (w XMLSerialization) WriteAttributeValue(ctx context.Context, dst io.Writer
 // WriteSequence serializes borrowed nodes and text without building another DOM.
 // Node storage is read-only for the duration of the call.
 func (w XMLSerialization) WriteSequence(ctx context.Context, dst io.Writer, items iter.Seq2[XMLItem, error]) error {
+	if items == nil {
+		return tree.ErrMalformed
+	}
+
 	options := w.XMLWriteOptions
 
 	options.SelfClose, options.Reconcile, options.NormalizeXMLID = sequenceSelfClose, sequenceReconcileNamespaces, sequenceNormalizeXMLID
@@ -66,6 +70,11 @@ func (w XMLSerialization) WriteSequence(ctx context.Context, dst io.Writer, item
 			var node *tree.Node
 
 			if item.Node != nil {
+				if IsNilNode(item.Node) {
+					yield(nil, tree.ErrMalformed)
+					return
+				}
+
 				if doctype != nil && !w.OmitDoctype && item.Node.Type() == ElementNode {
 					declaration := *doctype
 

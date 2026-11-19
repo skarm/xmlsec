@@ -133,6 +133,7 @@ func TestRejectedNamesNamespacesAndContentLeaveStartTagUntouched(t *testing.T) {
 		{"element prefix", func(w *stream.Writer) error { return w.StartElementNS("a:b", "item", "urn:p") }},
 		{"element local", func(w *stream.Writer) error { return w.StartElementNS("p", "a:b", "urn:p") }},
 		{"attribute local", func(w *stream.Writer) error { return w.StartAttributeNS("p", "a:b", "urn:p") }},
+		{"attribute namespace without prefix", func(w *stream.Writer) error { return w.StartAttributeNS("", "item", "urn:p") }},
 		{"xmlns prefix", func(w *stream.Writer) error { return w.StartElementNS("xmlns", "item", "urn:p") }},
 		{"xml rebind", func(w *stream.Writer) error { return w.StartElementNS("xml", "item", "urn:p") }},
 		{"XML namespace wrong prefix", func(w *stream.Writer) error {
@@ -170,6 +171,60 @@ func TestRejectedNamesNamespacesAndContentLeaveStartTagUntouched(t *testing.T) {
 				t.Fatalf("rejected operation changed subsequent scopes: %q; want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestWriterRejectsWrongMarkupTransitions(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		open  func(*stream.Writer) error
+		close func(*stream.Writer) error
+		want  string
+	}{
+		{"comment", (*stream.Writer).StartComment, (*stream.Writer).EndComment, "<root><!----></root>"},
+		{"processing instruction", func(w *stream.Writer) error { return w.StartPI("probe") }, (*stream.Writer).EndPI, "<root><?probe?></root>"},
+		{"CDATA", (*stream.Writer).StartCDATA, (*stream.Writer).EndCDATA, "<root><![CDATA[]]></root>"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output strings.Builder
+			w := stream.NewWriter(&output)
+			writeSteps(t, func() error { return w.StartElement("root") }, func() error { return test.open(&w) })
+			before := output.String()
+			if err := w.EndElement(); err == nil || output.String() != before {
+				t.Fatalf("EndElement while %s was open: %q, %v", test.name, output.String(), err)
+			}
+			if err := w.FullEndElement(); err == nil || output.String() != before {
+				t.Fatalf("FullEndElement while %s was open: %q, %v", test.name, output.String(), err)
+			}
+			writeSteps(t, func() error { return test.close(&w) }, w.EndElement)
+			if output.String() != test.want {
+				t.Fatalf("output after rejected operation = %q; want %q", output.String(), test.want)
+			}
+		})
+	}
+
+	var output strings.Builder
+	w := stream.NewWriter(&output)
+	writeSteps(t, func() error { return w.StartDTD("root", "", "") })
+	before := output.String()
+	if err := w.StartElement("root"); err == nil || output.String() != before {
+		t.Fatalf("element started before the DTD closed: %q, %v", output.String(), err)
+	}
+	writeSteps(t, w.EndDTD, func() error { return w.StartElement("root") }, w.EndElement)
+	if output.String() != "<!DOCTYPE root><root/>" {
+		t.Fatalf("output after rejected element = %q", output.String())
+	}
+}
+
+func TestWriterSeparatesProcessingInstructionTargetFromFirstText(t *testing.T) {
+	var output strings.Builder
+	w := stream.NewWriter(&output)
+	writeSteps(t, func() error { return w.StartPI("probe") }, func() error { return w.WriteString("") },
+		func() error { return w.WriteString("value") }, func() error { return w.WriteString(" tail") }, w.EndPI)
+	token, err := xml.NewDecoder(strings.NewReader(output.String())).Token()
+	pi, ok := token.(xml.ProcInst)
+	if err != nil || !ok || pi.Target != "probe" || string(pi.Inst) != "value tail" {
+		t.Fatalf("processing instruction from %q = %#v, %v", output.String(), token, err)
 	}
 }
 

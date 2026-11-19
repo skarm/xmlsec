@@ -28,6 +28,8 @@ const (
 
 const goTestSkipEvent = "skip"
 
+const languageXPath20CompatibilityProfile = "qt3/2.0/1.0/default/true/true"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	err := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
@@ -147,7 +149,7 @@ func (s languageProofStream) validate(stamp languageProofStamp) error {
 	}
 
 	if s.ExitCode != 0 || s.DecodeError != "" {
-		return fmt.Errorf("test stream process failed with exit code %d", s.ExitCode)
+		return errors.Join(fmt.Errorf("test stream process failed with exit code %d", s.ExitCode), validateLanguageProofPackages(s.Events))
 	}
 
 	if len(s.Arguments) < 4 || s.Arguments[0] != "test" || s.Arguments[1] != "-json" || s.Arguments[2] != "-count=1" {
@@ -186,7 +188,7 @@ func languageProofProfileKeys() []string {
 		"qt3/2.0/1.0/default/true/false", "qt3/3.0/1.0/default/true/false", "qt3/3.1/1.0/default/true/false",
 		"xslt30/2.0/1.0/default/true/false", "xslt30/3.0/1.0/default/true/false",
 		"qt3/3.1/1.1/default/true/false", "xslt30/3.0/1.1/default/true/false", "xslt30/3.0/1.0/default/false/false",
-		"qt3/2.0/1.0/default/true/true", "qt3/3.0/1.0/default/true/true", "qt3/3.1/1.0/default/true/true",
+		languageXPath20CompatibilityProfile, "qt3/3.0/1.0/default/true/true", "qt3/3.1/1.0/default/true/true",
 		"qt3/3.1/1.0/language/true/false", "xslt30/3.0/1.0/language/true/false",
 	}
 }
@@ -197,7 +199,7 @@ func currentLanguageProofStamp(ctx context.Context, root string) (languageProofS
 		return languageProofStamp{}, err
 	}
 
-	register, err := os.ReadFile(filepath.Join(root, "docs", "conformance.json")) // #nosec G304 -- The developer command selects the local repository root.
+	register, err := os.ReadFile(filepath.Join(root, "docs", conformanceRegisterFile)) // #nosec G304 -- The developer command selects the local repository root.
 	if err != nil {
 		return languageProofStamp{}, err
 	}
@@ -526,13 +528,6 @@ func runLanguageProof(ctx context.Context, root string, args []string, out, stde
 		return captureLanguageProof(ctx, root, *path, flags.Args(), out, stderr)
 	}
 
-	stamp, err := currentLanguageProofStamp(ctx, root)
-	if err != nil {
-		return err
-	}
-
-	artifact := languageProofArtifact{SchemaVersion: languageProofSchemaVersion, Stamp: stamp}
-
 	if err := validateProofDestination(*path, flags.Args()); err != nil {
 		return err
 	}
@@ -541,6 +536,13 @@ func runLanguageProof(ctx context.Context, root string, args []string, out, stde
 	if err := invalidateLanguageProofFile(*path); err != nil {
 		return err
 	}
+
+	stamp, err := currentLanguageProofStamp(ctx, root)
+	if err != nil {
+		return err
+	}
+
+	artifact := languageProofArtifact{SchemaVersion: languageProofSchemaVersion, Stamp: stamp}
 
 	for _, file := range flags.Args() {
 		var stream languageProofStream
@@ -570,16 +572,16 @@ func runLanguageProof(ctx context.Context, root string, args []string, out, stde
 }
 
 func captureLanguageProof(ctx context.Context, root, path string, args []string, out, stderr io.Writer) error {
+	if err := invalidateLanguageProofFile(path); err != nil {
+		return err
+	}
+
 	before, err := currentLanguageProofStamp(ctx, root)
 	if err != nil {
 		return err
 	}
 
 	stream := languageProofStream{SchemaVersion: languageProofSchemaVersion, Before: before, Arguments: append([]string{"test", "-json", "-count=1"}, args...), ExitCode: -1}
-
-	if err := invalidateLanguageProofFile(path); err != nil {
-		return err
-	}
 
 	commandCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

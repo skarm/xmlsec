@@ -191,15 +191,20 @@ func TestXMLSecEncryptionMethodKeySize(t *testing.T) {
 		t.Run(recipe.mode, func(t *testing.T) {
 			scenario := suite.prepare(t, recipe, false)
 			raw := probeData(t, fixture, "nextprobe", scenario.task)
-			method := `<xenc:EncryptionMethod Algorithm="` + enc11 + `aes256-gcm">`
-			raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>256</xenc:KeySize>`), 1)
+			insertKeySize := func(algorithm, size string) {
+				method := `<xenc:EncryptionMethod Algorithm="` + algorithm + `">`
+				if n := bytes.Count(raw, []byte(method)); n != 1 {
+					t.Fatalf("expected exactly one EncryptionMethod for %s, found %d", algorithm, n)
+				}
+				raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>`+size+`</xenc:KeySize>`), 1)
+			}
+			insertKeySize(enc11+"aes256-gcm", "256")
 			if recipe.mode != nameDirect {
 				algorithm, size := enc11+"rsa-oaep", "2048"
 				if recipe.mode == nameWrap {
 					algorithm, size = enc+"kw-aes128", "128"
 				}
-				method = `<xenc:EncryptionMethod Algorithm="` + algorithm + `">`
-				raw = bytes.Replace(raw, []byte(method), []byte(method+`<xenc:KeySize>`+size+`</xenc:KeySize>`), 1)
+				insertKeySize(algorithm, size)
 			}
 			write(t, scenario.ours, raw)
 			scenario.task[nameMode] = "decrypt" + scenario.suffix
@@ -732,8 +737,14 @@ func (suite *encryptionSuite) prepare(t *testing.T, r encryptionRecipe, xml bool
 		plain = []byte(`<r xmlns:p="urn:p"><p:v>й é 😀</p:v><!--inside--></r>`)
 	}
 
-	source := write(t, filepath.Join(suite.dir, "plain"), plain)
-	ours, theirs, output := filepath.Join(suite.dir, "go.xml"), filepath.Join(suite.dir, "ref.xml"), filepath.Join(suite.dir, "output")
+	// The native tool reads --binary-data as a URI. Some subtest names contain '#'.
+	dir, err := os.MkdirTemp(suite.dir, "case-")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := write(t, filepath.Join(dir, "plain"), plain)
+	ours, theirs, output := filepath.Join(dir, "go.xml"), filepath.Join(dir, "ref.xml"), filepath.Join(dir, "output")
 	keyfile, decryptKey := suite.key.public, suite.key.private
 
 	if r.mode != nameRSA {

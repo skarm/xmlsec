@@ -187,10 +187,33 @@ func removeCRLDotSegments(input string) string {
 }
 
 func equalCRLMailbox(a, b string) bool {
-	localA, hostA, okA := strings.Cut(a, "@")
-	localB, hostB, okB := strings.Cut(b, "@")
+	sepA, sepB := crlMailboxSeparator(a), crlMailboxSeparator(b)
 
-	return okA && okB && localA == localB && strings.EqualFold(hostA, hostB)
+	return sepA > 0 && sepB > 0 && sepA+1 < len(a) && sepB+1 < len(b) &&
+		a[:sepA] == b[:sepB] && strings.EqualFold(a[sepA+1:], b[sepB+1:])
+}
+
+// RFC 5280 section 7.5 folds only the Domain. A quoted Local-part may
+// contain both an at-sign and escaped quotes.
+func crlMailboxSeparator(mailbox string) int {
+	if !strings.HasPrefix(mailbox, `"`) {
+		return strings.IndexByte(mailbox, '@')
+	}
+
+	for i := 1; i+1 < len(mailbox); i++ {
+		switch mailbox[i] {
+		case '\\':
+			i++
+		case '"':
+			if mailbox[i+1] == '@' {
+				return i + 1
+			}
+
+			return -1
+		}
+	}
+
+	return -1
 }
 
 // A stored GeneralName URI uses RFC3986 ASCII syntax, not net/url's permissive

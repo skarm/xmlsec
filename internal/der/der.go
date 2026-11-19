@@ -73,8 +73,12 @@ func ReadLimits(b []byte, maximum, maxDepth, maxNodes int) (asn1.RawValue, error
 	count := 0
 
 	v, r, e := read(b, 1, &count, maxDepth, maxNodes)
-	if e != nil || len(r) != 0 {
+	if e != nil {
 		return asn1.RawValue{}, fmt.Errorf("%w: complete value: %w", ErrInvalidDER, e)
+	}
+
+	if len(r) != 0 {
+		return asn1.RawValue{}, fmt.Errorf("%w: trailing data", ErrInvalidDER)
 	}
 
 	return v, nil
@@ -89,6 +93,10 @@ func Children(v asn1.RawValue) ([]asn1.RawValue, error) {
 func ChildrenLimit(v asn1.RawValue, maximum int) ([]asn1.RawValue, error) {
 	if !v.IsCompound {
 		return nil, ErrInvalidDER
+	}
+
+	if maximum < 0 {
+		return nil, errors.Join(ErrInvalidDER, ErrLimit)
 	}
 
 	var out []asn1.RawValue
@@ -139,8 +147,12 @@ func Sequence(v asn1.RawValue, minimum, maximum int) ([]asn1.RawValue, error) {
 // Decode decodes a complete DER value into out and rejects trailing bytes.
 func Decode(v asn1.RawValue, out any) error {
 	r, e := asn1.Unmarshal(v.FullBytes, out)
-	if e != nil || len(r) != 0 {
+	if e != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidDER, e)
+	}
+
+	if len(r) != 0 {
+		return fmt.Errorf("%w: trailing data", ErrInvalidDER)
 	}
 
 	return nil
@@ -209,8 +221,24 @@ func Ctx(tag int, parts ...[]byte) []byte {
 	return Wrap(asn1.ClassContextSpecific, tag, true, bytes.Join(parts, nil))
 }
 
-// OID encodes an object identifier, returning nil for an invalid value.
+// OID encodes an object identifier accepted by the DER decoder, or returns nil.
 func OID(o asn1.ObjectIdentifier) []byte {
+	const (
+		maximumRootArc = 2
+		firstArcWidth  = 40
+	)
+	// encoding/asn1 omits negative arcs when encoding and permits combined
+	// first subidentifiers bigger than its decoder accepts.
+	if len(o) < 2 || o[0] < 0 || o[0] > maximumRootArc || o[1] < 0 || o[1] > math.MaxInt32-o[0]*firstArcWidth {
+		return nil
+	}
+
+	for _, arc := range o[2:] {
+		if arc < 0 || arc > math.MaxInt32 {
+			return nil
+		}
+	}
+
 	b, e := asn1.Marshal(o)
 	if e != nil {
 		return nil

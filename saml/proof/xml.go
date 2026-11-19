@@ -19,8 +19,10 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/transformxml"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
@@ -86,18 +88,20 @@ func signXML(ctx context.Context, envelope *document.Document, key Signing, enve
 		return nil, ErrProof
 	}
 
-	cert, err := certificate(key.Certificate)
+	cert, err := certificate(key.Certificate, x509cert.ParseDefault)
 	if err != nil {
 		return nil, err
 	}
 
-	public, ok := key.Key.Public().(interface{ Equal(crypto.PublicKey) bool })
-	if !ok || !public.Equal(cert.PublicKey) {
+	public := signature.SignerPublic(key.Key)
+
+	equal, ok := cert.PublicKey.(interface{ Equal(crypto.PublicKey) bool })
+	if !ok || signature.Key(public) != nil || !equal.Equal(public) {
 		return nil, ErrProof
 	}
 
 	if key.Method == "" {
-		switch key.Key.Public().(type) {
+		switch public.(type) {
 		case *rsa.PublicKey:
 			key.Method = xmldsig.RSASHA256
 		case *ecdsa.PublicKey:
@@ -295,7 +299,7 @@ func verifyXML(ctx context.Context, raw []byte, o Options, enveloped bool) (*Ver
 		certBytes = provided
 	}
 
-	cert, err := certificate(certBytes)
+	cert, err := certificate(certBytes, x509cert.ParseDefault)
 	if err != nil {
 		return nil, err
 	}

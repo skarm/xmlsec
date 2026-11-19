@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// openLocalFile avoids a blocking open if a path changes to a FIFO before
+// the caller can verify the opened descriptor with Stat.
+func openLocalFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 G703 -- The operator selects the CLI input path.
+}
+
 // Standard descriptors inherited in blocking mode are not necessarily enrolled
 // in Go's runtime poller. Closing such an os.File can wait for the blocked read
 // itself (notably on macOS). Give streams a pollable owned duplicate, retaining
@@ -27,6 +33,14 @@ func prepareFileIO(original *os.File) (*os.File, func(), error) {
 
 	if err := original.SetDeadline(time.Time{}); err == nil {
 		return original, noop, nil
+	}
+
+	// The null device completes reads with EOF and accepts writes immediately.
+	// It does not require, or on some kernels support, poller registration.
+	if stat.Mode()&os.ModeCharDevice != 0 {
+		if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(stat, null) {
+			return original, noop, nil
+		}
 	}
 
 	originalFD := original.Fd()

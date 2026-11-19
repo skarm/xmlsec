@@ -11,6 +11,7 @@ import (
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 )
@@ -51,24 +52,24 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		keyFlags = registerPrivateKeyFlags(fs)
 	}
 
-	input := fs.String("in", "-", "input XML; - reads stdin")
-	output := fs.String("out", "-", "output signed XML or diagnostic JSON")
-	keyFile := fs.String("key", "", "private key for sign-template; trusted public key for verify-core")
-	index := fs.Int("signature-index", cliUnspecifiedSelectionIndex, "REQUIRED zero-based Signature index (explicit selection, not trust)")
-	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "application ID attribute local name")
-	idNS := fs.String("id-ns", "", "application ID namespace URI")
-	methods := fs.String(nameC14N, c14n.Exclusive, "comma-separated allowed SignedInfo canonicalization URIs")
-	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
+	input := fs.String(flagNameIn, stdioPath, "input XML; - reads stdin")
+	output := fs.String(flagNameOut, stdioPath, "output signed XML or diagnostic JSON")
+	keyFile := fs.String(flagNameKey, "", "private key for sign-template; trusted public key for verify-core")
+	index := fs.Int(flagNameSignatureIndex, cliUnspecifiedSelectionIndex, "REQUIRED zero-based Signature index (explicit selection, not trust)")
+	idAttr := fs.String(flagNameIDAttr, cliDefaultIDAttribute, "application ID attribute local name")
+	idNS := fs.String(flagNameIDNS, "", "application ID namespace URI")
+	methods := fs.String(flagNameC14N, c14n.Exclusive, "comma-separated allowed SignedInfo canonicalization URIs")
+	modern := fs.Bool(flagNameModernAlgorithms, false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
 	manifests := fs.String("manifests", cliNoManifests, "Manifest validation: none, recursive or recursive-external")
 	manifestTransforms := fs.Bool("manifest-transforms", false, "follow authenticated Manifest transform results; requires recursive mode")
 	depth := fs.Int("manifest-max-depth", cliDefaultManifestDepth, "recursive Manifest depth limit")
 	nodes := fs.Int("manifest-max-nodes", cliDefaultManifestNodes, "maximum unique Manifest elements")
 	refs := fs.Int("manifest-max-references", cliDefaultManifestReferences, "maximum total direct and nested Reference elements")
-	resources := fs.String("resources", "", "optional trusted JSON URI/path allowlist for external references")
-	baseURI := fs.String("base-uri", "", "explicit absolute signature document URI for relative external references; requires -resources")
-	resourceLimit := fs.Int("max-resource-bytes", cliDefaultResourceBytes, "maximum bytes per external resource")
-	totalLimit := fs.Int("max-total-resource-bytes", cliDefaultTotalResourceBytes, "maximum fetched source bytes per operation")
-	allowedTransforms := fs.String("allowed-transforms", "", "comma-separated permitted Reference transform URIs")
+	resources := fs.String(flagNameResources, "", "optional trusted JSON URI/path allowlist for external references")
+	baseURI := fs.String(flagNameBaseURI, "", "explicit absolute signature document URI for relative external references; requires -resources")
+	resourceLimit := fs.Int(flagNameMaxResourceBytes, cliDefaultResourceBytes, "maximum bytes per external resource")
+	totalLimit := fs.Int(flagNameMaxTotalResourceBytes, cliDefaultTotalResourceBytes, "maximum fetched source bytes per operation")
+	allowedTransforms := fs.String(flagNameAllowedTransforms, "", "comma-separated permitted Reference transform URIs")
 	maxSignatures := fs.Int("max-signatures", cliDefaultSignatures, "maximum Signature elements (1..64)")
 	idRules := fs.String("id-rules", "", "trusted JSON array of additional IDAttributeRule values")
 	secretFile := fs.String("secret-file", "", "HMAC shared-secret file, instead of -key; requires -policy hmac")
@@ -102,7 +103,7 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		totalLimit:    *totalLimit,
 	}
 
-	if err := invocation.validate(); err != nil {
+	if err := invocation.validate(requiredIDs); err != nil {
 		return err
 	}
 
@@ -212,11 +213,11 @@ func runCore(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	if verifyErr == nil {
-		details["key_fingerprint_sha256"] = result.KeyFingerprintSHA256()
-		details["root_covered"] = result.CoversElement(doc.Root())
+		details[fieldKeyFingerprintSHA256] = result.KeyFingerprintSHA256()
+		details[fieldRootCovered] = result.CoversElement(doc.Root())
 	}
 
-	return errors.Join(verifyErr, jsonOutput(ctx, *output, stdout, resultReport("signature verify-core", "externally-supplied-key", details, verifyErr)))
+	return errors.Join(verifyErr, jsonOutput(ctx, *output, stdout, resultReport("signature verify-core", trustExternallySuppliedKey, details, verifyErr)))
 }
 
 func runCorePreserve(ctx context.Context, preserve repeatedFlag, signatures []document.Element, opt *xmldsig.SignatureOptions, signing *xmldsig.TemplateSignOptions) error {
@@ -330,7 +331,7 @@ func runCoreEntries(entries []resourceEntry, allowed []string) error {
 }
 
 func coreExternalReferencesContext(ctx context.Context, path string, resourceLimit, totalLimit int) (*xmldsig.ExternalReferences, error) {
-	if path == "-" {
+	if path == stdioPath {
 		return nil, errors.New("-resources must be a trusted local JSON file")
 	}
 
@@ -393,17 +394,9 @@ func requiredIDElements(ctx context.Context, doc *document.Document, opt xmldsig
 
 	out := make([]document.Element, 0, len(ids))
 	for _, id := range ids {
-		if id == "" {
-			return nil, usageError("-require-id must not be empty")
-		}
-
-		element, whole, err := resolver.Target(ctx, "#"+id)
+		element, _, err := resolver.Target(ctx, "#"+id)
 		if err != nil {
 			return nil, err
-		}
-
-		if whole {
-			return nil, usageError("-require-id requires an element ID")
 		}
 
 		out = append(out, element)
@@ -432,7 +425,7 @@ func validateCoreManifests(mode, resources string) error {
 	}
 }
 
-func (c coreInvocation) validate() error {
+func (c coreInvocation) validate(requiredIDs []string) error {
 	if c.key != "" && c.secret != "" {
 		return usageError("choose -key or -secret-file")
 	}
@@ -451,6 +444,12 @@ func (c coreInvocation) validate() error {
 
 	if c.resourceLimit < 1 || c.resourceLimit > cliMaxBytes || c.totalLimit < 1 || c.totalLimit > cliMaxBytes {
 		return usageError("resource byte limits must be 1..67108864")
+	}
+
+	for _, id := range requiredIDs {
+		if !xmlchar.IsValidNCName(id) {
+			return usageError("-require-id requires a literal XML ID")
+		}
 	}
 
 	return nil

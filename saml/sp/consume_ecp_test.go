@@ -92,7 +92,7 @@ func hokPartners(t *testing.T, c testcert.Chain, acs, sso, canonical string, enc
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := idp.NewIdentityProvider(idp.Config{EntityID: hokIDP, Metadata: partners, Signing: protocol.SigningKey{Key: c.TSAKey, CertificateDER: c.TSA.Raw, Canonicalization: canonical}, Replay: idpReplay, Encryption: encryption})
+	identity, err := idp.NewIdentityProvider(idp.Config{EntityID: hokIDP, Metadata: partners, Signing: protocol.SigningKey{Key: c.TSAKey, CertificateDER: c.TSA.Raw, Canonicalization: canonical}, Replay: idpReplay, Encryption: encryption, POSTLimits: binding.POSTLimits{MaxFormBytes: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

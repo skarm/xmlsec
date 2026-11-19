@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/saml/binding"
+	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/metadata"
 	"github.com/skarm/xmlsec/saml/protocol"
 	"github.com/skarm/xmlsec/xmldsig"
@@ -400,6 +401,38 @@ func TestAuthorityQueries(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAuthorizationQueryRequiresResourceAttribute(t *testing.T) {
+	t.Parallel()
+	key := testcert.Key(t)
+	at := testcert.Now()
+	const wire = `<p:AuthzDecisionQuery xmlns:p="` + protocol.ProtocolNamespace + `" xmlns:a="` + protocol.AssertionNamespace + `" ID="_authz" Version="2.0" IssueInstant="%s"%s><a:Issuer>` + sp + `</a:Issuer><a:Subject><a:NameID>alice</a:NameID></a:Subject><a:Action>Read</a:Action></p:AuthzDecisionQuery>`
+	o := protocol.ExchangeOptions{Issuer: sp, At: at, Binding: metadata.SOAP}
+	for _, tc := range []struct {
+		name, attribute, resource string
+		wantErr                   error
+	}{
+		{name: "absent", wantErr: protocol.ErrProfile},
+		{name: "empty", attribute: ` Resource=""`},
+		{name: "ordinary URI", attribute: ` Resource="urn:example:resource"`, resource: "urn:example:resource"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := queryXML(t, fmt.Sprintf(wire, at.Format(time.RFC3339Nano), tc.attribute))
+			signed, err := xmlsig.Sign(t.Context(), d, d.Root(), xmlsig.SigningKey{Key: key, Method: xmldsig.ECDSASHA256}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := protocol.VerifyQuery(t.Context(), signed, []crypto.PublicKey{key.Public()}, o)
+			if !errors.Is(err, tc.wantErr) || (got == nil) != (tc.wantErr != nil) {
+				t.Fatalf("VerifyQuery = %v, %v; want %v", got, err, tc.wantErr)
+			}
+			if got != nil && got.Query().Resource != tc.resource {
+				t.Errorf("Resource = %q, want %q", got.Query().Resource, tc.resource)
+			}
+		})
 	}
 }
 

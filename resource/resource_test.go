@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/skarm/xmlsec/evidence"
@@ -101,6 +104,24 @@ func TestResolverConfigurationRejectsEmptyFragments(t *testing.T) {
 	}
 }
 
+func TestHTTPResolverRequiresOriginHostname(t *testing.T) {
+	for _, origin := range []string{"https://:8443", "http://:8080"} {
+		resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{
+			Client: &http.Client{}, AllowedOrigins: []string{origin},
+		})
+		if resolver != nil || !errors.Is(err, resource.ErrInput) {
+			t.Errorf("origin %q: got resolver %v and error %v, want ErrInput", origin, resolver, err)
+		}
+	}
+	for _, origin := range []string{"https://resource.test:8443", "http://[::1]:8080"} {
+		if _, err := resource.NewHTTPResolver(resource.HTTPConfig{
+			Client: &http.Client{}, AllowedOrigins: []string{origin},
+		}); err != nil {
+			t.Errorf("origin %q: %v", origin, err)
+		}
+	}
+}
+
 func TestHTTPResolverRechecksCallerRedirectChanges(t *testing.T) {
 	calls, closed := 0, 0
 	resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{
@@ -166,12 +187,9 @@ func TestEvidenceObservationOwnership(t *testing.T) {
 func TestEvidenceCollectorSuccessAndConcurrentCalls(t *testing.T) {
 	request := []byte("OCSP request binding")
 	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == http.MethodPost {
-			defer req.Body.Close()
-			data, err := io.ReadAll(req.Body)
-			if err != nil || !bytes.Equal(data, request) || req.Header.Get("Content-Type") != "application/ocsp-request" {
-				t.Error(data, err, req.Header)
-			}
+		data, err := io.ReadAll(req.Body)
+		if req.Method != http.MethodPost || req.URL.Path != "/first" || err != nil || !bytes.Equal(data, request) || req.Header.Get("Content-Type") != "application/ocsp-request" {
+			t.Error(req.Method, req.URL.Path, data, err, req.Header)
 		}
 		_, _ = io.WriteString(w, "opaque")
 	}))
@@ -584,6 +602,34 @@ func TestHTTPAdaptersRejectTypedNilTransport(t *testing.T) {
 	}
 	if collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{"https://evidence.test/first"}}); collector == nil || err != nil {
 		t.Fatal("ordinary nil transport lost standard-client semantics", err)
+	}
+}
+
+func TestHTTPResolverCookieJarConfiguration(t *testing.T) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var absent *cookiejar.Jar
+	for _, tc := range []struct {
+		name string
+		jar  http.CookieJar
+		want error
+	}{
+		{name: "typed nil", jar: absent, want: resource.ErrInput},
+		{name: "plain nil"},
+		{name: "initialized", jar: jar},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter, err := resource.NewHTTPResolver(resource.HTTPConfig{
+				Client:         &http.Client{Jar: tc.jar},
+				AllowedOrigins: []string{"https://evidence.test"},
+			})
+			if !errors.Is(err, tc.want) || (adapter == nil) != (tc.want != nil) {
+				t.Fatalf("adapter = %v, error = %v; want error %v", adapter, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -1142,5 +1188,91 @@ func TestHTTPResolverRejectsMalformedQueryEscapes(t *testing.T) {
 
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A legacy transport may use CancelRequest instead of Request.Context or Cancel.
+// net/http still supports its timeout contract; adapters must preserve it.
+type legacyTimeoutTransport struct {
+	canceled chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (t *legacyTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		defer req.Body.Close()
+	}
+	select {
+	case <-t.canceled:
+		return nil, errors.New("transport canceled")
+	case <-t.release:
+		return nil, errors.New("test released stuck transport")
+	}
+}
+
+func (t *legacyTimeoutTransport) CancelRequest(*http.Request) {
+	t.once.Do(func() { close(t.canceled) })
+}
+
+func TestHTTPAdaptersPreserveClientTimeout(t *testing.T) {
+	const uri = "https://resource.test/status"
+	for _, mode := range []string{"client", "resolver", "collector"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &legacyTimeoutTransport{canceled: make(chan struct{}), release: make(chan struct{})}
+				defer close(transport.release)
+				client := &http.Client{Transport: transport, Timeout: time.Second}
+				var run func(context.Context) error
+				switch mode {
+				case "client":
+					run = func(ctx context.Context) error {
+						req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+						if err != nil {
+							return err
+						}
+						response, err := client.Do(req)
+						if response != nil {
+							return errors.Join(err, response.Body.Close())
+						}
+						return err
+					}
+				case "resolver":
+					resolver, err := resource.NewHTTPResolver(resource.HTTPConfig{Client: client, AllowedOrigins: []string{"https://resource.test"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					run = func(ctx context.Context) error {
+						body, err := resolver.Resolve(ctx, uri)
+						if body != nil {
+							return errors.Join(err, body.Close())
+						}
+						return err
+					}
+				case "collector":
+					collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{uri}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					run = func(ctx context.Context) error {
+						_, err := collector.Collect(ctx, []collect.Request{{Kind: evidence.CRL, URI: uri}})
+						return err
+					}
+				}
+				done := make(chan error, 1)
+				go func() { done <- run(t.Context()) }()
+				time.Sleep(2 * time.Second)
+				synctest.Wait()
+				select {
+				case err := <-done:
+					var timeout net.Error
+					if !errors.As(err, &timeout) || !timeout.Timeout() {
+						t.Fatalf("request returned %v, want a client timeout", err)
+					}
+				default:
+					t.Fatal("request still blocked after the client timeout")
+				}
+			})
+		})
 	}
 }

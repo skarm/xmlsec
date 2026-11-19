@@ -63,6 +63,67 @@ type mergeKeyValue struct {
 	atom       xdm.AtomicValue // original value exposed by current-merge-key()
 }
 
+// Source instructions can read the same URI with different accumulator grants.
+// Keep different grants separate without changing ordinary document identity.
+type accumulatorResourceKey struct {
+	uri      string
+	scope    *Stylesheet
+	names    string
+	merge    bool
+	ordinary bool
+}
+
+func (ec *execContext) accumulatorResourceKey(uri string, names []string, merge, streamable bool) accumulatorResourceKey {
+	scope := ec.effectiveStylesheet()
+	ordinary := !streamable && len(ec.stylesheet.usedPackages) == 0 && len(accumulatorGrant(names, scope)) == len(scope.accumulators)
+
+	names = slices.Clone(names)
+	slices.Sort(names)
+
+	return accumulatorResourceKey{
+		uri: uri, scope: scope, names: strings.Join(names, "\x00"),
+		merge: merge, ordinary: ordinary,
+	}
+}
+
+func (ec *execContext) cachedAccumulatorResource(ctx context.Context, key accumulatorResourceKey) (*xdm.Document, error) {
+	if key.ordinary {
+		if doc := ec.docCache[ec.docCacheKey(key.uri)]; doc != nil {
+			return ec.cachedDocumentRead(ctx, key.uri, doc)
+		}
+
+		return nil, nil
+	}
+
+	doc := ec.accumulatorResourceDocs[key]
+	if doc != nil {
+		if err := ec.RecordRead(ctx, key.uri); err != nil {
+			return nil, &xdm.ResourceAccessError{Cause: err}
+		}
+	}
+
+	return doc, nil
+}
+
+func (ec *execContext) storeAccumulatorResource(key accumulatorResourceKey, doc *xdm.Document, names []string) {
+	if key.ordinary {
+		if ec.docCache == nil {
+			ec.docCache = make(map[string]*xdm.Document)
+		}
+
+		ec.docCache[ec.docCacheKey(key.uri)] = doc
+
+		return
+	}
+
+	if ec.accumulatorResourceDocs == nil {
+		ec.accumulatorResourceDocs = make(map[accumulatorResourceKey]*xdm.Document)
+	}
+
+	ec.accumulatorResourceDocs[key] = doc
+	ec.addAccumulatorGrant(doc, accumulatorGrant(names, key.scope))
+}
+
 // execSourceDocument executes xsl:source-document by loading the referenced
 // document into a DOM tree and executing the body with that document as context.
 func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocumentInst) error {
@@ -78,21 +139,19 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 		effectiveBase = ec.stylesheet.baseURI
 	}
 
-	resolvedURI := resolveAgainstBaseURI(uripath.EscapeResourceReference(docURI), uripath.EscapeResourceReference(effectiveBase))
+	resolvedURI := resolveAgainstBaseURI(uripath.EscapeResourceReference(docURI), escapeResourceBase(effectiveBase))
 
-	cacheKey := ec.docCacheKey(resolvedURI)
+	cacheKey := ec.accumulatorResourceKey(resolvedURI, inst.UseAccumulators, false, false)
 	if err := ec.CheckRead(ctx, resolvedURI); err != nil {
 		return err
 	}
 
-	doc, ok := ec.docCache[cacheKey]
-	if ok {
-		if _, err := ec.existingDocumentRead(ctx, doc); err != nil {
-			return err
-		}
+	doc, err := ec.cachedAccumulatorResource(ctx, cacheKey)
+	if err != nil {
+		return err
 	}
 
-	if !ok {
+	if doc == nil {
 		reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
 		if err != nil {
 			if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
@@ -113,11 +172,7 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 			ec.stripWhitespaceFromDoc(doc)
 		}
 
-		if ec.docCache == nil {
-			ec.docCache = make(map[string]*xdm.Document)
-		}
-
-		ec.docCache[cacheKey] = doc
+		ec.storeAccumulatorResource(cacheKey, doc, inst.UseAccumulators)
 	}
 
 	// Apply input-type-annotations="strip": remove all type annotations so
@@ -142,7 +197,7 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 		startNode = elem
 	}
 
-	if err := ec.prepareSourceDocumentAccumulators(ctx, inst, doc); err != nil {
+	if err := ec.ensureAccumulatorStates(ctx, doc); err != nil {
 		return err
 	}
 
@@ -153,18 +208,12 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 	savedItem := ec.contextItem
 	savedPos := ec.position
 	savedSize := ec.size
-	savedActiveAccums := ec.activeAccumulators
 	ec.sourceDoc = doc
 	ec.contextNode = startNode
 	ec.currentNode = startNode
 	ec.contextItem = nil // document node is the context, not an atomic item
 	ec.position = 1
 	ec.size = 1
-
-	ec.activeAccumulators = make(map[string]struct{}, len(inst.UseAccumulators))
-	for _, name := range inst.UseAccumulators {
-		ec.activeAccumulators[name] = struct{}{}
-	}
 
 	defer func() {
 		ec.sourceDoc = savedSource
@@ -173,16 +222,10 @@ func (ec *execContext) execSourceDocument(ctx context.Context, inst *sourceDocum
 		ec.contextItem = savedItem
 		ec.position = savedPos
 		ec.size = savedSize
-		ec.activeAccumulators = savedActiveAccums
 	}()
+	defer ec.withoutTemplateRule()()
 
-	for _, child := range inst.Body {
-		if err := ec.executeInstruction(ctx, child); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return ec.executeSequenceConstructor(ctx, inst.Body)
 }
 
 // execIterate executes xsl:iterate, processing each item in the selected
@@ -317,6 +360,8 @@ func (ec *execContext) setIterateContext(item xdm.Item, position int) {
 }
 
 func (ec *execContext) executeIterateBody(ctx context.Context, body []instruction, params map[string]xdm.Sequence) error {
+	defer ec.withoutTemplateRule()()
+
 	ec.pushVarScope()
 	defer ec.popVarScope()
 
@@ -324,13 +369,7 @@ func (ec *execContext) executeIterateBody(ctx context.Context, body []instructio
 		ec.setVar(name, value)
 	}
 
-	for _, child := range body {
-		if err := ec.executeInstruction(ctx, child); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return ec.executeSequenceConstructor(ctx, body)
 }
 
 func (ec *execContext) updateIterateParams(ctx context.Context, values map[string]xdm.Sequence, types map[string]*xdm.SequenceType) error {
@@ -466,6 +505,8 @@ func (ec *execContext) resolveMergeDefinitions(ctx context.Context, definitions 
 }
 
 func (ec *execContext) resolveMergeKeyOptions(ctx context.Context, key *mergeKey) error {
+	defer ec.pushDeclarationBaseURI(key.BaseURI)()
+
 	for _, option := range []struct {
 		name     string
 		compiled **avt
@@ -488,7 +529,7 @@ func (ec *execContext) resolveMergeKeyOptions(ctx context.Context, key *mergeKey
 
 		value = strings.Trim(value, lexicon.XMLWhitespace)
 		if key.specified&mergeAttrCollation == 0 || option.name != lexicon.AttrLang && option.name != nameCaseOrder {
-			if err := validateLiteralSortOption(option.name, value); err != nil {
+			if err := validateLiteralSortOption(option.name, value, key.dataTypeNamespaces); err != nil {
 				return dynamicError(errCodeXTDE0030, "invalid %s value %q in xsl:merge-key", option.name, value)
 			}
 		}
@@ -575,15 +616,21 @@ func (ec *execContext) prepareMergeComparisons(ctx context.Context, sources []me
 				}
 
 				key := &sources[i].keys[j][keyIndex]
-				sequence := mergeKeyValueToSequence(*key)
-				text := stringifySequence(sequence)
-				value := mergeComparisonValue(sequence, text, &mode, ec.currentTime.Location())
+
+				value, err := mergeComparisonValue(ctx, *key, &mode, ec.currentTime.Location())
+				if err != nil {
+					return err
+				}
+
 				entries = append(entries, keyed1[*mergeKeyValue]{item: key, key: value})
 			}
 		}
 
 		if err := validateSortKeyTypes1(entries, mode, ec.stylesheet.xpathVersion()); err != nil {
-			return dynamicErrorCause(errCodeXTTE2230, err, "incomparable merge key values")
+			failure := dynamicErrorCause(errCodeXTTE2230, err, "incomparable merge key values")
+			failure.QualifiedCode = failure.CodeQName()
+
+			return failure
 		}
 
 		level := resolvedLevel{compare: collations[keyIndex]}
@@ -693,6 +740,7 @@ func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, 
 
 	state, restoreFunctions := ec.installMergeFunctions(inst.Sources)
 	defer restoreFunctions()
+	defer ec.withoutTemplateRule()()
 
 	// Save/restore context.
 	savedCurrent := ec.currentNode
@@ -728,16 +776,9 @@ func (ec *execContext) executeMergeGroups(ctx context.Context, inst *mergeInst, 
 		ec.setMergeFocus(g.allItems[0])
 
 		ec.inMergeAction = true
-		ec.pushVarScope()
-
-		for _, child := range inst.Action {
-			if err := ec.executeInstruction(ctx, child); err != nil {
-				ec.popVarScope()
-				return err
-			}
+		if err := ec.executeSequenceConstructor(ctx, inst.Action); err != nil {
+			return err
 		}
-
-		ec.popVarScope()
 	}
 
 	return nil
@@ -781,7 +822,7 @@ func (ec *execContext) gatherMergeDocuments(ctx context.Context, src *mergeSourc
 		ctx,
 		uris.Sequence(),
 		xdm.SequenceType{
-			ItemTest:   xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeString},
+			ItemTest:   xdm.AtomicOrUnionType{Name: lexicon.EQNamePrefix + lexicon.NamespaceXSD + "}" + lexicon.TypeString},
 			Occurrence: xdm.OccurrenceZeroOrMore,
 		},
 	)
@@ -820,7 +861,7 @@ func (ec *execContext) gatherMergeDocument(ctx context.Context, src *mergeSource
 
 	uri := atomic.StringVal()
 
-	doc, err := ec.loadMergeDocument(ctx, uri, src.BaseURI)
+	doc, err := ec.loadMergeDocument(ctx, uri, src)
 	if err != nil {
 		return mergeSourceItems{}, err
 	}
@@ -829,7 +870,7 @@ func (ec *execContext) gatherMergeDocument(ctx context.Context, src *mergeSource
 		return mergeSourceItems{}, err
 	}
 
-	if err := ec.prepareMergeSourceAccumulators(ctx, src, doc); err != nil {
+	if err := ec.ensureAccumulatorStates(ctx, doc); err != nil {
 		return mergeSourceItems{}, err
 	}
 
@@ -879,9 +920,6 @@ func (ec *execContext) selectMergeSourceItem(ctx context.Context, src *mergeSour
 	var node xdm.Node
 	if value, ok := item.(xdm.NodeItem); ok {
 		node = value.Node
-		if err := ec.prepareMergeSourceAccumulators(ctx, src, node); err != nil {
-			return nil, err
-		}
 	}
 
 	if node == nil {
@@ -968,59 +1006,14 @@ func (ec *execContext) storeAccumulatorSnapshot(dst map[xdm.Node]map[string]xdm.
 	}
 }
 
-func (ec *execContext) prepareMergeSourceAccumulators(ctx context.Context, src *mergeSource, node xdm.Node) error {
-	if len(src.UseAccumulators) == 0 || len(ec.effectiveAccumulators()) == 0 || node == nil {
-		return nil
-	}
-
-	doc := node.OwnerDocument()
-	if docNode, ok := node.(*xdm.Document); ok {
-		doc = docNode
-	}
-
-	if doc == nil {
-		return nil
-	}
-
-	if ec.accumulatorBeforeByNode != nil {
-		if _, ok := ec.accumulatorBeforeByNode[doc]; ok {
-			return nil
-		}
-	}
-
-	// Set activeAccumulators to restrict accumulator access (XTDE3362)
-	// to only those declared in use-accumulators on the merge-source.
-	savedActiveAccums := ec.activeAccumulators
-
-	ec.activeAccumulators = make(map[string]struct{}, len(src.UseAccumulators))
-	for _, name := range src.UseAccumulators {
-		ec.activeAccumulators[name] = struct{}{}
-	}
-
-	defer func() { ec.activeAccumulators = savedActiveAccums }()
-
-	names := append([]string(nil), ec.effectiveStylesheet().accumulatorOrder...)
-
-	return ec.computeAccumulatorStates(ctx, doc, names)
-}
-
-func (ec *execContext) prepareSourceDocumentAccumulators(ctx context.Context, inst *sourceDocumentInst, doc xdm.Node) error {
-	if len(inst.UseAccumulators) == 0 || len(ec.effectiveAccumulators()) == 0 || doc == nil {
-		return nil
-	}
-
-	if ec.accumulatorBeforeByNode != nil {
-		if _, ok := ec.accumulatorBeforeByNode[doc]; ok {
-			return nil
-		}
-	}
-
-	names := append([]string(nil), ec.effectiveStylesheet().accumulatorOrder...)
-
-	return ec.computeAccumulatorStates(ctx, doc, names)
-}
-
 func (ec *execContext) computeAccumulatorStates(ctx context.Context, doc xdm.Node, names []string) error {
+	focus := ec.captureExecutionFocus()
+	defer ec.restoreExecutionFocus(focus)
+	defer ec.pushAbsentGroupingContext()()
+
+	ec.currentNode, ec.contextNode, ec.contextItem = doc, doc, nil
+	ec.position, ec.size = 1, 1
+
 	// Accumulator declarations see globals, never the caller's local bindings.
 	locals := ec.localVars
 	ec.localVars = nil
@@ -1056,71 +1049,71 @@ func (ec *execContext) computeAccumulatorStates(ctx context.Context, doc xdm.Nod
 			continue
 		}
 
-		switch {
-		case def.Initial != nil:
-			result, err := ec.evalXPath(ctx, def.Initial, doc)
-			if err != nil {
-				stateErr[name] = err
-				state[name] = xdm.EmptySequence()
-
-				continue
-			}
-
-			checked, err := ec.checkAccumulatorType(ctx, def, result.Sequence())
-			if err != nil {
-				stateErr[name] = err
-				state[name] = xdm.EmptySequence()
-
-				continue
-			}
-
-			state[name] = cloneAccumulatorSequence(checked)
-		case len(def.InitialBody) > 0:
-			seq, err := ec.evaluateBodyAsSequence(ctx, def.InitialBody)
-			if err != nil {
-				stateErr[name] = err
-				state[name] = xdm.EmptySequence()
-
-				continue
-			}
-
-			checked, err := ec.checkAccumulatorType(ctx, def, seq)
-			if err != nil {
-				stateErr[name] = err
-				state[name] = xdm.EmptySequence()
-
-				continue
-			}
-
-			state[name] = cloneAccumulatorSequence(checked)
-		default:
-			state[name] = xdm.EmptySequence()
+		value, err := ec.evaluateAccumulatorInitialValue(ctx, doc, def)
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return failure
 		}
+
+		if err != nil {
+			stateErr[name] = err
+			state[name] = xdm.EmptySequence()
+
+			continue
+		}
+
+		state[name] = value
 	}
 
 	savedState := ec.accumulatorState
 	savedStateErr := ec.accumulatorStateError
-	savedCurrent := ec.currentNode
-	savedContext := ec.contextNode
-	savedItem := ec.contextItem
-	savedEval := ec.evaluatingAccumulator
+	savedEval := ec.accumulatorEvaluationTree
 	ec.accumulatorState = state
 	ec.accumulatorStateError = stateErr
-	ec.currentNode = doc
-	ec.contextNode = doc
-	ec.contextItem = nil
 
-	ec.evaluatingAccumulator = true
+	ec.accumulatorEvaluationTree = ec.accumulatorTreeKey(doc)
 	defer func() {
 		ec.accumulatorState = savedState
 		ec.accumulatorStateError = savedStateErr
-		ec.currentNode = savedCurrent
-		ec.contextNode = savedContext
-		ec.contextItem = savedItem
-		ec.evaluatingAccumulator = savedEval
+		ec.accumulatorEvaluationTree = savedEval
 	}()
 
 	return ec.walkAccumulatorTree(ctx, doc, names)
+}
+
+func (ec *execContext) evaluateAccumulatorInitialValue(ctx context.Context, doc xdm.Node, def *accumulatorDef) (xdm.Sequence, error) {
+	defer ec.pushDeclarationBaseURI(def.BaseURI)()
+
+	var seq xdm.Sequence
+
+	switch {
+	case def.Initial != nil:
+		result, err := ec.evalXPath(ctx, def.Initial, doc)
+		if err != nil {
+			return nil, err
+		}
+
+		seq = result.Sequence()
+	case len(def.InitialBody) > 0:
+		var err error
+
+		seq, err = ec.evaluateBodyAsSequence(ctx, def.InitialBody)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return xdm.EmptySequence(), nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	checked, err := ec.checkAccumulatorType(ctx, def, seq)
+	if err != nil {
+		return nil, err
+	}
+
+	return cloneAccumulatorSequence(checked), nil
 }
 
 func (ec *execContext) walkAccumulatorTree(ctx context.Context, node xdm.Node, names []string) error {
@@ -1188,8 +1181,18 @@ func (ec *execContext) applyAccumulatorPhase(ctx context.Context, node xdm.Node,
 }
 
 func (ec *execContext) applyAccumulatorRules(ctx context.Context, node xdm.Node, name string, def *accumulatorDef, phase string) error {
-	for _, rule := range def.Rules {
-		if rule.Phase != phase || !rule.Match.matchPattern(ctx, ec, node) {
+	// Only the last matching rule in declaration order fires for this phase.
+	for _, rule := range slices.Backward(def.Rules) {
+		if rule.Phase != phase {
+			continue
+		}
+
+		matched := rule.Match.matchPattern(ctx, ec, node)
+		if err := ec.takePatternError(); err != nil {
+			return err
+		}
+
+		if !matched {
 			continue
 		}
 
@@ -1203,6 +1206,10 @@ func (ec *execContext) applyAccumulatorRules(ctx context.Context, node xdm.Node,
 			value, err = ec.checkAccumulatorType(ctx, def, value)
 		}
 
+		if failure := preserveControlFailure(ctx, err); failure != nil {
+			return failure
+		}
+
 		if err != nil {
 			if ec.accumulatorStateError == nil {
 				ec.accumulatorStateError = make(map[string]error)
@@ -1210,16 +1217,20 @@ func (ec *execContext) applyAccumulatorRules(ctx context.Context, node xdm.Node,
 
 			ec.accumulatorStateError[name] = err
 
-			break
+			return nil
 		}
 
 		ec.accumulatorState[name] = value
+
+		return nil
 	}
 
 	return nil
 }
 
 func (ec *execContext) evaluateAccumulatorRule(ctx context.Context, node xdm.Node, name string, rule *accumulatorRule) (xdm.Sequence, error) {
+	defer ec.pushDeclarationBaseURI(rule.BaseURI)()
+
 	currentValue := ec.accumulatorState[name]
 	if rule.New {
 		currentValue = xdm.EmptySequence()
@@ -1273,18 +1284,18 @@ func (ec *execContext) applyMergeSourceValidation(ctx context.Context, src *merg
 
 // loadMergeDocument loads an XML document from a URI, resolving it relative
 // to the given effective base URI (which accounts for xml:base).
-func (ec *execContext) loadMergeDocument(ctx context.Context, uri string, effectiveBaseURI string) (*xdm.Document, error) {
+func (ec *execContext) loadMergeDocument(ctx context.Context, uri string, src *mergeSource) (*xdm.Document, error) {
 	// Resolve URI relative to the effective base URI.
-	effectiveBase := effectiveBaseURI
+	effectiveBase := src.BaseURI
 	if effectiveBase == "" {
 		effectiveBase = ec.stylesheet.baseURI
 	}
 
-	resolvedURI := resolveAgainstBaseURI(uripath.EscapeResourceReference(uri), uripath.EscapeResourceReference(effectiveBase))
+	resolvedURI := resolveAgainstBaseURI(uripath.EscapeResourceReference(uri), escapeResourceBase(effectiveBase))
 
-	mergeCacheKey := ec.docCacheKey(resolvedURI)
-	if doc, ok := ec.docCache[mergeCacheKey]; ok {
-		return ec.existingDocumentRead(ctx, doc)
+	mergeCacheKey := ec.accumulatorResourceKey(resolvedURI, src.UseAccumulators, true, src.StreamableAttr)
+	if doc, err := ec.cachedAccumulatorResource(ctx, mergeCacheKey); doc != nil || err != nil {
+		return doc, err
 	}
 
 	reader, err := ec.retrieveDocumentReader(ctx, resolvedURI)
@@ -1306,11 +1317,7 @@ func (ec *execContext) loadMergeDocument(ctx context.Context, uri string, effect
 		ec.stripWhitespaceFromDoc(doc)
 	}
 
-	if ec.docCache == nil {
-		ec.docCache = make(map[string]*xdm.Document)
-	}
-
-	ec.docCache[mergeCacheKey] = doc
+	ec.storeAccumulatorResource(mergeCacheKey, doc, src.UseAccumulators)
 
 	return doc, nil
 }
@@ -1465,6 +1472,8 @@ func (ec *execContext) evaluateSingleMergeKey(ctx context.Context, mk *mergeKey,
 }
 
 func (ec *execContext) evaluateMergeKeySequence(ctx context.Context, mk *mergeKey, node xdm.Node) (xdm.Sequence, error) {
+	defer ec.pushDeclarationBaseURI(mk.BaseURI)()
+
 	var seq xdm.Sequence
 
 	if mk.Select != nil {
@@ -1536,6 +1545,8 @@ func (ec *execContext) resolveMergeKeyCollation(ctx context.Context, mk *mergeKe
 // resolveMergeKeyCollationURI is like resolveMergeKeyCollation but also
 // returns the resolved collation URI string for inspection.
 func (ec *execContext) resolveMergeKeyCollationURI(ctx context.Context, key *mergeKey) (func(a, b string) int, string, error) {
+	defer ec.pushDeclarationBaseURI(key.BaseURI)()
+
 	collation := key.Collation
 	if key.CollationAVT != nil {
 		value, err := key.CollationAVT.evaluate(ctx, ec.contextNode)
@@ -1594,17 +1605,21 @@ func validateMergeSourceCollations(sources []*mergeSource) error {
 	return nil
 }
 
-func mergeComparisonValue(sequence xdm.Sequence, text string, mode *dataTypeMode, timezone *time.Location) sortValue {
-	if *mode == dataTypeNumber || *mode == dataTypeNumberAuto {
-		value := extractNumericSortValue(sequence, text, *mode == dataTypeNumber, timezone)
-		if *mode == dataTypeNumberAuto {
-			return autoNumericSortValue(value, sequence, timezone)
-		}
-
-		return value
+func mergeComparisonValue(ctx context.Context, key mergeKeyValue, mode *dataTypeMode, timezone *time.Location) (sortValue, error) {
+	if *mode == dataTypeNumber {
+		return explicitNumberSortValue(ctx, key.atom)
 	}
 
-	return textSortValue(sequence, text, xdm.SequenceLen(sequence) == 1, mode, timezone)
+	sequence := mergeKeyValueToSequence(key)
+	text := stringifySequence(sequence)
+
+	if *mode == dataTypeNumberAuto {
+		value := extractNumericSortValue(sequence, text, timezone)
+
+		return autoNumericSortValue(value, sequence, timezone), nil
+	}
+
+	return textSortValue(sequence, text, key.atom.TypeName != "", mode, timezone), nil
 }
 
 func prepareMergeSourceOrder(sources []mergeSourceItems, orders []mergeKeyOrder) error {
@@ -1625,30 +1640,28 @@ func prepareMergeSourceOrder(sources []mergeSourceItems, orders []mergeKeyOrder)
 }
 
 func sortMergeSourceItems(src *mergeSourceItems, orders []mergeKeyOrder) {
-	type indexedEntry struct {
-		idx  int
+	type entry struct {
 		item xdm.Item
 		keys []mergeKeyValue
 	}
 
 	// sort-before-merge="yes": sort the items by merge keys.
-	entries := make([]indexedEntry, len(src.items))
+	entries := make([]entry, len(src.items))
 	for i := range src.items {
-		entries[i] = indexedEntry{idx: i, item: src.items[i], keys: src.keys[i]}
+		entries[i] = entry{item: src.items[i], keys: src.keys[i]}
 	}
 
-	slices.SortStableFunc(entries, func(a, b indexedEntry) int {
+	slices.SortStableFunc(entries, func(a, b entry) int {
 		return compareMergeKeyValues(a.keys, b.keys, orders)
 	})
 
-	// Rebuild items and keys in sorted order using a temporary copy
-	// of the original keys to avoid in-place overwrite corruption.
-	origKeys := make([][]mergeKeyValue, len(src.keys))
-	copy(origKeys, src.keys)
+	// The selection can borrow a caller's sequence. Rebuild items in owned
+	// storage and reuse the keys already attached to the sorted entries.
+	src.items = make(xdm.ItemSlice, len(entries))
 
 	for i, e := range entries {
 		src.items[i] = e.item
-		src.keys[i] = origKeys[e.idx]
+		src.keys[i] = e.keys
 	}
 }
 

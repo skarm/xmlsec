@@ -573,6 +573,54 @@ func TestResponseCertificateRequestBinding(t *testing.T) {
 	}
 }
 
+func TestResponseDeduplicatesEmbeddedCertificateCandidates(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	request, err := timestamp.CreateRequest(t.Context(), []byte("timestamp with a shared issuer certificate"), timestamp.RequestOptions{Policy: policy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := testcert.Now()
+	response, err := timestamp.IssueResponse(t.Context(), request.DER(), chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{
+		Policy: policy(), SerialNumber: big.NewInt(1), GenTime: now, ExtraCertificates: [][]byte{chain.Root.Raw},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checker := verifier(t, chain)
+	crl := testcert.CRL(t, chain)
+	for _, count := range []int{63, 64, 65} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			t.Parallel()
+
+			input := pki.Evidence{CRLs: [][]byte{crl}, Intermediates: make([][]byte, count)}
+			for i := range input.Intermediates {
+				input.Intermediates[i] = chain.Root.Raw
+			}
+
+			result, err := checker.VerifyResponse(t.Context(), response, request, now, input)
+			if count > 64 {
+				if result != nil || !errors.Is(err, timestamp.ErrTrust) || !errors.Is(err, cms.ErrPolicy) {
+					t.Fatalf("over-limit verification = %v, %v; want no result and the CMS policy error", result, err)
+				}
+
+				return
+			}
+
+			if err != nil || result == nil || !result.Assertion().Valid() || result.Trust().RevocationStatus() != pki.Valid {
+				t.Fatalf("verification with %d candidates = %v, %v; want a trusted assertion", count, result, err)
+			}
+			certificates := result.Trust().ChainDER()
+			if len(certificates) != 2 || !bytes.Equal(certificates[0], chain.TSA.Raw) || !bytes.Equal(certificates[1], chain.Root.Raw) {
+				t.Fatal("verified chain differs from the issued TSA and its root")
+			}
+		})
+	}
+}
+
 func TestTimestampAccuracyAndClockBoundaries(t *testing.T) {
 	chain := testcert.New(t)
 	now := testcert.Now()
@@ -746,6 +794,34 @@ func TestResponseStatusSchemaAndDiagnostics(t *testing.T) {
 	}
 }
 
+func TestParseResponseRequiresTimestampTokenStructure(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	signer := cms.Signer{Key: chain.TSAKey, CertificateDER: chain.TSA.Raw}
+	for _, tc := range []struct {
+		name    string
+		options cms.SignOptions
+	}{
+		{name: "CMS_data"},
+		{name: "detached_TSTInfo", options: cms.SignOptions{ContentType: timestamp.TSTInfoOID(), Detached: true}},
+		{name: "malformed_TSTInfo", options: cms.SignOptions{ContentType: timestamp.TSTInfoOID()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			token, err := cms.Sign(t.Context(), []byte("ordinary CMS message"), []cms.Signer{signer}, tc.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := der.Seq(der.Seq(der.Int(0)), token)
+			if parsed, err := timestamp.ParseResponse(t.Context(), response); parsed != nil || !errors.Is(err, timestamp.ErrFormat) {
+				t.Errorf("ParseResponse returned response=%t and error %v, want ErrFormat", parsed != nil, err)
+			}
+		})
+	}
+}
+
 func TestFetchBoundsAndCloses(t *testing.T) {
 	c := testcert.New(t)
 
@@ -783,6 +859,11 @@ func TestFetchRejectsInvalidStateBeforeTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	wrongPolicy, err := timestamp.CreateRequest(t.Context(), nil, timestamp.RequestOptions{Policy: asn1.ObjectIdentifier{1, 2, 3, 4, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	for _, tc := range []struct {
 		name string
 		v    *timestamp.Verifier
@@ -792,6 +873,7 @@ func TestFetchRejectsInvalidStateBeforeTransport(t *testing.T) {
 		{"zero verifier", new(timestamp.Verifier), q, testcert.Now()},
 		{"zero request", v, new(timestamp.Request), testcert.Now()},
 		{"zero validation time", v, q, time.Time{}},
+		{"unaccepted requested policy", v, wrongPolicy, testcert.Now()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
@@ -1057,7 +1139,9 @@ func TestTimestampTSAAlternativeNameBindings(t *testing.T) {
 		{"email", 1, []byte("tsa@example.test"), nil},
 		{"wrong email", 1, []byte("other@example.test"), timestamp.ErrTrust},
 		{"DNS", 2, []byte("tsa.example.test"), nil},
+		{"DNS case-insensitive", 2, []byte("TSA.Example.Test"), nil},
 		{"wrong DNS", 2, []byte("other.example.test"), timestamp.ErrTrust},
+		{"non-ASCII DNS", 2, []byte("tsé.example.test"), timestamp.ErrFormat},
 		{"URI", 6, []byte("https://tsa.example.test/stamp"), nil},
 		{"wrong URI path", 6, []byte("https://tsa.example.test/other"), timestamp.ErrTrust},
 		{"IPv4", 7, []byte{192, 0, 2, 1}, nil},

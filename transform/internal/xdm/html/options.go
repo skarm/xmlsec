@@ -7,10 +7,9 @@
 package html
 
 import (
-	"strconv"
-
 	"github.com/skarm/xmlsec/internal/lexicon"
 	norm "github.com/skarm/xmlsec/internal/normalization"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 // HTML5 is the default requested version; supported numeric values retain
@@ -18,10 +17,9 @@ import (
 // independent: zero uses the current serialization table, while 20 pins REC2.0.
 const (
 	defaultHTMLVersion          = "5"
-	htmlVersion4                = 4
-	htmlVersion401              = 4.01
-	htmlVersion5                = 5
-	htmlVersionParseBits        = 64
+	htmlVersion4                = "4"
+	htmlVersion401              = "4.01"
+	htmlVersion5                = defaultHTMLVersion
 	defaultSerializationEdition = 0
 	serializationEdition20      = 20
 )
@@ -47,8 +45,16 @@ func RequestedVersion(htmlVersion, version string) string {
 
 // SupportedVersion identifies the HTML versions selected by this engine.
 func SupportedVersion(version string) bool {
-	value, err := strconv.ParseFloat(version, htmlVersionParseBits)
-	return err == nil && (value == htmlVersion4 || value == htmlVersion401 || value == htmlVersion5)
+	// Compare decimal values exactly: rounding can turn an unsupported version
+	// into a supported one. Validate the lexical form before comparing since
+	// CompareDecimal also accepts representations such as fractions or exponents.
+	if err := lexical.ValidateBuiltin(version, lexicon.TypeDecimal, lexical.Version11); err != nil {
+		return false
+	}
+
+	return lexical.CompareDecimal(version, htmlVersion4) == 0 ||
+		lexical.CompareDecimal(version, htmlVersion401) == 0 ||
+		lexical.CompareDecimal(version, htmlVersion5) == 0
 }
 
 // Writer configures HTML serialization. It is a value-style wrapper:

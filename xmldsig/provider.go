@@ -72,7 +72,7 @@ func SignMessageReader(ctx context.Context, src io.Reader, signer crypto.Signer,
 		return nil, fmt.Errorf("%w: message signing policy", ErrPolicy)
 	}
 
-	key := signer.Public()
+	key := signature.SignerPublic(signer)
 	if err := validateKey(key, p); err != nil {
 		return nil, err
 	}

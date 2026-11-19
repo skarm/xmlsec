@@ -5,7 +5,6 @@ package xslt
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -172,8 +171,9 @@ func (ec *execContext) accumulatorLookup(
 		name = xdm.ClarkName(resolved.URI, resolved.Local)
 	}
 
-	if err := ec.checkAccumulatorAccess(name); err != nil {
-		return nil, err
+	definition, ok := ec.effectiveAccumulators()[name]
+	if !ok {
+		return nil, dynamicError(errCodeXTDE3340, "no accumulator %q is declared in this stylesheet", name)
 	}
 
 	node, err := ec.accumulatorLookupNode(ctx, fnName)
@@ -181,8 +181,25 @@ func (ec *execContext) accumulatorLookup(
 		return nil, err
 	}
 
+	key := ec.accumulatorTreeKey(node)
+	if !ec.accumulatorApplies(key.root, definition) {
+		return nil, dynamicError(errCodeXTDE3362, "accumulator %q is not applicable to the context tree", name)
+	}
+
+	if ec.accumulatorComputationFailed {
+		if err := ec.accumulatorTreeErrors[key]; err != nil {
+			return nil, err
+		}
+	}
+
 	stateKey := ec.accumulatorStateKey(name)
-	if ec.evaluatingAccumulator {
+	if ec.accumulatorEvaluationTree == key {
+		// Completed phases have node-specific snapshots. The live state
+		// remains available to rules in the phase currently being evaluated.
+		if value, found, err := accumulatorNodeValue(node, stateKey, nodeMaps); found {
+			return value, err
+		}
+
 		if value, found, err := ec.currentAccumulatorValue(name); found {
 			return value, err
 		}
@@ -206,10 +223,6 @@ func (ec *execContext) accumulatorLookup(
 		if value, found, err := accumulatorNodeValue(node, stateKey, nodeMaps); found {
 			return value, err
 		}
-	}
-
-	if value, found, err := ec.currentAccumulatorValue(name); found {
-		return value, err
 	}
 
 	return xdm.EmptySequence(), nil
@@ -254,95 +267,165 @@ func (ec *execContext) mergeKeyAccumulatorValue(node xdm.Node, stateKey string) 
 	return nil, false
 }
 
-func (ec *execContext) checkAccumulatorAccess(name string) error {
-	// XTDE3340: the name must correspond to a declared accumulator.
-	if _, ok := ec.effectiveAccumulators()[name]; !ok {
-		return dynamicError(errCodeXTDE3340, "no accumulator %q is declared in this stylesheet", name)
-	}
-	// Document-level accumulator applicability (XTDE3362).
-	// This check must be performed even during accumulator evaluation
-	// so that an accumulator rule referencing a non-applicable peer
-	// (e.g. one not listed in use-accumulators) is rejected.
-	if ec.activeAccumulators != nil {
-		_, all := ec.activeAccumulators[lexicon.ModeAll]
-		if _, ok := ec.activeAccumulators[name]; !ok && !all {
-			return dynamicError(errCodeXTDE3362, "accumulator %q is not applicable in the current source-document", name)
-		}
+func (ec *execContext) accumulatorApplies(root xdm.Node, def *accumulatorDef) bool {
+	allowed, restricted := ec.accumulatorGrants[root]
+	if !restricted {
+		return true
 	}
 
-	if ec.evaluatingAccumulator {
-		return nil
-	}
-	// XTDE3362: check mode-level use-accumulators restriction.
-	// If the current mode explicitly declares use-accumulators, only
-	// those accumulators are accessible from templates in that mode.
-	if md := ec.effectiveModeDefs()[ec.currentMode]; md != nil && md.UseAccumulators != nil {
-		switch *md.UseAccumulators {
-		case lexicon.ModeAll:
-			// all accumulators allowed
-		case "":
-			// use-accumulators="" means NO accumulators allowed
-			return dynamicError(errCodeXTDE3362,
-				"accumulator %q is not applicable in mode %q (use-accumulators is empty)", name, ec.currentMode)
-		default:
-			allowed := make(map[string]struct{})
-			for n := range strings.FieldsSeq(*md.UseAccumulators) {
-				allowed[n] = struct{}{}
-			}
+	_, applies := allowed[def]
 
-			if _, ok := allowed[name]; !ok {
-				return dynamicError(errCodeXTDE3362,
-					"accumulator %q is not applicable in mode %q (not in use-accumulators)", name, ec.currentMode)
-			}
-		}
-	}
-
-	return nil
+	return applies
 }
 
-// ensureAccumulatorStates lazily computes accumulator states for the document
-// tree containing the given node, if not already computed.
-func (ec *execContext) ensureAccumulatorStates(ctx context.Context, node xdm.Node) error {
-	const (
-		accumulatorDocumentPackageFormat = "%p@%p"
-	)
+func (ec *execContext) addAccumulatorGrant(root xdm.Node, allowed map[*accumulatorDef]struct{}) {
+	if ec.accumulatorGrants == nil {
+		ec.accumulatorGrants = make(map[xdm.Node]map[*accumulatorDef]struct{})
+	}
 
+	ec.accumulatorGrants[root] = allowed
+}
+
+func accumulatorGrant(names []string, scope *Stylesheet) map[*accumulatorDef]struct{} {
+	allowed := make(map[*accumulatorDef]struct{}, len(names))
+
+	for _, name := range names {
+		if name == lexicon.ModeAll {
+			for _, def := range scope.accumulators {
+				allowed[def] = struct{}{}
+			}
+
+			break
+		}
+
+		if def := scope.accumulators[name]; def != nil {
+			allowed[def] = struct{}{}
+		}
+	}
+
+	return allowed
+}
+
+func (ec *execContext) registerInitialAccumulatorGrants(cfg *transformConfig, selection xdm.Sequence, supplied bool) {
+	if len(ec.stylesheet.accumulators) == 0 && len(ec.stylesheet.usedPackages) == 0 {
+		return
+	}
+
+	mode := ec.stylesheet.defaultMode
+	if cfg != nil && cfg.initialMode != "" && cfg.initialMode != modeDefault {
+		mode = cfg.initialMode
+	}
+
+	if mode == "" || mode == modeUnnamed {
+		mode = modeDefault
+	}
+
+	scope := ec.stylesheet.modePackage(mode)
+
+	var names []string
+	if def := scope.modeDefs[mode]; def != nil && def.UseAccumulators != nil {
+		names = strings.Fields(*def.UseAccumulators)
+	}
+
+	grant := accumulatorGrant(names, scope)
+
+	if supplied {
+		for item := range xdm.SequenceItems(selection) {
+			if node, ok := item.(xdm.NodeItem); ok && !xdm.IsNilNode(node.Node) {
+				ec.addAccumulatorGrant(documentRoot(node.Node), grant)
+			}
+		}
+	} else if ec.sourceDoc != nil {
+		ec.addAccumulatorGrant(ec.sourceDoc, grant)
+	}
+}
+
+type accumulatorCopy struct {
+	source, target xdm.Node
+	ancestors      bool
+}
+
+func (ec *execContext) recordCopiedAccumulatorTree(lineage accumulatorCopy) {
+	original, result := documentRoot(lineage.source), documentRoot(lineage.target)
+	if allowed, restricted := ec.accumulatorGrants[original]; restricted {
+		ec.addAccumulatorGrant(result, allowed)
+	}
+
+	if ec.accumulatorCopies == nil {
+		ec.accumulatorCopies = make(map[xdm.Node]accumulatorCopy)
+	}
+
+	ec.accumulatorCopies[result] = lineage
+	ec.recordAccumulatorTree(ec.accumulatorTreeKey(result), nil)
+}
+
+type accumulatorTreeKey struct {
+	root  xdm.Node
+	scope *Stylesheet
+}
+
+func (ec *execContext) accumulatorTreeKey(node xdm.Node) accumulatorTreeKey {
+	return accumulatorTreeKey{root: documentRoot(node), scope: ec.effectiveStylesheet()}
+}
+
+func (ec *execContext) recordAccumulatorTree(key accumulatorTreeKey, err error) {
+	if ec.accumulatorTreeErrors == nil {
+		ec.accumulatorTreeErrors = make(map[accumulatorTreeKey]error)
+	}
+
+	ec.accumulatorTreeErrors[key] = err
+	ec.accumulatorComputationFailed = ec.accumulatorComputationFailed || err != nil
+}
+
+// ensureAccumulatorStates lazily computes accumulator states for the containing
+// tree. Partial per-node results are inaccessible after computation fails.
+func (ec *execContext) ensureAccumulatorStates(ctx context.Context, node xdm.Node) error {
 	if xdm.IsNilNode(node) || len(ec.effectiveAccumulators()) == 0 {
 		return nil
 	}
 
-	root := documentRoot(node)
-
-	if ec.accumulatorComputedDocs == nil {
-		ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-	}
-	// Use a package-scoped key so that different packages' accumulators
-	// are computed independently for the same document.
-	cacheKey := root
-	if ec.currentPackage != nil && ec.currentPackage != ec.stylesheet {
-		// Create a synthetic key node per package to avoid collision.
-		// We reuse the root but track per-package with a separate map entry.
-		pkgKey := fmt.Sprintf(accumulatorDocumentPackageFormat, root, ec.currentPackage)
-		if ec.accumulatorComputedPkgs == nil {
-			ec.accumulatorComputedPkgs = make(map[string]struct{})
-		}
-
-		if _, done := ec.accumulatorComputedPkgs[pkgKey]; done {
-			return nil
-		}
-
-		ec.accumulatorComputedPkgs[pkgKey] = struct{}{}
-	} else {
-		if _, done := ec.accumulatorComputedDocs[cacheKey]; done {
-			return nil
-		}
-
-		ec.accumulatorComputedDocs[cacheKey] = struct{}{}
+	key := ec.accumulatorTreeKey(node)
+	if err, started := ec.accumulatorTreeErrors[key]; started {
+		return err
 	}
 
-	names := append([]string(nil), ec.effectiveStylesheet().accumulatorOrder...)
+	// Register the computation before walking because a rule can reference an
+	// accumulator on the same tree.
+	ec.recordAccumulatorTree(key, nil)
 
-	return ec.computeAccumulatorStates(ctx, root, names)
+	if origin, isCopy := ec.accumulatorCopies[key.root]; isCopy {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			ec.recordAccumulatorTree(key, err)
+
+			return err
+		}
+
+		err := ec.ensureAccumulatorStates(ctx, origin.source)
+		if err == nil {
+			ec.transferCopiedAccumulatorStates(origin)
+		}
+
+		ec.recordAccumulatorTree(key, err)
+
+		return err
+	}
+
+	var names []string
+
+	for _, name := range key.scope.accumulatorOrder {
+		if def := key.scope.accumulators[name]; def != nil && ec.accumulatorApplies(key.root, def) {
+			names = append(names, name)
+		}
+	}
+
+	if len(names) == 0 {
+		return nil
+	}
+
+	err := ec.computeAccumulatorStates(ctx, key.root, names)
+	ec.recordAccumulatorTree(key, err)
+
+	return err
 }
 
 func (ec *execContext) builtinFunctionAvailable(uri, local string, arity int) bool {

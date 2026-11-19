@@ -1070,7 +1070,7 @@ func matchAnnotationSubtype(annotation, target string, ec *evalContext) bool {
 // isAttr selects the namespace rule for an unprefixed name: attributes match
 // only no-namespace nodes, elements match the default element namespace.
 func matchElementOrAttributeName(name string, n xdm.Node, ec *evalContext, isAttr bool) bool {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if idx := strings.Index(name, "}"); idx >= 0 {
 			uri := name[2:idx]
 			local := name[idx+1:]
@@ -1110,10 +1110,10 @@ func matchNameTest(test xdm.NameTest, n xdm.Node, axis AxisType, ec *evalContext
 		if n.Type() != xdm.NamespaceNode {
 			return false
 		}
-		// Namespace nodes have simple NCName prefixes, not QNames.
-		// A name test with a prefix (e.g. namespace::b:a) cannot
-		// match any namespace node.
-		if test.Prefix != "" {
+		// A namespace node's name has no namespace URI. The URI bound by
+		// that node is its string value, not part of its name. A wildcard
+		// prefix leaves the URI unconstrained.
+		if test.URI != "" || (test.Prefix != "" && test.Prefix != "*") {
 			return false
 		}
 
@@ -1261,7 +1261,7 @@ func nodeTypeAnnotation(n xdm.Node, ec *evalContext) string {
 // namespace governs element names, not attribute names — while a bare
 // schema-element() name takes the default element namespace.
 func resolveSchemaTestName(name string, ec *evalContext, isAttr bool) (local, ns string) {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if idx := strings.Index(name, "}"); idx >= 0 {
 			return name[idx+1:], name[2:idx]
 		}
@@ -1401,10 +1401,13 @@ func vmPositionFromLiteral(expr LiteralExpr) (int, bool) {
 }
 
 func positionCall(expr Expr) bool {
+	// A lexical prefix can be rebound by the caller after lowering. Only
+	// unprefixed calls and URI-qualified names identify the standard namespace
+	// here without namespace resolution.
 	switch e := expr.(type) {
 	case FunctionCall:
 		local, isFn := lexicalFnLocalName(e.Name, e.Prefix)
-		return len(e.Args) == positionFunctionArity && isFn && local == lexicon.FnPosition
+		return len(e.Args) == positionFunctionArity && e.Prefix == "" && isFn && local == lexicon.FnPosition
 	case *FunctionCall:
 		if e == nil {
 			return false
@@ -1412,7 +1415,7 @@ func positionCall(expr Expr) bool {
 
 		local, isFn := lexicalFnLocalName(e.Name, e.Prefix)
 
-		return len(e.Args) == positionFunctionArity && isFn && local == lexicon.FnPosition
+		return len(e.Args) == positionFunctionArity && e.Prefix == "" && isFn && local == lexicon.FnPosition
 	default:
 		return false
 	}
@@ -1443,18 +1446,29 @@ func vmPredicateAttributeEqualsStringBinary(expr BinaryExpr) (xdm.NodeTest, stri
 	}
 
 	if test, ok := vmSingleRelativeAttributePath(expr.Left); ok {
-		if value, ok := vmStringLiteralValue(expr.Right); ok {
+		if value, ok := vmStringLiteralValue(expr.Right); ok && canUseAttributeStringShortcut(expr.Op, test) {
 			return test, value, true
 		}
 	}
 
 	if test, ok := vmSingleRelativeAttributePath(expr.Right); ok {
-		if value, ok := vmStringLiteralValue(expr.Left); ok {
+		if value, ok := vmStringLiteralValue(expr.Left); ok && canUseAttributeStringShortcut(expr.Op, test) {
 			return test, value, true
 		}
 	}
 
 	return nil, "", false
+}
+
+func canUseAttributeStringShortcut(op TokenType, test xdm.NodeTest) bool {
+	if op == TokenEquals {
+		return true
+	}
+	// Value equality requires at most one matching attribute. Only a name
+	// test for a single expanded name guarantees that cardinality here.
+	name, ok := test.(xdm.NameTest)
+
+	return ok && name.Prefix != "*" && name.Local != "*"
 }
 
 func vmSingleRelativeAttributePath(expr Expr) (xdm.NodeTest, bool) {

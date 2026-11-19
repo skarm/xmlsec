@@ -1,7 +1,9 @@
 package xslt //nolint:testpackage // Exercises match-pattern compilation and dispatch directly.
 
 import (
+	"context"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/skarm/xmlsec/transform/internal/xdm"
@@ -75,7 +77,12 @@ func TestMatchPatternPathAndPredicateFocus(t *testing.T) {
 		{"absolute_path_requires_document_root", `/r/b/n`, "abdef"},
 		{"descendant_axis_positions_are_per_ancestor", `b/descendant::n[@keep][2]`, "cf"},
 		{"child_predicates_filter_before_numbering", `b/n[@keep][2]`, "df"},
+		{"exact_decimal_at_position_matches", `b/n[1.0]`, "ae"},
+		{"decimal_near_position_does_not_match", `b/n[1.0000000000000000001]`, ""},
+		{"double_rounded_to_position_matches", `b/n[1.0000000000000000001e0]`, "ae"},
 		{"descendant_or_self_can_match_ancestor_itself", `b/descendant-or-self::b/n`, "abdef"},
+		{"following_axis_is_allowed_in_predicate", `n[following::n]`, "abcdef"},
+		{"following_sibling_axis_is_allowed_in_predicate", `n[following-sibling::n]`, "abe"},
 		{"parenthesized_step_checks_its_predecessor", `b/(n | box)`, "abdef"},
 		{"abbreviated_descendant_path_finds_ancestor", `b//n`, "abcdef"},
 		{"union_does_not_select_twice", `b/n | b/n[@keep] | outside/n`, "abdefg"},
@@ -107,6 +114,8 @@ func TestMatchPatternExpandedNamesAndNodeKinds(t *testing.T) {
 		{"local_wildcard_selects_all_matching_local_names", `*:n`, `r/*`, `.`, "ABC"},
 		{"document_test_ignores_prolog_processing_instruction", `document-node(element(r))`, `/`, `local-name(*)`, "r"},
 		{"document_test_rejects_wrong_root_name", `document-node(element(missing))`, `/`, `local-name(*)`, ""},
+		{"document_test_rejects_text_beside_root", `document-node(element(r))`, `parse-xml-fragment('text&lt;r/>')`, `local-name(*)`, ""},
+		{"unconstrained_document_test_accepts_text_beside_root", `document-node()`, `parse-xml-fragment('text&lt;r/>')`, `string(text())`, "text"},
 		{"processing_instruction_matches_its_target", `processing-instruction('label')`, `/processing-instruction() | r/processing-instruction()`, `.`, "mainlocal"},
 		{"comments_have_their_own_node_kind", `comment()`, `r/node()`, `.`, "note"},
 		{"namespace_pattern_matches_prefix", `namespace::p`, `r/namespace::*`, `.`, "urn:sample"},
@@ -121,18 +130,27 @@ func TestMatchPatternExpandedNamesAndNodeKinds(t *testing.T) {
 	}
 }
 
-func TestMatchPatternGroupingUsesPopulationFocus(t *testing.T) {
+func TestMatchPatternGroupingUsesSingletonFocus(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, selectItems, boundary, want string
+		ending                            bool
 	}{
-		{"atomic_boundary_uses_value_and_position", `('red', 'green', 'blue', 'yellow')`, `.[position() eq 3 and . eq 'blue']`, "red,green;blue,yellow;"},
-		{"node_boundary_uses_reordered_population", `reverse(r/n)`, `.[position() eq 2 and last() eq 4]`, "four;three,two,one;"},
-		{"numeric_predicate_starts_group_at_given_position", `(9,8,7,6)`, `.[2]`, "9;8,7,6;"},
+		{"atomic_boundary_does_not_see_population_position", `('red', 'green', 'blue', 'yellow')`, `.[position() eq 3 and . eq 'blue']`, "red,green,blue,yellow;", false},
+		{"node_boundary_does_not_see_population_size", `reverse(r/n)`, `.[position() eq 2 and last() eq 4]`, "four,three,two,one;", false},
+		{"numeric_predicate_above_one_never_matches", `(9,8,7,6)`, `.[2]`, "9,8,7,6;", false},
+		{"decimal_near_one_never_matches", `(9,8,7,6)`, `.[1.0000000000000000001]`, "9,8,7,6;", false},
+		{"exact_decimal_one_matches_every_item", `(9,8,7,6)`, `.[1.0]`, "9;8;7;6;", false},
+		{"double_rounded_to_one_matches_every_item", `(9,8,7,6)`, `.[1.0000000000000000001e0]`, "9;8;7;6;", false},
+		{"ending_boundary_matches_value_at_singleton_focus", `(9,8,7,6)`, `.[position() eq 1 and last() eq 1 and . eq 8]`, "9,8;7,6;", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ss := compileTestStylesheet(t, "", `<xsl:for-each-group select="`+tc.selectItems+`" group-starting-with="`+tc.boundary+`"><xsl:value-of select="string-join(current-group() ! string(.), ',') || ';'"/></xsl:for-each-group>`)
+			attribute := "group-starting-with"
+			if tc.ending {
+				attribute = "group-ending-with"
+			}
+			ss := compileTestStylesheet(t, "", `<xsl:for-each-group select="`+tc.selectItems+`" `+attribute+`="`+tc.boundary+`"><xsl:value-of select="string-join(current-group() ! string(.), ',') || ';'"/></xsl:for-each-group>`)
 			got, err := ss.Transform(parseTestDocument(t, `<r><n>one</n><n>two</n><n>three</n><n>four</n></r>`)).Serialize(t.Context())
 			requireSerialization(t, got, err, tc.want, "")
 		})
@@ -147,6 +165,10 @@ func TestCompilePatternReportsStaticErrors(t *testing.T) {
 		{"unbalanced_predicate", `n[1`, "XTSE0340"},
 		{"undeclared_prefix", `missing:n`, "XTSE0340"},
 		{"reverse_axis", `ancestor::n`, "XTSE0340"},
+		{"following_axis", `following::n`, "XTSE0340"},
+		{"following_sibling_axis", `following-sibling::n`, "XTSE0340"},
+		{"following_sibling_axis_after_id", `id('x')/following-sibling::n`, "XTSE0340"},
+		{"ancestor_axis_after_id", `id('x')/ancestor::n`, "XTSE0340"},
 		{"binary_operator", `n + 1`, "XTSE0340"},
 		{"function_cannot_start_path", `string('n')/child::n`, "XTSE0340"},
 		{"predicate_pattern_cannot_be_union_member", `n | .[true()]`, "XTSE0340"},
@@ -204,5 +226,46 @@ func TestCompilePatternRespectsXSLT20Grammar(t *testing.T) {
 			got, err := ss.Transform(parseTestDocument(t, `<r><group xml:id="picked" kind="x"><n id="A"/></group><group xml:id="other" kind="y"><n id="B"/></group></r>`)).Serialize(t.Context())
 			requireSerialization(t, got, err, tc.want, "")
 		})
+	}
+}
+
+func TestPatternConsumersPreserveResourceFailure(t *testing.T) {
+	const itemPattern = ".[doc('https://example.test/unavailable')]"
+	const nodePattern = "r[doc('https://example.test/unavailable')]"
+	for _, tc := range []struct{ name, declarations, body string }{
+		{"atomic rule", `<xsl:template mode="m" match="` + itemPattern + `">matched</xsl:template>`, `<xsl:apply-templates select="1" mode="m"/>`},
+		{"group boundary", "", `<xsl:for-each-group select="1 to 3" group-ending-with="` + itemPattern + `">group</xsl:for-each-group>`},
+		{"number", "", `<xsl:number select="r" count="` + nodePattern + `"/>`},
+		{"key index", `<xsl:key name="k" match="` + nodePattern + `" use="'id'"/>`, `<xsl:value-of select="count(key('k', 'id'))"/>`},
+		{"next match", `<xsl:template mode="m" match="r" priority="2"><xsl:next-match/></xsl:template><xsl:template mode="m" match="` + nodePattern + `">matched</xsl:template>`, `<xsl:apply-templates select="r" mode="m"/>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := compileTestStylesheet(t, tc.declarations, tc.body)
+			input := parseTestDocument(t, `<r/>`)
+			resolver := contractURIResolver(func(context.Context, string) (io.ReadCloser, error) {
+				return nil, ErrResourceTooLarge
+			})
+			if _, err := ss.Transform(input).URIResolver(resolver).Serialize(t.Context()); !errors.Is(err, ErrResourceTooLarge) {
+				t.Fatalf("got %v; want original resource limit", err)
+			}
+		})
+	}
+}
+
+func TestReviewAtomicPatternUsesDeclaredCollation(t *testing.T) {
+	const declarations = `<xsl:mode name="m" on-no-match="deep-skip"/><xsl:template mode="m" match=".[. eq 'a']" default-collation="http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive">matched</xsl:template>`
+	ss := compileTestStylesheet(t, declarations, `<xsl:apply-templates mode="m" select="'A'"/>`)
+	got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+	requireSerialization(t, got, err, "matched", "")
+}
+
+func TestReviewPatternsPreserveControlFailures(t *testing.T) {
+	for _, cause := range []error{context.Canceled, ErrResourceTooLarge} {
+		ss := compileTestStylesheet(t, `<xsl:template match="r[doc('https://example.test/probe')]"><xsl:text>matched</xsl:text></xsl:template>`, `<xsl:apply-templates select="r"/>`)
+		resolver := contractURIResolver(func(context.Context, string) (io.ReadCloser, error) { return nil, cause })
+		got, err := ss.Transform(parseTestDocument(t, `<r/>`)).URIResolver(resolver).Serialize(t.Context())
+		if !errors.Is(err, cause) {
+			t.Errorf("pattern returned %q, %v; want control cause %v", got, err, cause)
+		}
 	}
 }

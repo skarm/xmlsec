@@ -5,7 +5,6 @@ package packageversion
 
 import (
 	"strings"
-	"unicode"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmlchar"
@@ -131,12 +130,6 @@ func ParseConstraint(s string) Constraint {
 		return Constraint{valid: true, alternatives: []versionRange{{wildcard: true}}}
 	}
 
-	for _, r := range s {
-		if unicode.IsSpace(r) && !strings.ContainsRune(lexicon.XMLWhitespace, r) {
-			return Constraint{}
-		}
-	}
-
 	result := Constraint{valid: true}
 
 	for part := range strings.SplitSeq(s, ",") {
@@ -193,7 +186,7 @@ func parseVersionRange(part string) (versionRange, bool) {
 		closedRangeFields        = 3
 	)
 
-	fields := strings.Fields(part)
+	fields := strings.FieldsFunc(part, xmlchar.IsSpace)
 	r := versionRange{}
 
 	switch {

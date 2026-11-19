@@ -282,22 +282,22 @@ func (w *xmlStream) cdataPart(s string) {
 
 	write := func(s string) {
 		if s != "" {
-			w.text("<![CDATA[")
+			w.text(lexicon.CDATAStart)
 
 			for s != "" && w.err == nil {
-				i := strings.Index(s, "]]>")
+				i := strings.Index(s, lexicon.CDATAEnd)
 				if i < 0 {
 					w.text(s)
 					break
 				}
 
 				w.text(s[:i])
-				w.text("]]]]><![CDATA[>")
+				w.text("]]" + lexicon.CDATAEnd + lexicon.CDATAStart + ">")
 
-				s = s[i+3:]
+				s = s[i+len(lexicon.CDATAEnd):]
 			}
 
-			w.text("]]>")
+			w.text(lexicon.CDATAEnd)
 		}
 	}
 	for i, r := range s {
@@ -457,6 +457,9 @@ func (w *xmlStream) writeElement(n *Node) {
 	w.text("<")
 	w.text(QName(n.Prefix, n.Name.Local))
 	mark := len(w.ns.undo)
+
+	defer w.ns.pop(mark)
+
 	scope := w.ns.bindings
 	emitted := make(map[string]struct{}, len(n.NS)+2)
 
@@ -503,8 +506,11 @@ func (w *xmlStream) writeElement(n *Node) {
 
 	w.writeAttributes(n)
 
+	if w.err != nil {
+		return
+	}
+
 	if len(n.Children) == 0 && w.closeEmptyElement(n.Name) {
-		w.ns.pop(mark)
 		return
 	}
 
@@ -543,7 +549,6 @@ func (w *xmlStream) writeElement(n *Node) {
 	w.text("</")
 	w.text(QName(n.Prefix, n.Name.Local))
 	w.text(">")
-	w.ns.pop(mark)
 }
 
 func (w *xmlStream) indentContent(n *Node) bool {
@@ -587,6 +592,10 @@ func (w *xmlStream) writeAttributes(n *Node) {
 		w.text(QName(a.Prefix, a.Name.Local))
 		w.text("=\"")
 
+		if w.err != nil {
+			return
+		}
+
 		value := a.Value
 		if w.options.NormalizeXMLID && a.Name == (Name{Space: XMLNamespace, Local: "id"}) {
 			value = xmlchar.CollapseSpace(value)
@@ -596,7 +605,13 @@ func (w *xmlStream) writeAttributes(n *Node) {
 
 		if w.options.AttributeWriter != nil {
 			a.Value = value
-			handled, w.err = w.options.AttributeWriter(w.ctx, w, n.Name, a)
+
+			var err error
+
+			handled, err = w.options.AttributeWriter(w.ctx, w, n.Name, a)
+			if err != nil {
+				w.err = errors.Join(w.err, err)
+			}
 		}
 
 		if !handled && w.err == nil {
@@ -631,12 +646,12 @@ func (w *xmlStream) closeEmptyElement(name Name) bool {
 }
 
 func (w *xmlStream) sibling(n *Node, doe *bool, cdata bool) {
-	if w.options.DOEMarkers && n.Kind == PINode && n.Name.Space == "" {
-		switch n.Name.Local {
-		case lexicon.DisableOutputEscapingPITarget:
+	if w.options.DOEMarkers {
+		switch DOEMarkerOf(n) {
+		case DOEStart:
 			*doe = true
 			return
-		case lexicon.EnableOutputEscapingPITarget:
+		case DOEEnd:
 			*doe = false
 			return
 		}

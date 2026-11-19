@@ -67,7 +67,9 @@ type graphKeyPlan struct {
 	value     []byte
 	unwrap    func(context.Context, []byte) ([]byte, error)
 
-	done bool
+	// Additional depth below this plan, including any indirect master key.
+	dependencyDepth int
+	done            bool
 }
 
 type graphEncryptedFields struct {
@@ -261,7 +263,7 @@ func (g *keyGraph) consumerKey(node graphNode, info document.Element, algorithm 
 
 	if depth == 0 {
 		for _, candidate := range g.standalone {
-			if err := b.add(g.keyPlan(candidate, algorithm, size, depth+1)); err != nil {
+			if err := b.candidate(candidate); err != nil {
 				return nil, err
 			}
 		}
@@ -271,7 +273,7 @@ func (g *keyGraph) consumerKey(node graphNode, info document.Element, algorithm 
 		return nil, errGraphKeyUnavailable
 	}
 
-	return &graphKeyPlan{sources: b.plans, keyBytes: size}, nil
+	return &graphKeyPlan{sources: b.plans, keyBytes: size, dependencyDepth: b.dependencyDepth}, nil
 }
 
 func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*graphKeyPlan, error) {
@@ -287,6 +289,10 @@ func (g *keyGraph) keyPlan(node graphNode, consumer string, size, depth int) (*g
 	}
 
 	if existing := g.plans[identity]; existing != nil {
+		if existing.dependencyDepth > g.limits.MaxDepth-depth {
+			return nil, graphLimitError()
+		}
+
 		return existing, nil
 	}
 
@@ -401,7 +407,7 @@ func (g *keyGraph) wrappedEncryptedPlan(node graphNode, fields graphEncryptedFie
 		return nil, err
 	}
 
-	return &graphKeyPlan{algorithm: algorithm, keyBytes: size, sources: []*graphKeyPlan{kek}, cipher: cipher}, nil
+	return &graphKeyPlan{algorithm: algorithm, keyBytes: size, sources: []*graphKeyPlan{kek}, cipher: cipher, dependencyDepth: kek.dependencyDepth}, nil
 }
 
 func (g *keyGraph) encryptionAlgorithm(fields graphEncryptedFields) (string, error) {
@@ -590,19 +596,23 @@ func (g *keyGraph) derivedPlan(node graphNode, size, depth int) (*graphKeyPlan, 
 	}
 
 	key, err := g.namedMaterial(master, ConcatKDF, 0)
+	masterDepth := 0
+
 	if errors.Is(err, errGraphKeyUnavailable) {
 		info := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyInfo)
 		name := newElement(SignatureNamespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
 		appendChild(name, &tree.Node{Kind: tree.TextNode, Data: master})
 		appendChild(info, name)
-		key, err = g.consumerKey(node, tree.Wrap(node.document.doc, info), ConcatKDF, g.options.MasterKeyBytes, depth+1)
+
+		masterDepth = 1
+		key, err = g.consumerKey(node, tree.Wrap(node.document.doc, info), ConcatKDF, g.options.MasterKeyBytes, depth+masterDepth)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &graphKeyPlan{algorithm: ConcatKDF, sources: []*graphKeyPlan{key}, keyBytes: size, kdf: &expected}, nil
+	return &graphKeyPlan{algorithm: ConcatKDF, sources: []*graphKeyPlan{key}, keyBytes: size, kdf: &expected, dependencyDepth: masterDepth + key.dependencyDepth}, nil
 }
 
 func (g *keyGraph) prepareKey(plan *graphKeyPlan, visited map[*graphKeyPlan]struct{}) error {
@@ -726,7 +736,7 @@ func (g *keyGraph) retrievedKey(doc *graphDocument, method document.Element) (gr
 
 	uri, exists := method.Attribute(document.Name{Local: lexicon.SecurityAttrURI})
 	if !exists {
-		uri = ""
+		return graphNode{}, ErrFormat
 	}
 
 	target, err := g.referenceTarget(doc, method, uri)
@@ -807,10 +817,8 @@ func (g *keyGraph) referenceMatches(source *graphDocument, element document.Elem
 		return false, err
 	}
 
-	fragment := base.EscapedFragment()
-
-	base.Fragment, base.RawFragment = "", ""
-	if base.String() != target.document.uri {
+	resourceURI, fragment, _ := strings.Cut(base, "#")
+	if resourceURI != target.document.uri {
 		return false, nil
 	}
 
@@ -825,12 +833,22 @@ func (g *keyGraph) referenceMatches(source *graphDocument, element document.Elem
 }
 
 type graphSources struct {
-	graph     *keyGraph
-	target    graphNode
-	algorithm string
-	size      int
-	depth     int
-	plans     []*graphKeyPlan
+	graph           *keyGraph
+	target          graphNode
+	algorithm       string
+	size            int
+	depth           int
+	plans           []*graphKeyPlan
+	dependencyDepth int
+}
+
+func (b *graphSources) candidate(node graphNode) error {
+	plan, err := b.graph.keyPlan(node, b.algorithm, b.size, b.depth+1)
+	if err == nil {
+		b.dependencyDepth = max(b.dependencyDepth, 1+plan.dependencyDepth)
+	}
+
+	return b.add(plan, err)
 }
 
 func (b *graphSources) add(plan *graphKeyPlan, err error) error {
@@ -870,7 +888,7 @@ func (b *graphSources) keyInfo(info document.Element) error {
 			}
 		case elementName(Namespace, nameEncryptedKey), elementName(Namespace11, nameDerivedKey):
 			_, raw := tree.Unwrap(child)
-			if err := b.add(g.keyPlan(graphNode{b.target.document, raw}, b.algorithm, b.size, b.depth+1)); err != nil {
+			if err := b.candidate(graphNode{b.target.document, raw}); err != nil {
 				return err
 			}
 		case elementName(SignatureNamespace, lexicon.DSigElementRetrievalMethod):
@@ -879,7 +897,7 @@ func (b *graphSources) keyInfo(info document.Element) error {
 				return err
 			}
 
-			if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
+			if err := b.candidate(candidate); err != nil {
 				return err
 			}
 		default:
@@ -911,7 +929,7 @@ func (b *graphSources) named(name string) error {
 				continue
 			}
 
-			if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
+			if err := b.candidate(candidate); err != nil {
 				return err
 			}
 		}
@@ -938,7 +956,7 @@ func (b *graphSources) references() error {
 			}
 
 			if matched {
-				if err := b.add(g.keyPlan(candidate, b.algorithm, b.size, b.depth+1)); err != nil {
+				if err := b.candidate(candidate); err != nil {
 					return err
 				}
 			}

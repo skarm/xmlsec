@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -311,9 +310,8 @@ func authorityReadHTTP(t *testing.T, client *http.Client, req *http.Request) []b
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(r.Body, authorityHTTPBodyBytes))
-	if err != nil {
+	b, readErr := readAuthorityHTTPBody(r.Body, authorityHTTPBodyBytes)
+	if err := errors.Join(readErr, r.Body.Close()); err != nil {
 		t.Fatal(err)
 	}
 	if r.StatusCode != http.StatusOK {

@@ -74,6 +74,30 @@ func TestHTMLSequenceOrderingCancellationAndFailures(t *testing.T) {
 	}
 }
 
+func TestHTMLSequenceCancellationWithoutNextItem(t *testing.T) {
+	t.Parallel()
+
+	writer := html.NewWriter().Format(false)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	started := false
+	empty := func(func(xdm.XMLItem, error) bool) { started = true }
+	if err := writer.WriteSequence(ctx, io.Discard, empty); !errors.Is(err, context.Canceled) || started {
+		t.Fatalf("canceled write entered the iterator: started=%v, err=%v", started, err)
+	}
+
+	ctx, cancel = context.WithCancel(t.Context())
+	defer cancel()
+	var out bytes.Buffer
+	last := func(yield func(xdm.XMLItem, error) bool) {
+		yield(xdm.XMLItem{Text: "last"}, nil)
+		cancel()
+	}
+	if err := writer.WriteSequence(ctx, &out, last); !errors.Is(err, context.Canceled) || out.String() != "last" {
+		t.Fatalf("end-of-iteration cancellation: output=%q, err=%v", out.String(), err)
+	}
+}
+
 type silentShortWriter struct{}
 
 func (silentShortWriter) Write(p []byte) (int, error) {
@@ -132,7 +156,7 @@ func TestHTMLRawTextControlEscapingAndDOE(t *testing.T) {
 	if err := doc.AddChild(root); err != nil {
 		t.Fatal(err)
 	}
-	for _, node := range []xdm.Node{doc.CreateText("safe<&\u0080"), doc.CreatePI("disable-output-escaping", ""), doc.CreateText("<raw>&"), doc.CreatePI("enable-output-escaping", ""), doc.CreateText("<&")} {
+	for _, node := range []xdm.Node{doc.CreateText("safe<&\u0080"), doc.CreateDOEMarker(true), doc.CreateText("<raw>&"), doc.CreateDOEMarker(false), doc.CreateText("<&")} {
 		if err := root.AddChild(node); err != nil {
 			t.Fatal(err)
 		}
@@ -148,6 +172,7 @@ func TestHTMLRawTextControlEscapingAndDOE(t *testing.T) {
 	for _, test := range []struct{ input, want string }{
 		{`<script>if (a &lt; b) x &amp; y</script>`, `<script>if (a < b) x & y</script>`},
 		{`<p>&lt; &amp; &gt;</p>`, `<p>&lt; &amp; &gt;</p>`},
+		{`<p><?disable-output-escaping note?></p>`, `<p><?disable-output-escaping note></p>`},
 	} {
 		input, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(test.input))
 		if err != nil {
@@ -192,5 +217,29 @@ func TestHTMLDefaultFormatting(t *testing.T) {
 	got, err := html.WriteString(doc)
 	if err != nil || !strings.Contains(got, "\n<p>one</p>") || !strings.Contains(got, "\n<p>two</p>") || !strings.HasSuffix(got, "</html>\n") {
 		t.Fatalf("formatted default output = %q, %v", got, err)
+	}
+}
+
+func TestReviewHTMLCancellationDuringOrdinaryTree(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<div><p>first</p><p>second</p></div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	out := &cancelOnOutput{cancel: cancel}
+	err = html.NewWriter().Format(false).WriteSequence(ctx, out, func(yield func(xdm.XMLItem, error) bool) { yield(xdm.XMLItem{Node: doc}, nil) })
+	if !errors.Is(err, context.Canceled) || strings.Contains(out.String(), "second") || strings.Contains(out.String(), "</div>") {
+		t.Errorf("serialization continued after cancel: output=%q, writes=%d, err=%v", out.String(), out.calls, err)
+	}
+}
+
+func TestReviewHTMLDoctypeQuote(t *testing.T) {
+	doc := xdm.NewDefaultDocument()
+	doc.Doctype = &xdm.Doctype{Name: "html", SystemID: `a"b.dtd`}
+	var out bytes.Buffer
+	err := html.NewWriter().Format(false).WriteTo(&out, doc)
+	if err != nil || out.String() != "<!DOCTYPE html SYSTEM 'a\"b.dtd'>\n" {
+		t.Errorf("quoted system literal=%q, %v", out.String(), err)
 	}
 }

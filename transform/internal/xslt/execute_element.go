@@ -33,7 +33,10 @@ func (ec *execContext) execElement(ctx context.Context, inst *elementInst) error
 	}
 
 	// XTDE0820: validate the computed name before resolving its namespace.
-	name = strings.TrimSpace(name)
+	if ec.stylesheet.processorLanguage() >= processorXSLT20 {
+		name = strings.Trim(name, lexicon.XMLWhitespace)
+	}
+
 	if name == "" || !xmlchar.IsValidQName(name) {
 		return dynamicError(errCodeXTDE0820,
 			"invalid element name %q: not a valid QName", name)
@@ -88,12 +91,6 @@ func (ec *execContext) computedElementNamespace(ctx context.Context, inst *eleme
 	}
 
 	uri := inst.NSBindings[prefix]
-	if uri == "" && prefix != "" {
-		// Only prefixed names may fall back to stylesheet-level bindings.
-		// The default namespace belongs to the instruction's static context.
-		uri = ec.resolvePrefix(prefix)
-	}
-
 	if uri == "" && prefix != "" {
 		return "", dynamicError(errCodeXTDE0830,
 			"undeclared namespace prefix %q in element name %q", prefix, name)
@@ -380,6 +377,10 @@ func (ec *execContext) execAttribute(ctx context.Context, inst *attributeInst) e
 		return err
 	}
 
+	if ec.stylesheet.processorLanguage() >= processorXSLT20 {
+		name = strings.Trim(name, lexicon.XMLWhitespace)
+	}
+
 	// All output modes validate and resolve the computed name before content.
 	if err := validateComputedAttributeName(name, inst); err != nil {
 		return err
@@ -424,7 +425,7 @@ func (ec *execContext) execAttribute(ctx context.Context, inst *attributeInst) e
 	}
 
 	ec.annotateAttr(elem, firstNonEmptyType(inst.TypeName, valTypeName), resolved.localName, resolved.nsURI, value)
-	out.noteOutput()
+	out.noteAttributeOutput(elem, resolved.nsURI, resolved.localName)
 
 	return nil
 }
@@ -659,6 +660,10 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 		return err
 	}
 
+	if ec.stylesheet.processorLanguage() >= processorXSLT20 {
+		name = strings.Trim(name, lexicon.XMLWhitespace)
+	}
+
 	value, err := ec.commentOrPIContent(ctx, inst.Select, inst.Body)
 	if err != nil {
 		return err
@@ -680,6 +685,9 @@ func (ec *execContext) execPI(ctx context.Context, inst *piInst) error {
 	value = strings.ReplaceAll(value, "?>", "? >")
 
 	pi := ec.resultDoc.CreatePI(name, value)
+	if ec.currentOutput().sequenceMode {
+		xdm.SetNodeBaseURI(pi, ec.effectiveStaticBaseURI())
+	}
 
 	return ec.addNode(pi)
 }
@@ -689,6 +697,8 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 	if err != nil {
 		return err
 	}
+
+	name = strings.Trim(name, lexicon.XMLWhitespace)
 
 	value, err := ec.computedNamespaceValue(ctx, inst)
 	if err != nil {
@@ -725,7 +735,7 @@ func (ec *execContext) execNamespace(ctx context.Context, inst *namespaceInst) e
 		return err
 	}
 
-	out.noteOutput()
+	out.noteNamespaceOutput(elem, name)
 
 	return nil
 }
@@ -936,7 +946,7 @@ func elementHasChildElements(elem *xdm.Element) bool {
 // validateComputedAttributeName performs the name-validity checks for a
 // computed xsl:attribute name that are independent of the output target:
 // XTDE0855 (the name must not be "xmlns" when no namespace attribute is given)
-// and XTDE0850 (the name must be a lexically valid QName/EQName). It is invoked
+// and XTDE0850 (the name must be a lexically valid QName). It is invoked
 // before the element-output, sequence-mode, and item-capture branches so every
 // path enforces the same rules.
 func validateComputedAttributeName(name string, inst *attributeInst) error {
@@ -947,7 +957,7 @@ func validateComputedAttributeName(name string, inst *attributeInst) error {
 	}
 
 	// XTDE0850: name must be a valid QName
-	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
+	if !xmlchar.IsValidQName(name) {
 		return dynamicError(errCodeXTDE0850,
 			"xsl:attribute name %q is not a valid QName", name)
 	}

@@ -13,6 +13,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/htmlindex"
 
 	"github.com/skarm/xmlsec/document"
@@ -124,7 +125,7 @@ func suiteSecondaryAssertion(ctx context.Context, evaluation *suiteEvaluation, a
 		return suiteHarness("secondary assertion requires an XSLT result and one nested assertion")
 	}
 
-	uri, err := resolveSuiteURI(evaluation.environment.baseOutputURI, assertion.attr("uri"))
+	uri, err := resolveSuiteURI(evaluation.environment.baseOutputURI, assertion.attr(suiteURIAttribute))
 	if err != nil {
 		return err
 	}
@@ -190,7 +191,7 @@ func suiteErrorAssertion(actual error, expected string, namespaceOptions ...map[
 			}
 
 			name := transform.Name{Space: lexicon.NamespaceErr, Local: code}
-			if strings.HasPrefix(code, "Q{") {
+			if strings.HasPrefix(code, lexicon.EQNamePrefix) {
 				space, local, ok := strings.Cut(code[2:], "}")
 				if !ok || local == "" {
 					return suiteHarness("invalid expected error EQName %q", code)
@@ -295,37 +296,94 @@ func suitePermutationAssertion(ctx context.Context, evaluation *suiteEvaluation,
 		return errors.New("permutation sequence lengths differ")
 	}
 
-	used := make([]bool, expected.Len())
+	// Numeric promotion can make one item equal to several candidates while
+	// another item matches only one. Reassign an earlier match when necessary.
+	match := suitePermutationMatcher{
+		evaluation: evaluation,
+		expected:   expected,
+		owners:     make([]int, expected.Len()),
+		visited:    make([]bool, expected.Len()),
+	}
+	for i := range match.owners {
+		match.owners[i] = -1
+	}
+
 	for index := range evaluation.sequence.Len() {
-		value, _ := evaluation.sequence.At(index)
-		part := *evaluation
-		part.sequence = transform.Values(value)
-		matched := false
+		clear(match.visited)
 
-		for candidate := range expected.Len() {
-			if used[candidate] {
-				continue
-			}
-
-			other, _ := expected.At(candidate)
-
-			err := part.assertionTrue(ctx, "deep-equal($result, $candidate)", transform.Bindings{{Local: "candidate"}: transform.Values(other)})
-			if err == nil {
-				used[candidate], matched = true, true
-				break
-			}
-
-			if _, ok := errors.AsType[*suiteHarnessError](err); ok {
-				return err
-			}
+		matched, err := match.assign(ctx, index)
+		if err != nil {
+			return err
 		}
 
 		if !matched {
-			return errors.New("no matching unused permutation item")
+			return errors.New("no matching permutation")
 		}
 	}
 
 	return nil
+}
+
+type suitePermutationMatcher struct {
+	evaluation *suiteEvaluation
+	expected   transform.Sequence
+	owners     []int
+	visited    []bool
+}
+
+func (m *suitePermutationMatcher) assign(ctx context.Context, index int) (bool, error) {
+	value, _ := m.evaluation.sequence.At(index)
+	part := *m.evaluation
+	part.sequence = transform.Values(value)
+
+	for _, freeOnly := range []bool{true, false} {
+		candidate, err := m.find(ctx, &part, freeOnly)
+		if err != nil {
+			return false, err
+		}
+
+		if candidate >= 0 {
+			m.owners[candidate] = index
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (m *suitePermutationMatcher) find(ctx context.Context, part *suiteEvaluation, freeOnly bool) (int, error) {
+	for candidate, owner := range m.owners {
+		if freeOnly != (owner < 0) || m.visited[candidate] {
+			continue
+		}
+
+		other, _ := m.expected.At(candidate)
+
+		err := part.assertionTrue(ctx, "deep-equal($result, $candidate)", transform.Bindings{{Local: "candidate"}: transform.Values(other)})
+		if err != nil {
+			if _, ok := errors.AsType[*suiteHarnessError](err); ok {
+				return -1, err
+			}
+
+			continue
+		}
+
+		m.visited[candidate] = true
+		if owner >= 0 {
+			changed, err := m.assign(ctx, owner)
+			if err != nil {
+				return -1, err
+			}
+
+			if !changed {
+				continue
+			}
+		}
+
+		return candidate, nil
+	}
+
+	return -1, nil
 }
 
 func suiteExpectedBytes(e *suiteEvaluation, assertion *suiteNode) ([]byte, error) {
@@ -563,6 +621,15 @@ func suiteNamespaceAttributeValue(raw []byte) (string, error) {
 }
 
 func parseSuiteXMLFragment(ctx context.Context, environment *preparedSuiteEnvironment, data []byte) (document.Node, error) {
+	// Preserve the encoding declaration for complete documents. Whitespace
+	// outside the root does not become content in this path.
+	if parsed, err := environment.engine.Parse(ctx, data); err == nil {
+		node, _ := parsed.Root().Node()
+		return node.Reference(), nil
+	} else if errors.Is(err, transform.ErrLimit) || ctx.Err() != nil {
+		return document.Node{}, err
+	}
+
 	data = bytes.TrimPrefix(data, []byte("\uFEFF"))
 	if bytes.HasPrefix(data, []byte("<?xml ")) {
 		_, tail, ok := bytes.Cut(data, []byte("?>"))
@@ -571,16 +638,6 @@ func parseSuiteXMLFragment(ctx context.Context, environment *preparedSuiteEnviro
 		}
 
 		data = tail
-	}
-
-	// Parse a complete document as such: whitespace outside its root is not
-	// content. Fragments use the same language parser, which permits relative
-	// namespace names. C14N cannot compare those names, since it must reject them.
-	if parsed, err := environment.engine.Parse(ctx, data); err == nil {
-		node, _ := parsed.Root().Node()
-		return node.Reference(), nil
-	} else if errors.Is(err, transform.ErrLimit) || ctx.Err() != nil {
-		return document.Node{}, err
 	}
 
 	parsed, err := environment.query(ctx, "parse-xml-fragment($xml)", transform.Bindings{{Local: "xml"}: transform.Values(transform.String(string(data)))})
@@ -731,6 +788,14 @@ func suiteSerializedText(data []byte, encoding string) (string, error) {
 		}
 
 		return string(data), nil
+	}
+
+	// The HTML label index interprets these labels as Windows-1252. The XML
+	// serializer uses ISO-8859-1, including its U+0080–U+009F controls.
+	switch strings.NewReplacer("-", "", "_", "", ":", "", " ", "").Replace(label) {
+	case "iso88591", "iso885911987", "isoir100", "latin1", "l1", "ibm819", "cp819", "csisolatin1", "isolatin1":
+		decoded, err := charmap.ISO8859_1.NewDecoder().Bytes(data)
+		return string(decoded), err
 	}
 
 	codec, err := htmlindex.Get(label)

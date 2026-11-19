@@ -270,7 +270,7 @@ func (t *strictDecoderTransformer) unitOK(buf []byte, off int, order byteOrder) 
 		return off + utf32CodeUnitBytes, unitGood
 	}
 
-	// width == 2 (UTF-16 / UCS-2).
+	// width == 2 (UTF-16).
 	switch {
 	case v >= highSurrogateStart && v <= highSurrogateEnd:
 		// High surrogate: must be followed by a low surrogate.

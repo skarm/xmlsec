@@ -33,7 +33,6 @@ func WithAssertions(ctx context.Context, enabled bool) context.Context {
 type analyzeStringSource struct {
 	text     string
 	version2 bool
-	present  bool
 }
 
 func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStringInst) error {
@@ -46,10 +45,6 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 	input, err := ec.analyzeStringInput(ctx, inst)
 	if err != nil {
 		return err
-	}
-
-	if !input.present {
-		return nil
 	}
 
 	regex, err := inst.Regex.evaluate(ctx, ec.contextNode)
@@ -65,20 +60,7 @@ func (ec *execContext) execAnalyzeString(ctx context.Context, inst *analyzeStrin
 		}
 	}
 
-	// Version 2.0 restrictions
-	if input.version2 {
-		// XSLT 2.0: 'q' flag is not allowed (XTDE1145)
-		if strings.ContainsRune(flags, 'q') {
-			return dynamicError(errCodeXTDE1145, "xsl:analyze-string flag 'q' is not allowed in XSLT 2.0")
-		}
-		// XSLT 2.0: non-capturing groups (?:...) are not allowed (XTDE1140)
-		if strings.Contains(regex, "(?:") {
-			return dynamicError(errCodeXTDE1140, "non-capturing groups are not allowed in XSLT 2.0 regex")
-		}
-	}
-
-	// Compile the regex using XPath regex semantics
-	re, err := xpath.CompileRegexContext(ctx, regex, flags)
+	re, err := xpath.CompileRegexContext(ctx, regex, flags, ec.stylesheet.xpathVersion())
 	if err != nil {
 		if failure := preserveControlFailure(ctx, err); failure != nil {
 			return failure
@@ -189,10 +171,12 @@ func (ec *execContext) analyzeStringInput(ctx context.Context, inst *analyzeStri
 		return analyzeStringSource{}, dynamicError(lexicon.ErrXPTY0004, "xsl:analyze-string select must be xs:string: %v", err)
 	}
 
-	return analyzeStringSource{text: input, version2: isV2, present: true}, nil
+	return analyzeStringSource{text: input, version2: isV2}, nil
 }
 
 func (ec *execContext) executeAnalyzeStringSegments(ctx context.Context, inst *analyzeStringInst, re *xpath.Regex, input string, findLimit, totalSegments int) error {
+	defer ec.withoutTemplateRule()()
+
 	// Save and restore context state
 	savedNode := ec.contextNode
 	savedCurrent := ec.currentNode
@@ -233,13 +217,8 @@ func (ec *execContext) executeAnalyzeStringSegments(ctx context.Context, inst *a
 		ec.currentNode = nil
 
 		ec.regexGroups = groups
-		for _, bodyInst := range body {
-			if err := ec.executeInstruction(ctx, bodyInst); err != nil {
-				return err
-			}
-		}
 
-		return nil
+		return ec.executeSequenceConstructor(ctx, body)
 	}
 
 	// Second pass: re-stream the matches and execute each segment's body as its
@@ -375,14 +354,17 @@ func (ec *execContext) registerConditionalOutput(ctx context.Context, selectExpr
 		return err
 	}
 
+	attributeParent, _ := placeholder.Parent().(*xdm.Element)
 	scopeIdx := len(out.conditionalScopes) - 1
 	out.conditionalScopes[scopeIdx].actions = append(out.conditionalScopes[scopeIdx].actions, conditionalAction{
 		kind:       kind,
 		selectExpr: selectExpr, body: body, localVars: local,
 		staticBaseURI: ec.staticBaseURIOverride, xpathDefaultNS: ec.xpathDefaultNS, hasXPathDefaultNS: ec.hasXPathDefaultNS,
 		sourceLine: ec.errSourceLine, sourceModule: ec.errSourceModule,
-		placeholder:   placeholder,
-		prevWasAtomic: out.prevWasAtomic,
+		placeholder:       placeholder,
+		prevWasAtomic:     out.prevWasAtomic,
+		attributeParent:   attributeParent,
+		attributePosition: out.registerConditionalAttributePosition(attributeParent),
 	})
 
 	return nil
@@ -439,7 +421,7 @@ func (ec *execContext) execMapEntry(ctx context.Context, inst *mapEntryInst) err
 		return err
 	}
 
-	key, err := ec.convertSequenceType(ctx, keyResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeAnyAtomicType}})
+	key, err := ec.convertSequenceType(ctx, keyResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: lexicon.EQNamePrefix + lexicon.NamespaceXSD + "}" + lexicon.TypeAnyAtomicType}})
 	if err != nil {
 		return err
 	}
@@ -614,7 +596,7 @@ func (ec *execContext) evaluateXPathSource(ctx context.Context, inst *evaluateIn
 		return "", err
 	}
 
-	value, err := ec.convertSequenceType(ctx, xpathResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + lexicon.TypeString}})
+	value, err := ec.convertSequenceType(ctx, xpathResult.Sequence(), xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: lexicon.EQNamePrefix + lexicon.NamespaceXSD + "}" + lexicon.TypeString}})
 	if err != nil {
 		return "", err
 	}

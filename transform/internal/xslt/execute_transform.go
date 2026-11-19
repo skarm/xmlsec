@@ -76,6 +76,20 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 
 	restoreGlobalContextItem := ec.prepareTransformGlobalContext(ctx, cfg)
 
+	initialFunction := cfg != nil && cfg.initialFunction != ""
+	initialTemplate := ec.initialTemplateName(cfg, selectionSupplied)
+
+	if !initialFunction && initialTemplate == "" && !selectionSupplied && ec.sourceDoc == nil && ec.globalContextItem != nil && !ec.globalContextAbsent {
+		matchSelection = xdm.ItemSlice{ec.globalContextItem}
+		selectionSupplied = true
+	}
+
+	if !initialFunction && initialTemplate == "" {
+		// Only trees in an initial match selection are subject to the initial
+		// mode's accumulator grant, not the context of a named entry point.
+		ec.registerInitialAccumulatorGrants(cfg, matchSelection, selectionSupplied)
+	}
+
 	ctx = withExecContext(ctx, ec)
 	if err := ec.recordInitialResources(ctx, matchSelection); err != nil {
 		return nil, err
@@ -85,20 +99,11 @@ func executeTransform(ctx context.Context, source *xdm.Document, ss *Stylesheet,
 		return nil, err
 	}
 
-	if err := ec.prepareTransformAccumulators(ctx); err != nil {
-		return nil, err
-	}
-
-	if cfg != nil && cfg.initialFunction != "" {
+	if initialFunction {
 		return ec.executeInitialFunction(ctx, cfg)
 	}
 
-	if !selectionSupplied && ec.sourceDoc == nil && ec.globalContextItem != nil && !ec.globalContextAbsent {
-		matchSelection = xdm.ItemSlice{ec.globalContextItem}
-		selectionSupplied = true
-	}
-
-	if err := ec.executeInitialTemplates(ctx, cfg, matchSelection, selectionSupplied); err != nil {
+	if err := ec.executeInitialTemplates(ctx, cfg, initialTemplate, matchSelection, selectionSupplied); err != nil {
 		return nil, err
 	}
 
@@ -378,29 +383,6 @@ func (ec *execContext) initializeTransformGlobals(ctx context.Context, cfg *tran
 	return nil
 }
 
-func (ec *execContext) prepareTransformAccumulators(ctx context.Context) error {
-	effectiveSource := ec.sourceDoc
-	ss := ec.stylesheet
-
-	// Pre-compute accumulator states for the main source document so that
-	// accumulator-before() / accumulator-after() work during template execution.
-	// This mirrors what xsl:source-document does via prepareSourceDocumentAccumulators.
-	if len(ss.accumulators) > 0 && effectiveSource != nil {
-		names := append([]string(nil), ss.accumulatorOrder...)
-		if err := ec.computeAccumulatorStates(ctx, effectiveSource, names); err != nil {
-			return err
-		}
-		// Mark this document as computed so lazy computation doesn't redo it.
-		if ec.accumulatorComputedDocs == nil {
-			ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-		}
-
-		ec.accumulatorComputedDocs[documentRoot(effectiveSource)] = struct{}{}
-	}
-
-	return nil
-}
-
 func (ec *execContext) executeInitialFunction(ctx context.Context, cfg *transformConfig) (*xdm.Document, error) {
 	cfg.resolvedOutputDef = ec.resolvePrimaryOutputDef()
 
@@ -429,31 +411,34 @@ func (ec *execContext) executeInitialFunction(ctx context.Context, cfg *transfor
 	return doc, nil
 }
 
-func (ec *execContext) initialTemplateName(cfg *transformConfig) string {
+func (ec *execContext) initialTemplateName(cfg *transformConfig, selectionSupplied bool) string {
 	const (
 		initialTemplateLexicalName = "xsl:initial-template"
 	)
 
-	initialTemplateName := ""
 	if cfg != nil && cfg.initialTemplate != "" {
-		initialTemplateName = resolveQName(cfg.initialTemplate, ec.stylesheet.namespaces)
+		return resolveQName(cfg.initialTemplate, ec.stylesheet.namespaces)
 	}
 
-	// XSLT 3.0: if no explicit initial template, check for xsl:initial-template
-	if initialTemplateName == "" {
-		xsltInitial := xdm.ClarkName(lexicon.NamespaceXSLT, initialTemplateLocalName)
-		if _, ok := ec.stylesheet.namedTemplates[xsltInitial]; ok {
-			initialTemplateName = xsltInitial
-		} else if _, ok := ec.stylesheet.namedTemplates[initialTemplateLexicalName]; ok {
-			initialTemplateName = initialTemplateLexicalName
-		}
+	// A source or explicit selection requests apply-templates. The default
+	// named template is used only when there is no match invocation.
+	if selectionSupplied || ec.sourceDoc != nil || cfg != nil && cfg.initialMode != "" {
+		return ""
 	}
 
-	return initialTemplateName
+	xsltInitial := xdm.ClarkName(lexicon.NamespaceXSLT, initialTemplateLocalName)
+	if _, ok := ec.stylesheet.namedTemplates[xsltInitial]; ok {
+		return xsltInitial
+	}
+
+	if _, ok := ec.stylesheet.namedTemplates[initialTemplateLexicalName]; ok {
+		return initialTemplateLexicalName
+	}
+
+	return ""
 }
 
-func (ec *execContext) executeInitialTemplates(ctx context.Context, cfg *transformConfig, matchSelection xdm.Sequence, selectionSupplied bool) error {
-	initialTemplateName := ec.initialTemplateName(cfg)
+func (ec *execContext) executeInitialTemplates(ctx context.Context, cfg *transformConfig, initialTemplateName string, matchSelection xdm.Sequence, selectionSupplied bool) error {
 	initialMode := ""
 
 	if cfg != nil && cfg.initialMode != "" {
@@ -796,6 +781,10 @@ func (ec *execContext) applyPrimaryOutputOverrides(outDef *OutputDef) *OutputDef
 		return outDef
 	}
 
+	if ec.primaryOutputUsesNamedFormat {
+		return cloneOutputDef(ec.primaryOutputOverrides)
+	}
+
 	if outDef == nil {
 		outDef = &OutputDef{Method: lexicon.MethodXML, Encoding: lexicon.EncodingUTF8U}
 	}
@@ -871,7 +860,7 @@ func (ec *execContext) applyPrimaryOutputOverrides(outDef *OutputDef) *OutputDef
 	}
 
 	if ov.ItemSeparator != nil {
-		outDef.ItemSeparator = ov.ItemSeparator
+		outDef.ItemSeparator, outDef.ItemSeparatorAbsent = ov.ItemSeparator, false
 	} else if ov.ItemSeparatorAbsent {
 		outDef.ItemSeparator = nil
 		outDef.ItemSeparatorAbsent = true

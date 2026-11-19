@@ -33,12 +33,12 @@ func (f *privateKeyFlags) limits() keys.Limits {
 
 func registerPrivateKeyFlags(fs *flag.FlagSet) *privateKeyFlags {
 	f := &privateKeyFlags{}
-	fs.StringVar(&f.format, "key-format", namePlain, "private key format: plain, pkcs8 (encrypted), pkcs12")
-	fs.StringVar(&f.passwordFile, "password-file", "", "trusted regular file with one password line; no password in arguments")
-	fs.IntVar(&f.maxKDFWork, "key-max-kdf-work", keys.DefaultLimits().MaxKDFWork, "aggregate private key KDF iteration budget")
+	fs.StringVar(&f.format, flagNameKeyFormat, namePlain, "private key format: plain, pkcs8 (encrypted), pkcs12")
+	fs.StringVar(&f.passwordFile, flagNamePasswordFile, "", "trusted regular file with one password line; no password in arguments")
+	fs.IntVar(&f.maxKDFWork, flagNameKeyMaxKDFWork, keys.DefaultLimits().MaxKDFWork, "aggregate private key KDF iteration budget")
 
-	fs.IntVar(&f.minIterations, "key-min-iterations", keys.DefaultLimits().MinIterations, "minimum permitted import KDF iterations")
-	fs.IntVar(&f.maxIterations, "key-max-iterations", keys.DefaultLimits().MaxIterations, "maximum permitted iterations per KDF")
+	fs.IntVar(&f.minIterations, flagNameKeyMinIterations, keys.DefaultLimits().MinIterations, "minimum permitted import KDF iterations")
+	fs.IntVar(&f.maxIterations, flagNameKeyMaxIterations, keys.DefaultLimits().MaxIterations, "maximum permitted iterations per KDF")
 
 	return f
 }
@@ -56,7 +56,7 @@ func loadPrivateConfigured(ctx context.Context, path string, flags *privateKeyFl
 		return nil, errors.New("-key-format must be plain, pkcs8 or pkcs12")
 	}
 
-	if flags.passwordFile == "" || flags.passwordFile == "-" {
+	if flags.passwordFile == "" || flags.passwordFile == stdioPath {
 		return nil, errors.New("encrypted key requires a regular -password-file; stdin is reserved for XML")
 	}
 
@@ -106,7 +106,7 @@ func loadPrivateConfigured(ctx context.Context, path string, flags *privateKeyFl
 }
 
 func loadPrivateContext(ctx context.Context, path string) (crypto.Signer, error) {
-	if path == "-" {
+	if path == stdioPath {
 		return nil, errors.New("key must be a file; stdin is reserved for input")
 	}
 
@@ -120,7 +120,7 @@ func loadPrivateContext(ctx context.Context, path string) (crypto.Signer, error)
 }
 
 func loadPublicContext(ctx context.Context, path string) (crypto.PublicKey, error) {
-	if path == "-" {
+	if path == stdioPath {
 		return nil, errors.New("key must be a file; stdin is reserved for input")
 	}
 
@@ -160,7 +160,7 @@ func readCertificates(ctx context.Context, base string, paths []string) ([][]byt
 }
 
 func passwordFromFile(ctx context.Context, path string) ([]byte, error) {
-	if path == "" || path == "-" {
+	if path == "" || path == stdioPath {
 		return nil, usageError("password requires a trusted regular file")
 	}
 

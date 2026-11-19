@@ -243,6 +243,18 @@ func TestBeginDoesNotSaveWhenSigningFails(t *testing.T) {
 	}
 }
 
+func TestZeroServiceProviderRejectsBegin(t *testing.T) {
+	t.Parallel()
+
+	var service ServiceProvider
+	got, err := service.Begin(t.Context(), BeginOptions{
+		IDP: idpEntityID, At: testcert.Now(), BrowserBinding: bytes.Repeat([]byte{1}, 32),
+	})
+	if got != nil || !errors.Is(err, ErrPolicy) {
+		t.Errorf("zero ServiceProvider.Begin = %v, %v, want nil and ErrPolicy", got, err)
+	}
+}
+
 func TestBeginRejectsInvalidInputBeforeAdapters(t *testing.T) {
 	t.Parallel()
 
@@ -678,4 +690,41 @@ func TestRedirectPolicySnapshotAndUnusedPOST(t *testing.T) {
 			t.Fatalf("POST with unused Redirect policy: out=%v err=%v puts=%d", out != nil, err, requests.puts)
 		}
 	})
+}
+
+func TestResponseMetadataSignaturePolicy(t *testing.T) {
+	t.Parallel()
+	for _, wantSigned := range []bool{false, true} {
+		spec := metadata.EntityDescriptor{EntityID: spEntityID, ValidUntil: testcert.Now().Add(time.Hour), SP: &metadata.RoleDescriptor{
+			WantAssertionsSigned: wantSigned,
+			Endpoints:            map[string][]metadata.Endpoint{metadata.AssertionConsumerService: {{Binding: metadata.HTTPPost, Location: assertionConsumerURL}}},
+		}}
+		doc, err := metadata.Build(t.Context(), spec, testcert.Now(), metadata.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := doc.XML(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := metadata.ParseTrusted(t.Context(), raw, testcert.Now(), metadata.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entity, err := snapshot.Find(spEntityID, testcert.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		role, err := entity.Role(metadata.ServiceProvider, testcert.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, allowUnsigned := range []bool{false, true} {
+			options := protocol.ResponseOptions{AllowUnsignedAssertion: allowUnsigned}
+			responseMetadataPolicy("", role, &options)
+			if options.AllowUnsignedAssertion != (allowUnsigned && !wantSigned) {
+				t.Errorf("local AllowUnsignedAssertion=%t, metadata WantAssertionsSigned=%t: got %t", allowUnsigned, wantSigned, options.AllowUnsignedAssertion)
+			}
+		}
+	}
 }

@@ -470,6 +470,7 @@ func consumeJSONClose(dec *json.Decoder, expected json.Delim, kind string) error
 }
 
 func preprocessJSONStringLiterals(source string) (string, error) {
+	source = strings.TrimPrefix(source, lexicon.BOMUTF8)
 	preprocessor := jsonStringPreprocessor{source: source}
 	inString := false
 
@@ -663,13 +664,18 @@ func jsonStringRuneSize(r rune, escape bool) int {
 		case '\\', '\b', '\f', '\n', '\r', '\t':
 			return jsonShortEscapeBytes
 		default:
-			if !isValidXMLCodepoint(int(r)) {
+			if requiresJSONCodeUnitEscape(r) {
 				return jsonCodeUnitEscapeBytes
 			}
 		}
 	}
 
 	return utf8.RuneLen(r)
+}
+
+func requiresJSONCodeUnitEscape(r rune) bool {
+	return (r >= jsonC0ControlFirst && r <= jsonC0ControlLast) ||
+		(r >= jsonEscapedControlStart && r <= jsonEscapedControlEnd) || !isValidXMLCodepoint(int(r))
 }
 
 func jsonInvalidEscapeReplacement(ctx context.Context, raw string, opts jsonOptions) (string, error) {
@@ -723,7 +729,7 @@ func appendEscapedJSONStringRune(b *strings.Builder, r rune) {
 	case '\t':
 		b.WriteString(`\t`)
 	default:
-		if (r >= jsonC0ControlFirst && r <= jsonC0ControlLast) || !isValidXMLCodepoint(int(r)) {
+		if requiresJSONCodeUnitEscape(r) {
 			appendJSONCodeUnit(b, uint16(r), jsonHexLower) // #nosec G115 -- Decoded Unicode runes reach this branch only for disallowed BMP code points.
 			return
 		}
@@ -751,7 +757,7 @@ func appendSerializedJSONStringRune(b *strings.Builder, r rune) {
 	case '\t':
 		b.WriteString(`\t`)
 	default:
-		if (r >= jsonC0ControlFirst && r <= jsonC0ControlLast) || (r >= jsonEscapedControlStart && r <= jsonEscapedControlEnd) || !isValidXMLCodepoint(int(r)) {
+		if requiresJSONCodeUnitEscape(r) {
 			appendJSONCodeUnit(b, uint16(r), jsonHexUpper) // #nosec G115 -- Decoded Unicode runes reach this branch only for disallowed BMP code points.
 			return
 		}

@@ -81,7 +81,7 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 				return "", fmt.Errorf("%w: xml:base: %w", Err, err)
 			}
 
-			base = base.ResolveReference(part)
+			base = tree.ResolveURIReference(base, part)
 		}
 	}
 
@@ -89,7 +89,7 @@ func Resolve(value string, base *url.URL, resource string, source *tree.Node) (s
 		return "", fmt.Errorf("%w: hierarchical resource base required", Err)
 	}
 
-	resolved := base.ResolveReference(uri).String()
+	resolved := tree.ResolveURIReference(base, uri).String()
 	if strings.HasSuffix(value, "#") {
 		resolved += "#" // net/url omits an explicitly empty fragment
 	}

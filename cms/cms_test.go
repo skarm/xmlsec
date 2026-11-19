@@ -38,6 +38,16 @@ type cmsWriterFunc func([]byte) (int, error)
 
 func (f cmsWriterFunc) Write(p []byte) (int, error) { return f(p) }
 
+type countingCMSSigner struct {
+	crypto.Signer
+	calls *int
+}
+
+func (s countingCMSSigner) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
+	(*s.calls)++
+	return s.Signer.Sign(random, digest, options)
+}
+
 func TestCMSIndependentFixtures(t *testing.T) {
 	paths, err := filepath.Glob("../testdata/evidence/cms-*/signature.der")
 	if err != nil || len(paths) == 0 {
@@ -691,7 +701,8 @@ func TestCMSSignReaderBoundariesAndFailures(t *testing.T) {
 
 func TestCMSSignPolicyRejectsBeforeReading(t *testing.T) {
 	c := testcert.New(t)
-	signer := cms.Signer{Key: c.LeafKey, CertificateDER: c.Leaf.Raw}
+	signCalls := 0
+	signer := cms.Signer{Key: countingCMSSigner{Signer: c.LeafKey, calls: &signCalls}, CertificateDER: c.Leaf.Raw}
 	for _, tc := range []struct {
 		name    string
 		signers []cms.Signer
@@ -701,7 +712,9 @@ func TestCMSSignPolicyRejectsBeforeReading(t *testing.T) {
 		{"no signers", nil, cms.SignOptions{}, cms.ErrPolicy},
 		{"signer count", []cms.Signer{signer, signer}, cms.SignOptions{Limits: cms.Limits{MaxSigners: 1}}, cms.ErrPolicy},
 		{"certificate count", []cms.Signer{signer}, cms.SignOptions{ExtraCertificates: [][]byte{c.Root.Raw, c.TSA.Raw}, Limits: cms.Limits{MaxCertificates: 1}}, cms.ErrPolicy},
+		{"combined certificate count", []cms.Signer{signer}, cms.SignOptions{ExtraCertificates: [][]byte{c.Root.Raw}, Limits: cms.Limits{MaxCertificates: 1}}, cms.ErrPolicy},
 		{"omitted and extra certificates", []cms.Signer{signer}, cms.SignOptions{OmitCertificates: true, ExtraCertificates: [][]byte{c.Root.Raw}}, cms.ErrPolicy},
+		{"invalid omitted signer certificate", []cms.Signer{{Key: signer.Key, CertificateDER: []byte{0x30, 0}}}, cms.SignOptions{OmitCertificates: true}, cms.ErrCertificate},
 		{"invalid limit", []cms.Signer{signer}, cms.SignOptions{Limits: cms.Limits{MaxBytes: -1}}, cms.ErrPolicy},
 		{"invalid content OID", []cms.Signer{signer}, cms.SignOptions{ContentType: asn1.ObjectIdentifier{3, 1}}, cms.ErrPolicy},
 		{"invalid extra certificate", []cms.Signer{signer}, cms.SignOptions{ExtraCertificates: [][]byte{{0x30, 0}}}, cms.ErrCertificate},
@@ -709,16 +722,92 @@ func TestCMSSignPolicyRejectsBeforeReading(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := 0
+			signCalls = 0
 			source := cmsReaderFunc(func([]byte) (int, error) { reads++; return 0, io.EOF })
 			var output bytes.Buffer
-			if n, err := cms.SignReader(t.Context(), &output, source, tc.signers, tc.options); n != 0 || output.Len() != 0 || reads != 0 || !errors.Is(err, tc.want) {
-				t.Fatalf("invalid policy touched streams: bytes=%d, reads=%d, error=%v; want %v", n, reads, err, tc.want)
+			if n, err := cms.SignReader(t.Context(), &output, source, tc.signers, tc.options); n != 0 || output.Len() != 0 || reads != 0 || signCalls != 0 || !errors.Is(err, tc.want) {
+				t.Fatalf("invalid policy triggered work: bytes=%d, reads=%d, signatures=%d, error=%v; want %v", n, reads, signCalls, err, tc.want)
 			}
 		})
 	}
 	var output bytes.Buffer
 	if n, err := cms.SignReader(t.Context(), &output, bytes.NewReader(nil), []cms.Signer{signer}, cms.SignOptions{Detached: true, Limits: cms.Limits{MaxBytes: 1}}); n != 0 || output.Len() != 0 || !errors.Is(err, cms.ErrPolicy) {
 		t.Fatal("encoded metadata exceeded budget after emitting output", n, err)
+	}
+}
+
+func TestCMSSignCertificateLimitAppliesToEmbeddedSet(t *testing.T) {
+	t.Parallel()
+	chain := testcert.New(t)
+	signers := []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw}, {Key: chain.TSAKey, CertificateDER: chain.TSA.Raw}}
+	certificates := [][]byte{chain.Leaf.Raw, chain.TSA.Raw}
+	message := []byte("external signer certificates")
+	limits := cms.Limits{MaxCertificates: 1}
+	for _, tc := range []struct {
+		name            string
+		count, embedded int
+		options         cms.SignOptions
+	}{
+		{"attached_without_certificates", 2, 0, cms.SignOptions{OmitCertificates: true, Limits: limits}},
+		{"detached_without_certificates", 2, 0, cms.SignOptions{OmitCertificates: true, Detached: true, Limits: limits}},
+		{"duplicate_signer_certificate_embedded_once", 1, 1, cms.SignOptions{ExtraCertificates: certificates[:1], Limits: limits}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := cms.Sign(t.Context(), message, signers[:tc.count], tc.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signed, err := cms.Parse(t.Context(), raw, limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(signed.Certificates()); got != tc.embedded {
+				t.Fatalf("embedded certificates = %d, want %d", got, tc.embedded)
+			}
+			verify := cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true}
+			if tc.options.Detached {
+				verify.DetachedContent = &message
+			}
+			verified, err := signed.Verify(t.Context(), certificates[:tc.count], verify)
+			if err != nil || len(verified.Signers()) != tc.count || !bytes.Equal(verified.Content(), message) {
+				t.Fatalf("exact signing result did not verify: %v", err)
+			}
+		})
+	}
+}
+
+func TestCMSSignReaderWithSharedBuffer(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	message := bytes.Repeat([]byte("original content\x00"), 64)
+	for _, tc := range []struct {
+		name   string
+		writer func(*bytes.Buffer) io.Writer
+	}{
+		{"direct", func(buffer *bytes.Buffer) io.Writer { return buffer }},
+		{"wrapped", func(buffer *bytes.Buffer) io.Writer { return struct{ io.Writer }{buffer} }},
+		{"function_writer", func(buffer *bytes.Buffer) io.Writer { return cmsWriterFunc(buffer.Write) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buffer bytes.Buffer
+			buffer.Grow(len(message) + 4096)
+			buffer.Write(message)
+			n, err := cms.SignReader(t.Context(), tc.writer(&buffer), &buffer, []cms.Signer{{Key: chain.LeafKey, CertificateDER: chain.Leaf.Raw}}, cms.SignOptions{})
+			if err != nil || n != int64(buffer.Len()) {
+				t.Fatalf("SignReader wrote %d bytes to a buffer of %d bytes: %v", n, buffer.Len(), err)
+			}
+			signed, err := cms.Parse(t.Context(), buffer.Bytes(), cms.Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verified, err := signed.Verify(t.Context(), [][]byte{chain.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true})
+			if err != nil || !bytes.Equal(verified.Content(), message) {
+				t.Fatalf("in-place signed content did not authenticate as the original message: %v", err)
+			}
+		})
 	}
 }
 
@@ -1329,7 +1418,7 @@ func TestCMSAuthenticatedESSStructure(t *testing.T) {
 				t.Fatal("valid ESS certificate binding rejected", err)
 			}
 			if tc.want == nil {
-				result, err := parsed.Verify(t.Context(), [][]byte{chain.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true, RequireUnrestrictedCertificatePath: true})
+				result, err := parsed.Verify(t.Context(), [][]byte{chain.Leaf.Raw}, cms.VerifyOptions{ExpectedContentType: cms.DataOID(), RequireCertificateBinding: true, RequireUnrestrictedCertificatePath: true, AllowLegacyESSCertID: true})
 				if result == nil || err != nil {
 					t.Fatal("advisory ESS policy became a certification-path restriction", err)
 				}

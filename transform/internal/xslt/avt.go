@@ -6,8 +6,10 @@ package xslt
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -127,20 +129,6 @@ func (a *avt) evaluateStatic(ctx context.Context, eval xpath.Evaluator, node xdm
 	}
 
 	return sb.String(), nil
-}
-
-func stringifyItem(item xdm.Item) string {
-	av, err := xpath.AtomizeItem(item)
-	if err != nil {
-		return ""
-	}
-
-	s, err := xpath.AtomicToString(av)
-	if err != nil {
-		return ""
-	}
-
-	return s
 }
 
 // stringifyResult converts an xpath.Result to its string representation.
@@ -444,7 +432,7 @@ func (c *compiler) compileAVT(s string, nsBindings map[string]string) (*avt, err
 			exprStr := s[i+1 : i+1+end]
 			// Empty expression {} or comment-only expression {(: ... :)}
 			// produce empty string per XSLT 3.0 spec.
-			trimmed := strings.TrimSpace(exprStr)
+			trimmed := strings.Trim(exprStr, lexicon.XMLWhitespace)
 			if returned1, matchedBranch := compileAVTIsXPathCommentOnly(trimmed, c, &parts, exprStr, nsBindings); matchedBranch {
 				return nil, returned1
 			}
@@ -476,8 +464,7 @@ func (c *compiler) compileAVT(s string, nsBindings map[string]string) (*avt, err
 }
 
 // findAVTExprEnd finds the index of the closing '}' for an avt expression,
-// tracking brace nesting (for EQName Q{uri}local, map{}, array{}) and
-// skipping braces inside string literals.
+// tracking nested constructors and skipping string, comment, and URI contents.
 func findAVTExprEnd(s string) int {
 	depth := 0
 	commentDepth := 0
@@ -502,6 +489,13 @@ func findAVTExprEnd(s string) int {
 		case i+1 < len(s) && ch == '(' && s[i+1] == ':' && !inSingle && !inDouble:
 			commentDepth++
 			i++ // skip ':'
+		case ch == 'Q' && !inSingle && !inDouble && startsAVTBracedURI(s, i):
+			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 {
+				return -1
+			}
+
+			i += 2 + end
 		case ch == '\'' && !inDouble:
 			inSingle = !inSingle
 		case ch == '"' && !inSingle:
@@ -518,6 +512,20 @@ func findAVTExprEnd(s string) int {
 	}
 
 	return -1
+}
+
+func startsAVTBracedURI(s string, index int) bool {
+	if index+1 >= len(s) || s[index+1] != '{' {
+		return false
+	}
+
+	if index == 0 {
+		return true
+	}
+
+	previous, _ := utf8.DecodeLastRuneInString(s[:index])
+
+	return !xmlchar.IsNCNameChar(previous)
 }
 
 // isXPathCommentOnly checks if a string consists only of XPath comments.

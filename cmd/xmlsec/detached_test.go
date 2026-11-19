@@ -8,12 +8,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/c14n"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/reference"
 )
 
@@ -139,5 +141,38 @@ func TestResourceManifestRejects(t *testing.T) {
 		if err := run(t.Context(), []string{cmd, "-h"}, nil, &out, &stderr); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestLocalInputsAllowSymlinkToRegularFile(t *testing.T) {
+	t.Parallel()
+
+	const payload = "<payload></payload>"
+	dir := t.TempDir()
+	regular := testutil.WriteFile(t, dir, "payload.xml", []byte(payload))
+	alias := filepath.Join(dir, "payload-link.xml")
+	if err := os.Symlink(regular, alias); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+
+	if got := cli(t, nil, nameC14N, "-in", alias); string(got) != payload {
+		t.Errorf("canonicalized symlink input = %q, want %q", got, payload)
+	}
+
+	const uri = "urn:test:payload"
+	manifest := testutil.WriteJSON(t, dir, "resources.json", []resourceEntry{{URI: uri, Path: filepath.Base(alias)}})
+	_, resolve, err := loadResourcesContext(t.Context(), manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := resolve.Resolve(t.Context(), uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := io.ReadAll(f)
+	if closeErr := f.Close(); err != nil || closeErr != nil || string(got) != payload {
+		t.Errorf("resolved symlink input = %q, read error %v, close error %v", got, err, closeErr)
 	}
 }

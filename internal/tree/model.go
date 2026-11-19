@@ -89,10 +89,23 @@ const (
 	InvalidNode Kind = 255
 )
 
+// DOEMarker identifies a serializer boundary created by XSLT execution.
+type DOEMarker uint8
+
+const (
+	// NoDOEMarker identifies ordinary nodes, including processing instructions.
+	NoDOEMarker DOEMarker = iota
+	// DOEStart starts a span of text written without output escaping.
+	DOEStart
+	// DOEEnd restores normal output escaping.
+	DOEEnd
+)
+
 // Node is mutable only inside this module. Public Documents never expose it.
 type Node struct {
 	// Kind selects the XML or XPath node representation.
 	Kind       Kind
+	doeMarker  DOEMarker
 	SourceLine uint32 // 1-based start-tag line; zero when unavailable
 	// Name is the expanded name for named nodes.
 	Name Name
@@ -110,6 +123,25 @@ type Node struct {
 	Children []*Node
 	// textBuffer accumulates adjacent text during private draft construction.
 	textBuffer *strings.Builder
+}
+
+// NewDOEMarker creates an XSLT serializer boundary with private provenance.
+func NewDOEMarker(disable bool) *Node {
+	target, marker := lexicon.EnableOutputEscapingPITarget, DOEEnd
+	if disable {
+		target, marker = lexicon.DisableOutputEscapingPITarget, DOEStart
+	}
+
+	return &Node{Kind: PINode, Name: Name{Local: target}, doeMarker: marker}
+}
+
+// DOEMarkerOf reports the structural marker attached by NewDOEMarker.
+func DOEMarkerOf(n *Node) DOEMarker {
+	if n == nil || n.Kind != PINode {
+		return NoDOEMarker
+	}
+
+	return n.doeMarker
 }
 
 // Root returns the private root node for module-internal draft operations.
@@ -225,6 +257,7 @@ type Document struct {
 	nodeBases        map[*Node]string
 	dtdTypes         map[dtdAttributeKey]DTDAttributeType
 	views            sync.Map
+	contentSequence  bool
 	contextual       bool
 	contextSource    *Document
 	contextAnchor    *Node
@@ -237,12 +270,8 @@ func Unwrap(e Element) (*Document, *Node) { return e.doc, e.node }
 // Borrowed snapshot nodes must only be read through the draft. Reparse produces
 // an independently owned, validated snapshot.
 func FromNodes(nodes []*Node, limits Limits) *Document {
-	d := &Document{children: nodes, limits: limits}
-	for _, n := range nodes {
-		if n.Kind == ElementNode {
-			d.root = n
-		}
-	}
+	d := &Document{limits: limits}
+	SetDraftChildren(d, nodes)
 
 	return d
 }
@@ -258,7 +287,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		return nil, err
 	}
 
-	out := &Document{limits: d.limits, inputBytes: d.inputBytes, baseURI: d.baseURI, unparsedEntities: d.unparsedEntities, dtdInfo: d.dtdInfo, children: make([]*Node, len(d.children))}
+	out := &Document{limits: d.limits, inputBytes: d.inputBytes, baseURI: d.baseURI, unparsedEntities: d.unparsedEntities, dtdInfo: d.dtdInfo, children: make([]*Node, len(d.children)), contentSequence: d.contentSequence}
 
 	var cp func(*Node, *Node) (*Node, error)
 
@@ -270,7 +299,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		x := &Node{
 			Kind: n.Kind, Name: n.Name, Prefix: n.Prefix, Data: n.Data, Parent: p,
 			Attrs: append([]Attribute(nil), n.Attrs...), NS: append([]Namespace(nil), n.NS...),
-			SourceLine: n.SourceLine,
+			SourceLine: n.SourceLine, doeMarker: n.doeMarker,
 		}
 
 		if base := d.nodeBases[n]; base != "" {
@@ -309,7 +338,7 @@ func Clone(ctx context.Context, d *Document) (*Document, error) {
 		}
 
 		out.children[i] = c
-		if c.Kind == ElementNode {
+		if n == d.root {
 			out.root = c
 		}
 	}
@@ -491,6 +520,7 @@ func NCName(s string) bool { return xmlchar.IsValidNCName(s) }
 func SetDraftChildren(d *Document, nodes []*Node) {
 	d.children = nodes
 	d.root = nil
+	d.contentSequence = true
 
 	for _, n := range nodes {
 		if n.Kind == ElementNode {

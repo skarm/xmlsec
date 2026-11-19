@@ -70,7 +70,7 @@ func lookupFunctionsSequence(name string) (*builtinFunc, bool) {
 	case nameSort:
 		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityThree, fn: fnSort}, true
 	case fnNameFlatten:
-		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnFlatten, extension: staticOnlySequenceExtension}, true
+		return &builtinFunc{name: name, min: builtinArityOne, max: builtinArityOne, fn: fnArrayFlatten, extension: staticOnlySequenceExtension}, true
 	}
 
 	return nil, false
@@ -494,9 +494,10 @@ func deepEqualAtomic(a, b xdm.AtomicValue, opts deepEqualOptions) (bool, error) 
 		}
 	}
 
-	aStr := xdm.IsStringDerived(a.TypeName) || a.TypeName == xdm.TypeAnyURI
+	// The value comparison eq casts xs:untypedAtomic to xs:string.
+	aStr := xdm.IsStringDerived(a.TypeName) || a.TypeName == xdm.TypeAnyURI || a.TypeName == xdm.TypeUntypedAtomic
 
-	bStr := xdm.IsStringDerived(b.TypeName) || b.TypeName == xdm.TypeAnyURI
+	bStr := xdm.IsStringDerived(b.TypeName) || b.TypeName == xdm.TypeAnyURI || b.TypeName == xdm.TypeUntypedAtomic
 	if opts.coll != nil && aStr && bStr {
 		return opts.coll.compare(stringFromAtomic(a), stringFromAtomic(b)) == 0, nil
 	}
@@ -532,12 +533,12 @@ func deepEqualNode(a, b xdm.Node, opts deepEqualOptions) (bool, error) {
 		ba, bOK := b.(*xdm.Attribute)
 
 		return aOK && bOK && deepEqualAttribute(aa, ba, opts), nil
-	case xdm.NamespaceNode, xdm.ProcessingInstructionNode:
+	case xdm.NamespaceNode:
 		return a.Name() == b.Name() && xdm.CharacterData(a) == xdm.CharacterData(b), nil
-	case xdm.TextNode, xdm.CDATASectionNode:
+	case xdm.ProcessingInstructionNode:
+		return a.Name() == b.Name() && opts.stringsEqual(xdm.CharacterData(a), xdm.CharacterData(b)), nil
+	case xdm.TextNode, xdm.CDATASectionNode, xdm.CommentNode:
 		return opts.stringsEqual(xdm.CharacterData(a), xdm.CharacterData(b)), nil
-	case xdm.CommentNode:
-		return xdm.CharacterData(a) == xdm.CharacterData(b), nil
 	default:
 		return false, nil
 	}
@@ -1011,23 +1012,4 @@ func sequenceSortKeyLess(ctx context.Context, a, b xdm.Sequence, coll *collation
 
 	// Equal common prefixes sort by key length.
 	return xdm.SequenceLen(a) < xdm.SequenceLen(b), nil
-}
-
-func fnFlatten(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	var result xdm.ItemSlice
-	flattenItems(args[0], &result)
-
-	return result, nil
-}
-
-func flattenItems(seq xdm.Sequence, result *xdm.ItemSlice) {
-	for item := range xdm.SequenceItems(seq) {
-		if arr, ok := item.(xdm.ArrayItem); ok {
-			for _, m := range arr.MembersView() {
-				flattenItems(m, result)
-			}
-		} else {
-			*result = append(*result, item)
-		}
-	}
 }

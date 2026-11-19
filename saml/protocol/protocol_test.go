@@ -286,6 +286,16 @@ func TestAuthnRequest(t *testing.T) {
 		t.Fatal("relay")
 	}
 
+	bindingLimits := binding.Options{Policy: xmldsig.Policy{AllowedSignatureMethods: []string{xmldsig.ECDSASHA256}}}
+	if got, err := protocol.VerifyRedirectRequest(t.Context(), query, []crypto.PublicKey{c.LeafKey.Public()}, o, bindingLimits); err != nil || got == nil {
+		t.Fatalf("VerifyRedirectRequest with compatible binding policy = %v, %v", got, err)
+	}
+
+	bindingLimits.Policy.MaxRSABits = -1
+	if got, err := protocol.VerifyRedirectRequest(t.Context(), "", []crypto.PublicKey{c.LeafKey.Public()}, o, bindingLimits); got != nil || !errors.Is(err, protocol.ErrSignature) || !errors.Is(err, xmldsig.ErrPolicy) {
+		t.Fatalf("VerifyRedirectRequest with invalid local binding policy = %v, %v", got, err)
+	}
+
 	if _, e = protocol.VerifyRedirectRequest(t.Context(), strings.Replace(query, "RelayState=opaque", "RelayState=evil", 1), []crypto.PublicKey{c.LeafKey.Public()}, o, binding.Options{}); e == nil {
 		t.Fatal("binding tamper")
 	}
@@ -351,11 +361,13 @@ func TestAuthnRequestACSSelection(t *testing.T) {
 		second = "https://sp.example.test/acs-one"
 	)
 	for _, tc := range []struct {
-		name       string
-		attributes string
-		want       string
-		first      metadata.Endpoint
-		second     metadata.Endpoint
+		name         string
+		attributes   string
+		want         string
+		first        metadata.Endpoint
+		second       metadata.Endpoint
+		forceBinding string
+		wantBinding  string
 	}{
 		{name: "unspecified uses document order", want: first},
 		{name: "false is skipped before unspecified", first: metadata.Endpoint{DefaultSet: true}, want: second},
@@ -363,6 +375,8 @@ func TestAuthnRequestACSSelection(t *testing.T) {
 		{name: "explicit true precedes unspecified", second: metadata.Endpoint{DefaultSet: true, Default: true}, want: second},
 		{name: "first explicit true", first: metadata.Endpoint{DefaultSet: true, Default: true}, want: first},
 		{name: "explicit index", attributes: ` AssertionConsumerServiceIndex="1"`, want: second},
+		{name: "Artifact index selects metadata binding", attributes: ` AssertionConsumerServiceIndex="1"`, second: metadata.Endpoint{Binding: metadata.HTTPArtifact}, want: second, wantBinding: metadata.HTTPArtifact},
+		{name: "Artifact index respects fixed POST binding", attributes: ` AssertionConsumerServiceIndex="1"`, second: metadata.Endpoint{Binding: metadata.HTTPArtifact}, forceBinding: metadata.HTTPPost},
 		{name: "explicit URL", attributes: ` AssertionConsumerServiceURL="` + second + `" ProtocolBinding="` + metadata.HTTPPost + `"`, want: second},
 		{name: "explicit URL without binding", attributes: ` AssertionConsumerServiceURL="` + second + `"`, want: second},
 		{name: "explicit binding without URL", attributes: ` ProtocolBinding="` + metadata.HTTPPost + `"`, want: first},
@@ -381,8 +395,15 @@ func TestAuthnRequestACSSelection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a, b := tc.first, tc.second
 			a.Binding, a.Location, a.Index = metadata.HTTPPost, first, 9
-			b.Binding, b.Location, b.Index = metadata.HTTPPost, second, 1
-			options := protocol.RequestOptions{Issuer: sp, Destination: sso, At: testcert.Now(), ACS: []metadata.Endpoint{
+			b.Location, b.Index = second, 1
+			if b.Binding == "" {
+				b.Binding = metadata.HTTPPost
+			}
+			wantBinding := tc.wantBinding
+			if wantBinding == "" {
+				wantBinding = metadata.HTTPPost
+			}
+			options := protocol.RequestOptions{Issuer: sp, Destination: sso, At: testcert.Now(), ResponseBinding: tc.forceBinding, ACS: []metadata.Endpoint{
 				{Binding: metadata.HTTPRedirect, Location: "https://sp.example.test/redirect", Default: true, DefaultSet: true}, a, b,
 			}}
 			raw := fmt.Sprintf(`<samlp:AuthnRequest xmlns:samlp="%s" xmlns:saml="%s" ID="_request" Version="2.0" IssueInstant="%s" Destination="%s"%s><saml:Issuer>%s</saml:Issuer></samlp:AuthnRequest>`, protocol.ProtocolNamespace, protocol.AssertionNamespace, testcert.Now().Format(time.RFC3339), sso, tc.attributes, sp)
@@ -394,14 +415,14 @@ func TestAuthnRequestACSSelection(t *testing.T) {
 
 			for _, transport := range []string{"POST", "Redirect"} {
 				t.Run(transport, func(t *testing.T) {
-					checkACSSelection(t, ctx, d, key, options, transport, tc.want)
+					checkACSSelection(t, ctx, d, key, options, transport, tc.want, wantBinding)
 				})
 			}
 		})
 	}
 }
 
-func checkACSSelection(t *testing.T, ctx context.Context, d *document.Document, key crypto.Signer, options protocol.RequestOptions, transport, want string) {
+func checkACSSelection(t *testing.T, ctx context.Context, d *document.Document, key crypto.Signer, options protocol.RequestOptions, transport, want, wantBinding string) {
 	t.Helper()
 
 	var (
@@ -429,8 +450,8 @@ func checkACSSelection(t *testing.T, ctx context.Context, d *document.Document, 
 		if err == nil || result != nil {
 			t.Fatal("invalid endpoint selection accepted")
 		}
-	} else if err != nil || result == nil || result.ACS() != want {
-		t.Fatalf("want ACS %q, result=%v error=%v", want, result, err)
+	} else if err != nil || result == nil || result.ACS() != want || result.ResponseBinding() != wantBinding {
+		t.Fatalf("want ACS %q and binding %q, result=%v error=%v", want, wantBinding, result, err)
 	}
 }
 

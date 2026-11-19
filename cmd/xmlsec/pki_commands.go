@@ -24,35 +24,39 @@ func runPKI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	fs := flag.NewFlagSet("pki "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "OCSP request/response input")
-	out := fs.String("out", "-", "output DER or verification JSON")
-	certificate := fs.String("certificate", "", "leaf certificate PEM/DER")
-	issuer := fs.String(fieldIssuer, "", "explicit issuer certificate PEM/DER")
-	trustFile := fs.String("trust", "", "trusted local JSON trust/evidence configuration")
-	atValue := fs.String("at", "", "explicit verification time, RFC3339")
-	hashName := fs.String("hash", cliDefaultHashName, "OCSP CertID hash")
-	nonceFile := fs.String("nonce-file", "", "exact expected/request nonce file; request generates random nonce if omitted")
-	responder := fs.String("responder", "", "OCSP responder certificate")
-	keyFile := fs.String("key", "", "responder private key")
-	config := fs.String("config", "", "trusted JSON pki.OCSPResponseTemplate for issuance")
-	maxAge := fs.Duration("max-age", cliDefaultOCSPMaxAge, "OCSP freshness maximum age; 0 uses library default")
-	skew := fs.Duration("clock-skew", cliDefaultOCSPClockSkew, "OCSP clock skew tolerance")
+	input := fs.String(flagNameIn, stdioPath, "OCSP request/response input")
+	out := fs.String(flagNameOut, stdioPath, "output DER or verification JSON")
+	certificate := fs.String(flagNameCertificate, "", "leaf certificate PEM/DER")
+	issuer := fs.String(flagNameIssuer, "", "explicit issuer certificate PEM/DER")
+	trustFile := fs.String(flagNameTrust, "", "trusted local JSON trust/evidence configuration")
+	atValue := fs.String(flagNameAt, "", "explicit verification time, RFC3339")
+	hashName := fs.String(flagNameHash, cliDefaultHashName, "OCSP CertID hash")
+	nonceFile := fs.String(flagNameNonceFile, "", "exact expected/request nonce file; request generates random nonce if omitted")
+	responder := fs.String(flagNameResponder, "", "OCSP responder certificate")
+	keyFile := fs.String(flagNameKey, "", "responder private key")
+	config := fs.String(flagNameConfig, "", "trusted JSON pki.OCSPResponseTemplate for issuance")
+	maxAge := fs.Duration(flagNameMaxAge, cliDefaultOCSPMaxAge, "OCSP freshness maximum age; 0 uses library default")
+	skew := fs.Duration(flagNameClockSkew, cliDefaultOCSPClockSkew, "OCSP clock skew tolerance")
 	flags := registerPrivateKeyFlags(fs)
 
-	specific := "out certificate"
+	specific := []string{flagNameOut, flagNameCertificate}
 
 	switch cmd {
 	case nameVerify:
-		specific += " trust at"
+		specific = append(specific, flagNameTrust, flagNameAt)
 	case "ocsp-request":
-		specific += " issuer hash nonce-file"
+		specific = append(specific, flagNameIssuer, flagNameHash, flagNameNonceFile)
 	case "ocsp-verify":
-		specific += " in issuer at nonce-file trust max-age clock-skew"
+		specific = append(specific,
+			flagNameIn, flagNameIssuer, flagNameAt, flagNameNonceFile, flagNameTrust, flagNameMaxAge,
+			flagNameClockSkew,
+		)
 	case "ocsp-issue":
-		specific += " in issuer responder key config" + privateKeyFlagNames
+		specific = append(specific, flagNameIn, flagNameIssuer, flagNameResponder, flagNameKey, flagNameConfig)
+		specific = append(specific, privateKeyFlagNames()...)
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -81,7 +85,7 @@ func runPKI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 
 	var nonce []byte
 	if *nonceFile != "" {
-		nonce, err = readInputContext(ctx, *nonceFile, nil, cliMaxNonceBytes)
+		nonce, err = readNonceFile(ctx, *nonceFile)
 		if err != nil {
 			return err
 		}

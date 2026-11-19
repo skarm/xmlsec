@@ -6,7 +6,7 @@ package ecp
 import (
 	"context"
 	"errors"
-	"math"
+	"iter"
 	"mime"
 	"net/http"
 	"net/url"
@@ -66,7 +66,8 @@ const (
 
 // PAOS negotiation evaluates HTTP media ranges and quality values; advertisement or a matching Accept header is not proof of possession.
 const (
-	headerAccept = "Accept"
+	headerAccept              = "Accept"
+	unmatchedMediaSpecificity = -1
 )
 
 // SOAP 1.1 mustUnderstand accepts the numeric lexical forms 0 and 1 here; ECP creation emits mandatory 1 and validates the processing actor separately.
@@ -109,63 +110,138 @@ func Advertise(h http.Header) {
 	h.Set(headerPAOS, paosVersionQuotedParameter+PAOSNamespace+paosServiceDelimiter+Namespace+`"`)
 }
 
-// acceptsPAOS checks Accept media ranges. A q=0 entry disables that range;
-// an explicit range takes precedence over wildcards.
+// acceptsPAOS evaluates Accept for the UTF-8 PAOS representation we send.
 func acceptsPAOS(h http.Header) bool {
-	const (
-		applicationMediaSpecificity = 1
-		defaultMediaQuality         = 1.0
-		exactMediaSpecificity       = 2
-		mediaRangeAny               = "*/*"
-		mediaRangeApplication       = "application/*"
-		qualityFloatBitSize         = 64
-		qualityParameter            = "q"
-		unmatchedMediaQuality       = -1.0
-		unmatchedMediaSpecificity   = -1
-		wildcardMediaSpecificity    = 0
-	)
-
-	quality := unmatchedMediaQuality
 	specificity := unmatchedMediaSpecificity
+	accepted := false
 
 	for _, line := range h.Values(headerAccept) {
-		for part := range strings.SplitSeq(line, ",") {
-			media, p, err := mime.ParseMediaType(strings.TrimSpace(part))
+		for part := range acceptMediaRanges(line) {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+
+			media, p, err := mime.ParseMediaType(part)
 			if err != nil {
 				return false
 			}
 
-			spec := unmatchedMediaSpecificity
+			allowed := true
 
-			switch media {
-			case MediaType:
-				spec = exactMediaSpecificity
-			case mediaRangeApplication:
-				spec = applicationMediaSpecificity
-			case mediaRangeAny:
-				spec = wildcardMediaSpecificity
-			}
+			if raw, ok := p["q"]; ok {
+				var valid bool
 
-			q := defaultMediaQuality
-			if raw, ok := p[qualityParameter]; ok {
-				q, err = strconv.ParseFloat(raw, qualityFloatBitSize)
-				if err != nil || q < 0 || q > 1 || math.IsNaN(q) || math.IsInf(q, 0) {
+				allowed, valid = acceptQuality(raw)
+				if !valid {
 					return false
 				}
+
+				delete(p, "q")
 			}
 
-			if spec > specificity || spec == specificity && q > quality {
+			spec := paosMediaSpecificity(media, p)
+			switch {
+			case spec > specificity:
 				specificity = spec
-				quality = q
+				accepted = allowed
+			case spec == specificity && spec != unmatchedMediaSpecificity:
+				accepted = accepted || allowed
 			}
 		}
 	}
 
-	if specificity < 0 || quality <= 0 {
-		return false
+	return accepted
+}
+
+func paosMediaSpecificity(media string, params map[string]string) int {
+	const (
+		wildcardSpecificity    = 0
+		applicationSpecificity = 2
+		paosSpecificity        = 4
+	)
+
+	var specificity int
+
+	switch media {
+	case "*/*":
+		specificity = wildcardSpecificity
+	case "application/*":
+		specificity = applicationSpecificity
+	case MediaType:
+		specificity = paosSpecificity
+	default:
+		return unmatchedMediaSpecificity
 	}
 
-	return specificity >= 0 && quality > 0
+	if len(params) == 0 {
+		return specificity
+	}
+
+	// The only parameter on the emitted representation is charset=utf-8.
+	charset := strings.ToLower(params["charset"])
+	if len(params) == 1 && (charset == lexicon.EncodingUTF8 || charset == "csutf8") {
+		return specificity + 1
+	}
+
+	return unmatchedMediaSpecificity
+}
+
+// acceptQuality applies the qvalue grammar from RFC 9110 §12.4.2. Only
+// zero versus positive matters after the matching specificity is known.
+func acceptQuality(raw string) (positive, valid bool) {
+	const maximumQualityBytes = len("0.000")
+
+	if len(raw) == 0 || len(raw) > maximumQualityBytes || raw[0] != '0' && raw[0] != '1' {
+		return false, false
+	}
+
+	positive = raw[0] == '1'
+	if len(raw) == 1 {
+		return positive, true
+	}
+
+	if raw[1] != '.' {
+		return false, false
+	}
+
+	for _, digit := range raw[2:] {
+		if digit < '0' || digit > '9' || raw[0] == '1' && digit != '0' {
+			return false, false
+		}
+
+		positive = positive || digit != '0'
+	}
+
+	return positive, true
+}
+
+// acceptMediaRanges splits HTTP list members outside quoted parameter values.
+// mime.ParseMediaType validates each member's syntax.
+func acceptMediaRanges(value string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		start := 0
+		quoted, escaped := false, false
+
+		for i := range len(value) {
+			switch {
+			case escaped:
+				escaped = false
+			case quoted && value[i] == '\\':
+				escaped = true
+			case value[i] == '"':
+				quoted = !quoted
+			case !quoted && value[i] == ',':
+				if !yield(value[start:i]) {
+					return
+				}
+
+				start = i + 1
+			}
+		}
+
+		yield(value[start:])
+	}
 }
 
 // Negotiated reports PAOS media, service and version support in the HTTP headers.
@@ -350,6 +426,10 @@ func parseChallenge(ctx context.Context, raw []byte, resourceURL string, channel
 		xmlNameIDPList            = "IDPList"
 	)
 
+	if protocol.ValidateChannelBindings(channels, false) != nil {
+		return nil, ErrECP
+	}
+
 	limits.Understood = append(slices.Clone(limits.Understood), knownHeaders()...)
 
 	m, err := binding.DecodeSOAP(ctx, raw, limits)
@@ -394,19 +474,9 @@ func parseChallenge(ctx context.Context, raw []byte, resourceURL string, channel
 		return nil, ErrECP
 	}
 
-	base, err := url.Parse(resourceURL)
-	if err != nil || !profile.Endpoint(resourceURL, false) {
-		return nil, ErrECP
-	}
-
-	ref, err := url.Parse(xmlutil.Attr(paos, xmlNameResponseConsumerURL))
-	if err != nil || ref.String() == "" {
-		return nil, ErrECP
-	}
-
-	x.acs = base.ResolveReference(ref).String()
-	if !profile.Endpoint(x.acs, false) {
-		return nil, ErrECP
+	x.acs, err = resolveConsumerURL(resourceURL, xmlutil.Attr(paos, xmlNameResponseConsumerURL))
+	if err != nil {
+		return nil, err
 	}
 
 	if _, present := request.Attribute(document.Name{Local: xmlNameIsPassive}); present {
@@ -452,6 +522,29 @@ func parseChallenge(ctx context.Context, raw []byte, resourceURL string, channel
 	}
 
 	return x, nil
+}
+
+func resolveConsumerURL(resourceURL, consumerURL string) (string, error) {
+	base, err := url.Parse(resourceURL)
+	if err != nil || !profile.Endpoint(resourceURL, false) {
+		return "", ErrECP
+	}
+
+	if strings.ContainsRune(consumerURL, '#') {
+		return "", ErrECP
+	}
+
+	ref, err := url.Parse(consumerURL)
+	if err != nil || ref.String() == "" {
+		return "", ErrECP
+	}
+
+	acs := tree.ResolveURIReference(base, ref).String()
+	if !profile.Endpoint(acs, false) {
+		return "", ErrECP
+	}
+
+	return acs, nil
 }
 
 // IsPassive reports whether the ECP may interact with the user. An omitted ECP

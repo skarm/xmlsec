@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -239,8 +240,11 @@ func TestTextResourcesWorkingStorage(t *testing.T) {
 						return err
 					}
 					actual, err := result.Text()
-					if err != nil || actual != text {
-						return fmt.Errorf("text changed: %v", err)
+					if err != nil {
+						return err
+					}
+					if actual != text {
+						return errors.New("decoded text differs from input")
 					}
 					return nil
 				})
@@ -255,7 +259,7 @@ func TestTextResourcesWorkingStorage(t *testing.T) {
 
 func TestTextResourcesRejectBeforeReadingRemainder(t *testing.T) {
 	for _, lines := range []bool{false, true} {
-		t.Run(fmt.Sprint(lines), func(t *testing.T) {
+		t.Run(strconv.FormatBool(lines), func(t *testing.T) {
 			prefix := strings.Repeat("x", 4096)
 			limits := transform.Limits{MaxOutputBytes: 64}
 			expression := `unparsed-text('urn:text')`
@@ -291,7 +295,8 @@ func TestTextResourcesRejectBeforeReadingRemainder(t *testing.T) {
 func TestTextResourceChunksAndCompletion(t *testing.T) {
 	text := strings.Repeat("x", (32<<10)-1) + "🙂\r\nя\r\nend\n"
 	units := utf16.Encode([]rune(text))
-	encoded := []byte{0xfe, 0xff}
+	encoded := make([]byte, 2, 2+2*len(units))
+	encoded[0], encoded[1] = 0xfe, 0xff
 	for _, unit := range units {
 		encoded = append(encoded, byte(unit>>8), byte(unit))
 	}
@@ -390,8 +395,11 @@ func TestTextAvailabilityDoesNotRetainResource(t *testing.T) {
 			return err
 		}
 		available, err := value.Boolean()
-		if err != nil || !available {
-			return fmt.Errorf("resource unavailable: %v", err)
+		if err != nil {
+			return err
+		}
+		if !available {
+			return errors.New("resource unavailable")
 		}
 		return nil
 	})

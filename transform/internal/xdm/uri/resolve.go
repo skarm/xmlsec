@@ -131,16 +131,136 @@ func EscapeResourceReference(reference string) string {
 // or discarding empty query/fragment delimiters. It is shared by XML base,
 // schema/module resources and XPath URI functions.
 func ResolveIRIReference(ref, base string) (string, error) {
-	b, err := splitIRIReference(base)
+	parsedBase, err := ParseIRIReference(base)
 	if err != nil {
 		return "", err
 	}
 
-	r, err := splitIRIReference(ref)
+	parsedRef, err := ParseIRIReference(ref)
 	if err != nil {
 		return "", err
 	}
 
+	return parsedRef.ResolveAgainst(parsedBase), nil
+}
+
+// ParseIRIReference preserves IRI spelling, including host forms that are
+// syntactically valid even when net/url cannot use them as a network address.
+func ParseIRIReference(raw string) (IRIReference, error) {
+	if err := ValidatePercentEncoding(raw); err != nil {
+		return IRIReference{}, err
+	}
+
+	reference := splitIRIReference(raw)
+	if _, err := url.Parse(raw); err != nil {
+		if !reference.hasAuthority {
+			return IRIReference{}, err
+		}
+
+		authority, ok := genericAuthority(reference.authority)
+		if !ok {
+			return IRIReference{}, err
+		}
+
+		validation := reference
+		validation.authority = authority
+
+		if _, validationErr := url.Parse(validation.String()); validationErr != nil {
+			return IRIReference{}, validationErr
+		}
+	}
+
+	return reference, nil
+}
+
+func genericAuthority(authority string) (string, bool) {
+	hostPort := authority
+	if userinfo, rest, found := strings.Cut(authority, "@"); found {
+		if strings.ContainsRune(rest, '@') || strings.ContainsFunc(userinfo, func(value rune) bool {
+			return !isIRINameChar(value) && value != ':' && value != '%'
+		}) {
+			return "", false
+		}
+
+		hostPort = rest
+	}
+
+	if strings.HasPrefix(hostPort, "[") {
+		host, port, closed := strings.Cut(hostPort[1:], "]")
+		if !closed || !validIRIPortSuffix(port) {
+			return "", false
+		}
+
+		if isIPvFuture(host) {
+			return "host" + port, true
+		}
+
+		_, err := url.Parse("iri://" + hostPort)
+
+		return hostPort, err == nil
+	}
+
+	host, port, hasPort := strings.Cut(hostPort, ":")
+	if strings.ContainsFunc(host, func(value rune) bool {
+		return !isIRINameChar(value) && value != '%'
+	}) {
+		return "", false
+	}
+
+	if hasPort {
+		if !asciiDigits(port) {
+			return "", false
+		}
+
+		return "host:" + port, true
+	}
+
+	return "host", true
+}
+
+func isIPvFuture(host string) bool {
+	if host == "" || host[0] != 'v' && host[0] != 'V' {
+		return false
+	}
+
+	version, address, found := strings.Cut(host[1:], ".")
+
+	return found && version != "" && address != "" &&
+		!strings.ContainsFunc(version, func(value rune) bool {
+			return !(value >= '0' && value <= '9' || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F')
+		}) &&
+		!strings.ContainsFunc(address, func(value rune) bool { return !isIRINameASCII(value) && value != ':' })
+}
+
+func validIRIPortSuffix(suffix string) bool {
+	return suffix == "" || suffix[0] == ':' && asciiDigits(suffix[1:])
+}
+
+func asciiDigits(value string) bool {
+	return !strings.ContainsFunc(value, func(ch rune) bool { return ch < '0' || ch > '9' })
+}
+
+func isIRINameASCII(value rune) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || strings.ContainsRune("-._~!$&'()*+,;=", value)
+}
+
+func isIRINameChar(value rune) bool {
+	return isIRINameASCII(value) || value >= 0xA0 && value <= 0xD7FF ||
+		value >= 0xF900 && value <= 0xFDCF || value >= 0xFDF0 && value <= 0xFFEF ||
+		(value >= 0x10000 && value <= 0xDFFFD || value >= 0xE1000 && value <= 0xEFFFD) && value&0xFFFF <= 0xFFFD
+}
+
+// IsAbsolute reports whether the reference has a scheme.
+func (r IRIReference) IsAbsolute() bool { return r.scheme != "" }
+
+// IsHierarchical reports whether the reference has a hierarchical form.
+func (r IRIReference) IsHierarchical() bool {
+	return !r.IsAbsolute() || r.hasAuthority || r.path == "" || strings.HasPrefix(r.path, "/")
+}
+
+// ResolveAgainst applies RFC 3986 section 5.2 to the original IRI components.
+func (r IRIReference) ResolveAgainst(b IRIReference) string {
 	// RFC 3986 section 5.2, applied directly to IRI components. Serializing
 	// through net/url would escape Unicode and lose an empty fragment; decoding
 	// that result would also rewrite pre-existing percent escapes (F&O 6.1).
@@ -173,10 +293,11 @@ func ResolveIRIReference(ref, base string) (string, error) {
 		}
 	}
 
-	return t.String(), nil
+	return t.String()
 }
 
-type iriReference struct {
+// IRIReference holds the original spelling of a parsed reference.
+type IRIReference struct {
 	scheme       string
 	authority    string
 	path         string
@@ -187,7 +308,7 @@ type iriReference struct {
 	hasFragment  bool
 }
 
-func (r iriReference) String() string {
+func (r IRIReference) String() string {
 	var b strings.Builder
 	if r.scheme != "" {
 		b.WriteString(r.scheme)
@@ -233,16 +354,8 @@ func ValidatePercentEncoding(uri string) error {
 	return nil
 }
 
-func splitIRIReference(raw string) (iriReference, error) {
-	if err := ValidatePercentEncoding(raw); err != nil {
-		return iriReference{}, err
-	}
-
-	if _, err := url.Parse(raw); err != nil {
-		return iriReference{}, err
-	}
-
-	r := iriReference{}
+func splitIRIReference(raw string) IRIReference {
+	r := IRIReference{}
 	raw, r.fragment, r.hasFragment = strings.Cut(raw, "#")
 
 	raw, r.query, r.hasQuery = strings.Cut(raw, "?")
@@ -263,7 +376,7 @@ func splitIRIReference(raw string) (iriReference, error) {
 
 	r.path = raw
 
-	return r, nil
+	return r
 }
 
 func removeIRIDotSegments(input string) string {

@@ -82,7 +82,7 @@ func checkCMSBEROpenSSL(t *testing.T, fixture *interopFixture, name string) {
 
 	normalized := write(t, filepath.Join(dir, "normalized.der"), parsed.DER())
 	for _, path := range []string{encoded, normalized} {
-		verified := filepath.Join(dir, "verified")
+		verified := filepath.Join(t.TempDir(), "verified")
 		command(t, fixture, true, nil, "openssl", "cms", "-verify", "-binary", "-inform", "DER", "-in", path, "-noverify", "-out", verified)
 
 		if !bytes.Equal(read(t, verified), content) {
@@ -116,9 +116,13 @@ func TestEvidenceExchange(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Second).Add(time.Minute)
 	epoch := strconv.FormatInt(at.Unix(), 10)
 	p := binary(t, fixture, "evidenceprobe")
-	goProbe := func(mode string, args ...string) {
-		command(t, fixture, true, nil, p, append([]string{"-mode", mode, "-at", at.Format(time.RFC3339)}, args...)...)
+	probeFor := func(t *testing.T) func(string, ...string) {
+		return func(mode string, args ...string) {
+			t.Helper()
+			command(t, fixture, true, nil, p, append([]string{"-mode", mode, "-at", at.Format(time.RFC3339)}, args...)...)
+		}
 	}
+	goProbe := probeFor(t)
 	rootKey := generateKey(t, dir, nameECDSASHA384)
 	rootTpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "temporary evidence root"}, NotBefore: at.Add(-24 * time.Hour), NotAfter: at.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{1, 2, 3, 4}}
 	rootCert, rootDER, rootPEM := certificateFiles(t, dir, nameRoot, rootTpl, rootTpl, rootKey.signer, rootKey.signer)
@@ -152,7 +156,7 @@ func TestEvidenceExchange(t *testing.T) {
 			for _, pss := range pssValues {
 				for _, detached := range []bool{false, true} {
 					t.Run(fmt.Sprintf("cms/%s/%d/pss=%v/detached=%v", name, hash, pss, detached), func(t *testing.T) {
-						testEvidenceExchangeCase(t, &dir, &key, &signerDER, &data, &hash, &pss, &detached, &goProbe, &fixture, &signerPEM)
+						testEvidenceExchangeCase(t, fixture, probeFor(t), key, signerDER, signerPEM, data, hash, pss, detached)
 					})
 				}
 			}
@@ -220,9 +224,10 @@ func TestEvidenceExchange(t *testing.T) {
 		goProbe("xades-embed", flagIn, timed, flagCert, signerDER, "-root", rootDER, "-crl", crl, flagOut, lt)
 
 		for _, algorithm := range []string{exc, c10} {
-			archive := filepath.Join(dir, "archive.xml")
-			goProbe("archive-add", flagIn, lt, flagCert, signerDER, "-issuer", tsaDER, flagKey, key.private, "-root", rootDER, "-crl", crl, "-alg", algorithm, flagOut, archive)
-			d := xmlDoc(t, read(t, archive))
+			archiveDir := t.TempDir()
+			goArchive, opensslArchive := filepath.Join(archiveDir, "go.xml"), filepath.Join(archiveDir, "openssl.xml")
+			goProbe("archive-add", flagIn, lt, flagCert, signerDER, "-issuer", tsaDER, flagKey, key.private, "-root", rootDER, "-crl", crl, "-alg", algorithm, flagOut, goArchive)
+			d := xmlDoc(t, read(t, goArchive))
 			stamp := one(t, tree.Root(d), archiveNS, "ArchiveTimeStamp")
 			token := write(t, filepath.Join(dir, "archive-token.cms"), decode64(t, text(one(t, stamp, xadesNS, "EncapsulatedTimeStamp"))))
 			input := write(t, filepath.Join(dir, "archive-input"), independentArchiveInput(t, fixture, d, stamp))
@@ -235,8 +240,8 @@ func TestEvidenceExchange(t *testing.T) {
 			configTSA(256)
 			command(t, fixture, true, nil, "openssl", "ts", "-reply", "-config", config, "-queryfile", query, flagOut, reply)
 			command(t, fixture, true, nil, "openssl", "ts", "-reply", flagIn, reply, "-token_out", flagOut, token)
-			goProbe("archive-attach", flagIn, lt, flagCert, signerDER, "-token", token, "-root", rootDER, "-crl", crl, "-alg", algorithm, flagOut, archive)
-			goProbe("archive-verify", flagIn, archive, flagCert, signerDER, "-root", rootDER, "-crl", crl)
+			goProbe("archive-attach", flagIn, lt, flagCert, signerDER, "-token", token, "-root", rootDER, "-crl", crl, "-alg", algorithm, flagOut, opensslArchive)
+			goProbe("archive-verify", flagIn, opensslArchive, flagCert, signerDER, "-root", rootDER, "-crl", crl)
 		}
 	}
 
@@ -724,50 +729,54 @@ func certificateFiles(t *testing.T, dir, name string, tpl, parent *x509.Certific
 	return cert, write(t, filepath.Join(dir, name+".der"), der), write(t, filepath.Join(dir, name+".pem"), pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: der}))
 }
 
-func testEvidenceExchangeCase(t *testing.T, dir *string, key *testKey, signerDER *string, data *string, hash *int, pss *bool, detached *bool, goProbe *func(mode string, args ...string), fixture **interopFixture, signerPEM *string) {
-	ours, theirs, verified := filepath.Join((*dir), "go.cms"), filepath.Join((*dir), "ref.cms"), filepath.Join((*dir), "verified")
+func testEvidenceExchangeCase(t *testing.T, fixture *interopFixture, goProbe func(string, ...string), key testKey, signerDER, signerPEM, data string, hash int, pss, detached bool) {
+	t.Helper()
 
-	args := []string{flagKey, key.private, flagCert, (*signerDER), flagData, (*data), flagOut, ours, "-hash", strconv.Itoa((*hash))}
-	if *pss {
+	dir := t.TempDir()
+	ours, theirs := filepath.Join(dir, "go.cms"), filepath.Join(dir, "ref.cms")
+	opensslOutput, goOutput := filepath.Join(dir, "openssl-content"), filepath.Join(dir, "go-content")
+
+	args := []string{flagKey, key.private, flagCert, signerDER, flagData, data, flagOut, ours, "-hash", strconv.Itoa(hash)}
+	if pss {
 		args = append(args, "-pss")
 	}
 
-	if *detached {
+	if detached {
 		args = append(args, "-detached")
 	}
 
-	(*goProbe)("cms-sign", args...)
+	goProbe("cms-sign", args...)
 
-	args = []string{nameCMS, flagVerify, flagBinary, "-inform", nameDER, flagIn, ours, "-noverify", flagOut, verified}
-	if *detached {
-		args = append(args, "-content", (*data))
+	args = []string{nameCMS, flagVerify, flagBinary, "-inform", nameDER, flagIn, ours, "-noverify", flagOut, opensslOutput}
+	if detached {
+		args = append(args, "-content", data)
 	}
 
-	command(t, (*fixture), true, nil, "openssl", args...)
+	command(t, fixture, true, nil, "openssl", args...)
 
-	if !bytes.Equal(read(t, verified), read(t, (*data))) {
+	if !bytes.Equal(read(t, opensslOutput), read(t, data)) {
 		t.Fatal("CMS content changed")
 	}
 
-	args = []string{nameCMS, "-sign", flagBinary, flagIn, (*data), "-signer", (*signerPEM), flagInkey, key.private, "-md", fmt.Sprintf("sha%d", (*hash)), "-nosmimecap", "-cades", "-outform", nameDER, flagOut, theirs}
-	if !(*detached) {
+	args = []string{nameCMS, "-sign", flagBinary, flagIn, data, "-signer", signerPEM, flagInkey, key.private, "-md", fmt.Sprintf("sha%d", hash), "-nosmimecap", "-cades", "-outform", nameDER, flagOut, theirs}
+	if !detached {
 		args = append(args, "-nodetach")
 	}
 
-	if *pss {
+	if pss {
 		args = append(args, "-keyopt", "rsa_padding_mode:pss", "-keyopt", "rsa_pss_saltlen:digest")
 	}
 
-	command(t, (*fixture), true, nil, "openssl", args...)
+	command(t, fixture, true, nil, "openssl", args...)
 
-	args = []string{flagIn, theirs, flagCert, (*signerDER), flagData, (*data), flagOut, verified}
-	if *detached {
+	args = []string{flagIn, theirs, flagCert, signerDER, flagData, data, flagOut, goOutput}
+	if detached {
 		args = append(args, "-detached")
 	}
 
-	(*goProbe)("cms-verify", args...)
+	goProbe("cms-verify", args...)
 
-	if !bytes.Equal(read(t, verified), read(t, (*data))) {
+	if !bytes.Equal(read(t, goOutput), read(t, data)) {
 		t.Fatal("CMS content changed")
 	}
 }

@@ -15,8 +15,11 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // This is the reviewed conformance-register schema, not a language or report version.
@@ -846,7 +849,7 @@ func (c *conformanceCheck) path(id, path string) {
 
 func (c *conformanceCheck) webURL(id, source string) {
 	u, err := url.Parse(source)
-	if err != nil || u == nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u == nil || u.Scheme != "https" || u.Hostname() == "" {
 		c.problem(id, "source must be an absolute HTTPS URL")
 	}
 }
@@ -1069,6 +1072,17 @@ func conformanceTestFunction(file *ast.File, fn *ast.FuncDecl) bool {
 		return false
 	}
 
+	// Match the go command's test naming rule, including non-ASCII letters.
+	suffix, namedTest := strings.CutPrefix(fn.Name.Name, "Test")
+	if !namedTest {
+		return false
+	}
+
+	first, _ := utf8.DecodeRuneInString(suffix)
+	if unicode.IsLower(first) {
+		return false
+	}
+
 	parameter := fn.Type.Params.List[0]
 	if len(parameter.Names) > 1 {
 		return false
@@ -1080,7 +1094,8 @@ func conformanceTestFunction(file *ast.File, fn *ast.FuncDecl) bool {
 	}
 
 	for _, imported := range file.Imports {
-		if imported.Path.Value != `"testing"` {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil || path != "testing" {
 			continue
 		}
 

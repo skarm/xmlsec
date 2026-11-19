@@ -51,7 +51,7 @@ func NewID() (string, error) {
 // ParseTime parses SAML UTC dateTime values with four-digit positive years and
 // at most nine fractional digits. XML Schema permits 24:00:00 for midnight.
 func ParseTime(s string) (time.Time, error) {
-	t, err := xmltime.ParseUTC(s)
+	t, err := xmltime.ParseUTC(strings.Trim(s, lexicon.XMLWhitespace))
 	if err != nil {
 		return time.Time{}, ErrSchema
 	}
@@ -61,6 +61,15 @@ func ParseTime(s string) (time.Time, error) {
 
 // Time formats a SAML timestamp in UTC.
 func Time(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// ValidTime reports whether a required time can be represented in the SAML profile.
+func ValidTime(t time.Time) bool {
+	const maximumYear = 9999
+
+	year := t.UTC().Year()
+
+	return !t.IsZero() && year > 0 && year <= maximumYear
+}
 
 // ID reports whether s is an allowed SAML ID.
 func ID(s string) bool {
@@ -86,15 +95,19 @@ func URI(s string) bool {
 	return e == nil && u.IsAbs()
 }
 
-// Endpoint checks a bounded absolute HTTPS endpoint, permitting HTTP only when requested.
+// Endpoint checks a bounded, fragment-free HTTPS endpoint, permitting HTTP only when requested.
 func Endpoint(s string, allowHTTP bool) bool {
 	const (
 		maximumEndpointBytes = 4096
 	)
 
+	if len(s) > maximumEndpointBytes || strings.ContainsRune(s, '#') {
+		return false
+	}
+
 	u, e := url.Parse(s)
 
-	return e == nil && len(s) <= maximumEndpointBytes && u.Host != "" && u.User == nil && u.Fragment == "" && u.Opaque == "" && (u.Scheme == lexicon.SchemeHTTPS || (allowHTTP && u.Scheme == lexicon.SchemeHTTP))
+	return e == nil && u.Hostname() != "" && u.User == nil && u.Opaque == "" && (u.Scheme == lexicon.SchemeHTTPS || (allowHTTP && u.Scheme == lexicon.SchemeHTTP))
 }
 
 // Bool parses an XML Schema boolean.
@@ -136,6 +149,8 @@ func Duration(s string) (time.Duration, error) {
 		maximumDurationLexicalBytes = 64
 		minimumDurationLexicalBytes = 3
 	)
+
+	s = strings.Trim(s, lexicon.XMLWhitespace)
 
 	// day/time subset; calendar years/months fail explicitly.
 	if len(s) < minimumDurationLexicalBytes || len(s) > maximumDurationLexicalBytes || s[0] != 'P' {

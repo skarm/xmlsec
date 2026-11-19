@@ -55,9 +55,9 @@ func EncryptContentWithKeyWrap(ctx context.Context, doc *document.Document, pare
 // complete-output budgets follow DecryptElement. No result is returned on error;
 // sender identity, signatures and application context require separate checks.
 func DecryptContent(ctx context.Context, doc *document.Document, selected document.Element, recipient crypto.Decrypter, options RSAOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil || node.Parent == nil {
-		return nil, document.Element{}, ErrFormat
+	node, err := selectedContent(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
 	}
 
 	p, err := rsaDecryptProfile(ctx, options, recipient, decryption)
@@ -71,9 +71,9 @@ func DecryptContent(ctx context.Context, doc *document.Document, selected docume
 // DecryptContentWithKeyWrap has the DecryptContent snapshot/context contracts
 // using an explicitly supplied KEK.
 func DecryptContentWithKeyWrap(ctx context.Context, doc *document.Document, selected document.Element, kek []byte, options KeyWrapOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil || node.Parent == nil {
-		return nil, document.Element{}, ErrFormat
+	node, err := selectedContent(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
 	}
 
 	p, err := keyWrapDecryptProfile(ctx, kek, options, decryption)
@@ -91,6 +91,15 @@ func contentParent(doc *document.Document, parent document.Element) (*tree.Node,
 	}
 
 	if node.Name.Space == Namespace && (node.Name.Local == nameEncryptedData || node.Name.Local == nameEncryptedKey) {
+		return nil, ErrFormat
+	}
+
+	return node, nil
+}
+
+func selectedContent(doc *document.Document, selected document.Element) (*tree.Node, error) {
+	node, err := selectedNode(doc, selected)
+	if err != nil || node == tree.Root(doc) {
 		return nil, ErrFormat
 	}
 

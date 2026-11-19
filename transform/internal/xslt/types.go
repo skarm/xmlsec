@@ -65,6 +65,12 @@ func parseSequenceType(as string) sequenceType {
 		s = strings.TrimSpace(s[:len(s)-1])
 	}
 
+	// XPath permits parentheses around item types. Remove them before deciding
+	// which types require atomization, so (function(*)) preserves its array.
+	for len(s) > 2 && s[0] == '(' && s[len(s)-1] == ')' {
+		s = s[1 : len(s)-1]
+	}
+
 	return sequenceType{ItemType: s, Occurrence: occ}
 }
 
@@ -194,11 +200,6 @@ func coerceItem(ctx context.Context, item xdm.Item, itemType string, ec ...*exec
 
 // coerceItemWithContext is the inner implementation of coerceItem with an explicit exec context.
 func coerceItemWithContext(ctx context.Context, item xdm.Item, itemType string, ec *execContext) (xdm.Item, error) {
-	// Strip one enclosing pair, as in (function(...) as ...).
-	if len(itemType) > 2 && itemType[0] == '(' && itemType[len(itemType)-1] == ')' {
-		itemType = itemType[1 : len(itemType)-1]
-	}
-
 	switch itemType {
 	case lexicon.NodeTestItem:
 		return item, nil
@@ -208,6 +209,12 @@ func coerceItemWithContext(ctx context.Context, item xdm.Item, itemType string, 
 		}
 
 		return nil, fmt.Errorf("expected node(), got atomic value")
+	case sequenceTypeMapStart + "*)":
+		if _, ok := item.(xdm.MapItem); ok {
+			return item, nil
+		}
+
+		return nil, fmt.Errorf("expected %s, got %s", itemType, describeItem(item))
 	}
 
 	if kind, ok := simpleNodeTestKind(itemType); ok {
@@ -217,9 +224,8 @@ func coerceItemWithContext(ctx context.Context, item xdm.Item, itemType string, 
 	switch {
 	case strings.HasPrefix(itemType, lexicon.KindDocumentNode+"("):
 		return coerceDocumentNodeTest(ctx, item, itemType, ec)
-	case strings.HasPrefix(itemType, sequenceTypeMapStart):
-		return checkMapItemType(item, itemType)
-	case strings.HasPrefix(itemType, sequenceTypeArrayStart), strings.HasPrefix(itemType, lexicon.KindAttribute+"("):
+	case strings.HasPrefix(itemType, sequenceTypeMapStart), strings.HasPrefix(itemType, sequenceTypeArrayStart),
+		strings.HasPrefix(itemType, lexicon.KindAttribute+"("):
 		return coerceParsedItemType(ctx, item, itemType, ec)
 	case strings.HasPrefix(itemType, sequenceTypeFunctionStart):
 		return coerceFunctionItemType(ctx, item, itemType, ec)
@@ -242,7 +248,14 @@ func coerceParsedItemType(ctx context.Context, item xdm.Item, itemType string, e
 
 	namespaces, defaultNS := xpath.PredeclaredNamespaces(), ""
 	if ec != nil {
-		namespaces, defaultNS = ec.effectiveXPathNamespaces(), ec.xpathDefaultNS
+		namespaces = ec.nsOverride
+		if namespaces == nil {
+			namespaces = ec.effectiveXPathNamespaces()
+		}
+
+		if ec.hasXPathDefaultNS {
+			defaultNS = ec.xpathDefaultNS
+		}
 	}
 
 	st, err = xpath.BindSequenceType(ctx, st, namespaces, defaultNS)
@@ -312,7 +325,25 @@ func coerceDocumentNodeTest(ctx context.Context, item xdm.Item, itemType string,
 		return nil, fmt.Errorf("expected %s, got %s", itemType, describeItem(item))
 	}
 
-	root := findDocumentElement(doc)
+	var root xdm.Node
+
+	for child := range xdm.Children(doc) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		switch child.Type() {
+		case xdm.ElementNode:
+			if root != nil {
+				return nil, fmt.Errorf("expected %s: document has more than one element child", itemType)
+			}
+
+			root = child
+		case xdm.TextNode, xdm.CDATASectionNode:
+			return nil, fmt.Errorf("expected %s: document has a text child", itemType)
+		}
+	}
+
 	if root == nil {
 		return nil, fmt.Errorf("expected %s: document has no root element", itemType)
 	}
@@ -327,7 +358,7 @@ func coerceDocumentNodeTest(ctx context.Context, item xdm.Item, itemType string,
 func coerceFunctionItemType(ctx context.Context, item xdm.Item, itemType string, ec *execContext) (xdm.Item, error) {
 	if itemType == sequenceTypeFunctionStart+"*)" {
 		switch item.(type) {
-		case xdm.FunctionItem, xdm.MapItem, *xdm.ArrayItem:
+		case xdm.FunctionItem, xdm.MapItem, xdm.ArrayItem, *xdm.ArrayItem:
 			return item, nil
 		}
 
@@ -370,9 +401,18 @@ func coerceElementNodeTest(item xdm.Item, itemType string, ec *execContext) (xdm
 		return item, nil
 	}
 
-	parts := splitTopLevelTypeArgs(inner)
+	// The compiler has parsed the kind test already. Search for the optional
+	// type annotation separator after the URIQualifiedName's braced URI.
+	separatorStart := 0
+	if strings.HasPrefix(inner, lexicon.EQNamePrefix) {
+		separatorStart = strings.IndexByte(inner, '}') + 1
+	}
 
-	requiredName := strings.TrimSpace(parts[0])
+	if comma := strings.IndexByte(inner[separatorStart:], ','); comma >= 0 {
+		inner = inner[:separatorStart+comma]
+	}
+
+	requiredName := strings.TrimSpace(inner)
 	if requiredName == "*" {
 		return item, nil
 	}
@@ -480,11 +520,6 @@ func castAtomicToType(ctx context.Context, av xdm.AtomicValue, targetType string
 		return xdm.AtomicValue{TypeName: xdm.TypeString, Value: av.StringVal()}, nil
 	}
 
-	// xs:string -> xs:anyURI promotion (per XPath spec)
-	if av.TypeName == xdm.TypeString && target == xdm.TypeAnyURI {
-		return xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: av.StringVal()}, nil
-	}
-
 	// xs:untypedAtomic can be cast to any atomic type (function conversion rules).
 	// xs:string is NOT implicitly castable to other types — only xs:untypedAtomic
 	// has this privilege. xs:string -> xs:integer (etc.) is a type error (XTTE0590).
@@ -530,8 +565,8 @@ func castAtomicToType(ctx context.Context, av xdm.AtomicValue, targetType string
 
 			return cast, nil
 		}
-		// Same rank: accept as-is
-		return av, nil
+		// Equal numeric rank does not establish a subtype relationship.
+		return nil, fmt.Errorf("cannot convert %s to %s", av.TypeName, targetType)
 	}
 
 	// No implicit cast path found — type mismatch.
@@ -549,11 +584,16 @@ func trySchemaCast(ctx context.Context, s, target string, ec ...*execContext) (x
 // canonicalized to xs:. Other prefixed names are resolved to Q{ns}local
 // format using the exec context's namespace bindings (if available).
 func normalizeTypeName(name string, ec ...*execContext) string {
+	name = strings.Trim(name, lexicon.XMLWhitespace)
+	if local, found := strings.CutPrefix(name, lexicon.EQNamePrefix+lexicon.NamespaceXSD+"}"); found {
+		return lexicon.PrefixXS + ":" + local
+	}
+
 	if strings.HasPrefix(name, lexicon.PrefixXS+":") {
 		return name
 	}
 
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		return name
 	}
 	// Normalize xsd: prefix to xs: (both map to XML Schema namespace)
@@ -735,192 +775,4 @@ func describeItem(item xdm.Item) string {
 	default:
 		return fmt.Sprintf("%T", item)
 	}
-}
-
-func checkMapItemType(item xdm.Item, itemType string) (xdm.Item, error) {
-	m, ok := item.(xdm.MapItem)
-	if !ok {
-		return nil, fmt.Errorf("expected %s, got %s", itemType, describeItem(item))
-	}
-
-	keyType, valueType, hasMembers, err := parseMapItemType(itemType)
-	if err != nil {
-		return nil, err
-	}
-
-	if !hasMembers {
-		return item, nil
-	}
-
-	for _, key := range m.Keys() {
-		if !atomicMatchesType(key, keyType) {
-			return nil, fmt.Errorf("map key %q does not match %s", key.StringVal(), keyType)
-		}
-
-		value, _ := m.Get(key)
-		if !sequenceMatchesTypeStrict(value, valueType) {
-			return nil, fmt.Errorf("map entry for key %q does not match %s", key.StringVal(), formatSequenceType(valueType))
-		}
-	}
-
-	return item, nil
-}
-
-func parseMapItemType(itemType string) (string, sequenceType, bool, error) {
-	inner := strings.TrimSpace(itemType[len(sequenceTypeMapStart) : len(itemType)-1])
-	if inner == "*" {
-		return "", sequenceType{}, false, nil
-	}
-
-	parts := splitTopLevelTypeArgs(inner)
-	if len(parts) != 2 {
-		return "", sequenceType{}, false, fmt.Errorf("invalid map type %q", itemType)
-	}
-
-	return strings.TrimSpace(parts[0]), parseSequenceType(strings.TrimSpace(parts[1])), true, nil
-}
-
-func splitTopLevelTypeArgs(s string) []string {
-	var parts []string
-
-	depth := 0
-	start := 0
-
-	for i, r := range s {
-		switch r {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-
-	parts = append(parts, s[start:])
-
-	return parts
-}
-
-func sequenceMatchesTypeStrict(seq xdm.Sequence, st sequenceType) bool {
-	count := 0
-	if seq != nil {
-		count = xdm.SequenceLen(seq)
-	}
-
-	switch st.Occurrence {
-	case occurrenceExactlyOne:
-		if count != 1 {
-			return false
-		}
-	case '?':
-		if count > 1 {
-			return false
-		}
-	case '+':
-		if count == 0 {
-			return false
-		}
-	}
-
-	for item := range xdm.SequenceItems(seq) {
-		if !itemMatchesTypeStrict(item, st.ItemType) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func itemMatchesTypeStrict(item xdm.Item, itemType string) bool {
-	switch itemType {
-	case lexicon.NodeTestItem:
-		return true
-	case lexicon.NodeTestNode:
-		_, ok := item.(xdm.NodeItem)
-		return ok
-	case lexicon.NodeTestElement:
-		if ni, ok := item.(xdm.NodeItem); ok {
-			return ni.Node.Type() == xdm.ElementNode
-		}
-
-		return false
-	case lexicon.NodeTestAttribute:
-		if ni, ok := item.(xdm.NodeItem); ok {
-			return ni.Node.Type() == xdm.AttributeNode
-		}
-
-		return false
-	case lexicon.NodeTestText:
-		if ni, ok := item.(xdm.NodeItem); ok {
-			return ni.Node.Type() == xdm.TextNode || ni.Node.Type() == xdm.CDATASectionNode
-		}
-
-		return false
-	case lexicon.NodeTestComment:
-		if ni, ok := item.(xdm.NodeItem); ok {
-			return ni.Node.Type() == xdm.CommentNode
-		}
-
-		return false
-	case lexicon.NodeTestPI:
-		if ni, ok := item.(xdm.NodeItem); ok {
-			return ni.Node.Type() == xdm.ProcessingInstructionNode
-		}
-
-		return false
-	case lexicon.NodeTestDocumentNode:
-		if ni, ok := item.(xdm.NodeItem); ok {
-			return ni.Node.Type() == xdm.DocumentNode
-		}
-
-		return false
-	}
-
-	if strings.HasPrefix(itemType, sequenceTypeMapStart) {
-		_, err := checkMapItemType(item, itemType)
-		return err == nil
-	}
-
-	if strings.HasPrefix(itemType, sequenceTypeArrayStart) || strings.HasPrefix(itemType, sequenceTypeFunctionStart) {
-		return true
-	}
-
-	av, ok := item.(xdm.AtomicValue)
-	if !ok {
-		return false
-	}
-
-	return atomicMatchesType(av, itemType)
-}
-
-func atomicMatchesType(av xdm.AtomicValue, targetType string) bool {
-	target := normalizeTypeName(strings.TrimSpace(targetType))
-	switch target {
-	case xdm.TypeAnyAtomicType:
-		return true
-	case xdm.TypeNumeric:
-		return isNumericType(av.TypeName)
-	}
-
-	if av.TypeName == target {
-		return true
-	}
-
-	if target == xdm.TypeDecimal && av.TypeName == xdm.TypeInteger {
-		return true
-	}
-
-	return false
-}
-
-func formatSequenceType(st sequenceType) string {
-	if st.Occurrence == 0 {
-		return st.ItemType
-	}
-
-	return st.ItemType + string(st.Occurrence)
 }

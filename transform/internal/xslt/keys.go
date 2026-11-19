@@ -772,10 +772,8 @@ func (b *keyIndexBuilder) indexDefinition(ctx context.Context, def *keyDef, node
 	b.ec.staticBaseURIOverride, b.ec.staticBaseURIPinned = def.StaticBaseURI, true
 	defer func() { b.ec.staticBaseURIOverride, b.ec.staticBaseURIPinned = savedBase, savedPinned }()
 
-	if !def.Match.matchPattern(ctx, b.ec, node) {
-		err := b.ec.patternMatchErr
-		b.ec.patternMatchErr = nil
-
+	matched := def.Match.matchPattern(ctx, b.ec, node)
+	if err := b.ec.takePatternError(); err != nil || !matched {
 		return err
 	}
 

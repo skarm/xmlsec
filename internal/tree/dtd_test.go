@@ -135,6 +135,47 @@ func TestParseDTDReaderChecksSubsetResultAndClosesStream(t *testing.T) {
 	}
 }
 
+func TestParseDTDReaderBoundsExternalSubsetByRemainingInput(t *testing.T) {
+	t.Parallel()
+
+	// UTF-8 BOM and CRLF contribute to the physical input size even though the
+	// parser discards the BOM and normalizes the line endings before expansion.
+	const input = "\ufeff<!DOCTYPE r SYSTEM 'catalog.dtd'>\r\n<r/>"
+	const subset = `<!ELEMENT r EMPTY>`
+	for _, tc := range []struct {
+		name      string
+		subset    string
+		remaining int
+		wantRead  int
+		wantErr   error
+	}{
+		{"exact", subset, len(subset), len(subset), nil},
+		{"exhausted-empty", "", 0, 0, nil},
+		{"above-limit", subset + strings.Repeat(" ", 128), len(subset), len(subset) + 1, tree.ErrLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := strings.NewReader(tc.subset)
+			stream := &dtdReaderFixture{Reader: reader}
+			options := tree.ParseOptions{
+				Limits: tree.DefaultLimits(), AllowDTD: true,
+				DTDResolver: func(context.Context, string, string) (io.ReadCloser, string, error) {
+					return stream, "urn:example:subset", nil
+				},
+			}
+			options.Limits.MaxBytes = len(input) + tc.remaining
+			doc, err := options.ParseReader(t.Context(), strings.NewReader(input))
+			if !errors.Is(err, tc.wantErr) || (doc == nil) != (tc.wantErr != nil) {
+				t.Errorf("ParseReader = (%v, %v), want error %v", doc, err, tc.wantErr)
+			}
+			if got := len(tc.subset) - reader.Len(); got != tc.wantRead || stream.closed != 1 {
+				t.Errorf("external bytes read = %d, closes = %d, want %d bytes and one close", got, stream.closed, tc.wantRead)
+			}
+		})
+	}
+}
+
 func TestParseDTDReaderPreservesResolverErrors(t *testing.T) {
 	t.Parallel()
 
@@ -428,6 +469,7 @@ func TestParseDTDTextRejectsMalformedDeclarations(t *testing.T) {
 		{"invalid-standalone-value", `<?xml version="1.0" standalone="true"?><!DOCTYPE r><r/>`},
 		{"conditional-section-in-internal-subset", `<!DOCTYPE r [<![INCLUDE[<!ELEMENT r EMPTY>]]>]><r/>`},
 		{"invalid-content-model", `<!DOCTYPE r [<!ELEMENT r child>]><r/>`},
+		{"invalid-mixed-content-name", `<!DOCTYPE r [<!ELEMENT r (#PCDATA|p:part:label)*>]><r/>`},
 		{"entity-reference-without-semicolon", `<!DOCTYPE r><r>&amp</r>`},
 		{"undeclared-entity", `<!DOCTYPE r><r>&label;</r>`},
 		{"character-reference-without-semicolon", `<!DOCTYPE r><r>&#34</r>`},
@@ -569,6 +611,7 @@ func TestLanguageDTDProcessing(t *testing.T) {
 		want  string
 	}{
 		{`<!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a>foo</a>`, `<a>foo</a>`},
+		{`<!DOCTYPE a [<!ELEMENT a (#PCDATA|entry|p:label)*>]><a xmlns:p="urn:labels">word<entry/><p:label/></a>`, `<a xmlns:p="urn:labels">word<entry></entry><p:label></p:label></a>`},
 		{`<?xml version="1.0" encoding="iso-8859-1"?><!DOCTYPE a [<!ELEMENT a (#PCDATA)>]><a>é</a>`, `<a>é</a>`},
 		{`<!DOCTYPE a [<!ENTITY e "hello">]><a>&e;</a>`, `<a>hello</a>`},
 		{`<!DOCTYPE a [<!ENTITY e "<b>ok</b>">]><a>&e;</a>`, `<a><b>ok</b></a>`},

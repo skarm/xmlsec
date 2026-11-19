@@ -110,12 +110,12 @@ func (q *XPath) Version() XPathVersion {
 // The returned sequence owns its values and never exposes mutable XML nodes.
 func (q *XPath) Evaluate(ctx context.Context, d *Document, options XPathContext) (Sequence, error) {
 	if q == nil || q.expression == nil {
-		return Sequence{}, wrap("evaluate XPath", ErrInput)
+		return Sequence{}, wrap(opEvaluateXPath, ErrInput)
 	}
 
 	ctx, cancel, err := q.engine.invocation(ctx)
 	if err != nil {
-		return Sequence{}, wrapXPath("evaluate XPath", err, q.version)
+		return Sequence{}, wrapXPath(opEvaluateXPath, err, q.version)
 	}
 	defer cancel()
 
@@ -123,17 +123,17 @@ func (q *XPath) Evaluate(ctx context.Context, d *Document, options XPathContext)
 
 	ctx, err = q.engine.dynamicContext(ctx, options.Context)
 	if err != nil {
-		return Sequence{}, wrapXPath("evaluate XPath", err, q.version)
+		return Sequence{}, wrapXPath(opEvaluateXPath, err, q.version)
 	}
 
 	variables, err := nativeBindings(ctx, options.Variables, q.engine.limits)
 	if err != nil {
-		return Sequence{}, wrapXPath("evaluate XPath", err, q.version)
+		return Sequence{}, wrapXPath(opEvaluateXPath, err, q.version)
 	}
 
 	for _, name := range q.freeVariables {
 		if _, present := variables[name]; !present {
-			return Sequence{}, wrapXPath("evaluate XPath", xpath.UndefinedVariableError(name, int(q.version)), q.version)
+			return Sequence{}, wrapXPath(opEvaluateXPath, xpath.UndefinedVariableError(name, int(q.version)), q.version)
 		}
 	}
 
@@ -143,7 +143,7 @@ func (q *XPath) Evaluate(ctx context.Context, d *Document, options XPathContext)
 
 	position, size := options.Position, options.Size
 	if position < 0 || size < 0 {
-		return Sequence{}, wrap("evaluate XPath", ErrInput)
+		return Sequence{}, wrap(opEvaluateXPath, ErrInput)
 	}
 
 	if position == 0 {
@@ -155,7 +155,7 @@ func (q *XPath) Evaluate(ctx context.Context, d *Document, options XPathContext)
 	}
 
 	if position > size {
-		return Sequence{}, wrap("evaluate XPath", ErrInput)
+		return Sequence{}, wrap(opEvaluateXPath, ErrInput)
 	}
 
 	evaluator := q.evaluator.Variables(variables).Position(position).Size(size).TraceWriter(io.Discard)
@@ -167,17 +167,17 @@ func (q *XPath) Evaluate(ctx context.Context, d *Document, options XPathContext)
 
 	if options.ContextItem.item != nil {
 		if err := checkSequence(ctx, xdm.ItemSlice{options.ContextItem.item}, q.engine.limits, true); err != nil {
-			return Sequence{}, wrapXPath("evaluate XPath", err, q.version)
+			return Sequence{}, wrapXPath(opEvaluateXPath, err, q.version)
 		}
 
 		evaluator = evaluator.ContextItem(options.ContextItem.item)
 	} else if d != nil {
 		if d.native == nil {
-			return Sequence{}, wrap("evaluate XPath", ErrInput)
+			return Sequence{}, wrap(opEvaluateXPath, ErrInput)
 		}
 
 		if err := checkInputDocument(ctx, d.native, q.engine.limits); err != nil {
-			return Sequence{}, wrapXPath("evaluate XPath", err, q.version)
+			return Sequence{}, wrapXPath(opEvaluateXPath, err, q.version)
 		}
 
 		node = d.native
@@ -185,11 +185,11 @@ func (q *XPath) Evaluate(ctx context.Context, d *Document, options XPathContext)
 
 	result, err := evaluator.Evaluate(ctx, q.expression, node)
 	if err != nil {
-		return Sequence{}, wrapXPath("evaluate XPath", errors.Join(err, ctx.Err()), q.version)
+		return Sequence{}, wrapXPath(opEvaluateXPath, errors.Join(err, ctx.Err()), q.version)
 	}
 
 	if err := checkSequence(ctx, result.Sequence(), q.engine.limits, false); err != nil {
-		return Sequence{}, wrapXPath("evaluate XPath", err, q.version)
+		return Sequence{}, wrapXPath(opEvaluateXPath, err, q.version)
 	}
 
 	return ownSequence(result.Sequence()), nil
@@ -223,7 +223,7 @@ func evaluateVersion(ctx context.Context, q *XPath, variables map[string]xdm.Seq
 		for name, value := range variables {
 			normalized, err := xpath.XPath10Value(ctx, value)
 			if err != nil {
-				return wrap("evaluate XPath", err), true
+				return wrap(opEvaluateXPath, err), true
 			}
 
 			variables[name] = normalized
@@ -231,7 +231,7 @@ func evaluateVersion(ctx context.Context, q *XPath, variables map[string]xdm.Seq
 
 		if options.ContextItem.item != nil {
 			if _, ok := options.ContextItem.item.(xdm.NodeItem); !ok {
-				return wrap("evaluate XPath", ErrInput), true
+				return wrap(opEvaluateXPath, ErrInput), true
 			}
 		}
 	}
@@ -243,14 +243,14 @@ func evaluateVersion(ctx context.Context, q *XPath, variables map[string]xdm.Seq
 func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathOptions) (*XPath, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrapXPath("compile XPath", err, options.Version)
+		return nil, wrapXPath(opCompileXPath, err, options.Version)
 	}
 	defer cancel()
 
 	ctx = e.languageContext(ctx)
 
 	if len(source) > e.limits.MaxProgramBytes {
-		return nil, wrapXPath("compile XPath", ErrLimit, options.Version)
+		return nil, wrapXPath(opCompileXPath, ErrLimit, options.Version)
 	}
 
 	version := options.Version
@@ -259,7 +259,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 	}
 
 	if version != XPath10 && version != XPath20 && version != XPath30 && version != XPath31 {
-		return nil, wrapXPath("compile XPath", ErrUnsupported, options.Version)
+		return nil, wrapXPath(opCompileXPath, ErrUnsupported, options.Version)
 	}
 
 	namespaces := maps.Clone(options.Namespaces)
@@ -273,34 +273,34 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 		}
 
 		if err := xpath.CheckStaticNamespaces(namespaces); err != nil {
-			return nil, wrapXPath("compile XPath", err, version)
+			return nil, wrapXPath(opCompileXPath, err, version)
 		}
 	}
 
 	namespaces[lexicon.PrefixXML] = lexicon.NamespaceXML
 	if version == XPath10 && namespaces[""] != "" {
-		return nil, wrapXPath("compile XPath", fmt.Errorf("%w: XPath 1.0 has no default element namespace", ErrInput), options.Version)
+		return nil, wrapXPath(opCompileXPath, fmt.Errorf("%w: XPath 1.0 has no default element namespace", ErrInput), options.Version)
 	}
 
 	expression, err := xpath.NewCompiler().Context(ctx).Language(int(version), namespaces).Compile(source)
 	if err != nil {
-		return nil, wrapXPath("compile XPath", err, options.Version)
+		return nil, wrapXPath(opCompileXPath, err, options.Version)
 	}
 
 	if err := expression.Validate(namespaces); err != nil {
-		return nil, wrapXPath("compile XPath", err, options.Version)
+		return nil, wrapXPath(opCompileXPath, err, options.Version)
 	}
 
 	if err := xpath.CheckStandaloneFunctions(expression, namespaces, e.functionNames); err != nil {
-		return nil, wrapXPath("compile XPath", err, options.Version)
+		return nil, wrapXPath(opCompileXPath, err, options.Version)
 	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, wrapXPath("compile XPath", err, options.Version)
+		return nil, wrapXPath(opCompileXPath, err, options.Version)
 	}
 
 	if options.DefaultCollation != "" && !xpath.IsCollationSupported(options.DefaultCollation) {
-		return nil, wrapXPath("compile XPath", ErrUnsupported, options.Version)
+		return nil, wrapXPath(opCompileXPath, ErrUnsupported, options.Version)
 	}
 
 	evaluator := xpath.NewEvaluator(xpath.DefaultEvaluatorOptions).Namespaces(namespaces).DefaultCollation(options.DefaultCollation).BaseURI(options.BaseURI).ParseOptions(e.languageParseOptions()).MaxResourceBytes(int64(e.limits.MaxInputBytes)).OpLimit(e.limits.MaxOperations)
@@ -310,7 +310,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 
 	evaluator, err = e.xpathDecimalFormats(ctx, evaluator, options.DecimalFormats, version)
 	if err != nil {
-		return nil, wrapXPath("compile XPath", err, version)
+		return nil, wrapXPath(opCompileXPath, err, version)
 	}
 
 	if version == XPath31 {
@@ -328,7 +328,7 @@ func (e *Engine) CompileXPath(ctx context.Context, source string, options XPathO
 	}
 
 	if err := ctx.Err(); err != nil {
-		return nil, wrapXPath("compile XPath", err, version)
+		return nil, wrapXPath(opCompileXPath, err, version)
 	}
 
 	return &XPath{engine: e, expression: expression, evaluator: evaluator, version: version, namespaces: namespaces, freeVariables: freeVariables}, nil

@@ -39,7 +39,7 @@ func TestIdentifiersAndURIs(t *testing.T) {
 
 func TestEndpointPolicy(t *testing.T) {
 	t.Parallel()
-	for _, endpoint := range []string{"https://example.test/acs", "https://example.test:8443/acs?binding=post", "https://example.test/" + strings.Repeat("a", 4075)} {
+	for _, endpoint := range []string{"https://example.test/acs", "https://example.test:8443/acs?binding=post", "https://example.test/acs?name=%23", "https://[::1]:8443/acs", "https://example.test/" + strings.Repeat("a", 4075)} {
 		if !profile.Endpoint(endpoint, false) {
 			t.Errorf("valid HTTPS endpoint rejected: %q", endpoint)
 		}
@@ -49,7 +49,7 @@ func TestEndpointPolicy(t *testing.T) {
 		t.Fatal("HTTP permission changed")
 	}
 
-	for _, endpoint := range []string{"/acs", "https:opaque", "https://user@example.test/acs", "https://example.test/acs#fragment", "ftp://example.test/acs", "https://example.test/" + strings.Repeat("a", 4076)} {
+	for _, endpoint := range []string{"/acs", "https:opaque", "https://:8443/acs", "http://:8080/acs", "https://user@example.test/acs", "https://example.test/acs#fragment", "https://example.test/acs#", "ftp://example.test/acs", "https://example.test/" + strings.Repeat("a", 4076)} {
 		if profile.Endpoint(endpoint, true) {
 			t.Errorf("invalid endpoint accepted: %q", endpoint)
 		}
@@ -95,6 +95,7 @@ func TestSAMLTimeLexicalForm(t *testing.T) {
 		nanos int
 	}{
 		{"2026-10-18T01:02:03Z", 0},
+		{" \t2026-10-18T01:02:03Z\r\n", 0},
 		{"2026-10-18T01:02:03.1Z", 100_000_000},
 		{"2026-10-18T01:02:03.123456789Z", 123_456_789},
 		{"2026-10-18T01:02:03.100Z", 100_000_000},
@@ -112,6 +113,8 @@ func TestSAMLTimeLexicalForm(t *testing.T) {
 
 	for _, s := range []string{
 		"2026-10-18T1:02:03Z",
+		"2026-10-18 T01:02:03Z",
+		"\u00a02026-10-18T01:02:03Z",
 		"2026-10-18T01:02:03,1Z",
 		"2026-10-18T01:02:03.Z",
 		"2026-10-18T01:02:03.1234567891Z",
@@ -153,6 +156,7 @@ func TestSAMLDurationLexicalFormAndPrecision(t *testing.T) {
 		want time.Duration
 	}{
 		{"PT0.1S", 100 * time.Millisecond},
+		{" \tPT0.1S\r\n", 100 * time.Millisecond},
 		{"PT0.000000001S", time.Nanosecond},
 		{"P1DT2H3M4.000000001S", 26*time.Hour + 3*time.Minute + 4*time.Second + time.Nanosecond},
 		{"P364DT23H59M59.999999999S", 365*24*time.Hour - time.Nanosecond},
@@ -167,7 +171,7 @@ func TestSAMLDurationLexicalFormAndPrecision(t *testing.T) {
 		})
 	}
 
-	for _, s := range []string{"PT.5S", "PT1.S", "PT1..5S", "P1.5D", "PT0.0000000001S", "P365DT0.000000001S", "P366D", "PT999999999999999999999999999S", "PT0S", "P1DT", "PT1S1H"} {
+	for _, s := range []string{"PT 1S", "\u00a0PT1S", "PT.5S", "PT1.S", "PT1..5S", "P1.5D", "PT0.0000000001S", "P365DT0.000000001S", "P366D", "PT999999999999999999999999999S", "PT0S", "P1DT", "PT1S1H"} {
 		t.Run(s, func(t *testing.T) {
 			t.Parallel()
 			if got, err := profile.Duration(s); got != 0 || !errors.Is(err, profile.ErrSchema) {

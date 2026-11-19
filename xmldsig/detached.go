@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -301,11 +302,11 @@ func prepareDetachedVerification(ctx context.Context, doc *document.Document, ke
 		return nil, err
 	}
 
-	expected := make(map[string]struct{}, len(opt.ExpectedURIs))
 	if len(opt.ExpectedURIs) == 0 || len(opt.ExpectedURIs) > p.MaxReferences {
 		return nil, fmt.Errorf("%w: exact ExpectedURIs are required", ErrPolicy)
 	}
 
+	expected := make(map[string]struct{}, len(opt.ExpectedURIs))
 	if err := validateExpectedDetachedURIs(opt.ExpectedURIs, expected); err != nil {
 		return nil, err
 	}
@@ -314,6 +315,11 @@ func prepareDetachedVerification(ctx context.Context, doc *document.Document, ke
 	if err := plan.parseSignature(ctx, doc); err != nil {
 		return nil, err
 	}
+
+	// Reference results retain these settings for replay after verification.
+	plan.processing.Signature = doc.Root()
+	plan.processing.AllowedTransforms = slices.Clone(plan.processing.AllowedTransforms)
+	plan.processing.IDRules = cloneIDRules(plan.processing.IDRules)
 
 	for i, ref := range plan.refs {
 		if err := reference.PrepareTransforms(ctx, ref.Transforms, plan.processing); err != nil {
@@ -424,7 +430,7 @@ func prepareDetachedSigning(refs []DetachedReference, signer crypto.Signer, opt 
 		return nil, err
 	}
 
-	key := signer.Public()
+	key := signature.SignerPublic(signer)
 	if err := validateKey(key, p); err != nil {
 		return nil, err
 	}
@@ -518,8 +524,7 @@ func buildDetachedSignature(ctx context.Context, p *detachedSigningPlan) (*detac
 	add(si, sm)
 	// Build ALL metadata before resolving any data. Reparse the temporary template
 	// to catch invalid Type strings, prefixes, and document limits before I/O.
-	digestNodes := make([]*tree.Node, len(p.refs))
-	if err := signDetachedReferences(ctx, p.refs, digestNodes, si); err != nil {
+	if err := signDetachedReferences(ctx, p.refs, si); err != nil {
 		return nil, err
 	}
 
@@ -531,23 +536,41 @@ func buildDetachedSignature(ctx context.Context, p *detachedSigningPlan) (*detac
 	// any resource I/O. here() also needs the parsed parameter's real handle.
 	sig = tree.Root(checked)
 	si = sig.Children[0]
-	processing := p.processing
-	processing.Signature = tree.Wrap(checked, sig)
+	p.processing.Signature = tree.Wrap(checked, sig)
+	usesExtension := false
 
-	for i, n := range si.Children[2:] {
+	for i, n := range si.Children[signedInfoHeaderChildren:] {
 		if isDS(n.Children[0], lexicon.DSigElementTransforms) {
-			transforms, err := parseCoreTransforms(ctx, n.Children[0], processing)
+			transforms, err := parseCoreTransforms(ctx, checked, n.Children[0])
 			if err != nil {
 				return nil, &ReferenceError{i, p.refs[i].URI, nameTransform, err}
 			}
 
 			p.refs[i].Transforms = transforms
+			usesExtension = usesExtension || slices.ContainsFunc(transforms, func(tr reference.Transform) bool {
+				return reference.IsExtension(tr.Algorithm)
+			})
 		}
 
-		if err := reference.PrepareTransforms(ctx, p.refs[i].Transforms, processing); err != nil {
+		if err := reference.PrepareTransforms(ctx, p.refs[i].Transforms, p.processing); err != nil {
 			return nil, &ReferenceError{i, p.refs[i].URI, nameTransform, processingError(err)}
 		}
+	}
 
+	if usesExtension {
+		// Extensions receive immutable handles into checked. Fill digest and
+		// signature values in a separate private draft.
+		checked, err = tree.Clone(ctx, checked)
+		if err != nil {
+			return nil, err
+		}
+
+		sig = tree.Root(checked)
+		si = sig.Children[0]
+	}
+
+	digestNodes := make([]*tree.Node, len(p.refs))
+	for i, n := range si.Children[signedInfoHeaderChildren:] {
 		digestNodes[i] = n.Children[len(n.Children)-1]
 	}
 
@@ -572,14 +595,13 @@ func fillDetachedDigests(ctx context.Context, draft *detachedSignatureDraft, p *
 	return nil
 }
 
-func signDetachedReferences(ctx context.Context, refs []DetachedReference, digestNodes []*tree.Node, si *tree.Node) error {
+func signDetachedReferences(ctx context.Context, refs []DetachedReference, si *tree.Node) error {
 	for i, ref := range refs {
 		n, err := referenceTemplateNode(ctx, ReferenceTemplate{URI: ref.URI, Type: ref.Type, DigestMethod: ref.DigestMethod, Transforms: ref.Transforms})
 		if err != nil {
 			return &ReferenceError{i, ref.URI, nameTransform, err}
 		}
 
-		digestNodes[i] = n.Children[len(n.Children)-1]
 		add(si, n)
 	}
 

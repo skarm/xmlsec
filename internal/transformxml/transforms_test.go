@@ -166,6 +166,31 @@ func TestAppendParametersCanonicalPrefixes(t *testing.T) {
 	}
 }
 
+func TestCancelledCanonicalParametersLeaveDraftUnchanged(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	input := reference.Transform{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"p"}}
+	draft := newTransformDraft(input.Algorithm)
+	if err := transformxml.AppendParameters(ctx, draft, input); !errors.Is(err, context.Canceled) || len(draft.Children) != 0 {
+		t.Fatalf("cancelled AppendParameters appended %d children and returned %v", len(draft.Children), err)
+	}
+}
+
+func TestAppendCanonicalizationMethodPrefixes(t *testing.T) {
+	t.Parallel()
+
+	input := reference.Transform{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"p", "#default"}}
+	draft := newTransformDraft(input.Algorithm)
+	draft.Name.Local = "CanonicalizationMethod"
+	if err := transformxml.AppendParameters(t.Context(), draft, input); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := transformxml.ParseCanonical(draft, "CanonicalizationMethod")
+	if err != nil || parsed.Algorithm != input.Algorithm || !slices.Equal(parsed.InclusivePrefixes, input.InclusivePrefixes) {
+		t.Fatalf("parsed %+v with %v, want %+v", parsed, err, input)
+	}
+}
+
 func TestAppendParametersValidatesAlgorithmContract(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -179,6 +204,7 @@ func TestAppendParametersValidatesAlgorithmContract(t *testing.T) {
 		{"unsupported_algorithm", reference.Transform{Algorithm: "urn:example:unknown"}, reference.ErrUnsupported},
 		{"inclusive_canonicalization_cannot_declare_prefixes", reference.Transform{Algorithm: c14n.Canonical11, InclusivePrefixes: []string{"p"}}, reference.ErrInput},
 		{"forbidden_inclusive_prefix", reference.Transform{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"xmlns"}}, reference.ErrInput},
+		{"multiple_tokens_in_one_prefix", reference.Transform{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"p q"}}, reference.ErrInput},
 		{"base64_cannot_carry_xpath", reference.Transform{Algorithm: reference.Base64, XPath: []reference.XPathExpression{{Expression: "true()"}}}, reference.ErrInput},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,8 +214,8 @@ func TestAppendParametersValidatesAlgorithmContract(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("AppendParameters(%+v) error = %v, want %v", tc.input, err, tc.want)
 			}
-			if tc.want == nil && len(draft.Children) != 0 {
-				t.Fatalf("parameterless algorithm unexpectedly appended %d children", len(draft.Children))
+			if len(draft.Children) != 0 {
+				t.Fatalf("unexpectedly appended %d children", len(draft.Children))
 			}
 		})
 	}
@@ -244,6 +270,41 @@ func TestAppendProgramRejectsInvalidXPathBeforeAppending(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("second_filter_has_conflicting_prefix", func(t *testing.T) {
+		t.Parallel()
+
+		input := reference.Transform{Algorithm: reference.XPathFilter2, XPath: []reference.XPathExpression{
+			{Expression: "//first", Filter: "intersect"},
+			{Expression: "//second", Filter: "union", Namespaces: map[string]string{"xf": "urn:items"}},
+		}}
+
+		draft := newTransformDraft(input.Algorithm)
+		if err := transformxml.AppendProgram(t.Context(), draft, input); !errors.Is(err, reference.ErrPolicy) {
+			t.Fatalf("AppendProgram = %v; want ErrPolicy", err)
+		}
+
+		if len(draft.Children) != 0 {
+			t.Fatal("invalid program partially changed the transform")
+		}
+	})
+
+	t.Run("cancelled_xpath", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		input := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{Expression: "true()"}}}
+		draft := newTransformDraft(input.Algorithm)
+		if err := transformxml.AppendProgram(ctx, draft, input); !errors.Is(err, context.Canceled) {
+			t.Fatalf("AppendProgram = %v; want context.Canceled", err)
+		}
+
+		if len(draft.Children) != 0 {
+			t.Fatal("cancelled program changed the transform")
+		}
+	})
 }
 
 func TestAppendProgramStylesheet(t *testing.T) {

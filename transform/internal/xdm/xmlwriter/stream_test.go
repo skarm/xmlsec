@@ -139,6 +139,56 @@ func TestWriterXML11ControlReferences(t *testing.T) {
 	}
 }
 
+func TestWriterXML11RejectsRestrictedLiteralContent(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		write func(*stream.Writer, string) error
+		start func(*stream.Writer) error
+		end   func(*stream.Writer) error
+		body  string
+	}{
+		{"comment", (*stream.Writer).WriteComment, (*stream.Writer).StartComment, (*stream.Writer).EndComment, "<!--ok-->"},
+		{
+			"PI",
+			func(w *stream.Writer, s string) error { return w.WritePI("check", s) },
+			func(w *stream.Writer) error { return w.StartPI("check") },
+			(*stream.Writer).EndPI,
+			"<?check ok?>",
+		},
+		{"CDATA", (*stream.Writer).WriteCDATA, (*stream.Writer).StartCDATA, (*stream.Writer).EndCDATA, "<![CDATA[ok]]>"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			const restricted = "\u007f"
+			var output strings.Builder
+			w := stream.NewWriter(&output).XMLVersion("1.1")
+			writeSteps(t, func() error { return w.StartElement("root") })
+			before := output.String()
+			if err := test.write(&w, restricted); err == nil || output.String() != before {
+				t.Error("restricted literal was accepted or emitted", err, output.String())
+			}
+			writeSteps(t, func() error { return test.start(&w) })
+			before = output.String()
+			if err := w.WriteString(restricted); err == nil || output.String() != before {
+				t.Fatal("restricted chunk was accepted or emitted", err, output.String())
+			}
+			writeSteps(t, func() error { return w.WriteString("ok") }, func() error { return test.end(&w) }, w.EndElement)
+			if got, want := output.String(), "<root>"+test.body+"</root>"; got != want {
+				t.Fatalf("writer after validation error = %q; want %q", got, want)
+			}
+			output.Reset()
+			w = stream.NewWriter(&output)
+			writeSteps(t, func() error { return w.StartElement("root") }, func() error { return test.write(&w, restricted) }, w.EndElement)
+			if !strings.Contains(output.String(), restricted) {
+				t.Fatalf("valid literal missing in XML 1.0 output %q", output.String())
+			}
+		})
+	}
+}
+
 func TestWriterRejectsShortStringWrite(t *testing.T) {
 	t.Parallel()
 

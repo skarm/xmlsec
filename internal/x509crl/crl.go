@@ -199,6 +199,10 @@ func parseHeader(raw []byte, outer []asn1.RawValue) (*listDecoder, error) {
 }
 
 func (d *listDecoder) entries(maximum int) ([]asn1.RawValue, error) {
+	if maximum < 0 {
+		return nil, errors.Join(ErrLimit, der.ErrInvalidDER, der.ErrLimit)
+	}
+
 	var entries []asn1.RawValue
 
 	if d.index < len(d.body) && der.Is(d.body[d.index], asn1.ClassUniversal, asn1.TagSequence, true) {

@@ -144,7 +144,7 @@ func (s *Stylesheet) Transform(ctx context.Context, d *Document, options XSLTCon
 // through Execute and Result.WriteSecondary; this operation rejects secondary outputs.
 func (s *Stylesheet) Write(ctx context.Context, w io.Writer, d *Document, options XSLTContext) (int64, error) {
 	if nilcheck.IsNil(w) {
-		return 0, wrap("write XSLT", ErrInput)
+		return 0, wrap(opWriteXSLT, ErrInput)
 	}
 
 	result, err := s.Execute(ctx, d, options)
@@ -153,7 +153,7 @@ func (s *Stylesheet) Write(ctx context.Context, w io.Writer, d *Document, option
 	}
 
 	if len(result.native.Secondary) != 0 {
-		return 0, wrap("write XSLT", ErrUnsupported)
+		return 0, wrap(opWriteXSLT, ErrUnsupported)
 	}
 
 	return result.WriterTo(ctx).WriteTo(w)
@@ -161,16 +161,16 @@ func (s *Stylesheet) Write(ctx context.Context, w io.Writer, d *Document, option
 
 func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTContext) (context.Context, context.CancelFunc, xslt.Invocation, *outputCollector, error) {
 	if s == nil || s.native == nil {
-		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
+		return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, ErrInput)
 	}
 
 	if options.ResultMode > ResultDefault {
-		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
+		return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, ErrInput)
 	}
 
 	ctx, cancel, err := s.engine.invocation(ctx)
 	if err != nil {
-		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", err)
+		return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, err)
 	}
 
 	ctx = s.engine.languageContext(ctx)
@@ -178,7 +178,7 @@ func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTConte
 	ctx, err = s.engine.dynamicContext(ctx, options.Context)
 	if err != nil {
 		cancel()
-		return nil, nil, xslt.Invocation{}, nil, wrap("execute XSLT", err)
+		return nil, nil, xslt.Invocation{}, nil, wrap(opExecuteXSLT, err)
 	}
 
 	ready := false
@@ -189,16 +189,16 @@ func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTConte
 	}()
 
 	if options.Template.Local != "" && options.Mode.Local != "" && s.version == XSLT20 {
-		return nil, nil, xslt.Invocation{}, nil, xsltError("execute XSLT", &xdm.Error{Code: "XTDE0047", Message: "XSLT 2.0 invocation specifies both an initial mode and an initial template"})
+		return nil, nil, xslt.Invocation{}, nil, xsltError(opExecuteXSLT, &xdm.Error{Code: "XTDE0047", Message: "XSLT 2.0 invocation specifies both an initial mode and an initial template"})
 	}
 
 	if options.Template.Local != "" && options.Mode.Local != "" || options.function.Local != "" && (options.Template.Local != "" || options.Mode.Local != "" || len(options.InitialParameters) != 0 || len(options.TunnelParameters) != 0) {
-		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
+		return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, ErrInput)
 	}
 
 	bindings, err := nativeBindings(ctx, options.Parameters, s.engine.limits)
 	if err != nil {
-		return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", err)
+		return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, err)
 	}
 
 	parameters := xslt.NewParameters()
@@ -210,11 +210,11 @@ func (s *Stylesheet) prepare(ctx context.Context, d *Document, options XSLTConte
 
 	if d != nil {
 		if d.native == nil {
-			return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", ErrInput)
+			return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, ErrInput)
 		}
 
 		if err := checkInputDocument(ctx, d.native, s.engine.limits); err != nil {
-			return nil, nil, xslt.Invocation{}, nil, wrap("transform XSLT", err)
+			return nil, nil, xslt.Invocation{}, nil, wrap(opTransformXSLT, err)
 		}
 
 		source = d.native
@@ -250,11 +250,11 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 
 	if options.selection != nil {
 		if options.Template.Local != "" || options.function.Local != "" {
-			return xslt.Invocation{}, wrap("execute XSLT", ErrInput)
+			return xslt.Invocation{}, wrap(opExecuteXSLT, ErrInput)
 		}
 
 		if err := checkSequence(ctx, options.selection.items, s.engine.limits, true); err != nil {
-			return xslt.Invocation{}, wrap("execute XSLT", err)
+			return xslt.Invocation{}, wrap(opExecuteXSLT, err)
 		}
 
 		items := options.selection.items
@@ -271,7 +271,7 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 		checker := sequenceChecker{ctx: ctx, limits: s.engine.limits, input: true}
 		for _, argument := range options.arguments {
 			if err := checker.walk(argument.items, 0); err != nil {
-				return xslt.Invocation{}, wrap("execute XSLT", err)
+				return xslt.Invocation{}, wrap(opExecuteXSLT, err)
 			}
 
 			args = append(args, xdm.CloneSequence(argument.items))
@@ -284,7 +284,7 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 		item := options.ContextItem.item
 		if item != nil {
 			if err := checkSequence(ctx, xdm.ItemSlice{item}, s.engine.limits, true); err != nil {
-				return xslt.Invocation{}, wrap("execute XSLT", err)
+				return xslt.Invocation{}, wrap(opExecuteXSLT, err)
 			}
 
 			item = xdm.CloneItem(item)
@@ -295,7 +295,7 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 
 	initial, err := nativeBindings(ctx, options.InitialParameters, s.engine.limits)
 	if err != nil {
-		return xslt.Invocation{}, wrap("execute XSLT", err)
+		return xslt.Invocation{}, wrap(opExecuteXSLT, err)
 	}
 
 	for name, value := range initial {
@@ -308,7 +308,7 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 
 	tunnel, err := nativeBindings(ctx, options.TunnelParameters, s.engine.limits)
 	if err != nil {
-		return xslt.Invocation{}, wrap("execute XSLT", err)
+		return xslt.Invocation{}, wrap(opExecuteXSLT, err)
 	}
 
 	for name, value := range tunnel {
@@ -322,14 +322,14 @@ func (s *Stylesheet) initialInvocation(ctx context.Context, source *xdm.Document
 func (e *Engine) CompileXSLT(ctx context.Context, source []byte, options XSLTOptions) (*Stylesheet, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrap("compile XSLT", err)
+		return nil, wrap(opCompileXSLT, err)
 	}
 	defer cancel()
 
 	ctx = e.languageContext(ctx)
 
 	if len(source) > e.limits.MaxProgramBytes {
-		return nil, wrap("compile XSLT", ErrLimit)
+		return nil, wrap(opCompileXSLT, ErrLimit)
 	}
 
 	parse := e.languageParseOptions().WithByteLimit(int64(e.limits.MaxProgramBytes))
@@ -337,7 +337,7 @@ func (e *Engine) CompileXSLT(ctx context.Context, source []byte, options XSLTOpt
 
 	native, err := parse.Parse(ctx, source)
 	if err != nil {
-		return nil, wrap("compile XSLT", err)
+		return nil, wrap(opCompileXSLT, err)
 	}
 
 	return e.compileStylesheet(ctx, native, options)
@@ -349,12 +349,12 @@ func (e *Engine) CompileXSLT(ctx context.Context, source []byte, options XSLTOpt
 func (e *Engine) CompileXSLTReader(ctx context.Context, src io.Reader, options XSLTOptions) (*Stylesheet, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrap("compile XSLT", err)
+		return nil, wrap(opCompileXSLT, err)
 	}
 	defer cancel()
 
 	if nilcheck.IsNil(src) {
-		return nil, wrap("compile XSLT", ErrInput)
+		return nil, wrap(opCompileXSLT, ErrInput)
 	}
 
 	ctx = e.languageContext(ctx)
@@ -363,7 +363,7 @@ func (e *Engine) CompileXSLTReader(ctx context.Context, src io.Reader, options X
 
 	doc, err := parse.ParseReader(ctx, src)
 	if err != nil {
-		return nil, wrap("compile XSLT", err)
+		return nil, wrap(opCompileXSLT, err)
 	}
 
 	return e.compileStylesheet(ctx, doc, options)
@@ -372,16 +372,16 @@ func (e *Engine) CompileXSLTReader(ctx context.Context, src io.Reader, options X
 func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, options XSLTOptions) (*Stylesheet, error) {
 	version, err := xslt.CheckProcessorLanguage(doc, int(options.Version), int(options.ProcessorVersion))
 	if err != nil {
-		return nil, xsltError("compile XSLT", err)
+		return nil, xsltError(opCompileXSLT, err)
 	}
 
 	if len(options.StaticParameters) > 0 && version < int(XSLT30) {
-		return nil, wrap("compile XSLT", ErrUnsupported)
+		return nil, wrap(opCompileXSLT, ErrUnsupported)
 	}
 
 	bindings, err := nativeBindings(ctx, options.StaticParameters, e.limits)
 	if err != nil {
-		return nil, wrap("compile XSLT", err)
+		return nil, wrap(opCompileXSLT, err)
 	}
 
 	parameters := xslt.NewParameters()
@@ -400,7 +400,7 @@ func (e *Engine) compileStylesheet(ctx context.Context, doc *xdm.Document, optio
 
 	sheet, err := compiler.Compile(ctx, doc)
 	if err != nil {
-		return nil, xsltError("compile XSLT", err)
+		return nil, xsltError(opCompileXSLT, err)
 	}
 
 	return &Stylesheet{engine: e, native: sheet, version: map[int]XSLTVersion{int(XSLT10): XSLT10, int(XSLT20): XSLT20, int(XSLT30): XSLT30}[version]}, nil

@@ -180,9 +180,12 @@ func TestHMACTemplateChecksAllReferences(t *testing.T) {
 	ctx := t.Context()
 	key := testMACKey()
 
-	for _, method := range []string{xmldsig.HMACSHA256, xmldsig.HMACSHA384, xmldsig.HMACSHA512} {
-		t.Run(method, func(t *testing.T) {
-			d, s := paramTemplate(t, method, xmldsig.SignatureParameters{})
+	for _, test := range []struct {
+		method string
+		bits   int
+	}{{xmldsig.HMACSHA256, 256}, {xmldsig.HMACSHA384, 384}, {xmldsig.HMACSHA512, 512}} {
+		t.Run(test.method, func(t *testing.T) {
+			d, s := paramTemplate(t, test.method, xmldsig.SignatureParameters{})
 			before := coreXML(t, d)
 			o := xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy(), ExpectedURIs: []string{"#a", "#b"}, RequiredElements: []document.Element{coreFind(d, nameObject, "a")}}
 
@@ -204,8 +207,9 @@ func TestHMACTemplateChecksAllReferences(t *testing.T) {
 				t.Fatalf("%v %+v", e, report)
 			}
 
-			if r.SignatureMethod() != method || r.OutputLength() < 256 || !r.Signature().Valid() {
-				t.Fatal("HMAC result")
+			if r.SignatureMethod() != test.method || r.OutputLength() != test.bits || !r.Signature().Valid() {
+				t.Fatalf("HMAC result method %q, %d bits, valid signature handle %t; want %q, %d bits and a valid handle",
+					r.SignatureMethod(), r.OutputLength(), r.Signature().Valid(), test.method, test.bits)
 			}
 			// Only payload b changes: SignedInfo/HMAC are untouched. Earlier valid
 			// reference must not mask failure of the second Reference.
@@ -239,16 +243,21 @@ func TestHMACTemplateChecksAllReferences(t *testing.T) {
 
 func TestHMACMalformedAndDisabledParameters(t *testing.T) {
 	d, _ := paramTemplate(t, xmldsig.HMACSHA256, xmldsig.SignatureParameters{HMACOutputLength: 128})
+	policy := xmldsig.HMACPolicy()
+	policy.AllowHMACTruncation = true
+	opt := xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: policy}}
+	key := testMACKey()
+	if out, err := xmldsig.SignHMACTemplate(t.Context(), d, d.Root(), key, opt); out == nil || err != nil {
+		t.Fatalf("single permitted HMACOutputLength: %v", err)
+	}
 
 	raw := coreXML(t, d)
 	for _, value := range []string{"0", "-1", "1", "80", "127", "129", "257", "2560", "999999999999999999999", "12<!--comment-->8"} {
 		t.Run(value, func(t *testing.T) {
 			changed := strings.Replace(raw, ">128</ds:HMACOutputLength>", ">"+value+"</ds:HMACOutputLength>", 1)
 			input := coreParse(t, changed)
-			p := xmldsig.HMACPolicy()
-			p.AllowHMACTruncation = true
 
-			out, e := xmldsig.SignHMACTemplate(t.Context(), input, input.Root(), testMACKey(), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: p}})
+			out, e := xmldsig.SignHMACTemplate(t.Context(), input, input.Root(), key, opt)
 			if e == nil || out != nil {
 				t.Fatal("bad XML parameter accepted")
 			}
@@ -258,8 +267,8 @@ func TestHMACMalformedAndDisabledParameters(t *testing.T) {
 	duplicate := strings.Replace(raw, "</ds:SignatureMethod>", "<ds:HMACOutputLength>256</ds:HMACOutputLength></ds:SignatureMethod>", 1)
 
 	input := coreParse(t, duplicate)
-	if _, e := xmldsig.SignHMACTemplate(t.Context(), input, input.Root(), testMACKey(), xmldsig.TemplateSignOptions{Validation: xmldsig.SignatureOptions{Policy: xmldsig.HMACPolicy()}}); e == nil {
-		t.Fatal("duplicate parameter accepted")
+	if out, err := xmldsig.SignHMACTemplate(t.Context(), input, input.Root(), key, opt); out != nil || !errors.Is(err, xmldsig.ErrStructure) {
+		t.Fatalf("duplicate HMACOutputLength: result=%t, error=%v; want no result and ErrStructure", out != nil, err)
 	}
 }
 

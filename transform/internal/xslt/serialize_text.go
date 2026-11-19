@@ -6,10 +6,25 @@ import (
 	"unicode/utf8"
 
 	norm "github.com/skarm/xmlsec/internal/normalization"
-
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
+
+// serializeEncodedText writes an already normalized document through the same
+// text serializer and encoder used by the sequence path.
+func serializeEncodedText(ctx context.Context, dst io.Writer, doc *xdm.Document, definition *OutputDef) error {
+	target, finish, err := encodedOutput(ctx, dst, definition)
+	if err != nil {
+		return err
+	}
+
+	value := ValueResult{Items: xdm.ItemSlice{xdm.NodeItem{Node: doc}}}
+	if err := streamTextValue(ctx, target, value, definition); err != nil {
+		return err
+	}
+
+	return finish()
+}
 
 func streamTextValue(ctx context.Context, dst io.Writer, result ValueResult, definition *OutputDef) error {
 	text := textValueWriter{ctx: ctx, destination: dst, charMap: definition.ResolvedCharMap}
@@ -113,7 +128,8 @@ func (w *textValueWriter) write(value string) error {
 			return err
 		}
 
-		start = offset + utf8.RuneLen(r)
+		_, width := utf8.DecodeRuneInString(value[offset:])
+		start = offset + width
 	}
 
 	return w.plain(value[start:])

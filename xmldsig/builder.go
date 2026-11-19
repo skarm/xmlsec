@@ -476,6 +476,10 @@ func referenceTemplateNode(ctx context.Context, r ReferenceTemplate) (*tree.Node
 		return nil, err
 	}
 
+	if len(r.Transforms) > maximumReferenceTransforms {
+		return nil, fmt.Errorf("%w: too many template reference transforms", ErrPolicy)
+	}
+
 	for _, tr := range r.Transforms {
 		if reference.IsExtension(tr.Algorithm) {
 			if err := reference.ValidateTransformParameters(tr); err != nil {

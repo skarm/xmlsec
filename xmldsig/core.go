@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -446,14 +447,18 @@ func prepareCore(ctx context.Context, doc *document.Document, selected document.
 		return nil, err
 	}
 
-	if err := plan.prepareReferences(ctx, signed[signedInfoHeaderChildren:], opt, template, report); err != nil {
+	if err := plan.prepareReferences(ctx, doc, signed[signedInfoHeaderChildren:], opt, template, report); err != nil {
 		return nil, err
 	}
 
-	plan.resolver, err = reference.NewSameDocumentResolverWithRules(ctx, doc, coreIDRules(opt))
+	plan.resolver, err = reference.NewSameDocumentResolverWithRules(ctx, doc, plan.processing.IDRules)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrReference, err)
 	}
+
+	// Reference results retain these settings for replay after verification.
+	plan.processing.AllowedTransforms = slices.Clone(plan.processing.AllowedTransforms)
+	plan.processing.IDRules = cloneIDRules(plan.processing.IDRules)
 
 	plan.external, err = newResourceSession(opt.External)
 	if err != nil {
@@ -628,7 +633,7 @@ type corePlan struct {
 	graph      *manifestGraph
 }
 
-func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node, opt SignatureOptions, template bool, report *VerificationReport) error {
+func (plan *corePlan) prepareReferences(ctx context.Context, doc *document.Document, nodes []*tree.Node, opt SignatureOptions, template bool, report *VerificationReport) error {
 	report.References = make([]ReferenceReport, len(nodes))
 	for i, n := range nodes {
 		uri, _ := getAttr(n, document.Name{Local: lexicon.SecurityAttrURI})
@@ -641,7 +646,7 @@ func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node,
 	}
 
 	for i, n := range nodes {
-		ref, err := parseCoreReference(ctx, n, plan.policy, plan.processing, template)
+		ref, err := parseCoreReference(ctx, doc, n, plan.policy, plan.processing, template)
 		if err != nil {
 			return &ReferenceError{i, report.References[i].URI, stageStructure, err}
 		}
@@ -664,7 +669,7 @@ func (plan *corePlan) prepareReferences(ctx context.Context, nodes []*tree.Node,
 	return nil
 }
 
-func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt reference.Options, template bool) (coreReference, error) {
+func parseCoreReference(ctx context.Context, doc *document.Document, n *tree.Node, p Policy, opt reference.Options, template bool) (coreReference, error) {
 	var ref coreReference
 
 	children, err := structure(n, lexicon.DSigElementReference, lexicon.SecurityAttrURI, lexicon.SecurityAttrID, lexicon.SecurityAttrType)
@@ -680,7 +685,7 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 	ref.typeURI, _ = getAttr(n, document.Name{Local: lexicon.SecurityAttrType})
 
 	if len(children) > 0 && isDS(children[0], lexicon.DSigElementTransforms) {
-		ref.transforms, err = parseCoreTransforms(ctx, children[0], opt)
+		ref.transforms, err = parseCoreTransforms(ctx, doc, children[0])
 		if err != nil {
 			return ref, err
 		}
@@ -723,7 +728,7 @@ func parseCoreReference(ctx context.Context, n *tree.Node, p Policy, opt referen
 	return ref, err
 }
 
-func parseCoreTransforms(ctx context.Context, n *tree.Node, opt reference.Options) ([]reference.Transform, error) {
+func parseCoreTransforms(ctx context.Context, doc *document.Document, n *tree.Node) ([]reference.Transform, error) {
 	ts, err := structure(n, lexicon.DSigElementTransforms)
 	if err != nil {
 		return nil, err
@@ -736,7 +741,7 @@ func parseCoreTransforms(ctx context.Context, n *tree.Node, opt reference.Option
 	var transforms []reference.Transform
 
 	for _, tr := range ts {
-		method, err := parseCoreTransform(ctx, tr, opt)
+		method, err := parseTransform(ctx, tr, doc)
 		if err != nil {
 			return transforms, err
 		}
@@ -745,10 +750,6 @@ func parseCoreTransforms(ctx context.Context, n *tree.Node, opt reference.Option
 	}
 
 	return transforms, nil
-}
-
-func parseCoreTransform(ctx context.Context, tr *tree.Node, opt reference.Options) (reference.Transform, error) {
-	return parseTransform(ctx, tr, opt.Signature.Node().Document())
 }
 
 func parseTransform(ctx context.Context, tr *tree.Node, doc *document.Document) (reference.Transform, error) {

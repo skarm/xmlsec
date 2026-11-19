@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -28,6 +29,16 @@ const (
 	assertionConsumerURL  = "https://sp.example.test/acs"
 	authenticationContext = "urn:test:authentication"
 )
+
+func TestZeroIdentityProviderRejectsRedirect(t *testing.T) {
+	t.Parallel()
+
+	var provider IdentityProvider
+	got, err := provider.AcceptRedirect(t.Context(), "", spEntityID, singleSignOnURL, testcert.Now())
+	if got != nil || !errors.Is(err, ErrPolicy) {
+		t.Errorf("zero IdentityProvider.AcceptRedirect = %v, %v, want nil and ErrPolicy", got, err)
+	}
+}
 
 type metadataLookupCall struct {
 	id string
@@ -72,6 +83,13 @@ func TestIdentityProviderPolicyBoundariesAndSnapshots(t *testing.T) {
 	invalid.Signing.Key = &ecdsa.PrivateKey{}
 	if provider, err := NewIdentityProvider(invalid); provider != nil || !errors.Is(err, signature.Err) {
 		t.Fatal("invalid key error was replaced", provider, err)
+	}
+	oversized := make(ed25519.PrivateKey, ed25519.PrivateKeySize+1)
+	for _, signer := range []crypto.Signer{oversized, &oversized} {
+		invalid.Signing.Key = signer
+		if provider, err := NewIdentityProvider(invalid); provider != nil || !errors.Is(err, signature.Err) {
+			t.Fatalf("invalid Ed25519 signer produced provider %v, error %v", provider, err)
+		}
 	}
 	for _, test := range []struct {
 		name   string
@@ -123,6 +141,8 @@ func TestIdentityProviderPolicyBoundariesAndSnapshots(t *testing.T) {
 	config.Signing.Policy.AllowedSignatureMethods = []string{xmldsig.ECDSASHA256}
 	config.VerificationPolicy.AllowedDigestMethods = []string{xmldsig.SHA384}
 	config.VerificationPolicy.AllowedSignatureMethods = []string{xmldsig.ECDSASHA384}
+	config.RedirectLimits.Policy.AllowedDigestMethods = []string{xmldsig.SHA384}
+	config.RedirectLimits.Policy.AllowedSignatureMethods = []string{xmldsig.ECDSASHA384}
 	provider, err := NewIdentityProvider(config)
 	if err != nil {
 		t.Fatal(err)
@@ -132,8 +152,13 @@ func TestIdentityProviderPolicyBoundariesAndSnapshots(t *testing.T) {
 	config.Signing.Policy.AllowedSignatureMethods[0] = "changed"
 	config.VerificationPolicy.AllowedDigestMethods[0] = "changed"
 	config.VerificationPolicy.AllowedSignatureMethods[0] = "changed"
+	config.RedirectLimits.Policy.AllowedDigestMethods[0] = "changed"
+	config.RedirectLimits.Policy.AllowedSignatureMethods[0] = "changed"
 	if !bytes.Equal(provider.c.Signing.CertificateDER, wantDER) || !slices.Equal(provider.c.Signing.Policy.AllowedDigestMethods, []string{xmldsig.SHA256}) || !slices.Equal(provider.c.Signing.Policy.AllowedSignatureMethods, []string{xmldsig.ECDSASHA256}) || !slices.Equal(provider.c.VerificationPolicy.AllowedDigestMethods, []string{xmldsig.SHA384}) || !slices.Equal(provider.c.VerificationPolicy.AllowedSignatureMethods, []string{xmldsig.ECDSASHA384}) {
 		t.Fatal("caller mutation changed the provider's captured trust policy")
+	}
+	if !slices.Equal(provider.c.RedirectLimits.Policy.AllowedDigestMethods, []string{xmldsig.SHA384}) || !slices.Equal(provider.c.RedirectLimits.Policy.AllowedSignatureMethods, []string{xmldsig.ECDSASHA384}) {
+		t.Fatal("caller mutation changed the provider's captured Redirect policy")
 	}
 }
 
@@ -224,6 +249,7 @@ func TestAuthenticationPolicyIndependentConditions(t *testing.T) {
 	normal := signedAndVerifiedRequest(t, false, false, false)
 	force := signedAndVerifiedRequest(t, true, false, false)
 	passive := signedAndVerifiedRequest(t, false, true, true)
+	freshPassive := signedAndVerifiedRequest(t, true, true, true)
 	creation := signedAndVerifiedRequest(t, true, false, true)
 	at, skew := testcert.Now(), 2*time.Second
 	for _, test := range []struct {
@@ -246,6 +272,9 @@ func TestAuthenticationPolicyIndependentConditions(t *testing.T) {
 		}, false},
 		{"passive without interaction", passive, func(*Authentication) {}, true},
 		{"passive with interaction", passive, func(a *Authentication) { a.InteractionUsed = true }, false},
+		{"fresh passive without interaction", freshPassive, func(a *Authentication) { a.FreshAuthentication = true }, true},
+		{"fresh passive needs freshness", freshPassive, func(*Authentication) {}, false},
+		{"fresh passive forbids interaction", freshPassive, func(a *Authentication) { a.FreshAuthentication = true; a.InteractionUsed = true }, false},
 		{"creation forbidden", normal, func(a *Authentication) { a.CreatedNameID = true }, false},
 		{"passive and creation allowed", passive, func(a *Authentication) { a.CreatedNameID = true }, true},
 		{"force and creation allowed", creation, func(a *Authentication) { a.FreshAuthentication = true; a.CreatedNameID = true }, true},

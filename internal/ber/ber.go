@@ -151,6 +151,10 @@ func AppendOctets(ctx context.Context, value Value, dst *bytes.Buffer, maximum i
 		return err
 	}
 
+	if maximum < dst.Len() {
+		return ErrLimit
+	}
+
 	switch value.Tag {
 	case asn1.TagOctetString:
 		if len(value.Body) > maximum-dst.Len() {
@@ -176,6 +180,10 @@ func AppendOctets(ctx context.Context, value Value, dst *bytes.Buffer, maximum i
 func OctetLength(ctx context.Context, value Value, maximum int) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+
+	if maximum < 0 {
+		return 0, ErrLimit
 	}
 
 	switch value.Tag {

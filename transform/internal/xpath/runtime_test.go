@@ -357,6 +357,93 @@ func TestRegexCacheConcurrentWeightAndOversizedAdmission(t *testing.T) {
 	}
 }
 
+func TestUCACollationUsesLastValueOfEachKeyword(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ query, a, b string }{
+		{"numeric=yes;numeric=no", "2", "10"},
+		{"strength=primary;strength=tertiary", "e", "é"},
+		{"caseLevel=yes;caseLevel=no;fallback=no", "a", "b"},
+		{"fallback=no;unused=value;fallback=yes", "a", "b"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			compare, err := ResolveCollationCompareFunc(lexicon.CollationUCA + "?" + tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			want, err := ResolveCollationCompareFunc(lexicon.CollationUCA)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got, expected := compare(tc.a, tc.b), want(tc.a, tc.b); got != expected {
+				t.Errorf("compare(%q, %q) = %d; want default comparison %d", tc.a, tc.b, got, expected)
+			}
+		})
+	}
+
+	const query = "?numeric=no;strength=primary;numeric=yes"
+	compare, err := ResolveCollationCompareFunc(lexicon.CollationUCA + query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := compare("2", "10"), compare("e", "é"); a >= 0 || b != 0 {
+		t.Errorf("numeric and primary comparisons = (%d, %d); want a negative value and zero", a, b)
+	}
+}
+
+func TestUCACollationStrengthAliases(t *testing.T) {
+	t.Parallel()
+
+	for i, name := range []string{"primary", "secondary", "tertiary", "quaternary", "identical"} {
+		alias := strconv.Itoa(i + 1)
+		t.Run(alias, func(t *testing.T) {
+			t.Parallel()
+
+			params, err := parseUCAParams("strength=" + alias)
+			if err != nil || params.strength != name {
+				t.Errorf("strength %s = %q, %v; want %q", alias, params.strength, err, name)
+			}
+
+			const prefix = lexicon.CollationUCA + "?strength="
+			for _, fallback := range []string{";fallback=yes", ";fallback=no"} {
+				compare, err := ResolveCollationCompareFunc(prefix + alias + fallback)
+				want, namedErr := ResolveCollationCompareFunc(prefix + name + fallback)
+				if errors.Is(namedErr, &xdm.Error{Code: errCodeFOCH0002}) {
+					if !errors.Is(err, &xdm.Error{Code: errCodeFOCH0002}) {
+						t.Errorf("strength %s%s error = %v; want FOCH0002", alias, fallback, err)
+					}
+
+					continue
+				}
+				if err != nil || namedErr != nil {
+					t.Fatalf("strength %s and %s%s errors = %v, %v; want both supported", alias, name, fallback, err, namedErr)
+				}
+				if got, expected := compare("e", "é"), want("e", "é"); got != expected {
+					t.Errorf("strength %s%s compare = %d; want %d", alias, fallback, got, expected)
+				}
+			}
+		})
+	}
+}
+
+func TestCollationResolutionPreservesEmptyPathSegment(t *testing.T) {
+	t.Parallel()
+
+	const base = "http://www.w3.org/a/b/main.xml"
+	const collation = "2005/xpath-functions/collation/codepoint"
+	supported, err := resolveCollation("../../"+collation, base)
+	if err != nil || !supported.isCodepoint() {
+		t.Fatalf("ordinary relative codepoint collation = %v, %v", supported, err)
+	}
+	unsupported, err := resolveCollation("../..//"+collation, base)
+	if unsupported != nil || !errors.Is(err, &xdm.Error{Code: errCodeFOCH0002}) {
+		t.Fatalf("collation with distinct empty path segment = %v, %v; want FOCH0002", unsupported, err)
+	}
+}
+
 func TestCollationCacheBoundsDynamicURIs(t *testing.T) {
 	var r evaluationRuntime
 
@@ -771,12 +858,18 @@ func TestAnyURIDatatypeEditionsASTAndVM(t *testing.T) {
 }
 
 func TestTreeBudgetMeasuresBorrowedContent(t *testing.T) {
-	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r><x>ab</x><x>c</x><!--d--><?p e?></r>`))
+	doc, err := (xdm.ParseOptions{}).Parse(t.Context(), []byte(`<r><x/><x>c</x><!--d--><?p e?></r>`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Document and element accounting includes descendant text; text, comment
-	// and PI nodes also charge their own content.
+
+	first := doc.DocumentElement().FirstChild().(*xdm.Element)
+	if err := first.AddChild(doc.CreateCDATASection("ab")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Document and element accounting includes descendant text/CDATA; each
+	// text, CDATA, comment and PI node also charges its own content.
 	for _, maximum := range []int{13, 14} {
 		ctx := WithBudget(t.Context(), 100, 8, maximum, 10)
 

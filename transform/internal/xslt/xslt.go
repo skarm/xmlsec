@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 
+	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
@@ -51,8 +52,21 @@ func TransformToWriter(ctx context.Context, source *xdm.Document, ss *Stylesheet
 	return ss.Transform(source).WriteTo(ctx, w)
 }
 
+// A resolver may return an open stream alongside an error.
+func closeFailedResolution(reader io.ReadCloser, err error) error {
+	if nilcheck.IsNil(reader) {
+		return err
+	}
+
+	return errors.Join(err, reader.Close())
+}
+
 // parseXMLResource consumes and closes an explicitly opened XML resource.
 func parseXMLResource(ctx context.Context, configured *xdm.ParseOptions, reader io.ReadCloser, baseURI string, maxBytes int64) (*xdm.Document, error) {
+	if nilcheck.IsNil(reader) {
+		return nil, errors.New("resolver returned a nil reader")
+	}
+
 	options := xdm.ParseOptions{}
 	if configured != nil {
 		options = *configured

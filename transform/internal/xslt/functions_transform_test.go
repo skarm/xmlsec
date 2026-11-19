@@ -320,6 +320,41 @@ func TestTransformFunctionBindsStaticParametersAndDeliversDocument(t *testing.T)
 	}
 }
 
+func TestStaticTransformUsesCompilerPackageResolver(t *testing.T) {
+	t.Parallel()
+	const library = `<xsl:package xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+		name="urn:unit:package" package-version="2.1" version="3.0">
+		<xsl:output method="text"/>
+		<xsl:template name="start" visibility="public">package result</xsl:template>
+	</xsl:package>`
+	const caller = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">
+		<xsl:output method="text"/>
+		<xsl:variable name="label" static="yes" select="transform(map{
+			'package-name': 'urn:unit:package', 'package-version': '2.*',
+			'initial-template': QName('', 'start'), 'delivery-format': 'serialized'
+		})?output"/>
+		<xsl:template match="/"><xsl:value-of select="$label"/></xsl:template>
+	</xsl:stylesheet>`
+	reader := &closeTrackingReader{reader: strings.NewReader(library)}
+	calls := 0
+	resolver := contractPackageResolver(func(_ context.Context, name, version string) (io.ReadCloser, string, error) {
+		calls++
+		if name != "urn:unit:package" || version != "2.*" {
+			return nil, "", fmt.Errorf("unexpected package %q version %q", name, version)
+		}
+		return reader, "https://styles.example/library.xsl", nil
+	})
+	ss, err := NewCompiler().PackageResolver(resolver).Compile(t.Context(), parseTestDocument(t, caller))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ss.Transform(parseTestDocument(t, "<r/>")).Serialize(t.Context())
+	requireSerialization(t, got, err, "package result", "")
+	if calls != 1 || reader.closed != 1 {
+		t.Fatalf("package resolver calls = %d, reader closes = %d; want one each", calls, reader.closed)
+	}
+}
+
 func TestTransformFunctionAppliesSerializationParametersOnlyToPrimary(t *testing.T) {
 	t.Parallel()
 	const sheet = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">
@@ -471,4 +506,27 @@ func TestFnFunctionLookupPackageRespectsArityAndPackageScope(t *testing.T) {
 	}
 	got, err := ss.CallTemplate("run").Serialize(t.Context())
 	requireSerialization(t, got, err, "library|true|library|private-inside|CORE", "")
+}
+
+func TestReviewNestedTransformClosesReaderReturnedWithError(t *testing.T) {
+	for _, kind := range []string{"location", "package"} {
+		t.Run(kind, func(t *testing.T) {
+			reader := &closeTrackingReader{reader: strings.NewReader("")}
+			sentinel := errors.New("resource failed after opening")
+			option := WithTransformURIResolver(contractURIResolver(func(context.Context, string) (io.ReadCloser, error) { return reader, sentinel }))
+			key, value := "stylesheet-location", "https://example.test/stylesheet.xsl"
+			if kind == "package" {
+				option = WithTransformPackageResolver(contractPackageResolver(func(context.Context, string, string) (io.ReadCloser, string, error) { return reader, "", sentinel }))
+				key, value = "package-name", "urn:lib"
+			}
+			options := xdm.SingleEntryMap(stringItem(key), xdm.SingleString(value))
+			_, err := TransformFunction(option).Call(t.Context(), []xdm.Sequence{xdm.ItemSlice{options}})
+			if !errors.Is(err, sentinel) {
+				t.Errorf("lost cause: %v", err)
+			}
+			if reader.closed != 1 {
+				t.Errorf("closes %d, want 1", reader.closed)
+			}
+		})
+	}
 }

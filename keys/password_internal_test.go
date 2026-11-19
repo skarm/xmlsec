@@ -9,6 +9,7 @@ import (
 	"crypto/fips140"
 	"crypto/hmac"
 	"crypto/pbkdf2"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/asn1"
@@ -20,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/der"
+	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 )
 
@@ -87,6 +89,43 @@ func TestPasswordDerivation(t *testing.T) {
 
 		if out != nil || !errors.Is(err, context.Canceled) {
 			t.Fatal("KDF did not cancel without partial output", err)
+		}
+	}
+}
+
+func TestPKCS8PasswordLengthInStrictFIPS(t *testing.T) {
+	if !testutil.RunFIPSTest(t) {
+		return
+	}
+	if !fips140.Enforced() {
+		t.Skip("requires strict FIPS enforcement")
+	}
+
+	key := testcert.Key(t)
+	plain, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(plain)
+
+	for _, tc := range []struct {
+		password string
+		want     error
+	}{
+		{"", ErrPolicy},
+		{"1234567890123", ErrPolicy},
+		{"12345678901234", nil},
+	} {
+		password := []byte(tc.password)
+		container := protectedPKCS8Fixture(t, plain, password, crypto.SHA256, 256, false)
+		imported, err := ParseEncryptedPrivate(t.Context(), container, password, Limits{})
+		if !errors.Is(err, tc.want) || (imported != nil) != (tc.want == nil) {
+			t.Errorf("import with %d password bytes: key present=%v, err=%v, want %v", len(password), imported != nil, err, tc.want)
+		}
+
+		encoded, err := MarshalEncryptedPrivate(t.Context(), key, password, EncryptionOptions{Iterations: 1000}, Limits{})
+		if !errors.Is(err, tc.want) || (len(encoded) != 0) != (tc.want == nil) {
+			t.Errorf("export with %d password bytes: output present=%v, err=%v, want %v", len(password), len(encoded) != 0, err, tc.want)
 		}
 	}
 }
@@ -200,6 +239,34 @@ func TestPKCS12AuthenticatedBagAttributes(t *testing.T) {
 			}
 			if err != nil || identity == nil || !bytes.Equal(identity.Certificate.Raw, c.Leaf.Raw) || !c.LeafKey.PublicKey.Equal(identity.PrivateKey.Public()) {
 				t.Fatal("valid attributes changed identity", err)
+			}
+		})
+	}
+}
+
+func TestPKCS12SafeStructureErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		authSafe []byte
+		limits   Limits
+		want     error
+	}{
+		{"embedded_safe_contents_wrong_type", der.Seq(dataInfo(der.Int(0))), Limits{}, ErrFormat},
+		{"empty_authenticated_safe", der.Seq(), Limits{}, ErrFormat},
+		{"content_info_limit", der.Seq(dataInfo(der.Seq()), dataInfo(der.Seq())), Limits{MaxContentInfos: 1}, ErrLimit},
+		{"bag_limit", der.Seq(dataInfo(der.Seq(safeBag(oidKeyBag(), der.Int(0), nil), safeBag(oidKeyBag(), der.Int(0), nil)))), Limits{MaxBags: 1}, ErrLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mac, err := encodePKCS12MAC(testState(t.Context(), t), tc.authSafe, PKCS12Options{Encryption: EncryptionOptions{Hash: crypto.SHA256, Iterations: 1000}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pfx := der.Seq(der.Int(3), dataInfo(tc.authSafe), mac)
+			for _, allowBER := range []bool{false, true} {
+				result, err := ParsePKCS12WithOptions(t.Context(), pfx, []byte("public password"), PKCS12ParseOptions{AllowBER: allowBER}, tc.limits)
+				if result != nil || !errors.Is(err, tc.want) {
+					t.Errorf("ParsePKCS12 with BER=%v = (%v, %v), want no identity and %v", allowBER, result != nil, err, tc.want)
+				}
 			}
 		})
 	}
@@ -328,6 +395,46 @@ func TestPrivateRSACollectionBudget(t *testing.T) {
 		if key, err := ParsePrivate(raw, Limits{}); key != nil || !errors.Is(err, ErrLimit) {
 			t.Fatal("RSA additional primes reached crypto validation", err)
 		}
+	}
+}
+
+func TestRSAPKCS8AlgorithmParameters(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := privateEncoding(key, DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(raw)
+
+	fields := sequence(t, raw)
+	identifier := sequence(t, fields[1].FullBytes)
+	if len(identifier) != 2 || !bytes.Equal(identifier[1].FullBytes, asn1.NullBytes) {
+		t.Fatal("RSA private key export omitted canonical NULL parameters")
+	}
+
+	imported, err := ParsePrivate(raw, Limits{})
+	if err != nil || imported == nil || !key.PublicKey.Equal(imported.Public()) {
+		t.Fatal("RSA PKCS#8 import with canonical NULL parameters", err)
+	}
+
+	withoutParameters := der.Seq(fields[0].FullBytes, der.Seq(identifier[0].FullBytes), fields[2].FullBytes)
+	defer clear(withoutParameters)
+	imported, err = ParsePrivate(withoutParameters, Limits{})
+	if err != nil || imported == nil || !key.PublicKey.Equal(imported.Public()) {
+		t.Fatal("compatible RSA PKCS#8 import with omitted parameters", err)
+	}
+
+	invalidID := der.Seq(identifier[0].FullBytes, der.Int(0))
+	withInvalidParameters := der.Seq(fields[0].FullBytes, invalidID, fields[2].FullBytes)
+	defer clear(withInvalidParameters)
+	if imported, err := ParsePrivate(withInvalidParameters, Limits{}); imported != nil || !errors.Is(err, ErrFormat) {
+		t.Errorf("RSA PKCS#8 import with INTEGER parameters: key present=%t, error=%v, want ErrFormat", imported != nil, err)
+	}
+	if imported, err := parseDecryptedPrivate(testState(t.Context(), t), withInvalidParameters); imported != nil || !errors.Is(err, ErrDecrypt) {
+		t.Errorf("decrypted RSA PKCS#8 with INTEGER parameters: key present=%t, error=%v, want ErrDecrypt", imported != nil, err)
 	}
 }
 

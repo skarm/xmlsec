@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/metadata"
@@ -37,7 +38,8 @@ type Client struct {
 	Metadata metadata.Resolver
 	// Signing supplies the request signing key and policy.
 	Signing protocol.SigningKey
-	// Replay atomically consumes correlation and one-time assertion IDs.
+	// Replay atomically consumes correlation and one-time assertion IDs. It is
+	// required for Query and Map, and for Assertion when OneTimeUse is present.
 	Replay replay.Store
 	// Options supplies response, assertion and query-matching policy.
 	Options protocol.QueryResponseOptions
@@ -62,6 +64,20 @@ func (c Client) Query(ctx context.Context, q protocol.Query, at time.Time) (*pro
 		return nil, err
 	}
 
+	if nilcheck.IsNil(c.Replay) {
+		return nil, ErrDenied
+	}
+
+	age, _, skew, err := protocol.AcceptanceWindow(c.Options.Limits)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := role.SigningKeys()
+	if len(keys) == 0 {
+		return nil, protocol.ErrSignature
+	}
+
 	d, err := protocol.SignQuery(ctx, q, c.Signing)
 	if err != nil {
 		return nil, err
@@ -84,12 +100,7 @@ func (c Client) Query(ctx context.Context, q protocol.Query, at time.Time) (*pro
 	o.Binding = metadata.SOAP
 	o.Audience = c.EntityID
 
-	r, err := protocol.VerifyQueryResponse(ctx, d, role.SigningKeys(), q, o)
-	if err != nil {
-		return nil, err
-	}
-
-	age, _, skew, err := protocol.AcceptanceWindow(o.Limits)
+	r, err := protocol.VerifyQueryResponse(ctx, d, keys, q, o)
 	if err != nil {
 		return nil, err
 	}
@@ -107,10 +118,6 @@ func (c Client) Query(ctx context.Context, q protocol.Query, at time.Time) (*pro
 		}
 	}
 
-	if c.Replay == nil {
-		return nil, ErrDenied
-	}
-
 	if err = c.Replay.Consume(ctx, entries, now); err != nil {
 		return nil, err
 	}
@@ -121,6 +128,7 @@ func (c Client) Query(ctx context.Context, q protocol.Query, at time.Time) (*pro
 // Map requests a NameID mapping from a trusted IdP's NameIDMappingService.
 // Successful encrypted output is intentionally opaque and can be forwarded to
 // the target SP. It does not establish a local login or change an existing NameID.
+// A replay-store error is returned without a result.
 func (c Client) Map(ctx context.Context, q protocol.NameIDMappingRequest, at time.Time) (*protocol.VerifiedNameIDMappingResponse, error) {
 	started := time.Now()
 
@@ -132,6 +140,20 @@ func (c Client) Map(ctx context.Context, q protocol.NameIDMappingRequest, at tim
 	q.MessageHeader, err = c.header(q.MessageHeader, endpoint, at)
 	if err != nil {
 		return nil, err
+	}
+
+	if nilcheck.IsNil(c.Replay) {
+		return nil, ErrDenied
+	}
+
+	age, _, skew, err := protocol.AcceptanceWindow(c.Options.Limits)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := role.SigningKeys()
+	if len(keys) == 0 {
+		return nil, protocol.ErrSignature
 	}
 
 	d, err := protocol.SignNameIDMappingRequest(ctx, q, c.Signing)
@@ -154,7 +176,7 @@ func (c Client) Map(ctx context.Context, q protocol.NameIDMappingRequest, at tim
 		return nil, metadata.ErrExpired
 	}
 
-	r, err := protocol.VerifyNameIDMappingResponse(ctx, d, role.SigningKeys(), o)
+	r, err := protocol.VerifyNameIDMappingResponse(ctx, d, keys, o)
 	if err != nil {
 		return nil, err
 	}
@@ -165,18 +187,11 @@ func (c Client) Map(ctx context.Context, q protocol.NameIDMappingRequest, at tim
 		}
 	}
 
-	if c.Replay == nil {
-		return nil, ErrDenied
-	}
-
-	age, _, skew, err := protocol.AcceptanceWindow(o.Limits)
-	if err != nil {
+	if err := c.Replay.Consume(ctx, []replay.Entry{{Scope: scope(c.EntityID, c.Peer), ID: r.Header().ID, ExpiresAt: o.At.Add(age + 2*skew)}, {Scope: scope(c.EntityID, c.Peer) + scopeRequestSuffix, ID: q.ID, ExpiresAt: o.At.Add(age + 2*skew)}}, o.At); err != nil {
 		return nil, err
 	}
 
-	err = c.Replay.Consume(ctx, []replay.Entry{{Scope: scope(c.EntityID, c.Peer), ID: r.Header().ID, ExpiresAt: o.At.Add(age + 2*skew)}, {Scope: scope(c.EntityID, c.Peer) + scopeRequestSuffix, ID: q.ID, ExpiresAt: o.At.Add(age + 2*skew)}}, o.At)
-
-	return r, err
+	return r, nil
 }
 
 // Assertion retrieves an existing assertion using the URI binding and verifies
@@ -222,7 +237,7 @@ func (c Client) Assertion(ctx context.Context, id string, at time.Time) (*protoc
 	}
 
 	if a.OneTimeUse() {
-		if c.Replay == nil || a.NotOnOrAfter().IsZero() {
+		if nilcheck.IsNil(c.Replay) || a.NotOnOrAfter().IsZero() {
 			return nil, ErrDenied
 		}
 
@@ -276,7 +291,7 @@ func (c Client) header(h protocol.MessageHeader, endpoint string, at time.Time) 
 }
 
 func (c Client) endpoint(ctx context.Context, service, bindingURI string, at time.Time) (string, *metadata.Role, error) {
-	if c.Metadata == nil || service == "" || ctx == nil || at.IsZero() {
+	if nilcheck.IsNil(c.Metadata) || service == "" || ctx == nil || at.IsZero() {
 		return "", nil, ErrDenied
 	}
 

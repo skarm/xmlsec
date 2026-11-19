@@ -23,6 +23,12 @@ const (
 	languageOracleTimeout      = "-timeout=15m"
 )
 
+const (
+	conformanceRegisterFile = "conformance.json"
+	envQT3Directory         = "XMLSEC_QT3_DIR"
+	envXSLTDirectory        = "XMLSEC_XSLT_DIR"
+)
+
 // Inputs and generated evidence belong to a checkout-specific external cache.
 // They are never inferred from an unrelated checkout or an old audit report.
 type languageInputs struct {
@@ -65,7 +71,7 @@ func readLanguageInputs(root string) (languageInputs, string, error) {
 func configureLanguageInputs(ctx context.Context, root string, out io.Writer) error {
 	inputs := languageInputs{Environment: make(map[string]string)}
 
-	for _, name := range []string{"XMLSEC_QT3_DIR", "XMLSEC_XSLT_DIR", "SAXON_CLASSPATH", "SAXON20_CLASSPATH", "SERIALIZATION_SCHEMA_DIR", "JSON_SCHEMA_FILE"} {
+	for _, name := range []string{envQT3Directory, envXSLTDirectory, "SAXON_CLASSPATH", "SAXON20_CLASSPATH", "SERIALIZATION_SCHEMA_DIR", "JSON_SCHEMA_FILE"} {
 		value := os.Getenv(name)
 		if value == "" {
 			return fmt.Errorf("configure requires %s", name)
@@ -175,6 +181,28 @@ func languagePreparedValid(directory string, stamp languageProofStamp) bool {
 	return true
 }
 
+const languagePreparedSuffix = "-ready-"
+
+func findLanguagePrepared(directory string, stamp languageProofStamp) string {
+	if languagePreparedValid(directory, stamp) {
+		return directory
+	}
+
+	parent, prefix := filepath.Dir(directory), filepath.Base(directory)+languagePreparedSuffix
+
+	entries, _ := os.ReadDir(parent)
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+			candidate := filepath.Join(parent, entry.Name())
+			if languagePreparedValid(candidate, stamp) {
+				return candidate
+			}
+		}
+	}
+
+	return ""
+}
+
 func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writer) error {
 	inputs, base, err := readLanguageInputs(root)
 	if err != nil {
@@ -186,8 +214,8 @@ func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writ
 		return err
 	}
 
-	if languagePreparedValid(directory, stamp) {
-		_, err = fmt.Fprintln(out, "Current language evidence is cached in", directory)
+	if cached := findLanguagePrepared(directory, stamp); cached != "" {
+		_, err = fmt.Fprintln(out, "Current language evidence is cached in", cached)
 		return err
 	}
 
@@ -252,12 +280,12 @@ func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writ
 	for i, key := range languageProofProfileKeys() {
 		parts := strings.Split(key, "/")
 
-		checkout := inputs.Environment["XMLSEC_QT3_DIR"]
+		checkout := inputs.Environment[envQT3Directory]
 		if parts[0] == suiteXSLT {
-			checkout = inputs.Environment["XMLSEC_XSLT_DIR"]
+			checkout = inputs.Environment[envXSLTDirectory]
 		}
 
-		if explicit := os.Getenv(map[string]string{suiteQT3: "XMLSEC_QT3_DIR", suiteXSLT: "XMLSEC_XSLT_DIR"}[parts[0]]); explicit != "" {
+		if explicit := os.Getenv(map[string]string{suiteQT3: envQT3Directory, suiteXSLT: envXSLTDirectory}[parts[0]]); explicit != "" {
 			checkout = explicit
 		}
 		// Classified publisher failures remain visible in the report and are
@@ -275,20 +303,45 @@ func prepareLanguageInputs(ctx context.Context, root string, out, stderr io.Writ
 		return errors.Join(err, errors.New("sources changed during language preparation; rerun the tests"))
 	}
 
-	if err := os.Rename(work, directory); err != nil {
-		// Another IDE process may have finished preparing the same snapshot.
-		if !languagePreparedValid(directory, stamp) {
-			return err
-		}
+	published, err := publishLanguagePrepared(work, directory, stamp)
+	if err != nil {
+		return err
 	}
 
-	_, err = fmt.Fprintln(out, "Prepared current language evidence in", directory)
+	_, err = fmt.Fprintln(out, "Prepared current language evidence in", published)
 
 	return err
 }
 
+func publishLanguagePrepared(work, directory string, stamp languageProofStamp) (string, error) {
+	if !languagePreparedValid(work, stamp) {
+		return "", errors.New("cannot publish incomplete language evidence")
+	}
+
+	primaryErr := os.Rename(work, directory)
+	if primaryErr == nil {
+		return directory, nil
+	}
+	// A concurrent preparation may have finished while this one was running.
+	if cached := findLanguagePrepared(directory, stamp); cached != "" {
+		return cached, nil
+	}
+
+	if _, err := os.Stat(directory); err != nil {
+		return "", errors.Join(primaryErr, err)
+	}
+	// The original directory can be nonempty but incomplete. Publish a new
+	// generation atomically, so readers of the old path can finish safely.
+	generation := directory + languagePreparedSuffix + filepath.Base(work)
+	if err := os.Rename(work, generation); err != nil {
+		return "", errors.Join(primaryErr, err)
+	}
+
+	return generation, nil
+}
+
 func languageIndependentPatterns(root string) ([]string, error) {
-	raw, err := os.ReadFile(filepath.Join(root, "docs", "conformance.json")) // #nosec G304 -- Fixed repository-relative register.
+	raw, err := os.ReadFile(filepath.Join(root, "docs", conformanceRegisterFile)) // #nosec G304 -- Fixed repository-relative register.
 	if err != nil {
 		return nil, err
 	}

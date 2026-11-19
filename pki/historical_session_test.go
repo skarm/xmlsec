@@ -77,6 +77,59 @@ func TestHistoricalExpiredTargetAuthentication(t *testing.T) {
 	}
 }
 
+// A completed operation must publish its value. An observed cancellation must
+// suppress it, including when a session already has the requested path cached.
+func checkHistoricalCancellation(t *testing.T, operation func(context.Context) (bool, error)) {
+	t.Helper()
+
+	for checkpoint := int32(1); checkpoint <= 256; checkpoint++ {
+		parent, cancel := context.WithCancel(t.Context())
+		ctx := &ocspCancelAtCheckContext{Context: parent, cancel: cancel}
+		ctx.remaining.Store(checkpoint)
+		published, err := operation(ctx)
+		canceled := parent.Err() != nil
+		cancel()
+		if canceled {
+			if published || !errors.Is(err, context.Canceled) {
+				t.Fatalf("checkpoint %d: published=%t, err=%v", checkpoint, published, err)
+			}
+			continue
+		}
+		if checkpoint == 1 || !published || err != nil {
+			t.Fatalf("control at checkpoint %d: published=%t, err=%v", checkpoint, published, err)
+		}
+		return
+	}
+	t.Fatal("no successful control")
+}
+
+func TestHistoricalPathCancellation(t *testing.T) {
+	c := makeChain(t)
+	session, err := pki.NewHistoricalSession(t.Context(), pki.HistoricalConfig{PKI: pki.Config{Roots: [][]byte{c.root.Raw}}}, verificationTime(), pki.Evidence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := session.Paths(t.Context(), c.leaf.Raw)
+	if err != nil || len(paths) != 1 {
+		t.Fatal(len(paths), err)
+	}
+	t.Run("cached paths", func(t *testing.T) {
+		checkHistoricalCancellation(t, func(ctx context.Context) (bool, error) {
+			result, err := session.Paths(ctx, c.leaf.Raw)
+			return result != nil, err
+		})
+	})
+	t.Run("assessment", func(t *testing.T) {
+		if _, err := session.CheckPath(t.Context(), paths[0]); err != nil {
+			t.Fatal(err)
+		}
+		checkHistoricalCancellation(t, func(ctx context.Context) (bool, error) {
+			result, err := session.CheckPath(ctx, paths[0])
+			return result != nil, err
+		})
+	})
+}
+
 func TestHistoricalCertificateTimeSliding(t *testing.T) {
 	c := makeChain(t)
 	now := verificationTime().Add(3 * time.Hour)
@@ -816,6 +869,77 @@ func TestHistoricalPathCandidatesAndDepth(t *testing.T) {
 		} else if err != nil || len(paths) != 1 {
 			t.Fatal("exact chain-depth boundary rejected", len(paths), err)
 		}
+	}
+}
+
+func TestHistoricalPathCandidatesStayFixedAcrossTargetLookups(t *testing.T) {
+	t.Parallel()
+	c := makeChain(t)
+	now := verificationTime()
+	key := testcert.Key(t)
+	intermediate := testcert.Issue(t, &x509.Certificate{
+		SerialNumber: big.NewInt(40), Subject: pkix.Name{CommonName: "separate target"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}, c.root, key.Public(), c.rootKey)
+	leaf := testcert.Issue(t, c.leaf, intermediate, c.leafKey.Public(), key)
+	config := pki.HistoricalConfig{PKI: pki.Config{
+		Roots: [][]byte{c.root.Raw}, AllowCALeaf: true,
+		MaxEvidenceBytes: max(len(c.root.Raw), len(intermediate.Raw)+len(leaf.Raw)),
+	}}
+	for _, tc := range []struct {
+		name                                       string
+		retainIntermediate, queryIntermediateFirst bool
+	}{
+		{"leaf_before_intermediate_without_evidence", false, false},
+		{"leaf_after_intermediate_without_evidence", false, true},
+		{"leaf_before_intermediate_with_evidence", true, false},
+		{"leaf_after_intermediate_with_evidence", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var evidence pki.Evidence
+			if tc.retainIntermediate {
+				evidence.Intermediates = [][]byte{intermediate.Raw}
+			}
+			session, err := pki.NewHistoricalSession(t.Context(), config, now, evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := func(raw []byte, depth int) {
+				t.Helper()
+				wantPaths := 0
+				if depth > 0 {
+					wantPaths = 1
+				}
+
+				input := bytes.Clone(raw)
+				paths, err := session.Paths(t.Context(), input)
+				clear(input)
+				if err != nil || len(paths) != wantPaths {
+					t.Fatalf("Paths returned %d paths, error=%v, want %d paths", len(paths), err, wantPaths)
+				}
+				if depth > 0 {
+					chain := paths[0].ChainDER()
+					if len(chain) != depth || !bytes.Equal(chain[0], raw) || !bytes.Equal(chain[len(chain)-1], c.root.Raw) {
+						t.Fatalf("unexpected target, anchor or chain length %d (want %d)", len(chain), depth)
+					}
+					if depth == 3 && !bytes.Equal(chain[1], intermediate.Raw) {
+						t.Fatal("wrong intermediate in prospective path")
+					}
+				}
+			}
+			leafDepth := 0
+			if tc.retainIntermediate {
+				leafDepth = 3
+			}
+			if !tc.queryIntermediateFirst {
+				query(leaf.Raw, leafDepth)
+			}
+			query(intermediate.Raw, 2)
+			query(leaf.Raw, leafDepth)
+			query(intermediate.Raw, 2)
+		})
 	}
 }
 
@@ -2184,6 +2308,12 @@ func TestHistoricalEmbeddedCertificates(t *testing.T) {
 	if err != nil || len(certificates) != 1 || !bytes.Equal(certificates[0], responder.Raw) {
 		t.Fatal(len(certificates), err)
 	}
+	t.Run("cancellation", func(t *testing.T) {
+		checkHistoricalCancellation(t, func(ctx context.Context) (bool, error) {
+			result, err := pki.InspectOCSPCertificates(ctx, raw)
+			return result != nil, err
+		})
+	})
 	clear(certificates[0])
 	next, err := pki.InspectOCSPCertificates(t.Context(), raw)
 	if err != nil || !bytes.Equal(next[0], responder.Raw) {

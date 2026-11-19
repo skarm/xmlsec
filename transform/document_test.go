@@ -780,6 +780,62 @@ func TestXMLBaseURIReferences(t *testing.T) {
 	}
 }
 
+func TestXPathBaseURIWithLocalRoot(t *testing.T) {
+	e := engine(t, transform.Config{})
+	program := query(t, e, `string(base-uri(/r/item))`, transform.XPath31)
+	for _, tc := range []struct{ base, ref, want string }{
+		{"/", "./", "/assets/"},
+		{`\in.xml`, "./", "/assets/"},
+		{`C:\in.xml`, "./", "C:/assets/"},
+		{`\\server\share\in.xml`, "./", "//server/share/assets/"},
+		{"/styles/in.xml", ".", "/styles/assets/"},
+		{"/styles/in%2Fvoice.xml?draft#old", ".", "/styles/assets/"},
+		{"/styles/a%3Fb/in.xml", ".", "/styles/a%3Fb/assets/"},
+		{"/styles/a%25b/in.xml", ".", "/styles/a%25b/assets/"},
+		{"C:/styles/theme/in.xml", "..", "C:/styles/assets/"},
+		{"C:/styles/in.xml?draft=/other/location#old", ".", "C:/styles/assets/"},
+		{"//server/share/styles/in.xml", "draft/..", "//server/share/styles/assets/"},
+	} {
+		snapshot, err := (document.ParseOptions{BaseURI: tc.base}).ParseText(t.Context(), `<r xml:base="`+tc.ref+`"><item xml:base="assets/"/></r>`)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		doc, err := e.Import(t.Context(), snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := program.Evaluate(t.Context(), doc, transform.XPathContext{})
+		if err != nil || text(t, got) != tc.want {
+			t.Errorf("base %q, ref %q: got %v, error %v, want %q", tc.base, tc.ref, got, err, tc.want)
+		}
+	}
+}
+
+func TestXPathSameDocumentXMLBaseKeepsLocalDocumentBase(t *testing.T) {
+	e := engine(t, transform.Config{})
+	program := query(t, e, "string(base-uri(/r/item))", transform.XPath31)
+	for _, base := range []string{"/dir/in.xml", "dir/in.xml", "C:/dir/in.xml", "//server/share/in.xml", "C:\\dir\\in.xml"} {
+		for _, ref := range []string{"", "?query", "#fragment"} {
+			snapshot, err := (document.ParseOptions{BaseURI: base}).ParseText(t.Context(), "<r><item xml:base=\""+ref+"\"/></r>")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			doc, err := e.Import(t.Context(), snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := program.Evaluate(t.Context(), doc, transform.XPathContext{})
+			if want := base + ref; err != nil || text(t, got) != want {
+				t.Errorf("base %q, ref %q: got %v, error %v, want %q", base, ref, got, err, want)
+			}
+		}
+	}
+}
+
 type languageDTDCase struct {
 	name       string
 	expression string

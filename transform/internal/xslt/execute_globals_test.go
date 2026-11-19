@@ -63,6 +63,24 @@ func TestGlobalConstructorsKeepTemporaryDocumentAndSequenceSemantics(t *testing.
 	requireSerialization(t, got, err, "true|1 2 3|node|4 5|https://example.test/globals/|true|3|true|e|true|true|6 7label|19|true|true|true|true", "")
 }
 
+func TestTemporaryDocumentArrayMembersKeepSequenceOrder(t *testing.T) {
+	t.Parallel()
+	const globals = `
+		<xsl:variable name="tree">
+			<xsl:sequence select="'before'"/>
+			<xsl:sequence select="['first', [], ('second', ['third', /, r/n]), 'last']"/>
+			<xsl:sequence select="'after'"/>
+		</xsl:variable>
+		<xsl:variable name="typed" as="array(*)"><xsl:sequence select="['a', 'b']"/></xsl:variable>`
+	const body = `<xsl:value-of select="(
+		$tree instance of document-node(), string($tree/text()[1]), string($tree/r/n),
+		string($tree/n), string($tree/text()[2]), $typed?2
+	)" separator="|"/>`
+	ss := compileTestStylesheet(t, globals, body)
+	got, err := ss.Transform(parseTestDocument(t, `<r><n>node</n></r>`)).Serialize(t.Context())
+	requireSerialization(t, got, err, "true|before first second third|node|node|last after|b", "")
+}
+
 func TestGlobalBindingErrorsReturnNoOutput(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -72,6 +90,8 @@ func TestGlobalBindingErrorsReturnNoOutput(t *testing.T) {
 		{name: "required_parameter_checked_even_if_unused", globals: `<xsl:param name="p" required="yes"/>`, body: `unreachable`, code: "XTDE0050"},
 		{name: "parameter_override_must_match_declared_type", globals: `<xsl:param name="p" as="xs:integer" select="1"/>`, body: `<xsl:value-of select="$p"/>`, code: "XTTE0590", parameter: xdm.SingleString("wrong type")},
 		{name: "variable_default_must_match_declared_type", globals: `<xsl:variable name="p" as="xs:integer" select="'wrong type'"/>`, body: `<xsl:value-of select="$p"/>`, code: "XTTE0570"},
+		{name: "temporary_document_rejects_map", globals: `<xsl:variable name="p"><xsl:sequence select="map{'letter':'a'}"/></xsl:variable>`, body: `<xsl:value-of select="$p"/>`, code: "XTDE0450"},
+		{name: "temporary_document_rejects_function_after_array_expansion", globals: `<xsl:variable name="p"><xsl:sequence select="['first', [upper-case#1]]"/></xsl:variable>`, body: `<xsl:value-of select="$p"/>`, code: "XTDE0450"},
 		{name: "cycle_through_parameter_and_variable", globals: `<xsl:param name="p" select="$v"/><xsl:variable name="v" select="$p"/>`, body: `<xsl:value-of select="$p"/>`, code: "XTDE0640"},
 		{name: "global_failure_is_outside_local_catch", globals: `<xsl:variable name="v" select="1 idiv 0"/>`, body: `<xsl:try><xsl:value-of select="$v"/><xsl:catch>unexpected catch</xsl:catch></xsl:try>`, code: "FOAR0001"},
 	} {

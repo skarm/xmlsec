@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"strings"
 	"testing"
 
@@ -24,6 +25,39 @@ type trackedBody struct {
 }
 
 func (r *trackedBody) Close() error { *r.closed++; return r.closeError }
+
+func TestCollectorValidatesCookieJarAtConstruction(t *testing.T) {
+	t.Parallel()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var typedNil *cookiejar.Jar
+	for _, tc := range []struct {
+		name string
+		jar  http.CookieJar
+		want error
+	}{
+		{name: "absent"},
+		{name: "present", jar: jar},
+		{name: "typed nil", jar: typedNil, want: evidence.ErrInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &http.Client{Jar: tc.jar, Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+				t.Error("constructing a collector invoked the transport")
+				return nil, evidence.ErrResource
+			})}
+			collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{"https://evidence.test/status"}})
+			if !errors.Is(err, tc.want) || (collector != nil) != (tc.want == nil) {
+				t.Errorf("NewHTTP() = (collector present: %t, %v), want error %v", collector != nil, err, tc.want)
+			}
+		})
+	}
+}
 
 func TestCollectorSnapshotsRequestAndSourcePolicy(t *testing.T) {
 	allowed := []string{"https://evidence.test/status"}
@@ -85,6 +119,71 @@ func TestCollectorRollsBackStoredResultsAfterLateCloseError(t *testing.T) {
 	}
 }
 
+func TestCollectorLeavesRequestBytesAvailableUntilTransportClosesBody(t *testing.T) {
+	t.Parallel()
+
+	const uri = "https://evidence.test/status"
+	const original = "request nonce"
+	var requestBody io.ReadCloser
+	client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		requestBody = req.Body
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("opaque response")), Request: req}, nil
+	})}
+	collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{uri}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := collector.Collect(t.Context(), []collect.Request{{Kind: evidence.OCSP, URI: uri, Method: http.MethodPost, Body: []byte(original)}})
+	if err != nil || len(items) != 1 || requestBody == nil {
+		t.Fatalf("Collect returned (%v, %v), want one observation and an open transport request body", items, err)
+	}
+	// RoundTripper owns the request body and may finish with it after returning.
+	got, err := io.ReadAll(requestBody)
+	if err := errors.Join(err, requestBody.Close()); err != nil || string(got) != original {
+		t.Errorf("request body = (%q, %v), want %q", got, err, original)
+	}
+}
+
+func TestCollectorClosesUnsentRequestBodyAfterRedirectCloseFailure(t *testing.T) {
+	t.Parallel()
+
+	const uri = "https://evidence.test/status"
+	const next = "https://evidence.test/next"
+	failure := errors.New("redirect response close failed")
+	var sent, responseClosed, unsentClosed int
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if err := req.Body.Close(); err != nil {
+				return err
+			}
+			req.Body = &trackedBody{Reader: strings.NewReader("request"), closed: &unsentClosed}
+			return nil
+		},
+		Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+			sent++
+			if err := req.Body.Close(); err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusTemporaryRedirect,
+				Header:     http.Header{"Location": {next}},
+				Body:       &trackedBody{Reader: strings.NewReader(""), closed: &responseClosed, closeError: failure},
+				Request:    req,
+			}, nil
+		}),
+	}
+	collector, err := collect.NewHTTP(collect.Config{
+		Client: client, AllowedURIs: []string{uri, next}, Limits: collect.Limits{MaxRedirects: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := collector.Collect(t.Context(), []collect.Request{{Kind: evidence.OCSP, URI: uri, Method: http.MethodPost, Body: []byte("request")}})
+	if items != nil || !errors.Is(err, failure) || sent != 1 || responseClosed != 1 || unsentClosed != 1 {
+		t.Fatalf("Collect = (%v, %v), sent=%d, response closed=%d, unsent request closed=%d", items, err, sent, responseClosed, unsentClosed)
+	}
+}
+
 func TestCollectorPreservesCancellationAndBudgetErrors(t *testing.T) {
 	for _, cancelRead := range []bool{false, true} {
 		ctx, cancel := context.WithCancel(t.Context())
@@ -131,7 +230,7 @@ func BenchmarkHTTPCollect(b *testing.B) {
 	}
 }
 
-func TestCollectorRejectsMalformedQueryEscapes(t *testing.T) {
+func TestCollectorRejectsMalformedQueries(t *testing.T) {
 	calls := 0
 	wantURI := "https://evidence.test/status?x=%23%2f%25+value;other=yes"
 	client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
@@ -142,7 +241,7 @@ func TestCollectorRejectsMalformedQueryEscapes(t *testing.T) {
 
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("body")), Request: req}, nil
 	})}
-	for _, query := range []string{"x=%zz", "x=%", "x=%0"} {
+	for _, query := range []string{"x=%zz", "x=%", "x=%0", "x=two words", `x=one\two`} {
 		collector, err := collect.NewHTTP(collect.Config{Client: client, AllowedURIs: []string{"https://evidence.test/status?" + query}})
 		if collector != nil || !errors.Is(err, evidence.ErrInput) || calls != 0 {
 			t.Errorf("malformed query %q: collector=%v, err=%v, calls=%d", query, collector, err, calls)

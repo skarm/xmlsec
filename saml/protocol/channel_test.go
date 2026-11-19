@@ -14,6 +14,26 @@ import (
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
 
+func TestReadStatusRequiresExplicitTopLevelCode(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []string{"", Success} {
+		raw := `<p:Status xmlns:p="` + ProtocolNamespace + `"><p:StatusCode Value="` + code + `"/></p:Status>`
+		doc, err := document.Parse(t.Context(), []byte(raw), document.DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := readStatus(doc.Root())
+		if code == "" {
+			if !errors.Is(err, ErrProfile) {
+				t.Errorf("readStatus with empty Value = %+v, %v, want ErrProfile", got, err)
+			}
+		} else if err != nil || got.Code != code {
+			t.Errorf("readStatus with explicit Success = %+v, %v", got, err)
+		}
+	}
+}
+
 func TestValidateChannelBindingsLimitsAndUniqueTypes(t *testing.T) {
 	t.Parallel()
 

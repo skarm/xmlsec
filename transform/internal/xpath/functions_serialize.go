@@ -1130,7 +1130,7 @@ func resolveSerializeMethodOption(ctx context.Context, m xdm.MapItem, name strin
 			return "", true, &xdm.Error{Code: lexicon.ErrSEPM0016, Message: fmt.Sprintf("serialize option %s: an xs:QName value must have a non-absent namespace, got %q", name, qn.Local)}
 		}
 
-		return "Q{" + qn.URI + "}" + qn.Local, true, nil
+		return lexicon.EQNamePrefix + qn.URI + "}" + qn.Local, true, nil
 	}
 
 	// The expected type is a namespace-sensitive pure union. Unlike an
@@ -1374,7 +1374,7 @@ func validateSerializeInstanceAttributes(elem *xdm.Element, expectedType string)
 			return &xdm.Error{Code: errCodeSEPM0017, Message: "serialization parameter element is not nillable"}
 		case lexicon.AttrType:
 			name := strings.Trim(attr.Value(), lexicon.XMLWhitespace)
-			if strings.HasPrefix(name, "Q{") {
+			if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 				return &xdm.Error{Code: errCodeSEPM0017, Message: "xsi:type must be a lexical QName"}
 			}
 
@@ -1410,7 +1410,7 @@ func validateSerializeLaxElement(opts serializeOptions, elem *xdm.Element) error
 		}
 
 		name := strings.Trim(attr.Value(), lexicon.XMLWhitespace)
-		if strings.HasPrefix(name, "Q{") {
+		if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 			return serializeSchemaError("xsi:type must be a lexical QName")
 		}
 
@@ -1641,7 +1641,7 @@ func validateSerializeBuiltinType(opts serializeOptions, elem *xdm.Element, name
 	}
 
 	if name == lexicon.TypeQName {
-		if strings.HasPrefix(value, "Q{") {
+		if strings.HasPrefix(value, lexicon.EQNamePrefix) {
 			return serializeSchemaError("xs:QName requires a lexical QName")
 		}
 
@@ -1829,7 +1829,7 @@ func readSerializeNodeMethodValue(param *xdm.Element, value, token string, editi
 	if method {
 		valid = serializeMethodValid(token)
 		if edition == serializationEdition30 && (isBuiltinSerializeMethod(token) && value != token ||
-			token == lexicon.MethodJSON || token == lexicon.MethodAdaptive || strings.HasPrefix(token, "Q{")) {
+			token == lexicon.MethodJSON || token == lexicon.MethodAdaptive || strings.HasPrefix(token, lexicon.EQNamePrefix)) {
 			valid = false
 		}
 	}
@@ -2059,7 +2059,7 @@ func readSerializeParamQNameNames(elem *xdm.Element, edition int) (map[string]st
 	// (#x20/#x9/#xA/#xD) — NBSP and other Unicode whitespace stay inside the token
 	// and then fail NCName validation, and are never silently split.
 	for _, token := range xsdListFields(value) {
-		if edition == serializationEdition30 && strings.HasPrefix(token, "Q{") {
+		if edition == serializationEdition30 && strings.HasPrefix(token, lexicon.EQNamePrefix) {
 			return nil, &xdm.Error{Code: errCodeSEPM0017, Message: "Serialization 3.0 requires lexical QNames"}
 		}
 
@@ -2121,7 +2121,7 @@ func resolveSerializeNameToken(elem *xdm.Element, token string) (string, error) 
 // contains "}"), and a "{" inside the URI part means the token is not a
 // well-formed EQName (the caller then rejects it as an invalid name).
 func parseEQNameToken(token string) (string, string, bool) {
-	if !strings.HasPrefix(token, "Q{") {
+	if !strings.HasPrefix(token, lexicon.EQNamePrefix) {
 		return "", "", false
 	}
 

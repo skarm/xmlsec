@@ -304,7 +304,7 @@ func preflightNumericLexical(ctx context.Context, source, target string) error {
 	source = strings.Trim(source, lexicon.XMLWhitespace)
 
 	source = strings.TrimPrefix(strings.TrimPrefix(source, "+"), "-")
-	if strings.ContainsAny(source, "eE") {
+	if strings.ContainsAny(source, floatExponentMarkers) {
 		return nil
 	} // parsed as IEEE double
 

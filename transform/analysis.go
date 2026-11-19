@@ -31,18 +31,18 @@ type Analysis struct {
 // Analyze computes optional properties with the engine's execution budget.
 func (q *XPath) Analyze(ctx context.Context) (Analysis, error) {
 	if q == nil || q.expression == nil {
-		return Analysis{}, wrap("analyze XPath", ErrInput)
+		return Analysis{}, wrap(opAnalyzeXPath, ErrInput)
 	}
 
 	ctx, cancel, err := q.engine.invocation(ctx)
 	if err != nil {
-		return Analysis{}, wrap("analyze XPath", err)
+		return Analysis{}, wrap(opAnalyzeXPath, err)
 	}
 	defer cancel()
 
 	native, err := q.expression.Analyze(ctx, q.namespaces)
 	if err != nil {
-		return Analysis{}, wrap("analyze XPath", err)
+		return Analysis{}, wrap(opAnalyzeXPath, err)
 	}
 
 	result := Analysis{

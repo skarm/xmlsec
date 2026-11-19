@@ -33,36 +33,45 @@ func runKey(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	fs := flag.NewFlagSet("key "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "", "input key/certificate/CRL file")
-	output := fs.String("out", "-", "output path; private material is created with mode 0600")
-	algorithm := fs.String("algorithm", cliDefaultKeyAlgorithm, "generate: rsa, p256, p384, p521, ed25519, aes128, aes192, aes256 or hmac256/384/512")
-	bits := fs.Int("bits", cliDefaultGeneratedRSABits, "RSA modulus bits (2048..8192)")
-	format := fs.String("output-format", namePlain, "private output: plain (PKCS#8), pkcs8 (encrypted) or pkcs12")
-	outputPassword := fs.String("output-password-file", "", "password for encrypted output")
-	pemOutput := fs.Bool("pem", true, "PEM output; false writes DER (PKCS#12 and symmetric keys always use raw bytes)")
-	kind := fs.String(fieldKind, namePublic, "inspect: public, private, certificate, crl or pkcs12")
-	certificate := fs.String("certificate", "", "certificate file for PKCS#12 export")
+	input := fs.String(flagNameIn, "", "input key/certificate/CRL file")
+	output := fs.String(flagNameOut, stdioPath, "output path; private material is created with mode 0600")
+	algorithm := fs.String(flagNameAlgorithm, cliDefaultKeyAlgorithm, "generate: rsa, p256, p384, p521, ed25519, aes128, aes192, aes256 or hmac256/384/512")
+	bits := fs.Int(flagNameBits, cliDefaultGeneratedRSABits, "RSA modulus bits (2048..8192)")
+	format := fs.String(flagNameOutputFormat, namePlain, "private output: plain (PKCS#8), pkcs8 (encrypted) or pkcs12")
+	outputPassword := fs.String(flagNameOutputPasswordFile, "", "password for encrypted output")
+	pemOutput := fs.Bool(flagNamePEM, true, "PEM output; false writes DER (PKCS#12 and symmetric keys always use raw bytes)")
+	kind := fs.String(flagNameKind, namePublic, "inspect: public, private, certificate, crl or pkcs12")
+	certificate := fs.String(flagNameCertificate, "", "certificate file for PKCS#12 export")
 
 	var extras repeatedFlag
-	fs.Var(&extras, "extra-certificate", "extra PKCS#12 certificate; repeatable")
-	iterations := fs.Int("iterations", cliDefaultExportIterations, "PBKDF2 iterations for encrypted export")
-	hashName := fs.String("hash", cliDefaultHashName, "PBKDF2 SHA-2 PRF")
-	encryptionBits := fs.Int("encryption-bits", cliDefaultExportAESBits, "encrypted key AES bits: 128, 192 or 256")
-	classic := fs.Bool("classic-mac", false, "use classic SHA-2 PKCS#12 MAC instead of PBMAC1")
+	fs.Var(&extras, flagNameExtraCertificate, "extra PKCS#12 certificate; repeatable")
+	iterations := fs.Int(flagNameIterations, cliDefaultExportIterations, "PBKDF2 iterations for encrypted export")
+	hashName := fs.String(flagNameHash, cliDefaultHashName, "PBKDF2 SHA-2 PRF")
+	encryptionBits := fs.Int(flagNameEncryptionBits, cliDefaultExportAESBits, "encrypted key AES bits: 128, 192 or 256")
+	classic := fs.Bool(flagNameClassicMAC, false, "use classic SHA-2 PKCS#12 MAC instead of PBMAC1")
 	flags := registerPrivateKeyFlags(fs)
 
-	specific := "in out kind" + privateKeyFlagNames
+	specific := append([]string{flagNameIn, flagNameOut, flagNameKind}, privateKeyFlagNames()...)
 
 	switch cmd {
 	case "generate":
-		specific = "out algorithm bits output-format output-password-file pem certificate extra-certificate iterations hash encryption-bits classic-mac key-max-kdf-work key-min-iterations key-max-iterations"
+		specific = []string{
+			flagNameOut, flagNameAlgorithm, flagNameBits, flagNameOutputFormat, flagNameOutputPasswordFile,
+			flagNamePEM, flagNameCertificate, flagNameExtraCertificate, flagNameIterations, flagNameHash,
+			flagNameEncryptionBits, flagNameClassicMAC, flagNameKeyMaxKDFWork, flagNameKeyMinIterations,
+			flagNameKeyMaxIterations,
+		}
 	case "convert":
-		specific = "in out output-format output-password-file pem certificate extra-certificate iterations hash encryption-bits classic-mac" + privateKeyFlagNames
+		specific = append([]string{
+			flagNameIn, flagNameOut, flagNameOutputFormat, flagNameOutputPasswordFile, flagNamePEM,
+			flagNameCertificate, flagNameExtraCertificate, flagNameIterations, flagNameHash, flagNameEncryptionBits,
+			flagNameClassicMAC,
+		}, privateKeyFlagNames()...)
 	case namePublic:
-		specific += " pem"
+		specific = append(specific, flagNamePEM)
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -131,7 +140,7 @@ func (c keyCommand) run(ctx context.Context, stdout io.Writer) error {
 			return writeOutputContext(ctx, c.output, stdout, secret)
 		}
 	} else {
-		if err := requiredFlag("in", c.input); err != nil {
+		if err := requiredFlag(flagNameIn, c.input); err != nil {
 			return err
 		}
 
@@ -199,7 +208,7 @@ func (c keyCommand) generate() (crypto.Signer, []byte, error) {
 }
 
 func (c keyCommand) public(ctx context.Context) (crypto.PublicKey, error) {
-	if err := requiredFlag("in", c.input); err != nil {
+	if err := requiredFlag(flagNameIn, c.input); err != nil {
 		return nil, err
 	}
 
@@ -219,7 +228,7 @@ func (c keyCommand) public(ctx context.Context) (crypto.PublicKey, error) {
 }
 
 func (c keyCommand) inspect(ctx context.Context, stdout io.Writer) error {
-	if err := requiredFlag("in", c.input); err != nil {
+	if err := requiredFlag(flagNameIn, c.input); err != nil {
 		return err
 	}
 

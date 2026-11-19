@@ -36,15 +36,13 @@ const (
 // rules, even where their values coincide. Scaling multiplies values by the
 // percent or per-mille denominator before picture rounding.
 const (
-	maxPictureSubpatterns       = 2
-	maxPercentMarkers           = 1
-	maxPerMilleMarkers          = 1
-	minimumRepeatedGroups       = 2
-	minimumExponentIntegerSlots = 2
-	minimumExponentDigits       = 1
-	minimumMantissaDigits       = 1
-	percentScale                = 100
-	perMilleScale               = 1000
+	maxPictureSubpatterns = 2
+	maxPercentMarkers     = 1
+	maxPerMilleMarkers    = 1
+	minimumRepeatedGroups = 2
+	minimumPictureDigits  = 1
+	percentScale          = 100
+	perMilleScale         = 1000
 )
 
 // Numeric formatting uses ASCII decimal lexicals before digit localization.
@@ -62,13 +60,6 @@ const (
 	doublePrecisionBits       = 64
 	anyInfinitySign           = 0
 	minimumFractionalMantissa = 0.1
-)
-
-// Infinity rendering adds a minus prefix only when the selected picture does
-// not already supply the negative-value affix.
-const (
-	prefixWithoutMinus = false
-	prefixWithMinus    = true
 )
 
 // DecimalFormat defines picture symbols and special-value text for XPath and XSLT
@@ -149,19 +140,25 @@ type ParsedPicture struct {
 	HasDecimalPoint bool
 	// HasExponent records an exponent part in the picture.
 	HasExponent bool
+	// scalingFactor is the number of mandatory integer digits before padding.
+	scalingFactor int
 }
 
 // ParsePicture parses a single picture sub-pattern into its components.
 func ParsePicture(pic string, df DecimalFormat) (ParsedPicture, error) {
 	mantissa, exponent, hasExponent := splitPictureExponent([]rune(pic), df)
-	pp := ParsedPicture{HasExponent: hasExponent}
-
-	start, end := pictureNumericBounds(mantissa, df, &pp)
-	if start < 0 {
-		return pp, nil
+	if hasExponent && (strings.ContainsRune(pic, df.Percent) || strings.ContainsRune(pic, df.PerMille)) {
+		return ParsedPicture{}, fmt.Errorf("percent and per-mille are not allowed in exponent pictures")
 	}
 
-	if err := validatePictureMultipliers(mantissa, df); err != nil {
+	pp := ParsedPicture{HasExponent: hasExponent}
+
+	start, end := pictureNumericBounds(mantissa, df)
+	if start < 0 {
+		return ParsedPicture{}, fmt.Errorf("picture requires at least one digit")
+	}
+
+	if err := parsePictureMultipliers(&pp, mantissa, df); err != nil {
 		return ParsedPicture{}, err
 	}
 
@@ -172,6 +169,11 @@ func ParsePicture(pic string, df DecimalFormat) (ParsedPicture, error) {
 
 	if err := parsePictureDigits(&pp, mantissa[start:end], df); err != nil {
 		return ParsedPicture{}, err
+	}
+	// The XPath 3.1 picture rules introduced exponent syntax and revised the
+	// minimum digit counts. Older host profiles keep their previous counts.
+	if !df.ExponentDisabled {
+		adjustPictureDigits(&pp)
 	}
 
 	return pp, nil
@@ -186,55 +188,51 @@ func ParsePicture(pic string, df DecimalFormat) (ParsedPicture, error) {
 //   - picture: the format picture string
 //   - df: the decimal format specification
 func FormatNumber(f float64, isNaN, isPosInf, isNegInf, negative bool, precise *big.Rat, picture string, df DecimalFormat) (string, error) {
-	parts := strings.Split(picture, string(df.PatternSeparator))
+	parts := strings.SplitN(picture, string(df.PatternSeparator), maxPictureSubpatterns+1)
 	if len(parts) > maxPictureSubpatterns {
 		return "", fmt.Errorf("picture %q contains more than one pattern separator", picture)
 	}
 
-	positive, negativePicture := parts[0], ""
-	if len(parts) > 1 {
-		negativePicture = parts[1]
+	pp, err := ParsePicture(parts[0], df)
+	if err != nil {
+		return "", err
+	}
+
+	negative = isNegInf || negative && !isPosInf
+	hasNegativePicture := len(parts) > 1
+
+	if hasNegativePicture {
+		negativePicture, err := ParsePicture(parts[1], df)
+		if err != nil {
+			return "", err
+		}
+
+		if negative {
+			pp = negativePicture
+		}
 	}
 
 	if isNaN {
 		return df.NaN, nil
 	}
 
-	if isPosInf {
-		return formatInfinityPicture(positive, prefixWithoutMinus, df)
+	prefix := pp.Prefix
+	if negative && !hasNegativePicture {
+		prefix = string(df.MinusSign) + prefix
 	}
 
-	if isNegInf {
-		if negativePicture != "" {
-			return formatInfinityPicture(negativePicture, prefixWithoutMinus, df)
-		}
-
-		return formatInfinityPicture(positive, prefixWithMinus, df)
+	if isPosInf || isNegInf {
+		return prefix + df.Infinity + pp.Suffix, nil
 	}
 
 	if negative {
 		f = math.Abs(f)
 	}
 
-	selected := positive
-	if negative && negativePicture != "" {
-		selected = negativePicture
-	}
-
-	pp, err := ParsePicture(selected, df)
-	if err != nil {
-		return "", err
-	}
-
 	if pp.IsPercent {
 		f *= percentScale
 	} else if pp.IsPerMille {
 		f *= perMilleScale
-	}
-
-	prefix := pp.Prefix
-	if negative && negativePicture == "" {
-		prefix = string(df.MinusSign) + prefix
 	}
 
 	// A precise integer/decimal is scaled by exact arithmetic below. Its
@@ -270,7 +268,7 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 
 	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
 		if intStr == "" {
-			intStr = decimalZero
+			intStr = string(df.ZeroDigit)
 		}
 
 		return intStr
@@ -290,9 +288,9 @@ func FormatFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
 	if intStr == "" && fracStr == "" {
 		if pp.MaxFracDigits > 0 {
-			fracStr = decimalZero
+			fracStr = string(df.ZeroDigit)
 		} else {
-			intStr = decimalZero
+			intStr = string(df.ZeroDigit)
 		}
 	}
 
@@ -330,7 +328,7 @@ func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string
 
 	if !pp.HasDecimalPoint && pp.MaxFracDigits == 0 {
 		if intStr == "" {
-			intStr = decimalZero
+			intStr = string(df.ZeroDigit)
 		}
 
 		return intStr
@@ -342,9 +340,9 @@ func FormatDecimalPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) string
 	// to zero with MinIntDigits=0 and MinFracDigits=0), show at least one digit.
 	if intStr == "" && fracStr == "" {
 		if pp.MaxFracDigits > 0 {
-			fracStr = decimalZero
+			fracStr = string(df.ZeroDigit)
 		} else {
-			intStr = decimalZero
+			intStr = string(df.ZeroDigit)
 		}
 	}
 
@@ -367,9 +365,11 @@ func FormatBigInt(n *big.Int, minDigits int, groupingSizes []int, repeatGrouping
 	if padding := minDigits - len(s); padding > 0 {
 		s = strings.Repeat(decimalZero, padding) + s
 	}
+	// Only numeric digits belong to the decimal digit family.
+	s = localizeDigits(s, df.ZeroDigit)
 
 	if len(groupingSizes) == 0 || len(s) == 0 {
-		return localizeDigits(s, df.ZeroDigit)
+		return s
 	}
 
 	// Insert grouping separators from right
@@ -403,7 +403,7 @@ func FormatBigInt(n *big.Int, minDigits int, groupingSizes []int, repeatGrouping
 		result[i], result[j] = result[j], result[i]
 	}
 
-	return localizeDigits(string(result), df.ZeroDigit)
+	return string(result)
 }
 
 // FormatFrac formats the fractional part of a float64.
@@ -603,10 +603,10 @@ func parseGroupedPart(part []rune, sep rune, df DecimalFormat) ([]int, int, int,
 	maxDigits := 0
 	prevSep := false
 
-	for i, r := range part {
+	for _, r := range part {
 		switch {
 		case r == sep:
-			if i == len(part)-1 || prevSep {
+			if prevSep {
 				return nil, 0, 0, fmt.Errorf("invalid grouping separator placement")
 			}
 
@@ -681,7 +681,7 @@ func splitPictureExponent(runes []rune, df DecimalFormat) ([]rune, []rune, bool)
 	return runes, nil, false
 }
 
-func pictureNumericBounds(runes []rune, df DecimalFormat, pp *ParsedPicture) (int, int) {
+func pictureNumericBounds(runes []rune, df DecimalFormat) (int, int) {
 	start, end := -1, -1
 
 	for i, r := range runes {
@@ -692,18 +692,6 @@ func pictureNumericBounds(runes []rune, df DecimalFormat, pp *ParsedPicture) (in
 			}
 
 			end = i + 1
-		case r == df.Percent:
-			pp.IsPercent = true
-
-			if start >= 0 {
-				return start, i
-			}
-		case r == df.PerMille:
-			pp.IsPerMille = true
-
-			if start >= 0 {
-				return start, i
-			}
 		default:
 			if start >= 0 {
 				return start, i
@@ -714,7 +702,7 @@ func pictureNumericBounds(runes []rune, df DecimalFormat, pp *ParsedPicture) (in
 	return start, end
 }
 
-func validatePictureMultipliers(runes []rune, df DecimalFormat) error {
+func parsePictureMultipliers(pp *ParsedPicture, runes []rune, df DecimalFormat) error {
 	percent, perMille := 0, 0
 
 	for _, r := range runes {
@@ -738,6 +726,9 @@ func validatePictureMultipliers(runes []rune, df DecimalFormat) error {
 		return fmt.Errorf("picture contains both percent and per-mille signs")
 	}
 
+	pp.IsPercent = percent > 0
+	pp.IsPerMille = perMille > 0
+
 	return nil
 }
 
@@ -751,37 +742,31 @@ func parsePictureSuffix(pp *ParsedPicture, mantissaSuffix, exponent []rune, df D
 		return nil
 	}
 
+	if len(mantissaSuffix) > 0 {
+		return fmt.Errorf("passive character between mantissa and exponent")
+	}
+
 	end := 0
 
 	for i, r := range exponent {
-		if !isPatternDigit(r, df) {
+		if !isMandatoryDigit(r, df.ZeroDigit) {
 			break
 		}
 
 		end = i + 1
 	}
 
-	for _, r := range exponent[:end] {
-		if isMandatoryDigit(r, df.ZeroDigit) {
-			pp.MinExpDigits++
-		}
+	if end == 0 {
+		return fmt.Errorf("exponent requires at least one mandatory digit")
 	}
 
-	if pp.MinExpDigits == 0 {
-		pp.MinExpDigits = minimumExponentDigits
-	}
+	pp.MinExpDigits = end
 
 	suffix := exponent[end:]
 
 	pp.Suffix = string(suffix)
 	if hasInvalidLiteralChars(suffix, df) {
 		return fmt.Errorf("invalid active character in picture suffix")
-	}
-
-	for _, r := range suffix {
-		if r == df.Percent || r == df.PerMille {
-			return fmt.Errorf("percent and per-mille are not allowed in exponent pictures")
-		}
 	}
 
 	return nil
@@ -813,7 +798,31 @@ func parsePictureDigits(pp *ParsedPicture, number []rune, df DecimalFormat) erro
 	return validateIntegerPictureOrder(integer, df)
 }
 
+func adjustPictureDigits(pp *ParsedPicture) {
+	pp.scalingFactor = pp.MinIntDigits
+	if pp.MinIntDigits == 0 && pp.MaxFracDigits == 0 {
+		if pp.HasExponent {
+			pp.MinFracDigits = minimumPictureDigits
+			pp.MaxFracDigits = minimumPictureDigits
+		} else {
+			pp.MinIntDigits = minimumPictureDigits
+		}
+	}
+
+	if pp.HasExponent && pp.MinIntDigits == 0 && pp.MaxIntDigits > 0 {
+		pp.MinIntDigits = minimumPictureDigits
+	}
+
+	if pp.MinIntDigits == 0 && pp.MinFracDigits == 0 {
+		pp.MinFracDigits = minimumPictureDigits
+	}
+}
+
 func parseIntegerPicture(pp *ParsedPicture, integer []rune, df DecimalFormat) error {
+	if len(integer) > 0 && integer[len(integer)-1] == df.GroupingSeparator {
+		return fmt.Errorf("invalid grouping separator placement")
+	}
+
 	groups, minDigits, maxDigits, err := parseGroupedPart(integer, df.GroupingSeparator, df)
 	if err != nil {
 		return err
@@ -886,20 +895,6 @@ func validateIntegerPictureOrder(integer []rune, df DecimalFormat) error {
 	return nil
 }
 
-func formatInfinityPicture(picture string, minus bool, df DecimalFormat) (string, error) {
-	pp, err := ParsePicture(picture, df)
-	if err != nil {
-		return "", err
-	}
-
-	prefix := pp.Prefix
-	if minus {
-		prefix = string(df.MinusSign) + prefix
-	}
-
-	return prefix + df.Infinity + pp.Suffix, nil
-}
-
 func formatParsedNumber(f float64, precise *big.Rat, pp ParsedPicture, df DecimalFormat) string {
 	if pp.HasExponent {
 		if precise != nil {
@@ -916,59 +911,12 @@ func formatParsedNumber(f float64, precise *big.Rat, pp ParsedPicture, df Decima
 	return FormatFloat(f, pp, df)
 }
 
-// exponentScalingFactor computes the number of integer digits in the mantissa
-// for scientific notation formatting, per the XPath F&O spec:
-//   - MinIntDigits > 0: scaling factor = MinIntDigits
-//   - MinIntDigits = 0, MaxIntDigits >= 2: scaling factor = MaxIntDigits
-//   - Otherwise: scaling factor = 0 (mantissa in [0.1, 1))
-func exponentScalingFactor(pp ParsedPicture) int {
-	if pp.MinIntDigits > 0 {
-		return pp.MinIntDigits
-	}
-
-	if pp.MaxIntDigits >= minimumExponentIntegerSlots {
-		return pp.MaxIntDigits
-	}
-
-	return 0
-}
-
-// adjustMantissaPP adjusts the ParsedPicture for mantissa formatting in
-// scientific notation. When scaling factor m=0, unused integer digit slots
-// effectively become optional fractional digits.
-func adjustMantissaPP(pp ParsedPicture, m int) ParsedPicture {
-	r := pp
-	r.HasExponent = false
-	r.IsPercent = false
-	r.IsPerMille = false
-
-	if m == 0 {
-		// Integer # slots become optional fractional digits
-		effMaxFrac := max(pp.MaxFracDigits, pp.MaxIntDigits)
-
-		r.MaxFracDigits = effMaxFrac
-		if effMaxFrac > 0 {
-			r.HasDecimalPoint = true
-		}
-		// Show leading zero when pattern had integer digit placeholders
-		if pp.MaxIntDigits > 0 {
-			r.MinIntDigits = minimumMantissaDigits
-		} else if pp.MaxFracDigits > 0 && r.MinFracDigits == 0 {
-			// With pictures like ".#e0", rounding can carry into the integer part;
-			// keep one fractional digit in that case.
-			r.MinFracDigits = minimumMantissaDigits
-		}
-	}
-
-	return r
-}
-
 func formatExponentFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 	if f == 0 {
 		return formatExponentZero(pp, df)
 	}
 
-	m := exponentScalingFactor(pp)
+	m := pp.scalingFactor
 
 	// Compute exponent: normalize so mantissa has m integer digits
 	exp := 0
@@ -988,6 +936,14 @@ func formatExponentFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 		}
 	} else {
 		upperBound := math.Pow(decimalRadix, float64(m))
+		if !isFinite(upperBound) {
+			// Wide mantissas can exceed the float64 range even for a finite
+			// input. Preserve its shortest decimal value before scaling so
+			// normalization cannot overflow and emit a nil integer.
+			precise, _ := new(big.Rat).SetString(strconv.FormatFloat(f, fixedFloatNotation, -1, doublePrecisionBits))
+			return formatExponentPrecise(precise, pp, df)
+		}
+
 		lowerBound := math.Pow(decimalRadix, float64(m-1))
 
 		for abs >= upperBound {
@@ -1001,8 +957,7 @@ func formatExponentFloat(f float64, pp ParsedPicture, df DecimalFormat) string {
 		}
 	}
 
-	mantissaPP := adjustMantissaPP(pp, m)
-	mantissaStr := FormatFloat(abs, mantissaPP, df)
+	mantissaStr := FormatFloat(abs, pp, df)
 
 	return joinExponent(mantissaStr, exp, pp, df)
 }
@@ -1012,13 +967,7 @@ func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) strin
 		return formatExponentZero(pp, df)
 	}
 
-	if pp.IsPercent {
-		r = new(big.Rat).Mul(r, new(big.Rat).SetInt64(percentScale))
-	} else if pp.IsPerMille {
-		r = new(big.Rat).Mul(r, new(big.Rat).SetInt64(perMilleScale))
-	}
-
-	m := exponentScalingFactor(pp)
+	m := pp.scalingFactor
 
 	// Compute exponent by normalizing the value
 	exp := 0
@@ -1063,15 +1012,13 @@ func formatExponentPrecise(r *big.Rat, pp ParsedPicture, df DecimalFormat) strin
 	}
 
 	// Format the mantissa
-	mantissaPP := adjustMantissaPP(pp, m)
-	mantissaStr := FormatDecimalPrecise(abs, mantissaPP, df)
+	mantissaStr := FormatDecimalPrecise(abs, pp, df)
 
 	return joinExponent(mantissaStr, exp, pp, df)
 }
 
 func formatExponentZero(pp ParsedPicture, df DecimalFormat) string {
-	mantissaPP := adjustMantissaPP(pp, exponentScalingFactor(pp))
-	mantissaStr := FormatFloat(0, mantissaPP, df)
+	mantissaStr := FormatFloat(0, pp, df)
 
 	return joinExponent(mantissaStr, 0, pp, df)
 }

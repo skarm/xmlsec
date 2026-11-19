@@ -49,10 +49,8 @@ const (
 
 // CDATA splitting closes and reopens the section after its two closing brackets.
 const (
-	cdataStart           = "<![CDATA["
-	cdataEnd             = "]]>"
-	cdataReopen          = cdataEnd + cdataStart
-	cdataClosingBrackets = len(cdataEnd) - 1
+	cdataReopen          = lexicon.CDATAEnd + lexicon.CDATAStart
+	cdataClosingBrackets = len(lexicon.CDATAEnd) - 1
 )
 
 // XML 1.1 scalar bounds enforce its Char production; byte thresholds select
@@ -136,6 +134,9 @@ type elementEntry struct {
 type nsScope struct {
 	decls   []nsEntry
 	emitted int // number of decls already emitted (indices < emitted are done)
+	// These inherited prefixes are already used by an explicitly namespaced
+	// name on this start tag, so a later attribute cannot rebind them.
+	inheritedPrefixes []string
 }
 
 // nsBindings is the prefix -> URI index for the declarations currently in
@@ -371,7 +372,7 @@ func (w *Writer) StartElement(name string) error {
 	}
 
 	switch w.state {
-	case stateNone, stateDocument, stateText, stateDTD:
+	case stateNone, stateDocument, stateText:
 		// ok — stateNone allows fragment writing without StartDocument
 	case stateName:
 		w.closeTagIfOpen()
@@ -414,7 +415,7 @@ func (w *Writer) StartElementNS(prefix, localName, namespaceURI string) error {
 	// declareNS records a declaration, so an untrusted URI cannot inject
 	// markup as an xmlns attribute value and a rejected call leaves the
 	// writer unmutated.
-	if err := validateXMLChars("namespace URI", namespaceURI); err != nil {
+	if err := validateXMLChars("namespace URI", namespaceURI, false); err != nil {
 		return err
 	}
 
@@ -445,10 +446,8 @@ func (w *Writer) EndElement() error {
 		return errors.New("stream: EndElement called with no open element")
 	}
 
-	if w.state == stateAttribute {
-		if err := w.EndAttribute(); err != nil {
-			return err
-		}
+	if err := w.prepareEndElement(); err != nil {
+		return err
 	}
 
 	w.depth--
@@ -497,10 +496,8 @@ func (w *Writer) FullEndElement() error {
 		return errors.New("stream: FullEndElement called with no open element")
 	}
 
-	if w.state == stateAttribute {
-		if err := w.EndAttribute(); err != nil {
-			return err
-		}
+	if err := w.prepareEndElement(); err != nil {
+		return err
 	}
 
 	// Force close the opening tag if still open
@@ -530,6 +527,17 @@ func (w *Writer) FullEndElement() error {
 	}
 
 	return w.err
+}
+
+func (w *Writer) prepareEndElement() error {
+	switch w.state {
+	case stateName, stateText:
+		return nil
+	case stateAttribute:
+		return w.EndAttribute()
+	default:
+		return errors.New("stream: element cannot close within another open construct")
+	}
 }
 
 // WriteElement is a convenience for StartElement + WriteString + EndElement.
@@ -609,7 +617,9 @@ func (w *Writer) StartAttribute(name string) error {
 	return w.err
 }
 
-// StartAttributeNS opens a namespace-qualified attribute.
+// StartAttributeNS opens a namespace-qualified attribute. A nonempty
+// namespace URI requires a prefix because default namespaces do not apply
+// to attributes.
 func (w *Writer) StartAttributeNS(prefix, localName, namespaceURI string) error {
 	if w.err != nil {
 		return w.err
@@ -628,7 +638,7 @@ func (w *Writer) StartAttributeNS(prefix, localName, namespaceURI string) error 
 	// StartAttribute emits anything, so an untrusted URI cannot inject markup
 	// as an xmlns attribute value and a rejected call leaves the writer
 	// unmutated.
-	if err := validateXMLChars("namespace URI", namespaceURI); err != nil {
+	if err := validateXMLChars("namespace URI", namespaceURI, false); err != nil {
 		return err
 	}
 	// Verify the writer is in the correct state before declareNS records a
@@ -640,7 +650,11 @@ func (w *Writer) StartAttributeNS(prefix, localName, namespaceURI string) error 
 		return errors.New("stream: StartAttribute called outside element opening tag")
 	}
 
-	if namespaceURI != "" && prefix != "" {
+	if namespaceURI != "" {
+		if prefix == "" {
+			return errors.New("stream: an attribute with a namespace URI requires a prefix")
+		}
+
 		// Reject a same-scope prefix conflict before emitting markup: declareNS
 		// would otherwise silently keep the existing binding, producing an
 		// attribute whose prefix resolves to the wrong namespace.
@@ -746,7 +760,7 @@ func (w *Writer) WriteString(content string) error {
 
 		w.writeAttrEscaped(content)
 	case stateComment:
-		if err := validateXMLChars("comment", content); err != nil {
+		if err := validateXMLChars("comment", content, w.xml11); err != nil {
 			return err
 		}
 
@@ -764,27 +778,9 @@ func (w *Writer) WriteString(content string) error {
 			w.commentDash = strings.HasSuffix(content, "-")
 		}
 	case statePI, statePIText:
-		if err := validateXMLChars("processing instruction", content); err != nil {
-			return err
-		}
-
-		if w.piQuestion && strings.HasPrefix(content, ">") {
-			return errors.New("stream: processing instruction content must not contain '?>'")
-		}
-
-		if strings.Contains(content, "?>") {
-			return errors.New("stream: processing instruction content must not contain '?>'")
-		}
-
-		w.writeStr(content)
-
-		if content != "" {
-			w.piQuestion = strings.HasSuffix(content, "?")
-		}
-
-		w.state = statePIText
+		return w.writePIContent(content)
 	case stateCDATA:
-		if err := validateXMLChars("CDATA", content); err != nil {
+		if err := validateXMLChars("CDATA", content, w.xml11); err != nil {
 			return err
 		}
 
@@ -889,7 +885,7 @@ func (w *Writer) WriteComment(content string) error {
 	}
 	// Pre-validate content before StartComment emits "<!--", so a rejected
 	// write leaves the writer unmutated.
-	if err := validateXMLChars("comment", content); err != nil {
+	if err := validateXMLChars("comment", content, w.xml11); err != nil {
 		return err
 	}
 
@@ -982,7 +978,7 @@ func (w *Writer) WritePI(target, content string) error {
 	}
 	// Pre-validate content before StartPI emits "<?target", so a rejected
 	// write leaves the writer unmutated.
-	if err := validateXMLChars("processing instruction", content); err != nil {
+	if err := validateXMLChars("processing instruction", content, w.xml11); err != nil {
 		return err
 	}
 
@@ -996,6 +992,7 @@ func (w *Writer) WritePI(target, content string) error {
 
 	if content != "" {
 		w.writeByte(' ')
+		w.state = statePIText
 
 		if err := w.WriteString(content); err != nil {
 			return err
@@ -1003,6 +1000,30 @@ func (w *Writer) WritePI(target, content string) error {
 	}
 
 	return w.EndPI()
+}
+
+func (w *Writer) writePIContent(content string) error {
+	if content == "" {
+		return nil
+	}
+
+	if err := validateXMLChars("processing instruction", content, w.xml11); err != nil {
+		return err
+	}
+
+	if w.piQuestion && strings.HasPrefix(content, ">") || strings.Contains(content, "?>") {
+		return errors.New("stream: processing instruction content must not contain '?>'")
+	}
+
+	if w.state == statePI && !strings.ContainsRune(lexicon.XMLWhitespace, rune(content[0])) {
+		w.writeByte(' ')
+	}
+
+	w.writeStr(content)
+	w.piQuestion = strings.HasSuffix(content, "?")
+	w.state = statePIText
+
+	return w.err
 }
 
 // isValidPITarget reports whether target is a valid XML processing
@@ -1036,7 +1057,7 @@ func (w *Writer) StartCDATA() error {
 		w.elemStack[len(w.elemStack)-1].hasText = true
 	}
 
-	w.writeStr(cdataStart)
+	w.writeStr(lexicon.CDATAStart)
 	w.cdataBrackets = 0
 	w.stateStack = append(w.stateStack, w.state)
 	w.state = stateCDATA
@@ -1054,7 +1075,7 @@ func (w *Writer) EndCDATA() error {
 		return errors.New("stream: EndCDATA called outside CDATA section")
 	}
 
-	w.writeStr(cdataEnd)
+	w.writeStr(lexicon.CDATAEnd)
 	w.popState(stateText)
 
 	return w.err
@@ -1069,12 +1090,12 @@ func (w *Writer) WriteCDATA(content string) error {
 	}
 	// Pre-validate content before StartCDATA emits "<![CDATA[", so a rejected
 	// write leaves the writer unmutated.
-	if err := validateXMLChars("CDATA", content); err != nil {
+	if err := validateXMLChars("CDATA", content, w.xml11); err != nil {
 		return err
 	}
 
 	for {
-		idx := strings.Index(content, cdataEnd)
+		idx := strings.Index(content, lexicon.CDATAEnd)
 		if idx < 0 {
 			break
 		}
@@ -1476,6 +1497,7 @@ func (w *Writer) emitPendingNS() {
 	}
 
 	scope.emitted = len(scope.decls)
+	scope.inheritedPrefixes = nil // no more names can be added to this start tag
 }
 
 // lookupNS reports whether the prefix's current in-scope binding is uri.
@@ -1539,13 +1561,9 @@ func (w *Writer) revNSBind() {
 	w.nsSeq = w.nsBind.seq
 }
 
-// declareNS adds a namespace declaration to the current element scope
-// if the prefix is not already bound to the given URI.
+// declareNS adds a namespace declaration to the current element scope if
+// needed, or records that a name in this start tag uses the inherited binding.
 func (w *Writer) declareNS(prefix, uri string) {
-	if w.lookupNS(prefix, uri) {
-		return
-	}
-
 	if len(w.nsStack) == 0 {
 		return
 	}
@@ -1558,7 +1576,18 @@ func (w *Writer) declareNS(prefix, uri string) {
 	}
 
 	m := w.ownNSBind()
+
 	prev, had := m[prefix]
+	if had && prev == uri {
+		// Namespaced attributes always have a prefix and cannot change the
+		// default namespace. Only non-default inherited bindings need a guard.
+		if prefix != "" && !slices.Contains(scope.inheritedPrefixes, prefix) {
+			scope.inheritedPrefixes = append(scope.inheritedPrefixes, prefix)
+		}
+
+		return
+	}
+
 	scope.decls = append(scope.decls, nsEntry{prefix: prefix, uri: uri, prevURI: prev, prevHad: had})
 	m[prefix] = uri
 
@@ -1593,10 +1622,9 @@ func (w *Writer) popNSScope() {
 	w.nsStack = w.nsStack[:len(w.nsStack)-1]
 }
 
-// nsPrefixConflict reports whether prefix is already declared in the current
-// element scope bound to a different namespace URI. Redeclaring a prefix to a
-// conflicting URI within the same scope would silently corrupt the binding (the
-// existing declaration wins), so callers reject it instead.
+// nsPrefixConflict reports whether prefix has already been declared or used
+// for a different namespace URI on the current start tag. A prefix shared by
+// two names in the same tag cannot bind to two different URIs.
 func (w *Writer) nsPrefixConflict(prefix, uri string) bool {
 	if len(w.nsStack) == 0 {
 		return false
@@ -1609,7 +1637,7 @@ func (w *Writer) nsPrefixConflict(prefix, uri string) bool {
 		}
 	}
 
-	return false
+	return slices.Contains(scope.inheritedPrefixes, prefix) && !w.lookupNS(prefix, uri)
 }
 
 // validateContentChars validates text or attribute content that will be
@@ -1620,7 +1648,7 @@ func (w *Writer) nsPrefixConflict(prefix, uri string) bool {
 // reference, so those keep the strict validateXMLChars check.
 func (w *Writer) validateContentChars(kind, s string) error {
 	if !w.xml11 {
-		return validateXMLChars(kind, s)
+		return validateXMLChars(kind, s, false)
 	}
 
 	if !utf8.ValidString(s) {
@@ -1788,16 +1816,15 @@ func validateReservedNS(kind, prefix, namespaceURI string) error {
 	return nil
 }
 
-// validateXMLChars reports whether s contains only valid XML 1.0 Chars.
-// kind shapes the error message. It is used to reject control characters
-// (e.g. NUL) from text, attribute, comment, PI, and CDATA output.
-func validateXMLChars(kind, s string) error {
+// validateXMLChars reports whether s may be written literally in the given
+// XML version, including XML 1.1's restriction on most control characters.
+func validateXMLChars(kind, s string, xml11 bool) error {
 	if !utf8.ValidString(s) {
 		return fmt.Errorf("stream: invalid UTF-8 byte sequence in %s content", kind)
 	}
 
 	for _, r := range s {
-		if !xmlchar.IsChar(r) {
+		if !xmlchar.IsLiteralChar(r, xml11) {
 			return fmt.Errorf("stream: invalid XML character %#U in %s content", r, kind)
 		}
 	}

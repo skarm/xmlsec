@@ -25,6 +25,12 @@ const (
 	EscapeQuote = "&quot;"
 )
 
+const (
+	CDATAStart   = "<![CDATA["
+	CDATAEnd     = "]]>"
+	EQNamePrefix = "Q{"
+)
+
 // Reserved XML names, lexical attribute values and shared local names. A local
 // name must be paired with the namespace required by its consuming vocabulary.
 const (

@@ -155,6 +155,16 @@ func TestCertificateListSchemaAndEntryLimitPrecedence(t *testing.T) {
 			}
 		})
 	}
+	empty := build(algorithm, issuer, stamp)
+	limits.Entries = 0
+	if got, err := Parse(empty, limits); err != nil || got == nil {
+		t.Fatalf("zero entry budget on empty CRL: %v", err)
+	}
+	limits.Entries = -1
+	if got, err := Parse(empty, limits); got != nil || !errors.Is(err, ErrLimit) {
+		t.Fatalf("negative entry budget on empty CRL: got view %t, error %v", got != nil, err)
+	}
+
 	malformed := der.Seq(der.Int(42), der.Octets([]byte("not a time")))
 	raw := build(algorithm, issuer, stamp, der.Seq(malformed, entry))
 	limits.Entries = 1

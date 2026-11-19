@@ -77,3 +77,47 @@ func TestBoundNamespaceContextAcrossEvaluationPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateReuseUsesCurrentInvocation(t *testing.T) {
+	const namespace = "urn:status"
+	evaluator := NewEvaluator(DefaultEvaluatorOptions).Namespaces(map[string]string{"p": namespace}).DefaultLanguage("en")
+	state := evaluator.NewEvalState(nil)
+	expression, err := NewCompiler().Compile(`string-join((p:label(), string(current-dateTime()), string(default-language())), '|')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, tc := range []struct {
+		label    string
+		language string
+		at       time.Time
+	}{
+		{label: "first", language: "fr", at: at},
+		{label: "second", language: "de", at: at.Add(time.Hour)},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			ctx := WithEvaluationContext(t.Context(), EvaluationContext{CurrentTime: tc.at, Timezone: time.UTC, Language: tc.language})
+			ctx = WithFunctions(ctx, map[QualifiedName]Function{{URI: namespace, Name: "label"}: evaluatorFunction{value: tc.label}})
+			want := tc.label + "|" + tc.at.Format(time.RFC3339) + "|" + tc.language
+			independent, err := evaluator.Evaluate(ctx, expression, nil)
+			if err != nil || independent.StringValue() != want {
+				t.Fatalf("independent evaluation = %v, %v; want %q", independent, err, want)
+			}
+			reused, err := expression.EvaluateReuse(ctx, state, nil)
+			if err != nil || reused.StringValue() != want {
+				t.Fatalf("reused evaluation = %q, %v; want %q", reused.StringValue(), err, want)
+			}
+		})
+	}
+
+	language, err := NewCompiler().Compile(`string(default-language())`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reused, err := language.EvaluateReuse(t.Context(), state, nil)
+	if err != nil || reused.StringValue() != "en" {
+		t.Fatalf("base evaluation after overrides = %q, %v; want en", reused.StringValue(), err)
+	}
+}

@@ -102,6 +102,29 @@ func TestComparisonRejectsEitherInvalidOperand(t *testing.T) {
 	}
 }
 
+func TestFloatLexicalMappingRoundsAtTargetPrecision(t *testing.T) {
+	t.Parallel()
+
+	// The decimal is just above the midpoint between 1 and 1 + 2^-23.
+	// Rounding to float64 first loses the excess and changes the float32 result.
+	const (
+		decimal = "1.000000059604644775390625000000000000000001"
+		lower   = "1"
+		upper   = "1.00000011920928955078125"
+	)
+	if cmp, ok := lexicalpkg.Compare(decimal, lower, "float"); !ok || cmp != 1 {
+		t.Errorf("Compare with lower float = %d, %v; want 1, true", cmp, ok)
+	}
+	if cmp, ok := lexicalpkg.CompareFloatFacetBound(decimal, upper, "float"); !ok || cmp != 0 {
+		t.Errorf("CompareFloatFacetBound with upper float = %d, %v; want 0, true", cmp, ok)
+	}
+	key, ok := lexicalpkg.CanonicalKey(decimal, "float")
+	upperKey, upperOK := lexicalpkg.CanonicalKey(upper, "float")
+	if !ok || !upperOK || key != upperKey {
+		t.Errorf("CanonicalKey = %q, %v; want upper float key %q, %v", key, ok, upperKey, upperOK)
+	}
+}
+
 func TestDecimalComparatorFallbackKeepsStrictValidationSeparate(t *testing.T) {
 	t.Parallel()
 
@@ -332,6 +355,88 @@ func TestCanonicalKeyNormalizesNonValueComparableTypes(t *testing.T) {
 	} {
 		if got, valueKey := lexicalpkg.CanonicalKey(test.input, test.kind); valueKey || got != test.want {
 			t.Fatalf("string-family fallback %s: %q/%v; want %q/false", test.kind, got, valueKey, test.want)
+		}
+	}
+}
+
+func TestPartialCalendarComparisonUsesValidReferenceFields(t *testing.T) {
+	t.Parallel()
+
+	// XSD 1.1 D.2.1 fills absent calendar properties before comparing instants.
+	// Nonzero offsets must order around UTC even when month or day is absent.
+	for _, test := range []struct{ kind, value string }{
+		{"gYear", "2000"},
+		{"gYearMonth", "2000-01"},
+		{"gMonth", "--01"},
+		{"gDay", "---01"},
+		{"gMonthDay", "--01-01"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			t.Parallel()
+
+			for _, offset := range []struct {
+				zone string
+				want int
+			}{{"-01:00", 1}, {"+01:00", -1}, {"+00:00", 0}, {"-00:00", 0}} {
+				left, right := test.value+offset.zone, test.value+"Z"
+				if got, ok := lexicalpkg.Compare(left, right, test.kind); !ok || got != offset.want {
+					t.Errorf("Compare(%q,%q,%s) = %d,%v; want %d,true", left, right, test.kind, got, ok, offset.want)
+				}
+				if got, ok := lexicalpkg.Compare(right, left, test.kind); !ok || got != -offset.want {
+					t.Errorf("reverse Compare(%q,%q,%s) = %d,%v; want %d,true", right, left, test.kind, got, ok, -offset.want)
+				}
+			}
+		})
+	}
+}
+
+func TestPartialCalendarMixedTimezoneIntervals(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct{ kind, earlier, later string }{
+		{"gYear", "2000", "2002"},
+		{"gYearMonth", "2000-01", "2000-03"},
+		{"gMonth", "--01", "--03"},
+		{"gDay", "---01", "---03"},
+		{"gMonthDay", "--02-01", "--03-01"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			t.Parallel()
+
+			for _, operands := range [][2]string{{test.earlier, test.later + "Z"}, {test.earlier + "Z", test.later}} {
+				if got, ok := lexicalpkg.Compare(operands[0], operands[1], test.kind); !ok || got != -1 {
+					t.Errorf("disjoint intervals %q/%q = %d,%v; want -1,true", operands[0], operands[1], got, ok)
+				}
+				if got, ok := lexicalpkg.Compare(operands[1], operands[0], test.kind); !ok || got != 1 {
+					t.Errorf("reverse disjoint intervals %q/%q = %d,%v; want 1,true", operands[1], operands[0], got, ok)
+				}
+			}
+			for _, zone := range []string{"Z", "+14:00", "-14:00"} {
+				if _, ok := lexicalpkg.Compare(test.earlier, test.earlier+zone, test.kind); ok {
+					t.Errorf("overlapping intervals %q/%q became ordered", test.earlier, test.earlier+zone)
+				}
+			}
+		})
+	}
+}
+
+func TestPartialCalendarEqualInstantsKeepEqualKeys(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct{ kind, left, right string }{
+		{"gDay", "---01-14:00", "---02+10:00"},
+		{"gMonthDay", "--02-29-14:00", "--03-01+10:00"},
+		{"gYear", "0000Z", "0000+00:00"},
+		{"gYearMonth", "-0004-02Z", "-0004-02-00:00"},
+		{"gMonth", "--02Z", "--02+00:00"},
+	} {
+		if got, ok := lexicalpkg.Compare(test.left, test.right, test.kind); !ok || got != 0 {
+			t.Errorf("equal instants %q/%q = %d,%v; want 0,true", test.left, test.right, got, ok)
+		}
+		left, leftOK := lexicalpkg.CanonicalKey(test.left, test.kind)
+		right, rightOK := lexicalpkg.CanonicalKey(test.right, test.kind)
+		if !leftOK || !rightOK || left != right {
+			t.Errorf("equal %s instants have different keys: %q,%v and %q,%v", test.kind, left, leftOK, right, rightOK)
 		}
 	}
 }

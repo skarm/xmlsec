@@ -7,10 +7,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 )
 
 // URI helper dispatch and the absent-static-base error retain F&O spellings.
@@ -41,16 +43,16 @@ func ResolveURIReference(relative, base string) (string, error) {
 		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
 	}
 
-	parsed, err := parseURIReference(relative)
+	parsed, err := uripath.ParseIRIReference(relative)
 	if err != nil {
 		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
 	}
 
-	if parsed.IsAbs() {
+	if parsed.IsAbsolute() {
 		return relative, nil
 	}
 
-	return resolveRelativeURIReference(relative, base)
+	return resolveRelativeURIReference(parsed, base)
 }
 
 func lookupFunctionsURI(name string) (*builtinFunc, bool) {
@@ -156,13 +158,13 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
 	}
 
-	parsedRelative, err := parseURIReference(relative)
+	parsedRelative, err := uripath.ParseIRIReference(relative)
 	if err != nil {
 		return nil, &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
 	}
 
 	// F&O section 6.1 orders this rule before inspecting the effective base.
-	if parsedRelative.IsAbs() {
+	if parsedRelative.IsAbsolute() {
 		return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: relative}), nil
 	}
 
@@ -179,7 +181,7 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 		}
 	}
 
-	result, err := resolveRelativeURIReference(relative, base)
+	result, err := resolveRelativeURIReference(parsedRelative, base)
 	if err != nil {
 		return nil, err
 	}
@@ -187,17 +189,17 @@ func fnResolveURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error
 	return xdm.SingleAtomic(xdm.AtomicValue{TypeName: xdm.TypeAnyURI, Value: result}), nil
 }
 
-func resolveRelativeURIReference(relative, base string) (string, error) {
+func resolveRelativeURIReference(relative uripath.IRIReference, base string) (string, error) {
 	if err := validateIRI(base); err != nil {
 		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid base URI: " + base}
 	}
 
-	parsedBase, err := parseURIReference(base)
+	parsedBase, err := uripath.ParseIRIReference(base)
 	if err != nil {
 		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid base URI: " + base}
 	}
 
-	if !parsedBase.IsAbs() || parsedBase.Opaque != "" {
+	if !parsedBase.IsAbsolute() || !parsedBase.IsHierarchical() {
 		return "", &xdm.Error{Code: errCodeFORG0002, Message: "base URI is not absolute and hierarchical: " + base}
 	}
 
@@ -205,12 +207,7 @@ func resolveRelativeURIReference(relative, base string) (string, error) {
 		return "", &xdm.Error{Code: errCodeFORG0002, Message: "base URI must not contain a fragment: " + base}
 	}
 
-	result, err := resolveURIReference(base, relative)
-	if err != nil {
-		return "", &xdm.Error{Code: errCodeFORG0002, Message: "invalid relative URI: " + relative}
-	}
-
-	return result, nil
+	return relative.ResolveAgainst(parsedBase), nil
 }
 
 // validateIRI checks that a string is a valid IRI reference.
@@ -219,11 +216,18 @@ func validateIRI(s string) error {
 	if err := unparsedtext.ValidatePercentEncoding(s); err != nil {
 		return err
 	}
-	// A URI reference may contain at most one '#' (fragment separator).
-	if _, after, ok := strings.Cut(s, "#"); ok {
-		if strings.IndexByte(after, '#') >= 0 {
-			return fmt.Errorf("invalid IRI: multiple '#' characters")
-		}
+	// RFC 3987 permits only one fragment separator and permits literal
+	// private-use characters only in a query.
+	beforeFragment, fragment, _ := strings.Cut(s, "#")
+	if strings.ContainsRune(fragment, '#') {
+		return fmt.Errorf("invalid IRI: multiple '#' characters")
+	}
+
+	beforeQuery, _, _ := strings.Cut(beforeFragment, "?")
+
+	isPrivateUse := func(r rune) bool { return unicode.Is(unicode.Co, r) }
+	if strings.ContainsFunc(beforeQuery, isPrivateUse) || strings.ContainsFunc(fragment, isPrivateUse) {
+		return fmt.Errorf("invalid IRI: private-use character outside the query")
 	}
 
 	for _, r := range s {

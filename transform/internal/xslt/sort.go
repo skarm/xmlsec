@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
-	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -44,13 +43,14 @@ const (
 )
 
 type sortKey struct {
-	forwards10 bool
-	backwards  bool // effective XSLT 1.0 processing for sort-key cardinality
+	forwards10         bool
+	backwards          bool // effective XSLT 1.0 processing for sort-key cardinality
+	dataTypeNamespaces map[string]string
 
 	Select    *xpath.Expression
 	Body      []instruction // sequence constructor (when select is absent)
 	Order     *avt          // "ascending" or "descending"
-	DataType  *avt          // "text" or lexicon.TypeNumber
+	DataType  *avt          // "text", "number", or a custom EQName
 	CaseOrder *avt          // "upper-first" or "lower-first"
 	Lang      *avt
 	Collation *avt // collation URI
@@ -267,36 +267,33 @@ func (ec *execContext) sortSequenceValue(ctx context.Context, seq xdm.Sequence, 
 		return sortValue{}, err
 	}
 
-	seq = nil
-
-	if len(atoms) > 0 {
-		items := make(xdm.ItemSlice, len(atoms))
-		for i, atom := range atoms {
-			items[i] = atom
+	if len(atoms) > 1 {
+		if !compatible {
+			return sortValue{}, dynamicError(errCodeXTTE1020,
+				"sort key value is a sequence of %d items; a single value is required", len(atoms))
 		}
 
-		seq = items
+		// Backwards-compatible keys use the first item without raising XTTE1020.
+		atoms = atoms[:1]
 	}
 
-	seqLen := 0
-	if seq != nil {
-		seqLen = xdm.SequenceLen(seq)
+	legacy := ec.stylesheet.processorLanguage() == processorXSLT10
+	if !legacy && *dtMode == dataTypeNumber {
+		var atom xdm.AtomicValue
+		if len(atoms) == 1 {
+			atom = atoms[0]
+		}
+
+		return explicitNumberSortValue(ctx, atom)
+	}
+
+	seq = nil
+	if len(atoms) == 1 {
+		seq = xdm.ItemSlice{atoms[0]}
 	}
 
 	strVal := stringifySequence(seq)
-	// Backwards-compatible keys use the first item without raising XTTE1020.
-	if seqLen > 1 && compatible {
-		seq = xdm.ItemSlice{seq.Get(0)}
-		strVal = stringifyItem(seq.Get(0))
-		seqLen = 1
-	}
-
-	if seqLen > 1 {
-		return sortValue{}, dynamicError(errCodeXTTE1020,
-			"sort key value is a sequence of %d items; a single value is required", seqLen)
-	}
-
-	if ec.stylesheet.processorLanguage() == processorXSLT10 {
+	if legacy {
 		strVal, err = xpath.XPath10String(seq)
 		if err != nil {
 			return sortValue{}, err
@@ -312,17 +309,12 @@ func (ec *execContext) sortSequenceValue(ctx context.Context, seq xdm.Sequence, 
 	}
 
 	implicitTZ := ec.currentTime.Location()
-	if *dtMode == dataTypeNumber {
-		// Explicit numeric conversion uses number() semantics; dates become NaN.
-		return extractNumericSortValue(seq, strVal, true, implicitTZ), nil
-	}
-
 	if *dtMode == dataTypeNumberAuto {
-		sv := extractNumericSortValue(seq, strVal, false, implicitTZ)
+		sv := extractNumericSortValue(seq, strVal, implicitTZ)
 		return autoNumericSortValue(sv, seq, implicitTZ), nil
 	}
 
-	return textSortValue(seq, strVal, seqLen == 1, dtMode, implicitTZ), nil
+	return textSortValue(seq, strVal, len(atoms) == 1, dtMode, implicitTZ), nil
 }
 
 // evaluateSortExpression reuses an evaluation state only for expressions that
@@ -363,6 +355,8 @@ func (ec *execContext) bodySortValue(ctx context.Context, sk *sortKey, node xdm.
 }
 
 func (ec *execContext) evaluateSortBody(ctx context.Context, body []instruction, node xdm.Node) (xdm.Sequence, error) {
+	defer ec.withoutTemplateRule()()
+
 	savedCurrent := ec.currentNode
 
 	savedContext := ec.contextNode
@@ -398,96 +392,33 @@ func (ec *execContext) execPerformSort(ctx context.Context, inst *performSortIns
 		return nil
 	}
 
-	// Try to extract nodes for node-based sorting
-	nodes, allNodes := xdm.NodesFrom(seq)
-	if allNodes && len(nodes) > 0 {
-		return ec.outputSortedNodes(ctx, nodes, inst.Sort)
-	}
-
-	// Atomic sequence: sort by string value and output as text items
-	if len(inst.Sort) > 0 {
-		var err error
-
+	if nodes, allNodes := xdm.NodesFrom(seq); allNodes {
+		seq, err = ec.sortNodeSequence(ctx, nodes, inst.Sort)
+	} else {
 		seq, err = sortItems(ctx, ec, seq, inst.Sort)
-		if err != nil {
-			return err
-		}
 	}
 
-	// In capture mode (e.g. inside xsl:function), push sorted items
-	// directly so the caller receives a proper sequence of atomic values,
-	// and no merged text nodes.
-	out := ec.currentOutput()
-	if out.captureItems && out.doc != nil && out.current == out.doc.DocumentElement() {
-		out.captureSortedItems(seq)
-		return nil
+	if err != nil {
+		return err
 	}
 
-	return ec.outputSortedAtomicItems(seq)
+	// Sorting reorders items; the enclosing constructor decides how to use
+	// the sequence, just as for xsl:sequence.
+	return ec.writeXSLSequence(seq)
 }
 
-func (ec *execContext) outputSortedNodes(ctx context.Context, nodes []xdm.Node, keys []*sortKey) error {
-	if len(keys) > 0 {
-		var err error
-
-		nodes, err = sortNodes(ctx, ec, nodes, keys)
-		if err != nil {
-			return err
-		}
+func (ec *execContext) sortNodeSequence(ctx context.Context, nodes []xdm.Node, keys []*sortKey) (xdm.Sequence, error) {
+	sorted, err := sortNodes(ctx, ec, nodes, keys)
+	if err != nil {
+		return nil, err
 	}
 
-	savedCurrent := ec.currentNode
-	savedContext := ec.contextNode
-	savedPos := ec.position
-	savedSize := ec.size
-
-	ec.size = len(nodes)
-	defer func() {
-		ec.currentNode = savedCurrent
-		ec.contextNode = savedContext
-		ec.position = savedPos
-		ec.size = savedSize
-	}()
-
-	for _, node := range nodes {
-		if err := ec.copyNodeToOutput(node); err != nil {
-			return err
-		}
+	items := make(xdm.ItemSlice, len(sorted))
+	for i, node := range sorted {
+		items[i] = xdm.NodeItem{Node: node}
 	}
 
-	return nil
-}
-
-func (ec *execContext) outputSortedAtomicItems(seq xdm.Sequence) error {
-	// Output atomic items separated by spaces
-	idx := 0
-	for item := range xdm.SequenceItems(seq) {
-		if idx > 0 {
-			sep := ec.resultDoc.CreateText(" ")
-			if err := ec.addNode(sep); err != nil {
-				return err
-			}
-		}
-
-		av, ok := item.(xdm.AtomicValue)
-		if !ok {
-			continue
-		}
-
-		s, err := xpath.AtomicToString(av)
-		if err != nil {
-			continue
-		}
-
-		text := ec.resultDoc.CreateText(s)
-		if err := ec.addNode(text); err != nil {
-			return err
-		}
-
-		idx++
-	}
-
-	return nil
+	return items, nil
 }
 
 // performSortInput evaluates a select or sequence constructor without forcing
@@ -541,8 +472,6 @@ func sortItems(ctx context.Context, ec *execContext, items xdm.Sequence, sortKey
 	focus := ec.captureExecutionFocus()
 	defer ec.restoreExecutionFocus(focus)
 
-	ec.size = xdm.SequenceLen(items)
-
 	if len(sortKeys) == 1 {
 		return sortItems1(ctx, ec, items, sortKeys[0])
 	}
@@ -556,6 +485,12 @@ func sortItems1(ctx context.Context, ec *execContext, items xdm.Sequence, sk *so
 		return nil, err
 	}
 
+	level, err := resolveLevel1(ctx, ec, sk)
+	if err != nil {
+		return nil, err
+	}
+
+	ec.size = xdm.SequenceLen(items)
 	evalState := ec.sortXPathEvalState(ctx)
 	// Set size/position/current() context for the FULL mixed sequence so
 	// sort keys referencing position()/last()/current() compute correctly
@@ -601,11 +536,6 @@ func sortItems1(ctx context.Context, ec *execContext, items xdm.Sequence, sk *so
 		return nil, err
 	}
 
-	level, err := resolveLevel1(ctx, ec, sk)
-	if err != nil {
-		return nil, err
-	}
-
 	finalizeLevel1(&level, dtMode, entries)
 
 	slices.SortFunc(entries, func(a, b keyed1[xdm.Item]) int {
@@ -630,6 +560,12 @@ func sortItemsN(ctx context.Context, ec *execContext, items xdm.Sequence, sortKe
 		return nil, err
 	}
 
+	rs, err := buildResolvedSort(ctx, ec, sortKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	ec.size = xdm.SequenceLen(items)
 	evalState := ec.sortXPathEvalState(ctx)
 	// Set size/position/current() context for the FULL mixed sequence so
 	// sort keys referencing position()/last()/current() compute correctly
@@ -675,11 +611,6 @@ func sortItemsN(ctx context.Context, ec *execContext, items xdm.Sequence, sortKe
 		return nil, err
 	}
 
-	rs, err := buildResolvedSort(ctx, ec, sortKeys)
-	if err != nil {
-		return nil, err
-	}
-
 	finalizeLevels(&rs, dtModes, entries)
 
 	slices.SortFunc(entries, func(a, b keyedN[xdm.Item]) int {
@@ -711,8 +642,6 @@ func sortNodes(ctx context.Context, ec *execContext, nodes []xdm.Node, sortKeys 
 	focus := ec.captureExecutionFocus()
 	defer ec.restoreExecutionFocus(focus)
 
-	ec.size = len(nodes)
-
 	if len(sortKeys) == 1 {
 		return sortNodes1(ctx, ec, nodes, sortKeys[0])
 	}
@@ -728,6 +657,13 @@ func sortNodes1(ctx context.Context, ec *execContext, nodes []xdm.Node, sk *sort
 		return nil, err
 	}
 
+	level, err := resolveLevel1(ctx, ec, sk)
+	if err != nil {
+		return nil, err
+	}
+
+	ec.size = len(nodes)
+	ec.contextItem = nil
 	evalState := ec.sortXPathEvalState(ctx)
 	evalState.SetSize(len(nodes))
 
@@ -756,11 +692,6 @@ func sortNodes1(ctx context.Context, ec *execContext, nodes []xdm.Node, sk *sort
 		return nil, err
 	}
 
-	level, err := resolveLevel1(ctx, ec, sk)
-	if err != nil {
-		return nil, err
-	}
-
 	finalizeLevel1(&level, dtMode, entries)
 
 	slices.SortFunc(entries, func(a, b keyed1[xdm.Node]) int {
@@ -786,6 +717,13 @@ func sortNodesN(ctx context.Context, ec *execContext, nodes []xdm.Node, sortKeys
 		return nil, err
 	}
 
+	rs, err := buildResolvedSort(ctx, ec, sortKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	ec.size = len(nodes)
+	ec.contextItem = nil
 	evalState := ec.sortXPathEvalState(ctx)
 	evalState.SetSize(len(nodes))
 
@@ -812,11 +750,6 @@ func sortNodesN(ctx context.Context, ec *execContext, nodes []xdm.Node, sortKeys
 		return nil, err
 	}
 
-	rs, err := buildResolvedSort(ctx, ec, sortKeys)
-	if err != nil {
-		return nil, err
-	}
-
 	finalizeLevels(&rs, dtModes, entries)
 
 	slices.SortFunc(entries, func(a, b keyedN[xdm.Node]) int {
@@ -832,8 +765,11 @@ func sortNodesN(ctx context.Context, ec *execContext, nodes []xdm.Node, sortKeys
 
 // --- Sort level resolution ---
 
-func evaluateSortOption(ctx context.Context, ec *execContext, option *avt) (string, error) {
+func (sk *sortKey) evaluateOption(ctx context.Context, ec *execContext, option *avt) (string, error) {
+	defer ec.pushDeclarationBaseURI(sk.BaseURI)()
+
 	value, err := option.evaluate(ctx, ec.contextNode)
+
 	return strings.Trim(value, lexicon.XMLWhitespace), err
 }
 
@@ -845,7 +781,7 @@ func resolveSortOrder(ctx context.Context, ec *execContext, sk *sortKey) (string
 	if sk.Order != nil {
 		var err error
 
-		order, err = evaluateSortOption(ctx, ec, sk.Order)
+		order, err = sk.evaluateOption(ctx, ec, sk.Order)
 		if err != nil {
 			return "", err
 		}
@@ -877,7 +813,7 @@ func buildResolvedSort(ctx context.Context, ec *execContext, sortKeys []*sortKey
 		}
 
 		if sk.Collation != nil {
-			uri, err := evaluateSortOption(ctx, ec, sk.Collation)
+			uri, err := sk.evaluateOption(ctx, ec, sk.Collation)
 			if err != nil {
 				return resolvedSort{}, err
 			}
@@ -916,7 +852,7 @@ func resolveLevel1(ctx context.Context, ec *execContext, sk *sortKey) (resolvedL
 	}
 	// XTDE0030: validate lang attribute value
 	if sk.Collation == nil && sk.Lang != nil {
-		lang, err := evaluateSortOption(ctx, ec, sk.Lang)
+		lang, err := sk.evaluateOption(ctx, ec, sk.Lang)
 		if err != nil {
 			return resolvedLevel{}, err
 		}
@@ -930,7 +866,7 @@ func resolveLevel1(ctx context.Context, ec *execContext, sk *sortKey) (resolvedL
 	rl := resolvedLevel{desc: order == sortOrderDescending}
 
 	if sk.Collation != nil {
-		uri, err := evaluateSortOption(ctx, ec, sk.Collation)
+		uri, err := sk.evaluateOption(ctx, ec, sk.Collation)
 		if err != nil {
 			return resolvedLevel{}, err
 		}
@@ -969,7 +905,7 @@ func buildImplicitCollationURI(ctx context.Context, ec *execContext, sk *sortKey
 	var params []string
 
 	if sk.Lang != nil {
-		lang, err := evaluateSortOption(ctx, ec, sk.Lang)
+		lang, err := sk.evaluateOption(ctx, ec, sk.Lang)
 		if err != nil {
 			return "", err
 		}
@@ -981,7 +917,7 @@ func buildImplicitCollationURI(ctx context.Context, ec *execContext, sk *sortKey
 	}
 
 	if sk.CaseOrder != nil {
-		co, err := evaluateSortOption(ctx, ec, sk.CaseOrder)
+		co, err := sk.evaluateOption(ctx, ec, sk.CaseOrder)
 		if err != nil {
 			return "", err
 		}
@@ -1017,19 +953,19 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 	}
 
 	if sk.DataType != nil {
-		dt, err := evaluateSortOption(ctx, ec, sk.DataType)
+		dt, err := sk.evaluateOption(ctx, ec, sk.DataType)
 		if err != nil {
 			return err
 		}
 
-		if !isValidSortDataType(dt) {
+		if !isValidSortDataType(dt, sk.dataTypeNamespaces) {
 			return dynamicError(errCodeXTDE0030,
-				"invalid data-type %q in xsl:sort; must be \"text\", \"number\", or a QName", dt)
+				"invalid data-type %q in xsl:sort; must be \"text\", \"number\", or an EQName with a namespace", dt)
 		}
 	}
 
 	if sk.Collation == nil && sk.CaseOrder != nil {
-		co, err := evaluateSortOption(ctx, ec, sk.CaseOrder)
+		co, err := sk.evaluateOption(ctx, ec, sk.CaseOrder)
 		if err != nil {
 			return err
 		}
@@ -1041,7 +977,7 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 	}
 
 	if sk.Collation == nil && sk.Lang != nil {
-		lang, err := evaluateSortOption(ctx, ec, sk.Lang)
+		lang, err := sk.evaluateOption(ctx, ec, sk.Lang)
 		if err != nil {
 			return err
 		}
@@ -1053,7 +989,7 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 	}
 
 	if sk.Stable != nil {
-		stable, err := evaluateSortOption(ctx, ec, sk.Stable)
+		stable, err := sk.evaluateOption(ctx, ec, sk.Stable)
 		if err != nil {
 			return err
 		}
@@ -1067,7 +1003,7 @@ func validateSortKeyAttrs(ctx context.Context, ec *execContext, sk *sortKey) err
 	}
 
 	if sk.Collation != nil {
-		uri, err := evaluateSortOption(ctx, ec, sk.Collation)
+		uri, err := sk.evaluateOption(ctx, ec, sk.Collation)
 		if err != nil {
 			return err
 		}
@@ -1176,25 +1112,18 @@ func validateSortKeyTypesN[T any](entries keyedSlice[T], dtModes []dataTypeMode,
 // value: "text", "number", or a QName denoting a non-absent namespace
 // (a prefixed lexical QName or an EQName Q{uri}local). The effect of a QName
 // data-type is implementation-defined; the processor treats it as "text".
-func isValidSortDataType(s string) bool {
+func isValidSortDataType(s string, namespaces map[string]string) bool {
 	switch s {
 	case lexicon.MethodText, lexicon.TypeNumber:
 		return true
 	}
 
-	if isValidEQName(s) {
-		return true
-	}
-	// A bare NCName has an absent namespace and is not permitted; require a
-	// prefix so the QName denotes a non-absent namespace.
-	if strings.IndexByte(s, ':') > 0 && xmlchar.IsValidQName(s) {
-		return true
-	}
+	name, err := resolveIntrospectionName(s, "", errCodeXTDE0030, nsResolverFromMap(namespaces))
 
-	return false
+	return err == nil && name.URI != ""
 }
 
-func validateLiteralSortOption(name, value string) error {
+func validateLiteralSortOption(name, value string, dataTypeNamespaces map[string]string) error {
 	value = strings.Trim(value, lexicon.XMLWhitespace)
 	valid := true
 
@@ -1204,7 +1133,7 @@ func validateLiteralSortOption(name, value string) error {
 	case nameCaseOrder:
 		valid = value == nameLowerFirst || value == nameUpperFirst
 	case nameDataType:
-		valid = isValidSortDataType(value)
+		valid = isValidSortDataType(value, dataTypeNamespaces)
 	case lexicon.AttrLang:
 		valid = isValidLanguageTag(value)
 	}
@@ -1307,6 +1236,12 @@ func binarySortType(value xdm.AtomicValue) bool {
 // evaluateSortKey evaluates a single sort key for one item and returns its typed value.
 // Uses EvaluateReuse when evalState is non-nil to avoid per-item evalContext allocation.
 func evaluateSortKey(ctx context.Context, ec *execContext, sk *sortKey, node xdm.Node, dtMode *dataTypeMode, evalState *xpath.EvalState) (sortValue, error) {
+	if sk.BaseURI != ec.effectiveStaticBaseURI() {
+		// The reusable XPath state captured the enclosing instruction's base URI.
+		evalState = nil
+	}
+	defer ec.pushDeclarationBaseURI(sk.BaseURI)()
+
 	savedInSort := ec.inSortKeyEval
 
 	ec.inSortKeyEval = true
@@ -1348,14 +1283,11 @@ func extractSortValues(ctx context.Context, ec *execContext, sortKeys []*sortKey
 
 // --- Numeric extraction helpers ---
 
-// extractNumericSortValue converts a sort key sequence to a numeric sort value.
-// A single atomic item is converted directly when orderable; when numericOnly
-// is true (explicit data-type=lexicon.TypeNumber), only actual numeric types
-// use direct conversion per number() semantics, so dates/durations fall through
-// to the fallback string → double (producing NaN). Otherwise fallback is parsed.
-func extractNumericSortValue(seq xdm.Sequence, fallback string, numericOnly bool, implicitTZ *time.Location) sortValue {
+// extractNumericSortValue uses the original type of an orderable atomic key
+// when the sort mode detects a numeric or temporal comparison.
+func extractNumericSortValue(seq xdm.Sequence, fallback string, implicitTZ *time.Location) sortValue {
 	if seq != nil && xdm.SequenceLen(seq) == 1 {
-		if av, ok := seq.Get(0).(xdm.AtomicValue); ok && (!numericOnly || av.IsNumeric()) {
+		if av, ok := seq.Get(0).(xdm.AtomicValue); ok {
 			if sv, ok := atomicToNumericSortValue(av, implicitTZ); ok {
 				return sv
 			}
@@ -1363,7 +1295,7 @@ func extractNumericSortValue(seq xdm.Sequence, fallback string, numericOnly bool
 	}
 
 	value := parseToNumericSortValue(fallback)
-	value.empty = !numericOnly && xdm.SequenceLen(seq) == 0
+	value.empty = xdm.SequenceLen(seq) == 0
 
 	return value
 }
@@ -1452,7 +1384,7 @@ func atomicToNumericSortValue(av xdm.AtomicValue, implicitTZ *time.Location) (so
 			f = -f
 		}
 
-		return sortValue{kind: sortValueNumber, num: f, typeName: av.TypeName}, true
+		return sortValue{kind: sortValueNumber, num: f, precise: xdm.DurationToRat(d, false), typeName: av.TypeName}, true
 	case xdm.TypeDateTime, xdm.TypeDateTimeStamp, xdm.TypeDate:
 		t := prim.TimeVal()
 		t = xpath.ApplyImplicitTZ(t, implicitTZ)
@@ -1488,7 +1420,7 @@ func initDataTypeModes(ctx context.Context, ec *execContext, sortKeys []*sortKey
 			continue
 		}
 
-		dt, err := evaluateSortOption(ctx, ec, sk.DataType)
+		dt, err := sk.evaluateOption(ctx, ec, sk.DataType)
 		if err != nil {
 			return nil, err
 		}
@@ -1508,7 +1440,7 @@ func initDataTypeMode1(ctx context.Context, ec *execContext, sk *sortKey) (dataT
 		return dataTypeAuto, nil
 	}
 
-	dt, err := evaluateSortOption(ctx, ec, sk.DataType)
+	dt, err := sk.evaluateOption(ctx, ec, sk.DataType)
 	if err != nil {
 		return dataTypeAuto, err
 	}
@@ -1570,12 +1502,34 @@ func finalizeLevel1[T any](level *resolvedLevel, dtMode dataTypeMode, entries []
 }
 
 func parseToNumericSortValue(s string) sortValue {
-	f := parseNumber(s)
-	if math.IsNaN(f) {
+	return numberSortValue(parseNumber(s))
+}
+
+// explicitNumberSortValue implements the fn:number conversion for an atomized
+// sort or merge key. An absent key is passed as a zero atomic value.
+func explicitNumberSortValue(ctx context.Context, atom xdm.AtomicValue) (sortValue, error) {
+	if atom.TypeName == "" {
+		return sortValue{kind: sortValueNaN}, nil
+	}
+
+	value, err := xpath.CastAtomicContext(ctx, atom, xdm.TypeDouble)
+	if err == nil {
+		return numberSortValue(value.ToFloat64()), nil
+	}
+
+	if failure := preserveControlFailure(ctx, err); failure != nil {
+		return sortValue{}, failure
+	}
+
+	return sortValue{kind: sortValueNaN}, nil
+}
+
+func numberSortValue(number float64) sortValue {
+	if math.IsNaN(number) {
 		return sortValue{kind: sortValueNaN}
 	}
 
-	return sortValue{kind: sortValueNumber, num: f}
+	return sortValue{kind: sortValueNumber, num: number}
 }
 
 // Numeric promotion applies to the entire sort level, including comparisons
@@ -1712,11 +1666,4 @@ func parseNumber(s string) float64 {
 	}
 
 	return f
-}
-
-func (out *outputFrame) captureSortedItems(seq xdm.Sequence) {
-	out.pendingItems = append(out.pendingItems, xdm.Materialize(seq)...)
-	if seq != nil && xdm.SequenceLen(seq) > 0 {
-		out.noteOutput()
-	}
 }

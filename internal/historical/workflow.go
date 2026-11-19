@@ -344,7 +344,7 @@ func (w *validationWorkflow) prepareTimestamp(candidate Candidate) (*preparedSta
 	accuracy, exists := assertion.Info().Accuracy()
 	if !exists {
 		if w.config.MissingAccuracy == nil {
-			outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Archive: candidate.Archive, SubIndication: codeTimestampConstraintsFailure}
+			outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Archive: candidate.Archive, Content: candidate.Content, SubIndication: codeTimestampConstraintsFailure}
 
 			return nil, w.rejectTimestampConstraint(outcome)
 		}
@@ -354,7 +354,7 @@ func (w *validationWorkflow) prepareTimestamp(candidate Candidate) (*preparedSta
 
 	upper := assertion.Info().GenTime().Add(accuracy)
 	if upper.After(w.now) {
-		outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Upper: upper, Archive: candidate.Archive, SubIndication: codeTimestampConstraintsFailure}
+		outcome := Stamp{Token: assertion.TokenSHA256(), Generation: assertion.Info().GenTime(), Upper: upper, Archive: candidate.Archive, Content: candidate.Content, SubIndication: codeTimestampConstraintsFailure}
 
 		return nil, w.rejectTimestampConstraint(outcome)
 	}
@@ -372,7 +372,7 @@ func (w *validationWorkflow) rejectTimestampAuthentication(candidate Candidate, 
 		indication, sub = Failed, codeHashFailure
 	}
 
-	w.report.Stamps = append(w.report.Stamps, Stamp{Token: sha256.Sum256(candidate.Token.DER()), Archive: candidate.Archive, Indication: indication, SubIndication: sub})
+	w.report.Stamps = append(w.report.Stamps, Stamp{Token: sha256.Sum256(candidate.Token.DER()), Archive: candidate.Archive, Content: candidate.Content, Indication: indication, SubIndication: sub})
 	if w.ctx.Err() != nil || errors.Is(err, pki.ErrLimit) {
 		return err
 	}
@@ -513,7 +513,15 @@ func (w *validationWorkflow) processTimestamp(stamp preparedStamp, accepted []pr
 		return false, nil
 	}
 
+	return w.applyTimestampProof(stamp, accepted)
+}
+
+func (w *validationWorkflow) applyTimestampProof(stamp preparedStamp, accepted []preparedStamp) (bool, error) {
 	if err := checkProtectedChronology(w.ctx, w.graph, stamp, accepted); err != nil {
+		if !errors.Is(err, ErrValidation) {
+			return false, err
+		}
+
 		w.rejectTimestampChronology()
 
 		if w.config.RequireAllTimestamps {

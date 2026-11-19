@@ -180,16 +180,17 @@ func TestExecCopyOfAccumulators(t *testing.T) {
 	t.Parallel()
 
 	const accumulator = `
-		<xsl:accumulator name="seen" as="xs:integer" initial-value="0">
+		<xsl:accumulator name="seen" as="xs:integer" initial-value="0" streamable="yes">
 			<xsl:accumulator-rule match="n" select="$value + 1"/>
-		</xsl:accumulator>`
+		</xsl:accumulator>
+		<xsl:accumulator name="other" initial-value="0"><xsl:accumulator-rule match="n" select="$value + 10"/></xsl:accumulator>`
 
 	for _, tc := range []struct {
 		name, mode, want, code string
 	}{
 		{name: "explicit_list_transfers_source_values", mode: `<xsl:mode use-accumulators="seen"/>`, want: "3"},
 		{name: "all_transfers_source_values", mode: `<xsl:mode use-accumulators="#all"/>`, want: "3"},
-		{name: "mode_without_accumulators_rejects_copy", mode: `<xsl:mode use-accumulators=""/>`, code: "XTDE3362"},
+		{name: "the_copy_without_grant_rejects_lookup", mode: `<xsl:mode use-accumulators=""/>`, code: "XTDE3362"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -198,6 +199,30 @@ func TestExecCopyOfAccumulators(t *testing.T) {
 				<xsl:for-each select="$last"><xsl:value-of select="accumulator-before('seen')"/></xsl:for-each>`)
 			got, err := ss.Transform(parseTestDocument(t, `<r><n/><n/><n/></r>`)).Serialize(t.Context())
 			requireSerialization(t, got, err, tc.want, tc.code)
+		})
+	}
+}
+
+func TestExecCopyOfPropagatesAccumulatorComputationFailure(t *testing.T) {
+	t.Parallel()
+
+	const declarations = `
+		<xsl:mode use-accumulators="#all"/>
+		<xsl:accumulator name="total" initial-value="0">
+			<xsl:accumulator-rule match="item" select="accumulator-before('total') + 1"/>
+		</xsl:accumulator>`
+	const temporary = `<xsl:variable name="temporary" as="element()"><item/></xsl:variable>`
+	const copyOf = `<xsl:copy-of select="$temporary" copy-accumulators="yes"/>`
+	const caughtCopy = `<xsl:try xmlns:err="http://www.w3.org/2005/xqt-errors">` + copyOf + `<xsl:catch errors="err:XTDE3400"/></xsl:try>`
+	for _, tc := range []struct{ name, body string }{
+		{"reports_initial_failure", temporary + copyOf},
+		{"reports_failure_again_after_catch", temporary + caughtCopy + copyOf},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ss := compileTestStylesheet(t, declarations, tc.body)
+			got, err := ss.Transform(parseTestDocument(t, `<source/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, "", "XTDE3400")
 		})
 	}
 }
@@ -241,6 +266,61 @@ func TestCheckCopyOfNamespaceContent(t *testing.T) {
 			if !errors.As(err, &detail) || detail.Code != tc.wantCode {
 				t.Fatalf("namespace check error = %v; want %s", err, tc.wantCode)
 			}
+		})
+	}
+}
+
+func TestCopyOfOrphanBaseURI(t *testing.T) {
+	t.Parallel()
+	const source = `<r xml:base="https://example.test/source/"><child xml:base="relative/"><leaf/><?item text?></child></r>`
+	for _, copyNS := range []string{"yes", "no"} {
+		t.Run(copyNS, func(t *testing.T) {
+			t.Parallel()
+			body := `<xsl:variable name="nodes" as="node()*" xml:base="https://example.test/style/">
+				<xsl:copy-of xml:base="copy/" select="r/child, r/child/leaf, r/child/processing-instruction()" copy-namespaces="` + copyNS + `"/>
+			</xsl:variable>
+			<xsl:value-of select="($nodes[1], $nodes[1]/leaf, $nodes[2], $nodes[3]) ! base-uri(.)" separator="|"/>`
+			ss := compileTestStylesheet(t, "", body)
+			got, err := ss.Transform(parseTestDocument(t, source)).Serialize(t.Context())
+			const fromStyle = "https://example.test/style/copy/relative/"
+			const fromSource = "https://example.test/source/relative/"
+			requireSerialization(t, got, err, fromStyle+"|"+fromStyle+"|"+fromSource+"|"+fromSource, "")
+		})
+	}
+}
+
+func TestCopyOrphanBaseURI(t *testing.T) {
+	t.Parallel()
+	const source = `<r xml:base="https://example.test/source/"><child xml:base="relative/"><?item text?></child></r>`
+	const sourceBase = "https://example.test/source/relative/"
+	for _, tc := range []struct{ name, instruction, want string }{
+		{"omit source attribute", `<xsl:copy/>`, sourceBase},
+		{"copy source attribute", `<xsl:copy xml:base="copy/"><xsl:copy-of select="@xml:base"/></xsl:copy>`, "https://example.test/style/copy/relative/"},
+		{"construct another attribute", `<xsl:copy><xsl:attribute name="xml:base">new/</xsl:attribute></xsl:copy>`, "https://example.test/style/new/"},
+		{"copy processing instruction", `<xsl:copy select="processing-instruction()"/>`, sourceBase},
+		{"attach to new parent", `<parent xml:base="https://example.test/parent/"><xsl:copy><xsl:copy-of select="@xml:base"/></xsl:copy></parent>`, "https://example.test/parent/relative/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `<xsl:variable name="node" as="node()" xml:base="https://example.test/style/"><xsl:for-each select="r/child">` + tc.instruction + `</xsl:for-each></xsl:variable>
+			<xsl:value-of select="base-uri(if ($node/self::parent) then $node/child else $node)"/>`
+			ss := compileTestStylesheet(t, "", body)
+			got, err := ss.Transform(parseTestDocument(t, source)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
+func TestReviewConstructedAndCopiedNodeBaseURI(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"processing instruction constructor", `<xsl:variable name="node" as="processing-instruction()"><xsl:processing-instruction xml:base="https://example.test/styles/" name="item"/></xsl:variable><xsl:value-of select="base-uri($node)"/>`, "https://example.test/styles/"},
+		{"element copy namespaces yes", `<xsl:variable name="node" as="element()"><xsl:copy-of select="r/child"/></xsl:variable><xsl:value-of select="base-uri($node)"/>`, "https://example.test/source/"},
+		{"element copy namespaces no", `<xsl:variable name="node" as="element()"><xsl:copy-of select="r/child" copy-namespaces="no"/></xsl:variable><xsl:value-of select="base-uri($node)"/>`, "https://example.test/source/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := compileTestStylesheet(t, "", tc.body)
+			got, err := ss.Transform(parseTestDocument(t, `<r xml:base="https://example.test/source/"><child/></r>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
 		})
 	}
 }

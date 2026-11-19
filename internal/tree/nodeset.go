@@ -126,6 +126,10 @@ func (n NodeRef) Value() string {
 	case ElementNode:
 		return (Element{n.doc, n.node}).Text()
 	case DocumentNode:
+		if n.doc.contentSequence {
+			return StringValue(&Node{Children: n.doc.children})
+		}
+
 		return n.doc.Root().Text()
 	case AttributeNode:
 		return n.node.Attrs[n.index].Value
@@ -191,7 +195,7 @@ type NodeSet struct {
 // NewNodeSet selects individual nodes from one snapshot without selecting their
 // descendants.
 func NewNodeSet(d *Document, nodes ...NodeRef) (NodeSet, error) {
-	if d == nil || d.root == nil {
+	if !d.Node().Valid() {
 		return NodeSet{}, fmt.Errorf("%w: node-set document", ErrMalformed)
 	}
 
@@ -404,7 +408,7 @@ func (s NodeSet) combine(other NodeSet, op byte) (NodeSet, error) {
 
 // Node returns the immutable XPath node handle.
 func (d *Document) Node() NodeRef {
-	if d == nil || d.root == nil {
+	if d == nil || d.root == nil && !d.contentSequence {
 		return NodeRef{}
 	}
 
@@ -547,7 +551,7 @@ func collectNodes(ctx context.Context, d *Document, start *Node) (NodeSet, error
 		return NodeSet{}, err
 	}
 
-	if d == nil || d.root == nil {
+	if !d.Node().Valid() {
 		return NodeSet{}, fmt.Errorf("%w: node-set document", ErrMalformed)
 	}
 

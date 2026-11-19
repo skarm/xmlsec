@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -112,18 +113,18 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return usageError("version takes no arguments")
 		}
 
-		return writeJSON(stdout, versionInfo())
+		return jsonOutput(ctx, stdioPath, stdout, versionInfo())
 	case "algorithms":
 		if len(args) != 1 {
 			return usageError("algorithms takes no arguments")
 		}
 
-		return writeJSON(stdout, algorithmInfo())
+		return jsonOutput(ctx, stdioPath, stdout, algorithmInfo())
 	}
 
 	args = expandAlias(args)
 	if command, tail, ok := findCommand(args); ok {
-		return command.handler(ctx, append([]string{lastWord(command.name)}, tail...), stdin, stdout, stderr)
+		return command.run(ctx, append([]string{lastWord(command.name)}, tail...), stdin, stdout, stderr)
 	}
 
 	if isGroupHelp(args) {
@@ -133,14 +134,35 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	return usageError("unknown command %q; use xmlsec --help", strings.Join(args, " "))
 }
 
+var errDiagnosticOutput = errors.New("could not write command diagnostics")
+
+func (command commandSpec) run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	// flag.FlagSet discards errors from its help and diagnostics writer.
+	// Publish that output through the same checked path as command results.
+	var diagnostics bytes.Buffer
+
+	err := command.handler(ctx, args, stdin, stdout, &diagnostics)
+	if diagnostics.Len() != 0 {
+		if writeErr := writeOutputContext(ctx, stdioPath, stderr, diagnostics.Bytes()); writeErr != nil {
+			return errors.Join(err, errDiagnosticOutput, writeErr)
+		}
+	}
+
+	return err
+}
+
 func showHelp(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	path := strings.Join(args, " ")
 	for _, command := range commands() {
 		if command.name == path {
-			return command.handler(ctx, []string{lastWord(path), "-h"}, stdin, stdout, stderr)
+			return command.run(ctx, []string{lastWord(path), "-h"}, stdin, stdout, stderr)
 		}
 	}
 
+	return produceOutput(ctx, stdioPath, stdout, func(dst io.Writer) error { return writeCommandList(dst, path) })
+}
+
+func writeCommandList(dst io.Writer, path string) error {
 	found := path == ""
 	for _, command := range commands() {
 		if path != "" && !strings.HasPrefix(command.name, path+" ") {
@@ -149,7 +171,7 @@ func showHelp(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 
 		found = true
 
-		if _, err := fmt.Fprintf(stdout, "  %-30s %s\n", command.name, command.summary); err != nil {
+		if _, err := fmt.Fprintf(dst, "  %-30s %s\n", command.name, command.summary); err != nil {
 			return err
 		}
 	}
@@ -158,7 +180,7 @@ func showHelp(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return usageError("unknown help topic %q", path)
 	}
 
-	_, err := fmt.Fprintln(stdout, "\nRoot options: --json-errors (before command).\nUse xmlsec help COMMAND or xmlsec GROUP COMMAND -h. Flags follow the command.\nFiles use - for stdin/stdout where supported. Trust and resource access are explicit.\nExit codes: 0 success/help, 1 operation or verification failed, 2 usage, 130 canceled, 124 timeout.")
+	_, err := fmt.Fprintln(dst, "\nRoot options: --json-errors (before command).\nUse xmlsec help COMMAND or xmlsec GROUP COMMAND -h. Flags follow the command.\nFiles use - for stdin/stdout where supported. Trust and resource access are explicit.\nExit codes: 0 success/help, 1 operation or verification failed, 2 usage, 130 canceled, 124 timeout.")
 
 	return err
 }

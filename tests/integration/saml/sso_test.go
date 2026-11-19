@@ -116,8 +116,8 @@ func TestConcurrentSPOneWinner(t *testing.T) {
 			r, e := s.sp.ConsumePOST(t.Context(), form, sp.ConsumeOptions{At: testcert.Now().Add(3 * time.Second), BrowserBinding: browser})
 			if e == nil && r != nil {
 				wins.Add(1)
-			} else if !errors.Is(e, replay.ErrReplay) {
-				t.Errorf("unexpected %v", e)
+			} else if r != nil || !errors.Is(e, replay.ErrReplay) {
+				t.Errorf("expected rejected replay without a result, got result=%v, error=%v", r != nil, e)
 			}
 		})
 	}

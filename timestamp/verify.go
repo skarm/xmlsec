@@ -12,7 +12,9 @@ import (
 	"math/big"
 	"net"
 	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
@@ -242,7 +244,7 @@ func (v *Verifier) VerifyResponseReader(ctx context.Context, src io.Reader, q *R
 		return nil, fmt.Errorf("%w: %w", ErrFormat, e)
 	}
 
-	r, e := parseResponseValue(ctx, value, false)
+	r, e := parseResponseValue(value)
 	if e != nil {
 		return nil, e
 	}
@@ -315,9 +317,7 @@ func (v *Verifier) verify(ctx context.Context, token *Token, want Expectation, a
 		return nil, nil, e
 	}
 
-	ev := tokenEvidence(evidence, certificates, chosen)
-
-	verified, e := s.VerifyWithTrust(ctx, [][]byte{chosen}, cms.VerifyOptions{ExpectedContentType: tstOID(), RequireCertificateBinding: true, AllowLegacyESSCertID: v.legacy, DiscardContent: true}, cms.TrustOptions{Verifier: v.trust, VerificationTime: at, Evidence: ev})
+	verified, e := s.VerifyWithTrust(ctx, [][]byte{chosen}, cms.VerifyOptions{ExpectedContentType: tstOID(), RequireCertificateBinding: true, AllowLegacyESSCertID: v.legacy, DiscardContent: true}, cms.TrustOptions{Verifier: v.trust, VerificationTime: at, Evidence: evidence})
 	if e != nil {
 		return nil, nil, fmt.Errorf("%w: %w", ErrTrust, e)
 	}
@@ -548,19 +548,6 @@ func InspectToken(ctx context.Context, b []byte) (Info, error) {
 	return token.UnverifiedInfo(), nil
 }
 
-func tokenEvidence(evidence pki.Evidence, certificates [][]byte, chosen []byte) pki.Evidence {
-	ev := evidence
-	ev.Intermediates = append([][]byte(nil), evidence.Intermediates...)
-
-	for _, c := range certificates {
-		if !bytes.Equal(c, chosen) {
-			ev.Intermediates = append(ev.Intermediates, c)
-		}
-	}
-
-	return ev
-}
-
 func checkTSACertificate(c *x509.Certificate, at time.Time) error {
 	const requiredTSAKeyUsages = 1
 
@@ -616,11 +603,13 @@ func matchTSAName(ctx context.Context, n asn1.RawValue, c *x509.Certificate) err
 			return nil
 		}
 	case lexicon.GeneralNameDNS:
-		if n.IsCompound {
+		if n.IsCompound || slices.ContainsFunc(n.Bytes, func(c byte) bool { return c >= utf8.RuneSelf }) {
 			return ErrFormat
 		}
 
-		if slices.Contains(c.DNSNames, string(n.Bytes)) {
+		name := string(n.Bytes)
+
+		if slices.ContainsFunc(c.DNSNames, func(dns string) bool { return strings.EqualFold(dns, name) }) {
 			return nil
 		}
 	case lexicon.GeneralNameURI:

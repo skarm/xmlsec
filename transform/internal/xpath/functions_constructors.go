@@ -177,7 +177,7 @@ func lookupConstructor(requestedName string) (*builtinFunc, bool) {
 		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: makeXSConstructor(xdm.TypeDateTimeStamp)}, true
 	}
 
-	// xs:error — always raises an error (used for type checking tests)
+	// xs:error applies the same optional cardinality as a cast to xs:error?.
 	if requestedName == lexicon.TypeError {
 		return &builtinFunc{name: requestedName, min: builtinArityOne, max: builtinArityOne, fn: fnXSError}, true
 	}
@@ -587,8 +587,17 @@ func atomizeConstructorArg(seq xdm.Sequence, typeName string) (xdm.AtomicValue, 
 }
 
 func fnXSError(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
-	if xdm.SequenceLen(args[0]) == 0 {
+	atoms, err := atomizeSingletonOperand(args[0])
+	if err != nil {
+		return nil, err
+	}
+
+	if len(atoms) == 0 {
 		return nil, nil
+	}
+
+	if len(atoms) > constructorAtomCardinality {
+		return nil, &xdm.Error{Code: lexicon.ErrXPTY0004, Message: "xs:error constructor requires a singleton argument"}
 	}
 
 	return nil, &xdm.Error{

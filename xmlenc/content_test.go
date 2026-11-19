@@ -175,6 +175,48 @@ func TestContentAuthenticatedXMLAndLimits(t *testing.T) {
 	}
 }
 
+func TestContentLimitsCountNamespacesOnPlaintextElements(t *testing.T) {
+	t.Parallel()
+
+	key := make([]byte, 32)
+	limits := document.DefaultLimits()
+	limits.MaxInScopeNamespaces = 2 // xml and p; no room for a default binding.
+	options := xmlenc.DecryptOptions{XMLLimits: limits}
+	for _, tc := range []struct {
+		name, content string
+		wantError     bool
+	}{
+		{name: "empty"},
+		{name: "text_and_comment", content: `tea &amp; milk<!--note-->`},
+		{name: "default_reset", content: `<a xmlns=""><p:b/></a>`},
+		{name: "inherited_default", content: `<p:b/>`, wantError: true},
+		{name: "nested_default", content: `<a xmlns=""><b xmlns="urn:extra"/></a>`, wantError: true},
+		{name: "second_prefix", content: `<a xmlns=""><q:b xmlns:q="urn:extra"/></a>`, wantError: true},
+		{name: "scope_restored_for_sibling", content: `<a xmlns=""/><p:b/>`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := parse(t, []byte(`<r xmlns="urn:parent" xmlns:p="urn:prefix"><item>`+tc.content+`</item></r>`))
+			encrypted, selected, err := xmlenc.EncryptContentWithKey(t.Context(), source, source.Root().Children()[0], key, xmlenc.SymmetricOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, parent, err := xmlenc.DecryptContentWithKey(t.Context(), encrypted, selected, key, xmlenc.SymmetricOptions{}, options)
+			if tc.wantError {
+				if result != nil || parent.Valid() || !errors.Is(err, xmlenc.ErrDecrypt) {
+					t.Fatalf("restored=%t, parent=%t, error=%v; want ErrDecrypt", result != nil, parent.Valid(), err)
+				}
+				return
+			}
+			if err != nil || result == nil || !parent.Same(result.Root().Children()[0]) {
+				t.Fatalf("restored=%t, parent=%t, error=%v", result != nil, parent.Valid(), err)
+			}
+			sameXML(t, source, result)
+		})
+	}
+}
+
 func TestContentSelectionAndSuperEncryption(t *testing.T) {
 	ctx, kek := t.Context(), make([]byte, 32)
 	source := parse(t, []byte(`<!--before--><r ID="root">before<secret>protected</secret>after</r><!--after-->`))

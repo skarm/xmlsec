@@ -140,8 +140,9 @@ var standardFunctionDeclarations = [...]struct {
 	{catalogXPath30Bit | catalogXPath31Bit, "fn:filter|item()*|item()*|function(item()) as xs:boolean"},
 	{catalogXPath20Bit | catalogXPath30Bit | catalogXPath31Bit, "fn:floor|xs:numeric?|xs:numeric?"},
 	{catalogXPath30Bit | catalogXPath31Bit, "fn:fold-left|item()*|item()*|item()*|function(item()*, item()) as item()*"},
-	{catalogXPath30Bit, "fn:fold-right|item()*|item()*|item()*|function(item()*, item()) as item()*"},
-	{catalogXPath31Bit, "fn:fold-right|item()*|item()*|item()*|function(item(), item()*) as item()*"},
+	// Follow the Rules in F&O 3.0 §16.2.4: the printed signature reverses the
+	// callback cardinalities. F&O 3.1 §16.2.4 has the correct signature.
+	{catalogXPath30Bit | catalogXPath31Bit, "fn:fold-right|item()*|item()*|item()*|function(item(), item()*) as item()*"},
 	{catalogXPath30Bit | catalogXPath31Bit, "fn:for-each-pair|item()*|item()*|item()*|function(item(), item()) as item()*"},
 	{catalogXPath30Bit | catalogXPath31Bit, "fn:for-each|item()*|item()*|function(item()) as item()*"},
 	{catalogXPath30Bit | catalogXPath31Bit, "fn:format-dateTime|xs:string?|xs:dateTime?|xs:string"},

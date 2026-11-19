@@ -21,46 +21,63 @@ func runTimestamp(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	fs := flag.NewFlagSet("timestamp "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "data for request, request DER for issue, response/token DER for verify/inspect")
-	out := fs.String("out", "-", "output DER or diagnostic JSON")
-	kind := fs.String(fieldKind, nameResponse, "inspect/verify: request (inspect only), response or token")
-	hashName := fs.String("hash", cliDefaultHashName, "imprint/signature hash")
-	policy := fs.String("tsa-policy", "", "TSA policy OID for request/issue or expected token policy")
-	nonceFile := fs.String("nonce-file", "", "exact nonce bytes; omitted requests generate a random nonce")
-	omitNonce := fs.Bool("omit-nonce", false, "explicitly omit request nonce")
-	omitCerts := fs.Bool("omit-certificates", false, "do not request TSA certificate inclusion")
-	requestFile := fs.String(nameRequest, "", "original request DER required to verify a response")
-	dataFile := fs.String("data", "", "original timestamped data required to verify a standalone token")
-	config := fs.String("trust", "", "trusted TSA JSON configuration")
-	atValue := fs.String("at", "", "explicit verification/issuance time, RFC3339")
-	serialValue := fs.String("serial", "", "positive unique decimal serial for issuance")
-	accuracy := fs.Duration("accuracy", cliDefaultDeclaredAccuracy, "declared issuance accuracy (0 omits accuracy)")
-	ordering := fs.Bool("ordering", false, "assert TSA ordering; issuer must guarantee it")
-	pss := fs.Bool("pss", false, "RSA-PSS signature for issuance")
-	keyFile := fs.String("key", "", "TSA private key")
-	certificate := fs.String("certificate", "", "TSA certificate PEM/DER")
-	tokenOut := fs.String("token-out", "", "optional local token DER output after verification")
+	input := fs.String(flagNameIn, stdioPath, "data for request, request DER for issue, response/token DER for verify/inspect")
+	out := fs.String(flagNameOut, stdioPath, "output DER or diagnostic JSON")
+	kind := fs.String(flagNameKind, nameResponse, "inspect/verify: request (inspect only), response or token")
+	hashName := fs.String(flagNameHash, cliDefaultHashName, "imprint/signature hash; an explicit hash also constrains a verified response")
+	policy := fs.String(flagNameTSAPolicy, "", "TSA policy OID for request/issue or expected token policy")
+	nonceFile := fs.String(flagNameNonceFile, "", "exact nonce bytes; omitted requests generate a random nonce")
+	omitNonce := fs.Bool(flagNameOmitNonce, false, "explicitly omit request nonce")
+	omitCerts := fs.Bool(flagNameOmitCertificates, false, "do not request TSA certificate inclusion")
+	requestFile := fs.String(flagNameRequest, "", "original request DER required to verify a response")
+	dataFile := fs.String(flagNameData, "", "original timestamped data required to verify a standalone token")
+	config := fs.String(flagNameTrust, "", "trusted TSA JSON configuration")
+	atValue := fs.String(flagNameAt, "", "explicit verification/issuance time, RFC3339")
+	serialValue := fs.String(flagNameSerial, "", "positive unique decimal serial for issuance")
+	accuracy := fs.Duration(flagNameAccuracy, cliDefaultDeclaredAccuracy, "declared issuance accuracy (0 omits accuracy)")
+	ordering := fs.Bool(flagNameOrdering, false, "assert TSA ordering; issuer must guarantee it")
+	pss := fs.Bool(flagNamePSS, false, "RSA-PSS signature for issuance")
+	keyFile := fs.String(flagNameKey, "", "TSA private key")
+	certificate := fs.String(flagNameCertificate, "", "TSA certificate PEM/DER")
+	tokenOut := fs.String(flagNameTokenOut, "", "optional local token DER output after verification")
 	flags := registerPrivateKeyFlags(fs)
 
-	specific := ioFlagNames
+	specific := []string{flagNameIn, flagNameOut}
 
 	switch cmd {
 	case nameRequest:
-		specific += " hash tsa-policy nonce-file omit-nonce omit-certificates"
+		specific = append(specific,
+			flagNameHash, flagNameTSAPolicy, flagNameNonceFile, flagNameOmitNonce, flagNameOmitCertificates,
+		)
 	case nameInspect:
-		specific += " kind"
+		specific = append(specific, flagNameKind)
 	case nameIssue:
-		specific += " hash tsa-policy at serial accuracy ordering pss key certificate" + privateKeyFlagNames
+		specific = append(specific,
+			flagNameHash, flagNameTSAPolicy, flagNameAt, flagNameSerial, flagNameAccuracy, flagNameOrdering,
+			flagNamePSS, flagNameKey, flagNameCertificate,
+		)
+		specific = append(specific, privateKeyFlagNames()...)
 	case nameVerify:
-		specific += " kind hash tsa-policy nonce-file request data trust at token-out"
+		specific = append(specific,
+			flagNameKind, flagNameHash, flagNameTSAPolicy, flagNameNonceFile, flagNameRequest, flagNameData,
+			flagNameTrust, flagNameAt, flagNameTokenOut,
+		)
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
 		return err
 	}
+
+	hashSet := false
+
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == flagNameHash {
+			hashSet = true
+		}
+	})
 
 	ctx, cancel, err := exec.start(ctx)
 	if err != nil {
@@ -74,6 +91,7 @@ func runTimestamp(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		output:           *out,
 		kind:             *kind,
 		hash:             *hashName,
+		hashSet:          hashSet,
 		policy:           *policy,
 		nonceFile:        *nonceFile,
 		omitNonce:        *omitNonce,
@@ -112,6 +130,7 @@ type timestampCommand struct {
 	certificate      string
 	tokenOut         string
 	omitNonce        bool
+	hashSet          bool
 	omitCertificates bool
 	ordering         bool
 	pss              bool
@@ -153,7 +172,7 @@ func (c timestampCommand) run(ctx context.Context, stdin io.Reader, stdout io.Wr
 
 	switch c.command {
 	case nameInspect:
-		value, err := inspectTimestamp(raw, c.kind)
+		value, err := inspectTimestamp(ctx, raw, c.kind)
 		if err != nil {
 			return err
 		}
@@ -201,9 +220,17 @@ func (c timestampCommand) validate() error {
 			if c.requestFile == "" {
 				return usageError("-request is required for response verification")
 			}
+
+			if c.dataFile != "" {
+				return usageError("-data requires -kind token")
+			}
 		case nameToken:
 			if c.dataFile == "" {
 				return usageError("-data is required for token verification")
+			}
+
+			if c.requestFile != "" {
+				return usageError("-request requires -kind response")
 			}
 		default:
 			return usageError("verification -kind must be response or token")
@@ -232,7 +259,7 @@ func (c timestampCommand) requestOptions(ctx context.Context) (timestamp.Request
 			return opt, usageError("choose -nonce-file or -omit-nonce")
 		}
 
-		opt.Nonce, err = readInputContext(ctx, c.nonceFile, nil, cliMaxNonceBytes)
+		opt.Nonce, err = readNonceFile(ctx, c.nonceFile)
 	}
 
 	return opt, err
@@ -302,6 +329,9 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 		}
 
 		result, verifyErr = verifier.VerifyResponse(ctx, raw, q, at, evidence)
+		if verifyErr == nil {
+			verifyErr = checkResponseExpectations(result.Info(), opt, c.hashSet)
+		}
 	} else {
 		var imprint timestamp.Imprint
 
@@ -329,7 +359,7 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 		details = timestampInfo(result.Info())
 
 		if c.tokenOut != "" {
-			if err := separateOutput(c.tokenOut, c.output, "token-out"); err != nil {
+			if err := separateOutput(c.tokenOut, c.output, flagNameTokenOut); err != nil {
 				return err
 			}
 
@@ -337,7 +367,7 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 				return err
 			}
 
-			if err := separateOutput(c.tokenOut, c.output, "token-out"); err != nil {
+			if err := separateOutput(c.tokenOut, c.output, flagNameTokenOut); err != nil {
 				return err
 			}
 		}
@@ -346,7 +376,26 @@ func (c timestampCommand) verify(ctx context.Context, raw []byte, opt timestamp.
 	return errors.Join(verifyErr, jsonOutput(ctx, c.output, stdout, resultReport("timestamp verify", "explicit-tsa-pkix-policy", details, verifyErr)))
 }
 
-func inspectTimestamp(raw []byte, kind string) (any, error) {
+func checkResponseExpectations(info timestamp.Info, opt timestamp.RequestOptions, hashSet bool) error {
+	if hashSet && info.Imprint().Hash != opt.Hash || len(opt.Policy) != 0 && !info.Policy().Equal(opt.Policy) {
+		return timestamp.ErrBinding
+	}
+
+	if len(opt.Nonce) != 0 {
+		nonce := info.Nonce()
+		if nonce == nil || nonce.Cmp(new(big.Int).SetBytes(opt.Nonce)) != 0 {
+			return timestamp.ErrBinding
+		}
+	}
+
+	return nil
+}
+
+func inspectTimestamp(ctx context.Context, raw []byte, kind string) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	switch kind {
 	case nameRequest:
 		q, err := timestamp.ParseRequest(raw)
@@ -362,12 +411,12 @@ func inspectTimestamp(raw []byte, kind string) (any, error) {
 			"certificates_requested": q.CertificatesRequested(),
 		}, nil
 	case nameResponse:
-		r, err := timestamp.ParseResponse(context.Background(), raw)
+		r, err := timestamp.ParseResponse(ctx, raw)
 		if err != nil {
 			return nil, err
 		}
 
-		info, err := timestamp.InspectToken(context.Background(), r.TokenDER())
+		info, err := timestamp.InspectToken(ctx, r.TokenDER())
 		if err != nil {
 			return nil, err
 		}
@@ -378,7 +427,7 @@ func inspectTimestamp(raw []byte, kind string) (any, error) {
 			nameToken:         timestampInfo(info),
 		}, nil
 	case nameToken:
-		info, err := timestamp.InspectToken(context.Background(), raw)
+		info, err := timestamp.InspectToken(ctx, raw)
 		if err != nil {
 			return nil, err
 		}

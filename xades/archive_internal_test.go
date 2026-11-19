@@ -108,6 +108,7 @@ func TestBaselineReferenceKeyBaseResolution(t *testing.T) {
 		{"relative without base", "objects.xml#data", "", "", "objects.xml#data"},
 		{"relative with base", "objects.xml#data", "https://example.test/root/signature.xml", "", "https://example.test/root/objects.xml#data"},
 		{"inherited XML base", "objects.xml#data", "https://example.test/root/signature.xml", ` xml:base="assets/"`, "https://example.test/root/assets/objects.xml#data"},
+		{"inherited XML base with empty segment", "objects.xml#data", "https://example.test/root/signature.xml", ` xml:base="..//assets/"`, "https://example.test//assets/objects.xml#data"},
 		{"absolute URI", "https://other.test/objects.xml#data", "https://example.test/root/signature.xml", ` xml:base="assets/"`, "https://other.test/objects.xml#data"},
 		{"missing fragment", "objects.xml", "", "", ""},
 		{"invalid ID", "#1data", "", "", ""},

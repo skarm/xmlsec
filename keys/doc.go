@@ -12,6 +12,9 @@
 // [DefaultLimits]. Encoded input and decoded key, certificate, CRL and
 // container budgets are independent. Ambiguous PEM, trailing DER and
 // unsupported private-key structures are rejected.
+// RSA PKCS#8 export includes the NULL rsaEncryption parameters specified by
+// RFC 8017. Import also accepts an RSA PKCS#8 AlgorithmIdentifier with omitted
+// parameters for compatibility.
 //
 // # Password-protected material
 //
@@ -54,6 +57,7 @@
 // while RFC 9879 PBMAC1 retains SHA-2 policy. Non-default PBMAC1 MAC-key sizes
 // require AllowNonDefaultMACKeyLength and must contain 16..64 bytes. By default,
 // the key must match the MAC output size. Salt sizes are bounded to 8..64 bytes.
+// Under strict Go FIPS enforcement, PBKDF2 requires at least 14 password bytes.
 // Cancellation is checked during
 // KDF work, CBC chunks and container MAC input. Export requires a nonempty
 // password and an exportable software key. Container output remains one identity

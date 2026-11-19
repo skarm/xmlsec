@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io"
 	"maps"
-	"path"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
@@ -636,6 +635,7 @@ func (cfg *transformFnConfig) compileTransformLocation(ctx context.Context, nest
 
 	rc, resolveErr := cfg.stylesheetResolver.Resolve(ctx, loc)
 	if resolveErr != nil {
+		resolveErr = closeFailedResolution(rc, resolveErr)
 		// The supplied stylesheet-location cannot identify a usable source, before
 		// invoking the compiler. Report the invalid option rather than a failure
 		// of an already invoked transformation (F&O fn:transform error conditions).
@@ -668,6 +668,7 @@ func (cfg *transformFnConfig) compileTransformPackage(ctx context.Context, neste
 
 	rc, location, resolveErr := resolver.ResolvePackage(ctx, packageName, packageVersion)
 	if resolveErr != nil {
+		resolveErr = closeFailedResolution(rc, resolveErr)
 		return nil, transformFailure(ctx, resolveErr, "fn:transform: cannot resolve package %q (version %q): %v", packageName, packageVersion, resolveErr)
 	}
 
@@ -1349,7 +1350,7 @@ func resolveRelativeURI(base, ref string) string {
 	}
 	// Local filesystem base: resolve with forward-slash (path) semantics so the
 	// result uses '/' on every OS; on Windows filepath.Dir/Join would emit '\'.
-	return uripath.JoinLocalBaseDir(path.Dir(uripath.ToSlash(base)), ref)
+	return uripath.JoinLocalBaseFile(base, ref)
 }
 
 // resolveStylesheetLocation resolves an fn:transform stylesheet-location loc
@@ -1487,6 +1488,11 @@ func (request transformRequest) applyParameters(fnTransformCfg *transformConfig,
 		})
 		*mp.target = params
 	}
+
+	// F&O 3.1 supplies these two parameter maps to either template entry.
+	// The selected entry owns any changes it makes while binding them.
+	fnTransformCfg.initialModeParams = fnTransformCfg.initialTemplateParams
+	fnTransformCfg.initialModeTunnel = fnTransformCfg.initialTemplateTunnel
 
 	// Merge static params as runtime params so the externally supplied
 	// values override the compiled select="..." defaults at runtime.

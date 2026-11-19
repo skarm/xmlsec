@@ -39,11 +39,12 @@ import (
 const (
 	encodingUTF32BE   = "utf-32be"
 	encodingUTF32LE   = "utf-32le"
-	utf32NamePrefix   = "utf-32"
 	normalizedUTF16   = "utf16"
 	normalizedUTF16BE = "utf16be"
 	normalizedUTF16LE = "utf16le"
 	normalizedUTF32   = "utf32"
+	normalizedUTF32BE = "utf32be"
+	normalizedUTF32LE = "utf32le"
 )
 
 // MIME charset inference recognizes these media-type families and XML suffixes.
@@ -504,11 +505,9 @@ func EncodingsCompatible(specified, detected string) bool {
 		return true
 	}
 
-	if s == normalizedUTF16 && (d == normalizedUTF16LE || d == normalizedUTF16BE) {
-		return true
-	}
-
-	return false
+	return encoding.IsUTF8(detected) && encoding.IsUTF8(specified) ||
+		s == normalizedUTF16 && (d == normalizedUTF16LE || d == normalizedUTF16BE) ||
+		s == normalizedUTF32 && (d == normalizedUTF32LE || d == normalizedUTF32BE)
 }
 
 // ValidatePercentEncoding verifies that every '%' in uri is followed by two
@@ -563,7 +562,7 @@ func resolveReference(base, ref string) (string, error) {
 		return "", err
 	}
 
-	return baseURL.ResolveReference(refURL).String(), nil
+	return tree.ResolveURIReference(baseURL, refURL).String(), nil
 }
 
 func jsonCharacterChunk(cfg *Config, chunk []byte) ([]byte, bool, error) {
@@ -619,19 +618,13 @@ func decodedJSONReader(src io.Reader, contentType string) (io.Reader, bool, erro
 		return nil, false, err
 	}
 
-	detected, skip := jsonBOMEncoding(prefix)
+	detected, skip := detectBOM(prefix)
 
-	effective, compatible := "", false
+	effective, compatible := "", true
 	if charset != "" {
 		effective = resolveEncoding(charset, detected)
-		if normalizeEncodingName(charset) == normalizedUTF32 && strings.HasPrefix(detected, utf32NamePrefix) {
-			effective = detected
-		}
-
-		compatible = !strings.HasPrefix(detected, utf32NamePrefix)
 	} else if detected != "" {
 		effective = detected
-		compatible = !strings.HasPrefix(detected, utf32NamePrefix)
 	} else {
 		effective = jsonInitialEncoding(prefix)
 		compatible = effective == encodingUTF8
@@ -650,20 +643,6 @@ func decodedJSONReader(src io.Reader, contentType string) (io.Reader, bool, erro
 	decoded, err := encodingReader(reader, effective)
 
 	return decoded, compatible, err
-}
-
-func jsonBOMEncoding(prefix []byte) (string, int) {
-	if bytes.HasPrefix(prefix, []byte{lexicon.BOMUTF32BE[0], lexicon.BOMUTF32BE[1], lexicon.BOMUTF32BE[2], lexicon.BOMUTF32BE[3]}) {
-		return encodingUTF32BE, len(lexicon.BOMUTF32BE)
-	}
-
-	if bytes.HasPrefix(prefix, []byte{lexicon.BOMUTF32LE[0], lexicon.BOMUTF32LE[1], lexicon.BOMUTF32LE[2], lexicon.BOMUTF32LE[3]}) {
-		return encodingUTF32LE, len(lexicon.BOMUTF32LE)
-	}
-
-	bom, clean := detectBOM(prefix)
-
-	return bom, len(prefix) - len(clean)
 }
 
 func jsonInitialEncoding(prefix []byte) string {
@@ -863,33 +842,35 @@ func textMediaType(contentType string) (string, bool, error) {
 	return parameters[charsetParameter], xml, nil
 }
 
-// detectBOM checks for a byte-order mark and returns the detected encoding
-// name and data with the BOM stripped.
-func detectBOM(data []byte) (string, []byte) {
-	if len(data) >= len(lexicon.BOMUTF8) && data[0] == lexicon.BOMUTF8[0] && data[1] == lexicon.BOMUTF8[1] && data[2] == lexicon.BOMUTF8[2] {
-		return encodingUTF8, data[len(lexicon.BOMUTF8):]
+// detectBOM returns the encoding and the number of leading bytes to discard.
+// UTF-32LE shares its first two bytes with UTF-16LE, so test it first.
+func detectBOM(data []byte) (string, int) {
+	for _, entry := range [...]struct{ bom, encoding string }{
+		{lexicon.BOMUTF32BE, encodingUTF32BE},
+		{lexicon.BOMUTF32LE, encodingUTF32LE},
+		{lexicon.BOMUTF8, encodingUTF8},
+		{lexicon.BOMUTF16LE, encodingUTF16LE},
+		{lexicon.BOMUTF16BE, encodingUTF16BE},
+	} {
+		if bytes.HasPrefix(data, []byte(entry.bom)) {
+			return entry.encoding, len(entry.bom)
+		}
 	}
 
-	if len(data) >= len(lexicon.BOMUTF16LE) && data[0] == lexicon.BOMUTF16LE[0] && data[1] == lexicon.BOMUTF16LE[1] {
-		return encodingUTF16LE, data[len(lexicon.BOMUTF16LE):]
-	}
-
-	if len(data) >= len(lexicon.BOMUTF16BE) && data[0] == lexicon.BOMUTF16BE[0] && data[1] == lexicon.BOMUTF16BE[1] {
-		return encodingUTF16BE, data[len(lexicon.BOMUTF16BE):]
-	}
-
-	return "", data
+	return "", 0
 }
 
-// detectXMLDeclEncoding looks for an XML declaration at the beginning of
-// data and extracts the encoding attribute value if present.
-// It works on raw bytes assuming the declaration is in ASCII-compatible encoding.
-func detectXMLDeclEncoding(data []byte) string {
-	// XML declaration must start at the very beginning.
-	if !bytes.HasPrefix(data, []byte(xmlDeclarationStart)) {
-		return ""
-	}
+// startsXMLDeclaration distinguishes a declaration from processing
+// instructions whose target starts with "xml", such as xml-stylesheet.
+func startsXMLDeclaration(data []byte) bool {
+	return len(data) > len(xmlDeclarationStart) &&
+		bytes.HasPrefix(data, []byte(xmlDeclarationStart)) &&
+		strings.IndexByte(lexicon.XMLWhitespace, data[len(xmlDeclarationStart)]) >= 0
+}
 
+// detectXMLDeclEncoding extracts the encoding attribute of an ASCII-compatible
+// declaration after its opening has been recognized.
+func detectXMLDeclEncoding(data []byte) string {
 	end := bytes.Index(data, []byte(xmlDeclarationEnd))
 	if end < 0 || end > maxXMLDeclarationBytes {
 		return ""
@@ -930,24 +911,17 @@ func detectXMLDeclEncoding(data []byte) string {
 // resolveEncoding determines the effective encoding from the user-specified
 // encoding and BOM-detected encoding. Returns "" if they conflict.
 func resolveEncoding(specified, detected string) string {
-	if specified != "" {
-		if detected != "" && !EncodingsCompatible(specified, detected) {
+	if detected != "" {
+		if specified != "" && !EncodingsCompatible(specified, detected) {
 			return ""
 		}
-		// The BOM has already been stripped from the data by this point, so a
-		// generic "utf-16" decoder can no longer recover the endianness and
-		// would fall back to its little-endian default. When the BOM told us
-		// the concrete endianness, prefer the detected endian-specific
-		// encoding so a big-endian payload is decoded as big-endian.
-		if detected != "" && normalizeEncodingName(specified) == normalizedUTF16 {
-			return detected
-		}
-
-		return specified
+		// The decoder receives bytes after the BOM, so use the specific
+		// endianness even when the supplied encoding is generic.
+		return detected
 	}
 
-	if detected != "" {
-		return detected
+	if specified != "" {
+		return specified
 	}
 
 	return encodingUTF8
@@ -980,20 +954,27 @@ func decodedReader(src io.Reader, specified, contentType string) (io.Reader, err
 		return nil, err
 	}
 
-	detected, clean := detectBOM(prefix)
-	if skipped := len(prefix) - len(clean); skipped > 0 {
+	detected, skipped := detectBOM(prefix)
+	if skipped > 0 {
 		if _, err := reader.Discard(skipped); err != nil {
 			return nil, err
 		}
 	}
 
 	if detected == "" && specified == "" {
-		prefix, err = reader.Peek(len(xmlDeclarationStart))
+		detected, err = detectUTF16XMLDeclaration(reader, prefix)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if detected == "" && specified == "" {
+		prefix, err = reader.Peek(len(xmlDeclarationStart) + 1)
 		if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 			return nil, err
 		}
 
-		if bytes.Equal(prefix, []byte(xmlDeclarationStart)) {
+		if startsXMLDeclaration(prefix) {
 			prefix, err = reader.Peek(maxXMLDeclarationBytes + len(xmlDeclarationEnd))
 			if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF is completion; wrapped or joined failures must propagate.
 				return nil, err
@@ -1016,10 +997,55 @@ func decodedReader(src io.Reader, specified, contentType string) (io.Reader, err
 	return decoded, err
 }
 
+// UTF-16BE/LE may omit a BOM when the XML declaration names the byte order.
+// Inspect ASCII declaration characters within the same bounded byte prefix;
+// leave the original bytes buffered for the stateful decoder.
+func detectUTF16XMLDeclaration(reader *bufio.Reader, prefix []byte) (string, error) {
+	name, lowByte := "", 0
+
+	switch {
+	case bytes.HasPrefix(prefix, []byte{0, '<', 0, '?'}):
+		name, lowByte = encodingUTF16BE, 1
+	case bytes.HasPrefix(prefix, []byte{'<', 0, '?', 0}):
+		name = encodingUTF16LE
+	default:
+		return "", nil
+	}
+
+	prefix, err := reader.Peek(maxXMLDeclarationBytes + len(xmlDeclarationEnd))
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+
+	declaration := make([]byte, 0, len(prefix)/2)
+	for i := 0; i+1 < len(prefix); i += 2 {
+		if prefix[i+1-lowByte] != 0 {
+			break
+		}
+
+		declaration = append(declaration, prefix[i+lowByte])
+	}
+
+	if !startsXMLDeclaration(declaration) {
+		return "", nil
+	}
+
+	declared := detectXMLDeclEncoding(declaration)
+	if declared == "" {
+		return "", nil
+	}
+
+	if normalizeEncodingName(declared) != normalizeEncodingName(name) {
+		return "", &Error{Code: ErrCodeEncoding, Message: "XML declaration encoding conflicts with BOM-less UTF-16 byte order"}
+	}
+
+	return name, nil
+}
+
 type implicitUTF8Reader struct{ io.Reader }
 
 func encodingReader(src io.Reader, name string) (io.Reader, error) {
-	if normalizeEncodingName(name) == lexicon.EncodingUTF8Alt || name == "" {
+	if name == "" || encoding.IsUTF8(name) {
 		return src, nil
 	}
 
@@ -1058,20 +1084,20 @@ func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOn
 
 			r, size := utf8.DecodeRune(buffer[valid:end])
 			if failure := decodedRuneError(reader, r, size, xmlOnly); failure != nil {
-				return failure
+				return withReadFailure(failure, err)
 			}
 
 			valid += size
 		}
 
 		if maximum >= 0 && int64(valid) > maximum-used {
-			return textLimitError()
+			return withReadFailure(textLimitError(), err)
 		}
 
 		used += int64(valid)
 		if valid > 0 {
 			if failure := emit(buffer[:valid]); failure != nil {
-				return failure
+				return withReadFailure(failure, err)
 			}
 		}
 
@@ -1090,6 +1116,16 @@ func readDecodedText(ctx context.Context, reader io.Reader, maximum int64, xmlOn
 
 		pending = copy(buffer[:], buffer[valid:end])
 	}
+}
+
+// withReadFailure preserves a hard I/O error returned with the bytes being
+// validated or consumed. If the read succeeded, return the failure verbatim.
+func withReadFailure(failure, read error) error {
+	if read == nil || read == io.EOF { //nolint:errorlint // Wrapped or joined EOF can carry a hard read error.
+		return failure
+	}
+
+	return errors.Join(failure, read)
 }
 
 func decodedRuneError(reader io.Reader, r rune, size int, xmlOnly bool) error {

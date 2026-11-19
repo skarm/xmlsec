@@ -67,15 +67,10 @@ func DecodeBase64(ctx context.Context, node *Node, textLimit, decodedLimit int) 
 		return nil, err
 	}
 
-	if encoded > base64.StdEncoding.EncodedLen(decodedLimit) {
-		return nil, ErrLimit
-	}
-
-	size := base64.StdEncoding.DecodedLen(encoded)
-	if encoded%4 == 0 {
-		size -= min(padding, 2)
-	}
-
+	// The scan guarantees complete quanta and at most two padding bytes.
+	// Compute the actual size instead of encoding the caller's limit, which
+	// can overflow even when the input is small.
+	size := base64.StdEncoding.DecodedLen(encoded) - padding
 	if size > decodedLimit {
 		return nil, ErrLimit
 	}

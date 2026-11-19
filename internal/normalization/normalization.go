@@ -52,9 +52,20 @@ func (f Form) Each(ctx context.Context, s string, emit func(string) error) error
 
 // EachBytes emits borrowed UTF-8 segments with reusable iterator storage. The
 // callback must consume each segment before returning. Safe blocks need no
-// normalized copy; long runs use the same exact fallback as Each.
+// normalized copy; long runs use the same exact fallback as Each. Cancellation
+// is checked before each emission.
 func (f Form) EachBytes(ctx context.Context, s string, emit func([]byte) error) error {
 	var iterator norm.Iter
+
+	done := ctx.Done()
+	emitPart := func(part []byte) error {
+		select {
+		case <-done:
+			return ctx.Err()
+		default:
+			return emit(part)
+		}
+	}
 
 	return f.segments(ctx, s, func(source string) error {
 		if len(source) > segmentChunkBytes+utf8.UTFMax {
@@ -63,7 +74,7 @@ func (f Form) EachBytes(ctx context.Context, s string, emit func([]byte) error) 
 				return err
 			}
 
-			return emit([]byte(result))
+			return emitPart([]byte(result))
 		}
 
 		iterator.InitString(norm.Form(f), source)
@@ -79,13 +90,13 @@ func (f Form) EachBytes(ctx context.Context, s string, emit func([]byte) error) 
 				return err
 			}
 
-			return emit([]byte(result))
+			return emitPart([]byte(result))
 		}
 
 		iterator.InitString(norm.Form(f), source)
 
 		for !iterator.Done() {
-			if err := emit(iterator.Next()); err != nil {
+			if err := emitPart(iterator.Next()); err != nil {
 				return err
 			}
 		}
@@ -395,7 +406,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 
 		if norm.Form(w.form).Properties(w.tail[:w.tailSize]).BoundaryBefore() && len(w.pending) >= segmentChunkBytes {
 			if w.err = w.flush(); w.err != nil {
-				return i, w.err
+				// The next rune has not been accepted. Its leading bytes
+				// may belong to an earlier call, already counted there.
+				return max(0, i-w.tailSize), w.err
 			}
 		}
 
@@ -439,10 +452,14 @@ func (w *Writer) Close() error {
 	}
 
 	if w.tailSize != 0 {
-		return io.ErrUnexpectedEOF
+		w.err = io.ErrUnexpectedEOF
+		return w.err
 	}
 
 	w.err = w.flush()
+	if w.err == nil {
+		w.err = w.ctx.Err()
+	}
 
 	return w.err
 }

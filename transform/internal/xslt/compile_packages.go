@@ -44,6 +44,8 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 
 	rc, pkgBaseURI, err := c.packageResolver.ResolvePackage(ctx, pkgName, pkgVersion)
 	if err != nil {
+		err = closeFailedResolution(rc, err)
+
 		return staticErrorCause(errCodeXTSE3000, err,
 			"xsl:use-package: cannot resolve package %q version %q: %v", pkgName, pkgVersion, err)
 	}
@@ -93,7 +95,7 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 	}
 
 	// Merge components from the package, respecting visibility, xsl:accept rules, and overrides.
-	if err := c.mergePackageComponents(ctx, pkgSS, elem, oset, acceptRules); err != nil {
+	if err := c.mergePackageComponents(ctx, pkgSS, oset, acceptRules); err != nil {
 		return err
 	}
 
@@ -102,15 +104,8 @@ func (c *compiler) compileUsePackage(ctx context.Context, elem *xdm.Element) err
 
 // mergePackageComponents merges components from a used package into the
 // current stylesheet, respecting visibility and xsl:accept rules.
-func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, usePackageElem *xdm.Element, oset *overrideSet, acceptRules []acceptRule) error {
-	nsBindings := c.collectElemNamespaces(ctx, usePackageElem)
-
-	var excluded map[*xdm.Element]struct{}
-	if oset != nil {
-		excluded = oset.excluded
-	}
-
-	overrideNames := c.collectOverrideNames(ctx, usePackageElem, nsBindings, excluded)
+func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, oset *overrideSet, acceptRules []acceptRule) error {
+	overrideNames := oset.componentNames()
 	if err := c.validatePackageOverrideConflicts(oset); err != nil {
 		return err
 	}
@@ -145,7 +140,10 @@ func (c *compiler) mergePackageComponents(ctx context.Context, pkg *Stylesheet, 
 	}
 
 	c.mergePackageAccumulators(pkg)
-	c.mergePackageAttributeSets(pkg, acceptRules, overrideNames)
+
+	if err := c.mergePackageAttributeSets(pkg, acceptRules, overrideNames); err != nil {
+		return err
+	}
 
 	return c.mergePackageOverrides(ctx, pkg, oset)
 }
@@ -497,7 +495,7 @@ func (c *compiler) mergePackageAccumulators(pkg *Stylesheet) {
 	}
 }
 
-func (c *compiler) mergePackageAttributeSets(pkg *Stylesheet, acceptRules []acceptRule, overrideNames map[string]struct{}) {
+func (c *compiler) mergePackageAttributeSets(pkg *Stylesheet, acceptRules []acceptRule, overrideNames map[string]struct{}) error {
 	// Package-internal references use the original package map; only
 	// accepted attribute sets enter the using package scope.
 	if pkg.attributeSets != nil {
@@ -519,12 +517,20 @@ func (c *compiler) mergePackageAttributeSets(pkg *Stylesheet, acceptRules []acce
 				continue
 			}
 
-			as.OwnerPackage = pkg
-			if _, exists := c.stylesheet.attributeSets[name]; !exists {
-				c.stylesheet.attributeSets[name] = as
+			if existing := c.stylesheet.attributeSets[name]; existing != nil {
+				if existing.OwnerPackage != nil && existing.OwnerPackage != c.stylesheet {
+					return staticError(errCodeXTSE3050, "attribute-set %q accepted from multiple packages with non-hidden visibility", name)
+				}
+
+				continue
 			}
+
+			as.OwnerPackage = pkg
+			c.stylesheet.attributeSets[name] = as
 		}
 	}
+
+	return nil
 }
 
 func (c *compiler) mergePackageOverrides(ctx context.Context, pkg *Stylesheet, oset *overrideSet) error {

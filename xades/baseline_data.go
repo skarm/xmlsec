@@ -213,6 +213,9 @@ func parseDataObjectFormat(element document.Element) (DataObjectFormat, error) {
 			out.ObjectIdentifier = &identifier
 		case 2:
 			out.MIMEType, err = simple(child)
+			if err == nil && !validMime(out.MIMEType) {
+				err = ErrProfile
+			}
 		case 3:
 			out.Encoding, err = simple(child)
 		}
@@ -227,7 +230,7 @@ func parseDataObjectFormat(element document.Element) (DataObjectFormat, error) {
 		return out, ErrProfile
 	}
 
-	if out.MIMEType != "" && !validMime(out.MIMEType) || !baselineURI(out.Encoding) || out.ObjectReference == "" || !baselineURI(out.ObjectReference) {
+	if !baselineURI(out.Encoding) || out.ObjectReference == "" || !baselineURI(out.ObjectReference) {
 		return out, ErrProfile
 	}
 
@@ -642,12 +645,12 @@ func baselineReferenceKey(value string, element document.Element, options Baseli
 						return "", ErrProfile
 					}
 
-					base = base.ResolveReference(part)
+					base = tree.ResolveURIReference(base, part)
 				}
 			}
 		}
 
-		uri = base.ResolveReference(uri)
+		uri = tree.ResolveURIReference(base, uri)
 	}
 
 	return uri.String() + "#" + fragment, nil

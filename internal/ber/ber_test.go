@@ -131,3 +131,25 @@ func TestEndOfContentsReservedTag(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyOctetBudget(t *testing.T) {
+	for _, raw := range [][]byte{{4, 0}, {0x24, 0}} {
+		value, err := ber.Read(t.Context(), raw, ber.Limits{MaxBytes: 2, MaxDepth: 1, MaxNodes: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := ber.OctetLength(t.Context(), value, 0); n != 0 || err != nil {
+			t.Fatalf("%x: length = %d, %v", raw, n, err)
+		}
+		if _, err := ber.OctetLength(t.Context(), value, -1); !errors.Is(err, ber.ErrLimit) {
+			t.Errorf("%x: negative budget: %v", raw, err)
+		}
+		dst := bytes.NewBufferString("abc")
+		if err := ber.AppendOctets(t.Context(), value, dst, 3); err != nil {
+			t.Fatal(err)
+		}
+		if err := ber.AppendOctets(t.Context(), value, dst, 2); !errors.Is(err, ber.ErrLimit) || dst.String() != "abc" {
+			t.Errorf("%x: exceeded budget: %q, %v", raw, dst, err)
+		}
+	}
+}

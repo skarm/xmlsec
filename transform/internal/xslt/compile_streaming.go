@@ -149,6 +149,10 @@ func (c *compiler) collectIterateChild(ctx context.Context, child xdm.Node, inst
 				return staticError(errCodeXTSE0010, "xsl:iterate must have at most one xsl:on-completion child")
 			}
 
+			if lastIterateBodyChild(state.bodyChildren) >= 0 {
+				return staticError(errCodeXTSE0010, "xsl:on-completion must precede the sequence constructor of xsl:iterate")
+			}
+
 			state.seenOnCompletion = true
 
 			body, err := c.compileIterateCompletion(ctx, elem)
@@ -229,7 +233,10 @@ func (c *compiler) compileIterateCompletion(ctx context.Context, elem *xdm.Eleme
 		return nil, err
 	}
 
-	return []instruction{&xslSequenceInst{Select: expression}}, nil
+	inst := &xslSequenceInst{Select: expression}
+	c.recordInstructionSource(elem, inst)
+
+	return []instruction{inst}, nil
 }
 
 func (c *compiler) compileIterateBody(ctx context.Context, inst *iterateInst, children []iterateBodyChild) error {
@@ -482,6 +489,7 @@ func (c *compiler) compileAccumulator(ctx context.Context, elem *xdm.Element) er
 	expandedName := resolveQName(name, c.nsBindings)
 
 	acc := &accumulatorDef{
+		BaseURI:    stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
 		Name:       expandedName,
 		As:         getAttr(elem, nameAs),
 		Streamable: xsdBoolTrue(getAttr(elem, nameStreamable)),
@@ -592,9 +600,10 @@ func (c *compiler) compileAccumulatorRule(ctx context.Context, parent *accumulat
 	}
 
 	rule := &accumulatorRule{
-		Match: matchPat,
-		Phase: getAttr(elem, namePhase),
-		New:   getAttr(elem, nameAccumulatorNewValue) == lexicon.ValueYes,
+		BaseURI: stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
+		Match:   matchPat,
+		Phase:   getAttr(elem, namePhase),
+		New:     getAttr(elem, nameAccumulatorNewValue) == lexicon.ValueYes,
 	}
 
 	// Default phase is "start" per XSLT 3.0 spec §14
@@ -831,7 +840,7 @@ func (c *compiler) compileMergeSourceSelection(elem *xdm.Element, src *mergeSour
 func (c *compiler) compileMergeKey(ctx context.Context, elem *xdm.Element) (*mergeKey, error) {
 	defer c.pushElementVersion(elem)()
 
-	if err := validateMergeKeyAttrs(elem); err != nil {
+	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrSelect, nameOrder, nameCollation, nameDataType, lexicon.AttrLang, nameCaseOrder)); err != nil {
 		return nil, err
 	}
 
@@ -892,6 +901,10 @@ func (c *compiler) compileMergeKeyCollation(elem *xdm.Element, key *mergeKey) er
 }
 
 func (c *compiler) compileMergeKeyOrdering(elem *xdm.Element, key *mergeKey) error {
+	if _, present := elem.GetAttribute(nameDataType); present {
+		key.dataTypeNamespaces = inScopeNamespaces(elem)
+	}
+
 	for _, option := range []struct {
 		name   string
 		target **avt
@@ -920,7 +933,7 @@ func (c *compiler) compileMergeKeyOption(elem *xdm.Element, key *mergeKey, name 
 	}
 
 	if literal, static := compiled.staticValue(); static {
-		if err := validateLiteralSortOption(name, literal); err != nil {
+		if err := validateLiteralSortOption(name, literal, key.dataTypeNamespaces); err != nil {
 			return err
 		}
 	}
@@ -1110,24 +1123,6 @@ func mergeStreamCheck(inst *mergeInst) error {
 func avtIsDynamic(value *avt) bool {
 	_, static := value.staticValue()
 	return !static
-}
-
-func validateMergeKeyAttrs(elem *xdm.Element) error {
-	// XTSE0090: validate permitted attributes on xsl:merge-key.
-	for _, attr := range elem.Attributes() {
-		if attr.URI() != "" {
-			continue // namespace-qualified attributes are allowed
-		}
-
-		switch attr.LocalName() {
-		case xslAttrSelect, nameOrder, nameCollation, nameDataType, lexicon.AttrLang, nameCaseOrder:
-			// permitted
-		default:
-			return staticError(errCodeXTSE0090, "attribute %q is not permitted on xsl:merge-key", attr.LocalName())
-		}
-	}
-
-	return nil
 }
 
 // sortAccumulatorOrder topologically sorts the accumulator evaluation order
