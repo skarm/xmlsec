@@ -21,6 +21,46 @@ func TestAnalyzeStringSetsSegmentFocusAndRestoresOuterFocus(t *testing.T) {
 	requireSerialization(t, got, err, "1/5:[|2/5:12a|3/5:-|4/5:3b|5/5:]|1/2:first;1/1:abc|2/2:second;", "")
 }
 
+func TestAnalyzeStringKeepsSegmentConstructorScopes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{
+			name: "local_bindings_do_not_escape_their_segment",
+			body: `<xsl:variable name="s" select="'outer'"/>
+				<xsl:analyze-string select="'a-a'" regex="a">
+					<xsl:matching-substring>
+						<xsl:variable name="s" select="'inner'"/>
+						<xsl:value-of select="$s"/>
+					</xsl:matching-substring>
+					<xsl:non-matching-substring><xsl:value-of select="$s"/></xsl:non-matching-substring>
+				</xsl:analyze-string>
+				<xsl:value-of select="'|' || $s"/>`,
+			want: "innerouterinner|outer",
+		},
+		{
+			name: "conditional_output_observes_only_the_owning_segment",
+			body: `<xsl:text>prefix:</xsl:text>
+				<xsl:analyze-string select="'a-a'" regex="a">
+					<xsl:matching-substring><xsl:on-empty>fallback</xsl:on-empty></xsl:matching-substring>
+					<xsl:non-matching-substring>
+						<xsl:text>-gap:</xsl:text>
+						<xsl:on-non-empty>present-</xsl:on-non-empty>
+					</xsl:non-matching-substring>
+				</xsl:analyze-string>`,
+			want: "prefix:fallback-gap:present-fallback",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			invocation := compileTestStylesheet(t, "", tc.body).Transform(parseTestDocument(t, `<r/>`))
+			got, err := invocation.Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
 func TestAnalyzeStringEnforcesVersionAndRegexRules(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -31,7 +71,13 @@ func TestAnalyzeStringEnforcesVersionAndRegexRules(t *testing.T) {
 		{name: "quoted_regex_in_xslt_30", version: "3.0", selectExpr: "'a.b'", regex: ".", flags: "q", want: "a[.]b"},
 		{name: "quoted_regex_rejected_in_xslt_20", version: "2.0", selectExpr: "'a.b'", regex: ".", flags: "q", code: "XTDE1145"},
 		{name: "noncapturing_group_rejected_in_xslt_20", version: "2.0", selectExpr: "'a'", regex: "(?:a)", code: "XTDE1140"},
-		{name: "empty_selection_in_xslt_30", version: "3.0", selectExpr: "()", regex: "z*"},
+		{name: "free_spacing_noncapturing_group_rejected_in_xslt_20", version: "2.0", selectExpr: "'a'", regex: "( ? : a )", flags: "x", code: "XTDE1140"},
+		{name: "literal_character_class_in_xslt_20", version: "2.0", selectExpr: "'('", regex: "[(?:]", want: "[(]"},
+		{name: "escaped_class_bracket_in_xslt_20", version: "2.0", selectExpr: "'?'", regex: `[\](?:]`, want: "[?]"},
+		{name: "escaped_bracket_does_not_begin_character_class", version: "2.0", selectExpr: "'[a'", regex: `\[(?:a)`, code: "XTDE1140"},
+		{name: "empty_selection_matches_empty_input_in_xslt_30", version: "3.0", selectExpr: "()", regex: "z*", want: "[]"},
+		{name: "empty_string_matches_empty_input_in_xslt_30", version: "3.0", selectExpr: "''", regex: "z*", want: "[]"},
+		{name: "empty_selection_does_not_bypass_regex_validation", version: "3.0", selectExpr: "()", regex: "[", code: "XTDE1140"},
 		{name: "empty_selection_rejected_in_xslt_20", version: "2.0", selectExpr: "()", regex: "z*", code: "XPTY0004"},
 		{name: "multiple_values_are_rejected", version: "3.0", selectExpr: "('a', 'b')", regex: "a", code: "XPTY0004"},
 		{name: "non_string_value_is_rejected", version: "3.0", selectExpr: "1", regex: "a", code: "XPTY0004"},
@@ -57,6 +103,27 @@ func TestAnalyzeStringEnforcesVersionAndRegexRules(t *testing.T) {
 			requireSerialization(t, got, err, tc.want, tc.code)
 		})
 	}
+
+	t.Run("XPath 2 functions share the regular expression syntax", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct{ expression, want string }{
+			{`matches('?', '[\](?:]')`, "true"},
+			{`matches('a', '( ? : a )', 'x')`, ""},
+		} {
+			body := `<xsl:value-of select="` + tc.expression + `"/>`
+			sheet, err := NewCompiler().ProcessorVersion(processorXSLT20).Compile(t.Context(), stylesheetDocument(t, "", body))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := sheet.Transform(parseTestDocument(t, "<r/>")).Serialize(t.Context())
+			if tc.want != "" {
+				requireSerialization(t, got, err, tc.want, "")
+			} else if got != "" || !errors.Is(err, &xdm.Error{Code: "FORX0002"}) {
+				t.Errorf("XPath 2 match returned %q, %v; want FORX0002 and no output", got, err)
+			}
+		}
+	})
 }
 
 func TestWherePopulatedFiltersItemsBeforeConstruction(t *testing.T) {

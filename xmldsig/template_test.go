@@ -8,6 +8,8 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/reference"
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
@@ -67,5 +69,45 @@ func TestSignTemplateRejectsCanceledContextAndNilSigner(t *testing.T) {
 	}
 	if got, err := xmldsig.SignTemplate(t.Context(), nil, document.Element{}, nil, xmldsig.TemplateSignOptions{}); got != nil || !errors.Is(err, xmldsig.ErrKey) {
 		t.Errorf("SignTemplate without signer = (result present: %t, %v), want ErrKey", got != nil, err)
+	}
+}
+
+func TestTemplateInScopedDocument(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	const input = `<outer xmlns:p="urn:record"><record><p:data ID="data">payload</p:data></record></outer>`
+	envelope := coreParse(t, input)
+	record, err := tree.ScopeDocument(envelope, envelope.Root().Children()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spec := xmldsig.SignatureTemplate{
+		SignatureMethod: xmldsig.ECDSASHA256,
+		References:      []xmldsig.ReferenceTemplate{{URI: "#data", Transforms: []reference.Transform{{Algorithm: c14n.Exclusive}}}},
+	}
+	draft, sig, err := xmldsig.BuildTemplate(ctx, record, record.Root(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sig.Same(draft.Root().Children()[1]) {
+		t.Fatal("template handle did not identify the inserted scoped signature")
+	}
+
+	key := coreEC(t)
+	options := xmldsig.SignatureOptions{RequiredElements: []document.Element{draft.Root().Children()[0]}}
+	signed, err := xmldsig.SignTemplate(ctx, draft, sig, key, xmldsig.TemplateSignOptions{Validation: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := signed.Root().Children()
+	options.RequiredElements = []document.Element{children[0]}
+	verified, err := xmldsig.VerifySignature(ctx, signed, children[1], key.Public(), options)
+	if err != nil || !verified.CoversElement(children[0]) || children[0].Name().Space != "urn:record" {
+		t.Fatalf("scoped signature or inherited namespace was lost: %v", err)
+	}
+	if len(record.Root().Children()) != 1 || len(envelope.Root().Children()[0].Children()) != 1 {
+		t.Fatal("template modified the original record or envelope")
 	}
 }

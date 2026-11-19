@@ -28,27 +28,15 @@ const (
 // EvaluateReuse call on the same EvalState — the result's backing
 // storage may be overwritten.
 type EvalState struct {
+	// base is the evaluator configuration and starting focus. Resetting ec from
+	// it prevents one call's invocation settings from becoming the next one's
+	// defaults while retaining reusable configuration and operation-counter storage.
+	base evalContext
 	// ec retains mutable evaluation context and scratch storage between calls.
 	ec      evalContext
 	oneItem [singleReuseResultItem]xdm.Item // reusable backing for single-item results
 	// nodes is the reusable backing of a result that is a node list.
 	nodes resultNodes
-
-	// baseNode / baseContextItem capture the focus seeded by NewEvalState so
-	// each EvaluateReuse call starts from that base focus, and never a focus
-	// mutated by a prior call.
-	baseNode xdm.Node
-	// baseContextItem restores the configured non-node focus before each evaluation.
-	baseContextItem xdm.Item
-	// baseCompat restores the host's XPath 1.0 compatibility setting.
-	baseCompat bool
-	// baseNamespaces retains the unbound expression's namespace context between
-	// evaluations.
-	baseNamespaces map[string]string
-	// baseXMLNamespace restores the host XML default namespace for unbound expressions.
-	baseXMLNamespace string
-	// baseDefaultCollation restores the evaluator collation between expressions.
-	baseDefaultCollation string
 
 	// explicitTime is true when the Evaluator had an explicitly configured
 	// CurrentTime. When false, EvaluateReuse refreshes the clock per call so
@@ -64,20 +52,17 @@ type EvalState struct {
 // for subsequent EvaluateReuse calls (a reuse call with a non-nil node
 // still overrides it for that call only).
 func (s *EvalState) SetContextItem(item xdm.Item) {
-	s.ec.contextItem = item
-
-	s.baseContextItem = item
+	s.base.contextItem = item
 	if item != nil {
-		s.ec.node = nil
-		s.baseNode = nil
+		s.base.node = nil
 	}
 }
 
 // SetPosition sets the context position on the eval state.
-func (s *EvalState) SetPosition(pos int) { s.ec.position = pos }
+func (s *EvalState) SetPosition(pos int) { s.base.position = pos }
 
 // SetSize sets the context size on the eval state.
-func (s *EvalState) SetSize(size int) { s.ec.size = size }
+func (s *EvalState) SetSize(size int) { s.base.size = size }
 
 // EvaluateReuse evaluates the expression with reusable mutable state. The node
 // argument overrides the base context node for this call when non-nil. Evaluation can
@@ -87,51 +72,56 @@ func (s *EvalState) SetSize(size int) { s.ec.size = size }
 // using that EvalState. Consume or copy needed values before reusing the state. An
 // EvalState must not be used concurrently.
 func (e *Expression) EvaluateReuse(ctx context.Context, state *EvalState, node xdm.Node) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
 	if err := e.requireCompiledProgram(); err != nil {
 		return Result{}, err
 	}
 
+	previous := state.ec
+	state.ec = state.base
 	ec := &state.ec
 	bindInvocationScope(ctx, ec)
-	ec.version = e.version
-	ec.defaultXMLNamespace = state.baseXMLNamespace
+	// Document outcomes are stable within one host invocation, including failed
+	// loads, but a new invocation must observe the resolver again.
+	if previous.invocation == ec.invocation {
+		ec.docCache = previous.docCache
+		ec.documentSnapshots = previous.documentSnapshots
+	} else {
+		ec.docCache = make(map[string]xdm.Node)
+		ec.documentSnapshots = &documentSnapshotStore{}
+	}
 
-	ec.defaultCollation = state.baseDefaultCollation
+	ec.version = e.version
+
 	if e.staticCollation != "" {
 		ec.defaultCollation = e.staticCollation
 	}
 
-	ec.namespaces = state.baseNamespaces
 	if e.staticNamespaces != nil {
 		ec.namespaces = e.staticNamespaces
 		ec.defaultXMLNamespace = e.defaultXMLNamespace
 	}
 
-	ec.xpath10Compat = state.baseCompat || e.version == xpathVersion10
-	applyBudget(ctx, ec)
-
-	// Start from the base focus seeded by NewEvalState/SetContextItem so a
-	// prior reuse call cannot leak its focus into this one. A non-nil node
-	// overrides the base focus for this call only.
+	ec.xpath10Compat = ec.xpath10Compat || e.version == xpathVersion10
+	// A non-nil node overrides the base focus for this call only.
 	if node != nil {
 		ec.node = node
 		ec.contextItem = nil
-	} else {
-		ec.node = state.baseNode
-		ec.contextItem = state.baseContextItem
 	}
 
-	ec.depth = 0
 	*ec.opCount = 0
 
-	// When CurrentTime was not explicitly configured on the Evaluator, refresh
-	// the clock per call so fn:current-dateTime() / fn:current-date() track
-	// wall-clock time instead of staying frozen at NewEvalState construction.
-	// A user-pinned CurrentTime is preserved untouched.
+	// Refresh the evaluator's fallback clock. The invocation can then override
+	// it, as it does during an independent evaluation.
 	if !state.explicitTime {
 		now := time.Now()
 		ec.currentTime = &now
 	}
+
+	applyBudget(ctx, ec)
 
 	// Fast path for "." — skip eval entirely, reuse backing array
 	if e.program != nil && e.program.stream.isContextItem {
@@ -240,21 +230,5 @@ func (e Evaluator) NewEvalState(node xdm.Node) *EvalState {
 	// the reuse state stays in lockstep with normal Evaluate: same nil-cfg
 	// guard, same custom max-node limit, and the same complete set of copied
 	// fields (preserved ID annotations, TraceWriter, etc.).
-	s := &EvalState{ec: *e.newEvalCtx(node)}
-
-	// Capture the seeded base focus so each EvaluateReuse call can reset to it.
-	// newEvalCtx clears ec.node when a non-node context item is configured, so
-	// read both back from the freshly built context.
-	s.baseCompat = s.ec.xpath10Compat
-	s.baseNamespaces = s.ec.namespaces
-	s.baseXMLNamespace = s.ec.defaultXMLNamespace
-	s.baseDefaultCollation = s.ec.defaultCollation
-	s.baseNode = s.ec.node
-	s.baseContextItem = s.ec.contextItem
-
-	// Record whether CurrentTime was explicitly configured. If so, the reuse
-	// path must keep it pinned; otherwise the reuse path refreshes per call.
-	s.explicitTime = e.cfg != nil && e.cfg.currentTime != nil
-
-	return s
+	return &EvalState{base: *e.newEvalCtx(node), explicitTime: e.cfg != nil && e.cfg.currentTime != nil}
 }

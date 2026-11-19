@@ -77,6 +77,77 @@ func TestScopedCanonicalContextAndReparse(t *testing.T) {
 	}
 }
 
+func TestReparseRetainsDocumentContext(t *testing.T) {
+	t.Parallel()
+
+	const raw = `<?before retained?><outer><first/><selected/></outer><!--retained-->`
+	const base = "https://example.test/doc.xml"
+
+	for _, scopeDepth := range []string{"document", "root", "descendant"} {
+		t.Run(scopeDepth, func(t *testing.T) {
+			t.Parallel()
+
+			limits := tree.DefaultLimits()
+			source, err := tree.Parse(t.Context(), []byte(raw), limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tree.SetBaseURI(source, base)
+			target := source.Root().Children()[1]
+			draftSource := source
+
+			switch scopeDepth {
+			case "root":
+				draftSource, err = tree.ScopeDocument(source, source.Root())
+			case "descendant":
+				draftSource, err = tree.ScopeDocument(source, target)
+			}
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, selected := tree.Unwrap(target)
+			replacement := &tree.Node{Kind: tree.ElementNode, Name: tree.Name{Local: "replacement"}}
+			draft, err := tree.ReplaceDraft(t.Context(), draftSource, selected, replacement)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := tree.Reparse(t.Context(), draft, limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			wantRoot := "outer"
+			if scopeDepth == "descendant" {
+				wantRoot = "replacement"
+			}
+
+			if root := got.Root().Name().Local; root != wantRoot {
+				t.Errorf("root = %q; want %q", root, wantRoot)
+			}
+
+			contextDoc, _ := tree.Unwrap(tree.ContextElement(got.Root()))
+			wire, err := contextDoc.XML(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if want := `<?before retained?><outer><first></first><replacement></replacement></outer><!--retained-->`; string(wire) != want {
+				t.Errorf("full source = %s; want %s", wire, want)
+			}
+
+			for _, d := range []*tree.Document{got, contextDoc} {
+				if gotBase := tree.BaseURI(d); gotBase != base {
+					t.Errorf("retrieval base = %q; want %q", gotBase, base)
+				}
+			}
+		})
+	}
+}
+
 func TestScopedNodeSelectionAndNamespaceLimits(t *testing.T) {
 	limits := tree.DefaultLimits()
 	source, err := tree.Parse(t.Context(), []byte(`<outer xmlns:p="urn:protocol" xmlns:q="urn:context"><p:message><p:value/></p:message><unselected/></outer>`), limits)

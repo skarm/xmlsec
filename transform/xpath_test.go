@@ -9,6 +9,8 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,6 +93,84 @@ func TestXPathCalendarOverflowCodes(t *testing.T) {
 	for _, expression := range []string{`xs:date('999999999-12-31')`, `xs:date('-999999999-01-01')`, `xs:date('2000-02-29')`} {
 		if _, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{}); err != nil {
 			t.Fatal(expression, err)
+		}
+	}
+}
+
+func TestXPathCalendarExplicitOffsetsUnderLocalDST(t *testing.T) {
+	const child = "XMLSEC_XPATH_CALENDAR_LOCAL_DST"
+	if os.Getenv(child) != "1" {
+		binary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestXPathCalendarExplicitOffsetsUnderLocalDST$")
+		cmd.Env = append(os.Environ(), child+"=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("XPath calendar test under local DST: %v\n%s", err, output)
+		}
+		return
+	}
+
+	// This child runs only this test, so changing time.Local is isolated.
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Local = location
+
+	e := engine(t, transform.Config{})
+	options := transform.XPathContext{Context: transform.DynamicContext{ImplicitTimezone: time.FixedZone("caller", 2*60*60)}}
+	for _, test := range []struct{ expression, want string }{
+		{`xs:dateTime('2026-03-12T12:00:00-05:00')`, "2026-03-12T12:00:00-05:00"},
+		{`xs:date('2026-03-12-05:00')`, "2026-03-12-05:00"},
+		{`xs:dateTimeStamp('2026-03-12T12:00:00-05:00')`, "2026-03-12T12:00:00-05:00"},
+		{`xs:dateTime('2006-03-12T12:00:00-05:00') + xs:dayTimeDuration('P30D')`, "2006-04-11T12:00:00-05:00"},
+		{`xs:gMonthDay(xs:date('2026-03-12-05:00'))`, "--03-12-05:00"},
+		{`xs:gMonthDay('--03-12-05:00')`, "--03-12-05:00"},
+		{`xs:dateTime('2026-03-12T00:00:00Z')`, "2026-03-12T00:00:00Z"},
+		{`xs:time('12:00:00-05:00')`, "12:00:00-05:00"},
+		{`empty(timezone-from-dateTime(xs:dateTime('2026-03-12T12:00:00')))`, nameTrue},
+		{`xs:dateTime('2026-03-12T12:00:00') eq xs:dateTime('2026-03-12T10:00:00Z')`, nameTrue},
+	} {
+		generated, err := query(t, e, test.expression, transform.XPath31).Evaluate(t.Context(), nil, options)
+		if err != nil {
+			t.Errorf("%s: %v", test.expression, err)
+		} else if got := text(t, generated); got != test.want {
+			t.Errorf("%s = %q; want %q", test.expression, got, test.want)
+		}
+	}
+}
+
+func TestXPathCalendarClockLexicalForms(t *testing.T) {
+	for _, edition := range []transform.XMLSchemaVersion{transform.XMLSchema10, transform.XMLSchema11} {
+		e := engine(t, transform.Config{XMLSchemaVersion: edition})
+		for _, test := range []struct{ value, kind string }{
+			{"2024-02-29T12:00:00,5Z", "dateTime"},
+			{"2024-02-29T2:00:00Z", "dateTime"},
+			{"12:00:00,5Z", "time"},
+			{"2:00:00Z", "time"},
+		} {
+			quoted := "'" + test.value + "'"
+			typeName := "xs:" + test.kind
+			_, err := query(t, e, typeName+"("+quoted+")", transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != errCodeFORG0001 {
+				t.Errorf("XSD %d %s rejected with %v; want FORG0001", edition, test.value, err)
+			}
+			if got := text(t, evaluate(t, e, quoted+" castable as "+typeName, transform.XPath31)); got != nameFalse {
+				t.Errorf("XSD %d %s castable = %s; want false", edition, test.value, got)
+			}
+		}
+		for _, test := range []struct{ expression, want string }{
+			{`xs:dateTime('2024-02-29T12:00:00.5Z')`, "2024-02-29T12:00:00.5Z"},
+			{`xs:dateTime('2024-02-29T24:00:00.0Z')`, "2024-03-01T00:00:00Z"},
+			{`xs:time('02:00:00.5Z')`, "02:00:00.5Z"},
+			{`xs:time('24:00:00.0Z')`, "00:00:00Z"},
+		} {
+			if got := text(t, evaluate(t, e, test.expression, transform.XPath31)); got != test.want {
+				t.Errorf("XSD %d %s = %q; want %q", edition, test.expression, got, test.want)
+			}
 		}
 	}
 }
@@ -451,9 +531,18 @@ func TestDecimalFormatUnicodeDigitsAcrossPaths(t *testing.T) {
 	e := engine(t, transform.Config{})
 
 	for _, zero := range []rune{'0', '\u0660', '\U0001d7d8', '\U0001d7ec'} {
-		picture, expected := string(zero), string(zero+2)
+		picture := string(zero)
+		exponentPicture := "##." + picture + picture + "e" + picture
+		expression := fmt.Sprintf(`string-join((
+			format-number(2, '%s'), format-number(0, '#'), format-number(0, '.#'),
+			format-number(1, '#.#'), format-number(1250, '%s')
+		), '|')`, picture, exponentPicture)
+		expected := strings.Join([]string{
+			string(zero + 2), picture, "." + picture, string(zero+1) + "." + picture,
+			string([]rune{zero, '.', zero + 1, zero + 2, 'e', zero + 4}),
+		}, "|")
 
-		program, err := e.CompileXPath(t.Context(), "format-number(2, '"+picture+"')", transform.XPathOptions{DecimalFormats: map[transform.Name]map[string]string{{}: {nameZeroDigit: picture}}})
+		program, err := e.CompileXPath(t.Context(), expression, transform.XPathOptions{DecimalFormats: map[transform.Name]map[string]string{{}: {nameZeroDigit: picture}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -463,7 +552,7 @@ func TestDecimalFormatUnicodeDigitsAcrossPaths(t *testing.T) {
 			t.Fatal("XPath digit alphabet", picture, value, err)
 		}
 
-		sheet := stylesheet(t, e, `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:decimal-format zero-digit="`+picture+`"/><xsl:template name="start"><xsl:value-of select="format-number(2, '`+picture+`')"/></xsl:template></xsl:stylesheet>`)
+		sheet := stylesheet(t, e, `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0"><xsl:decimal-format zero-digit="`+picture+`"/><xsl:template name="start"><xsl:value-of select="`+expression+`"/></xsl:template></xsl:stylesheet>`)
 
 		result, err := sheet.CallTemplate(t.Context(), nil, transform.Name{Local: nameStart}, transform.XSLTContext{})
 		if err != nil || text(t, result.Primary()) != expected {
@@ -614,6 +703,8 @@ func xpathSyntaxErrorSources() []string {
 	return []string{
 		"1 +", "$", "'unterminated", "1 ; 2", "sum(1", "unknown-axis::node()", "1e", "1E+", "1e-",
 		"text(*)", "comment(*)", "node(*)", "processing-instruction(*)", "() instance of empty-sequence(1)",
+		"child::item()", "/r/@item()", "1 + if (true()) then 2 else 3",
+		"let $x : = 2 return $x", "let $x :(: delimiter :) = 2 return $x",
 		"p: local", "p(:comment:):local", "p:(:comment:)local", "p: *", "*: local", "* :local",
 		"*(:comment:):local", "*:(:comment:)local", "fn: true()", "fn(:comment:):true()", "fn:(:comment:)true()",
 	}
@@ -634,6 +725,87 @@ func TestXPathSyntaxErrorCodes(t *testing.T) {
 					t.Errorf("XPath %d %q: %v", version, source, err)
 				}
 			})
+		}
+	}
+}
+
+func TestXPathSourceUTF8(t *testing.T) {
+	t.Parallel()
+
+	e := engine(t, transform.Config{})
+	for _, version := range []transform.XPathVersion{transform.XPath10, transform.XPath20, transform.XPath30, transform.XPath31} {
+		options := transform.XPathOptions{Version: version}
+		wantCode := errCodeXPST0003
+		if version == transform.XPath10 {
+			wantCode = ""
+		}
+
+		for _, prefix := range []string{"", "'", "\n'\uFFFDтест"} {
+			source := prefix + "\xff"
+			if prefix != "" {
+				source += "'"
+			}
+			expression, err := e.CompileXPath(t.Context(), source, options)
+			if detail, ok := errors.AsType[*transform.Error](err); expression != nil || !ok || detail.Code != wantCode ||
+				!strings.Contains(err.Error(), fmt.Sprintf("invalid UTF-8 at position %d", len(prefix))) {
+				t.Errorf("XPath %d compiling %q = (%t, %v), want no expression and code %q at byte %d", version, source, expression != nil, err, wantCode, len(prefix))
+			}
+		}
+
+		const valid = "\uFFFDтест"
+		expression, err := e.CompileXPath(t.Context(), "'"+valid+"'", options)
+		if err != nil {
+			t.Fatalf("XPath %d compiling legal Unicode literal: %v", version, err)
+		}
+		result, err := expression.Evaluate(t.Context(), nil, transform.XPathContext{})
+		if err != nil {
+			t.Fatalf("XPath %d evaluating legal Unicode literal: %v", version, err)
+		}
+		if got, err := result.Text(); err != nil || got != valid {
+			t.Errorf("XPath %d Unicode literal = (%q, %v), want %q", version, got, err, valid)
+		}
+	}
+}
+
+func TestXPathPositionPredicateResolvesFunctionNamespace(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	e := engine(t, transform.Config{Functions: []transform.Function{{
+		Name: transform.Name{Space: namespaceApplication, Local: "position"},
+		Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+			calls++
+			return transform.Values(transform.Integer(2)), nil
+		},
+	}}})
+	doc, err := e.Parse(t.Context(), []byte(`<r><n id="a"/><n id="b"/></r>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		call, want string
+		namespaces map[string]string
+		wantCalls  int
+	}{
+		{"app:position()", "a|b", map[string]string{"app": namespaceApplication}, 2},
+		{"fn:position()", "a|b", map[string]string{"fn": namespaceApplication}, 2},
+		{"fn:position()", "b", nil, 0},
+		{"position()", "b", nil, 0},
+		{"Q{" + namespaceFunctions + "}position()", "b", map[string]string{"fn": namespaceApplication}, 0},
+	} {
+		calls = 0
+		source := "string-join(/r/n[" + tc.call + " = 2]/@id, '|')"
+		query, err := e.CompileXPath(t.Context(), source, transform.XPathOptions{Namespaces: tc.namespaces})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := query.Evaluate(t.Context(), doc, transform.XPathContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := result.Text(); err != nil || got != tc.want || calls != tc.wantCalls {
+			t.Errorf("%s with prefixes %v = (%q, %v), callback calls %d, want %q and %d calls", tc.call, tc.namespaces, got, err, calls, tc.want, tc.wantCalls)
 		}
 	}
 }
@@ -662,6 +834,10 @@ func xpathLexicalCases(version transform.XPathVersion) map[string]string {
 		`count(/r/p:local | /r/other/..)`:                  "2",
 		`1<2<3`:                                            errCodeXPST0003,
 		`if (true()) then 1 else 2+3`:                      "1",
+		`1 + (if (true()) then 2 else 3)`:                  "3",
+		`abs(if (false()) then -2 else -3)`:                "3",
+		`1 instance of item()`:                             nameTrue,
+		`count(/r/child::item)`:                            "0",
 		`some $x in (1,2) satisfies $x eq 2 and true()`:    nameTrue,
 		`/ * 5`:   errCodeXPST0003,
 		`(/) * 5`: "10",
@@ -702,6 +878,7 @@ func xpathLexicalCases(version transform.XPathVersion) map[string]string {
 		`count(/r/p(:comment:):local)`: errCodeXPST0003,
 	}
 	if version >= transform.XPath30 {
+		cases[`let $x:=2, $y (: before := :) := (: after := :) 3 return $x+$y`] = "5"
 		cases[`string-join((1,2) ! string(. * 2), ' ')`] = "2 4"
 		cases[`count(() ! error())`] = "0"
 		cases[`string-join((1,2) ! string(position()), ' ')`] = "1 2"
@@ -1806,6 +1983,12 @@ func TestXPathLexicalCasts(t *testing.T) {
 			t.Fatal(source, err)
 		}
 	}
+
+	for _, source := range []string{`empty(xs:error([]))`, `empty(xs:error#1([()]))`} {
+		if got := text(t, evaluate(t, e, source, transform.XPath31)); got != nameTrue {
+			t.Errorf("%s = %s, want true", source, got)
+		}
+	}
 }
 
 func TestNumericBudgetExactness(t *testing.T) {
@@ -2282,7 +2465,7 @@ func TestSumUntypedPromotion(t *testing.T) {
 		`sum([xs:untypedAtomic('2'),[xs:untypedAtomic('3')]])`:    "5",
 		`sum((xs:untypedAtomic('INF'),xs:untypedAtomic('-INF')))`: valueNaN,
 		`sum((xs:untypedAtomic('NaN'),1))`:                        valueNaN,
-		`sum((xs:untypedAtomic('-0'),xs:untypedAtomic('-0')))`:    "0",
+		`sum((xs:untypedAtomic('-0'),xs:untypedAtomic('-0')))`:    "-0",
 		`sum((xs:untypedAtomic('+INF'),1))`:                       namePositiveInfinity,
 		`sum((xs:untypedAtomic('1e2'),1))`:                        "101",
 		`sum((xs:untypedAtomic('1e9999'),1))`:                     namePositiveInfinity,
@@ -2502,6 +2685,37 @@ func TestXPathOperationErrorContracts(t *testing.T) {
 	} {
 		if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != want {
 			t.Errorf("%s: %q, want %q", expression, got, want)
+		}
+	}
+}
+
+func TestXPathRangeComparisonEvaluatesCallbackOnce(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result func(int64) transform.Sequence
+	}{
+		{"double", func(n int64) transform.Sequence { return transform.Values(transform.Double(float64(n))) }},
+		{"sequence", func(n int64) transform.Sequence { return transform.Values(transform.Integer(n), transform.Integer(9)) }},
+		{"integer shortcut", func(n int64) transform.Sequence { return transform.Values(transform.Integer(n)) }},
+	} {
+		for _, expr := range []string{
+			`Q{urn:callback}next() = (1 to 1)`, `(1 to 1) = Q{urn:callback}next()`,
+			`Q{urn:callback}next() < (2 to 2)`, `(2 to 2) > Q{urn:callback}next()`,
+		} {
+			t.Run(test.name+"/"+expr, func(t *testing.T) {
+				var calls int64
+				e := engine(t, transform.Config{Functions: []transform.Function{{
+					Name: transform.Name{Space: "urn:callback", Local: "next"},
+					Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+						calls++
+						return test.result(calls), nil
+					},
+				}}})
+				got := text(t, evaluate(t, e, expr, transform.XPath31))
+				if got != nameTrue || calls != 1 {
+					t.Errorf("comparison = %s with %d callback calls; want true with one call", got, calls)
+				}
+			})
 		}
 	}
 }
@@ -2781,6 +2995,7 @@ func TestXPathNumberPictureVersions(t *testing.T) {
 			`format-number(12,'e0')`:                "e12",
 			`format-number(12,'0e')`:                "12e",
 			`format-number(12,'0.0')`:               "12.0",
+			`format-number(12.345,'0.0,00,')`:       "12.3,45",
 		} {
 			got, err := query(t, e, expression, version).Evaluate(t.Context(), nil, transform.XPathContext{})
 			if version == transform.XPath30 && strings.Contains(expression, "9.9999e999") {
@@ -3084,6 +3299,27 @@ func TestXPathMapKeyAtomization(t *testing.T) {
 		if got := text(t, result); got != want {
 			t.Errorf("%s: %q, want %q", expression, got, want)
 		}
+	}
+}
+
+func TestXPathTimeMapKeys(t *testing.T) {
+	e := engine(t, transform.Config{})
+	ctx := transform.XPathContext{Context: transform.DynamicContext{
+		CurrentTime: time.Date(2026, time.November, 17, 12, 30, 0, 123, time.UTC),
+	}}
+	for _, test := range []struct{ name, time string }{
+		{"current time", `current-time()`},
+		{"absent timezone", `adjust-time-to-timezone(current-time(),())`},
+		{"adjustment through midnight", `adjust-time-to-timezone(xs:time('23:15:00Z'),xs:dayTimeDuration('PT2H'))`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			expression := `let $t := ` + test.time + `, $copy := xs:time(string($t))
+				return deep-equal($t,$copy) and map:contains(map:entry($t,true()),$copy)`
+			value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, ctx)
+			if err != nil || text(t, value) != nameTrue {
+				t.Fatal(value, err)
+			}
+		})
 	}
 }
 
@@ -4836,5 +5072,62 @@ func TestXSLTNameTestsEmptyNamespace(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestXPathAnalyzeStaticContext(t *testing.T) {
+	t.Parallel()
+
+	name := transform.Name{Space: namespaceApplication, Local: "inspect"}
+	calls := 0
+	e := engine(t, transform.Config{Functions: []transform.Function{{
+		Name: name,
+		Call: func(context.Context, []transform.Sequence) (transform.Sequence, error) {
+			calls++
+			return transform.Sequence{}, nil
+		},
+	}}})
+	expression, err := e.CompileXPath(t.Context(), `(count(/r/item[child::ready]), fn:count#1, $task(.), app:inspect())`, transform.XPathOptions{
+		Namespaces: map[string]string{"app": name.Space},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := expression.Analyze(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []transform.FunctionReference{
+		{Name: transform.Name{Space: namespaceFunctions, Local: "count"}, Arity: 1},
+		{Name: name, Arity: 0},
+	}
+	if !slices.Equal(got.Functions, want) || !got.ContextItem || !got.DynamicCalls || !got.NonMotionlessPredicates || got.DownwardSelections != 2 {
+		t.Errorf("Analyze = %+v; want functions %+v, applied focus, dynamic call, non-motionless predicate and two downward selections", got, want)
+	}
+	if version := expression.Version(); version != transform.XPath31 || calls != 0 {
+		t.Errorf("compiled version = %d, callback calls = %d; want XPath 3.1 and no calls", version, calls)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if result, err := expression.Analyze(ctx); !errors.Is(err, context.Canceled) || len(result.Functions) != 0 {
+		t.Errorf("canceled Analyze = %+v, %v; want empty result and context.Canceled", result, err)
+	}
+	var absent *transform.XPath
+	if _, err := absent.Analyze(t.Context()); !errors.Is(err, transform.ErrInput) || absent.Version() != 0 {
+		t.Errorf("nil XPath accepted by Analyze or Version: %v", err)
+	}
+}
+
+func TestXPathAnalyzeExecutionBudget(t *testing.T) {
+	t.Parallel()
+
+	e := engine(t, transform.Config{Limits: transform.Limits{MaxOperations: 1}})
+	expression := query(t, e, `(true(), false())`, transform.XPath31)
+	got, err := expression.Analyze(t.Context())
+	if !errors.Is(err, transform.ErrLimit) || len(got.Functions) != 0 {
+		t.Fatalf("budget-limited Analyze = %+v, %v; want an empty result and ErrLimit", got, err)
 	}
 }

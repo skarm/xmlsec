@@ -736,6 +736,7 @@ func TestMapKeyValueEquality(t *testing.T) {
 	t.Parallel()
 
 	date := time.Date(2020, 2, 29, 12, 30, 0, 123, time.UTC)
+	otherDate := time.Date(1980, 1, 1, 12, 30, 0, 123, time.UTC)
 	cases := []struct {
 		name                  string
 		key, equal, different xdm.AtomicValue
@@ -754,7 +755,11 @@ func TestMapKeyValueEquality(t *testing.T) {
 		{"derived URI", xdm.AtomicValue{TypeName: "Q{u}uri", BaseType: xdm.TypeAnyURI, Value: "urn:a"}, stringKey("urn:a"), stringKey("urn:b")},
 		{"QName prefix", xdm.AtomicValue{TypeName: xdm.TypeQName, Value: xdm.QNameValue{Prefix: "p", Local: "name", URI: "urn:a"}}, xdm.AtomicValue{TypeName: xdm.TypeQName, Value: xdm.QNameValue{Prefix: "q", Local: "name", URI: "urn:a"}}, xdm.AtomicValue{TypeName: xdm.TypeQName, Value: xdm.QNameValue{Prefix: "p", Local: "name", URI: "urn:b"}}},
 		{"time zone", xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: date}, xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: date.In(time.FixedZone("offset", 3*3600))}, xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: date.Add(time.Nanosecond)}},
+		{"same time of day on different dates", xdm.AtomicValue{TypeName: xdm.TypeTime, Value: date}, xdm.AtomicValue{TypeName: "Q{u}clock", BaseType: xdm.TypeTime, Value: otherDate.In(time.FixedZone("offset", 3*3600))}, xdm.AtomicValue{TypeName: xdm.TypeTime, Value: otherDate.Add(time.Nanosecond)}},
+		{"unzoned time of day", xdm.AtomicValue{TypeName: xdm.TypeTime, Value: time.Date(2020, 2, 29, 12, 30, 0, 123, xdm.NoTimezone())}, xdm.AtomicValue{TypeName: xdm.TypeTime, Value: time.Date(1980, 1, 1, 12, 30, 0, 123, xdm.NoTimezone())}, xdm.AtomicValue{TypeName: xdm.TypeTime, Value: date}},
 		{"absent time zone", xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: time.Date(2020, 2, 29, 12, 30, 0, 0, xdm.NoTimezone())}, xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: time.Date(2020, 2, 29, 12, 30, 0, 0, xdm.NoTimezone())}, xdm.AtomicValue{TypeName: xdm.TypeDateTime, Value: time.Date(2020, 2, 29, 12, 30, 0, 0, time.UTC)}},
+		{"Gregorian day at the same instant", xdm.AtomicValue{TypeName: xdm.TypeGDay, Value: "---10-14:00"}, xdm.AtomicValue{TypeName: xdm.TypeGDay, Value: "---11+10:00"}, xdm.AtomicValue{TypeName: xdm.TypeGDay, Value: "---11+11:00"}},
+		{"Gregorian month-day across leap day", xdm.AtomicValue{TypeName: xdm.TypeGMonthDay, Value: "--02-29-14:00"}, xdm.AtomicValue{TypeName: "Q{u}day", BaseType: xdm.TypeGMonthDay, Value: "--03-01+10:00"}, xdm.AtomicValue{TypeName: xdm.TypeGMonthDay, Value: "--03-01"}},
 		{"binary content", xdm.AtomicValue{TypeName: xdm.TypeHexBinary, Value: []byte{0, 255}}, xdm.AtomicValue{TypeName: xdm.TypeHexBinary, Value: []byte{0, 255}}, xdm.AtomicValue{TypeName: xdm.TypeHexBinary, Value: []byte{0, 254}}},
 		{"boolean domain", xdm.AtomicValue{TypeName: xdm.TypeBoolean, Value: true}, xdm.AtomicValue{TypeName: xdm.TypeBoolean, Value: true}, xdm.AtomicValue{TypeName: xdm.TypeBoolean, Value: false}},
 		{"duration", xdm.AtomicValue{TypeName: xdm.TypeDuration, Value: xdm.Duration{Seconds: 1.5, FracSec: big.NewRat(1, 2)}}, xdm.AtomicValue{TypeName: "Q{u}duration", BaseType: xdm.TypeDayTimeDuration, Value: xdm.Duration{SecRat: big.NewRat(3, 2)}}, xdm.AtomicValue{TypeName: xdm.TypeDuration, Value: xdm.Duration{Seconds: 1.25, FracSec: big.NewRat(1, 4)}}},

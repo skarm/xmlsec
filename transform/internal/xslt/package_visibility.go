@@ -180,13 +180,13 @@ func resolveComponentReference(name, component string, elem *xdm.Element) (strin
 		if xmlchar.IsValidNCName(prefix) && ns[prefix] != "" {
 			return xdm.ClarkName(ns[prefix], "*"), nil
 		}
-	case strings.HasPrefix(base, "Q{") && strings.HasSuffix(base, "}*"):
+	case strings.HasPrefix(base, lexicon.EQNamePrefix) && strings.HasSuffix(base, "}*"):
 		if isValidEQName(base[:len(base)-1] + wildcardProbeLocalName) {
 			return base[1:], nil
 		}
 	default:
 		if xmlchar.IsValidQName(base) || isValidEQName(base) {
-			if prefix, _, prefixed := strings.Cut(base, ":"); prefixed && !strings.HasPrefix(base, "Q{") && ns[prefix] == "" {
+			if prefix, _, prefixed := strings.Cut(base, ":"); prefixed && !strings.HasPrefix(base, lexicon.EQNamePrefix) && ns[prefix] == "" {
 				return "", staticError(errCodeXTSE0280, "unbound prefix %q in component name", prefix)
 			}
 
@@ -480,33 +480,6 @@ func (c *compiler) saveDeclaredComponentVisibility() {
 	}
 }
 
-// collectElemNamespaces gathers namespace bindings from an element and its ancestors.
-func (c *compiler) collectElemNamespaces(_ context.Context, elem *xdm.Element) map[string]string {
-	return inScopeNamespaces(elem)
-}
-
-// collectOverrideNames scans xsl:override children of xsl:use-package and returns
-// a set of "type:name" keys for components being overridden. Elements in
-// excluded (removed by use-when) override nothing and are skipped.
-func (c *compiler) collectOverrideNames(_ context.Context, usePackageElem *xdm.Element, nsBindings map[string]string, excluded map[*xdm.Element]struct{}) map[string]struct{} {
-	names := make(map[string]struct{})
-
-	for child := range xdm.Children(usePackageElem) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT || elem.LocalName() != xslElemOverride {
-			continue
-		}
-
-		if _, skip := excluded[elem]; skip {
-			continue
-		}
-
-		collectOverrideBlockNames(elem, nsBindings, excluded, names)
-	}
-
-	return names
-}
-
 type exposedComponent struct {
 	kind     string
 	name     string
@@ -581,63 +554,6 @@ func componentRulePriority(name string) int {
 	return exposePriorityExact
 }
 
-func collectOverrideBlockNames(block *xdm.Element, bindings map[string]string, excluded map[*xdm.Element]struct{}, names map[string]struct{}) {
-	for child := range xdm.Children(block) {
-		elem, ok := child.(*xdm.Element)
-		if !ok || elem.URI() != lexicon.NamespaceXSLT {
-			continue
-		}
-
-		if _, skip := excluded[elem]; skip {
-			continue
-		}
-
-		if key := overrideComponentKey(elem, bindings); key != "" {
-			names[key] = struct{}{}
-		}
-	}
-}
-
-func overrideComponentKey(elem *xdm.Element, bindings map[string]string) string {
-	const (
-		componentArityFormat = "#%d"
-	)
-
-	kind := elem.LocalName()
-	switch kind {
-	case xslElemTemplate, xslElemVariable, xslElemParam, xslElemAttributeSet:
-		name := resolveQName(getAttr(elem, xslAttrName), bindings)
-		if name == "" {
-			return ""
-		}
-
-		if kind == xslElemParam {
-			kind = xslElemVariable
-		}
-
-		return kind + ":" + name
-	case xslElemFunction:
-		name := getAttr(elem, xslAttrName)
-		if name != "" {
-			return xslElemFunction + ":" + resolveQName(name, bindings) + fmt.Sprintf(componentArityFormat, overrideFunctionArity(elem))
-		}
-	}
-
-	return ""
-}
-
-func overrideFunctionArity(elem *xdm.Element) int {
-	arity := 0
-
-	for child := range xdm.Children(elem) {
-		if param, ok := child.(*xdm.Element); ok && param.URI() == lexicon.NamespaceXSLT && param.LocalName() == lexicon.XSLTElementParam {
-			arity++
-		}
-	}
-
-	return arity
-}
-
 // checkExposeVisibility applies the explicit exposure/declaration table in 3.5.3.1.
 func checkExposeVisibility(name, newVis, declaredVis string) (string, string) {
 	if declaredVis != "" {
@@ -670,7 +586,7 @@ func checkExposeVisibility(name, newVis, declaredVis string) (string, string) {
 func splitComponentArity(name string) (string, string, bool) {
 	start := 0
 
-	if strings.HasPrefix(name, "{") || strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, "{") || strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if end := strings.IndexByte(name, '}'); end >= 0 {
 			start = end + 1
 		}

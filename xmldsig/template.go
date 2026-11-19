@@ -11,6 +11,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 )
 
@@ -78,7 +79,7 @@ func SignTemplate(ctx context.Context, doc *document.Document, selected document
 		return nil, ErrKey
 	}
 
-	return signTemplate(ctx, doc, selected, signatureCredential{signer: signer, public: signer.Public()}, opt)
+	return signTemplate(ctx, doc, selected, signatureCredential{signer: signer, public: signature.SignerPublic(signer)}, opt)
 }
 
 func signTemplate(ctx context.Context, doc *document.Document, selected document.Element, credential signatureCredential, opt TemplateSignOptions) (*document.Document, error) {
@@ -287,7 +288,7 @@ func remapElement(from, to *document.Document, e document.Element) (document.Ele
 
 	var path []int
 
-	for n.Parent != nil {
+	for n != tree.Root(from) && n.Parent != nil {
 		parent := n.Parent
 		index := -1
 

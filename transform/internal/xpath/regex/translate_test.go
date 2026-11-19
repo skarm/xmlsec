@@ -124,6 +124,9 @@ func TestTranslateCharacterClassesAndSubtraction(t *testing.T) {
 		{`[\I]`, "1", "é"},
 		{`[\C]`, " ", "-"},
 		{`[\d]`, "٣", "a"},
+		{`[\\d]`, `\`, "N"},
+		{`[\\i]`, "i", "A"},
+		{`[-\+-0]`, "/", "1"},
 		{`[\D]`, "a", "٣"},
 		{`[\w]`, "$", "!"},
 		{`[\W]`, "!", "$"},
@@ -240,7 +243,11 @@ func TestBackreferenceGrammarAndCaptureNumbering(t *testing.T) {
 		{`(?:a)(b)\1`, "abb", "aba"},
 		{`(a(b)\2)`, "abb", "aba"},
 		{`(a)\11`, "aa1", "aaa"},
+		{`(a)\1+`, "aaaa", "aa2"},
+		{`(a)\12+`, "aa222", "aa2a2"},
+		{`(a)\123+`, "aa2333", "aa23a23"},
 		{`(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)\12`, "abcdefghijkll", "abcdefghijkla2"},
+		{`(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)\123`, "abcdefghijkll3", "abcdefghijkla23"},
 		{`(a)\` + strings.Repeat("1", 30), "aa" + strings.Repeat("1", 29), "aa"},
 	} {
 		t.Run(test.source, func(t *testing.T) {
@@ -253,7 +260,10 @@ func TestBackreferenceGrammarAndCaptureNumbering(t *testing.T) {
 			}
 		})
 	}
-	for _, source := range []string{`\0`, `\1(a)`, `(a\1)`, `((a)\1)`, `(?:a)\1`, `(a)\2`} {
+	for _, source := range []string{
+		`\0`, `\1(a)`, `(a\1)`, `((a)\1)`, `(?:a)\1`, `(a)\2`,
+		`(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l\123)`,
+	} {
 		t.Run("invalid/"+source, func(t *testing.T) {
 			t.Parallel()
 			if err := xpathregex.Validate(source, true); err == nil {
@@ -294,6 +304,10 @@ func TestQuantifierGrammarAndEscapedBraces(t *testing.T) {
 		{`(?:ab){2}`, "abab", "ab"},
 		{`[{}]`, "{", "a"},
 		{`\{2\}`, "{2}", "22"},
+		{`\({2}`, "((", "("},
+		{`\|{2}`, "||", "|"},
+		{`\{{2}`, "{{", "{"},
+		{`\\\({2}`, `\((`, `\(`},
 	} {
 		t.Run(test.source, func(t *testing.T) {
 			t.Parallel()
@@ -302,7 +316,7 @@ func TestQuantifierGrammarAndEscapedBraces(t *testing.T) {
 			assertRegexMatch(t, compiled, test.no, false)
 		})
 	}
-	for _, source := range []string{`{1}a`, `a{}`, `a{,2}`, `a{2,a}`, `a{1,2,3}`, `a{2`, `a}`, `a|{2}`, `({2})`, `a{{2}}`} {
+	for _, source := range []string{`{1}a`, `a{}`, `a{,2}`, `a{2,a}`, `a{1,2,3}`, `a{2`, `a}`, `a|{2}`, `({2})`, `a{{2}}`, `\\({2})`, `\\|{2}`} {
 		t.Run("invalid/"+source, func(t *testing.T) {
 			t.Parallel()
 			if err := xpathregex.Validate(source, true); err == nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlsig"
@@ -86,8 +87,12 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 		return nil, err
 	}
 
-	if returned1, matched := buildIsZero(ctx, &at, &s); matched {
-		return nil, returned1
+	if ctx == nil || at.IsZero() || !s.ValidUntil.After(at) || s.ValidUntil.IsZero() || !profile.URI(s.EntityID) {
+		return nil, ErrMetadata
+	}
+
+	if s.SP == nil && s.IDP == nil && s.AuthnAuthority == nil && s.AttributeAuthority == nil && s.PDP == nil {
+		return nil, ErrMetadata
 	}
 
 	id := s.ID
@@ -110,12 +115,12 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 	xmlutil.Set(root, xmlNameEntityID, s.EntityID)
 	xmlutil.Set(root, nameValidUntil, profile.Time(s.ValidUntil))
 
-	if returned1Value, matchedBranch := buildCacheDuration(&s, root); matchedBranch {
-		return nil, returned1Value
+	if err := appendCacheDuration(s.CacheDuration, root); err != nil {
+		return nil, err
 	}
 
-	if returned1ValueValue, matchedBranchBranch := buildEntries(ctx, &s, root, o.MaxKeysPerRole); matchedBranchBranch {
-		return nil, returned1ValueValue
+	if err := appendRoles(ctx, &s, root, o.MaxKeysPerRole); err != nil {
+		return nil, err
 	}
 
 	d, e := xmlutil.Document(ctx, root)
@@ -138,11 +143,20 @@ func Build(ctx context.Context, s EntityDescriptor, at time.Time, o Options) (*d
 	return d, nil
 }
 
-// Sign creates a root signature before the first metadata child. Unlike
-// Verify, signing an aggregate that already contains signatures is not supported.
+// Sign creates a root signature before the first metadata child at the supplied
+// nonzero validation time. It rejects aggregates that already contain signatures.
 func Sign(ctx context.Context, d *document.Document, key crypto.Signer, certificateDER []byte, method string, at time.Time, o Options) (*document.Document, error) {
-	if d == nil || len(xmldsig.Signatures(d)) != 0 {
+	if d == nil || at.IsZero() || len(xmldsig.Signatures(d)) != 0 {
 		return nil, ErrMetadata
+	}
+
+	o, e := normalize(o)
+	if e != nil {
+		return nil, e
+	}
+
+	if _, e := expiry(d.Root(), at, at.Add(o.MaxLifetime)); e != nil {
+		return nil, e
 	}
 
 	signed, e := xmlsig.Sign(ctx, d, d.Root(), xmlsig.SigningKey{Key: key, CertificateDER: certificateDER, Method: method, Policy: o.Policy}, false)
@@ -150,7 +164,7 @@ func Sign(ctx context.Context, d *document.Document, key crypto.Signer, certific
 		return nil, e
 	}
 
-	v, e := NewVerifier(Config{TrustedKeys: []crypto.PublicKey{key.Public()}, Options: o})
+	v, e := newVerifier([]crypto.PublicKey{signature.SignerPublic(key)}, o)
 	if e != nil {
 		return nil, e
 	}
@@ -172,14 +186,10 @@ func Sign(ctx context.Context, d *document.Document, key crypto.Signer, certific
 
 func md(local string) *tree.Node { return xmlutil.Node(prefixMetadata, Namespace, local) }
 
-func buildOrder(order []string, r *struct {
-	kind RoleType
-	spec *RoleDescriptor
-}, n *tree.Node, used map[string]struct{},
-) {
+func appendRoleEndpoints(order []string, role *RoleDescriptor, n *tree.Node, used map[string]struct{}) {
 	for _, kind := range order {
 		if kind == nameNameIDFormat {
-			for _, f := range r.spec.NameIDFormats {
+			for _, f := range role.NameIDFormats {
 				nf := md(kind)
 				xmlutil.Text(nf, f)
 				xmlutil.Add(n, nf)
@@ -189,7 +199,7 @@ func buildOrder(order []string, r *struct {
 		}
 
 		used[kind] = struct{}{}
-		for _, ep := range r.spec.Endpoints[kind] {
+		for _, ep := range role.Endpoints[kind] {
 			n2 := md(kind)
 			xmlutil.Set(n2, xmlNameBinding, ep.Binding)
 			xmlutil.Set(n2, xmlNameLocation, ep.Location)
@@ -212,28 +222,20 @@ func buildOrder(order []string, r *struct {
 	}
 }
 
-func buildIsZero(ctx context.Context, at *time.Time, s *EntityDescriptor) (returned1 error, matched bool) {
-	if ctx == nil || at.IsZero() || s.ValidUntil.IsZero() || !s.ValidUntil.After(*at) || s.SP == nil && s.IDP == nil && s.AuthnAuthority == nil && s.AttributeAuthority == nil && s.PDP == nil || !profile.URI(s.EntityID) {
-		return ErrMetadata, true
-	}
-
-	return
-}
-
-func buildCacheDuration(s *EntityDescriptor, root *tree.Node) (returned1Value error, matchedBranch bool) {
+func appendCacheDuration(duration time.Duration, root *tree.Node) error {
 	const (
 		decimalRadix         = 10
 		maximumCacheDuration = 365 * 24 * time.Hour
 		nanosecondsPerSecond = int64(time.Second)
 	)
 
-	if s.CacheDuration != 0 {
-		if s.CacheDuration <= 0 || s.CacheDuration > maximumCacheDuration {
-			return ErrMetadata, true
+	if duration != 0 {
+		if duration <= 0 || duration > maximumCacheDuration {
+			return ErrMetadata
 		}
 
-		secs := s.CacheDuration / time.Second
-		frac := s.CacheDuration % time.Second
+		secs := duration / time.Second
+		frac := duration % time.Second
 
 		value := strconv.FormatInt(int64(secs), decimalRadix)
 		if frac != 0 {
@@ -243,10 +245,10 @@ func buildCacheDuration(s *EntityDescriptor, root *tree.Node) (returned1Value er
 		xmlutil.Set(root, nameCacheDuration, "PT"+value+"S")
 	}
 
-	return
+	return nil
 }
 
-func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, maxKeys int) (returned1ValueValue error, matchedBranchBranch bool) {
+func appendRoles(ctx context.Context, s *EntityDescriptor, root *tree.Node, maxKeys int) error {
 	for _, r := range []struct {
 		kind RoleType
 		spec *RoleDescriptor
@@ -256,11 +258,11 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 		}
 
 		if len(r.spec.Keys) > maxKeys || validateEndpointExtensionValues(r.spec.Endpoints) != nil {
-			return ErrMetadata, true
+			return ErrMetadata
 		}
 
 		if isAuthorityRole(r.kind) && (r.spec.AuthnRequestsSigned || r.spec.WantAuthnRequestsSigned || r.spec.WantAssertionsSigned) {
-			return ErrMetadata, true
+			return ErrMetadata
 		}
 
 		n := md(string(r.kind))
@@ -280,12 +282,12 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 
 		for _, k := range r.spec.Keys {
 			if len(k.CertificateDER) > maximumCertificateBytes {
-				return ErrMetadata, true
+				return ErrMetadata
 			}
 
 			encoded, err := tree.EncodeBase64(ctx, k.CertificateDER)
 			if err != nil {
-				return err, true
+				return err
 			}
 
 			kd := md(xmlNameKeyDescriptor)
@@ -307,16 +309,16 @@ func buildEntries(ctx context.Context, s *EntityDescriptor, root *tree.Node, max
 
 		used := map[string]struct{}{}
 
-		buildOrder(order, &r, n, used)
+		appendRoleEndpoints(order, r.spec, n, used)
 
 		for kind := range r.spec.Endpoints {
 			if _, exists := used[kind]; !exists {
-				return ErrMetadata, true
+				return ErrMetadata
 			}
 		}
 
 		xmlutil.Add(root, n)
 	}
 
-	return returned1ValueValue, matchedBranchBranch
+	return nil
 }

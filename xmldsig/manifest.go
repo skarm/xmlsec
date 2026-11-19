@@ -411,12 +411,12 @@ func (b *manifestGraphBuilder) registerManifest(t *coreTask) ([]*tree.Node, erro
 
 func (b *manifestGraphBuilder) buildManifestReferences(m *manifestPlan, children []*tree.Node, depth int) error {
 	for i, n := range children {
-		r, err := parseCoreReference(b.ctx, n, b.plan.policy, b.plan.processing, b.template)
+		r, err := parseCoreReference(b.ctx, m.scope.doc, n, b.plan.policy, b.plan.processing, b.template)
 		if err != nil {
 			return (&coreTask{ref: r, owner: m, index: i}).wrap(stageStructure, err)
 		}
 
-		if m.scope.uri != "" {
+		if m.scope.doc != b.doc {
 			if err := reference.PrepareTransforms(b.ctx, r.transforms, b.plan.processing); err != nil {
 				return (&coreTask{ref: r, owner: m, index: i}).wrap(stagePreflight, processingError(err))
 			}

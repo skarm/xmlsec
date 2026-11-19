@@ -1,6 +1,7 @@
 package xdm
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -43,16 +44,29 @@ type XMLSerialization struct {
 }
 
 // WriteTo serializes a borrowed node with declaration metadata using a background
-// context. It leaves dst open and can leave partial output on error; use
-// WriteSequence when cancellation is required.
+// context. It leaves dst open and can leave partial output on error.
 func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
+	return w.WriteToContext(context.Background(), dst, n)
+}
+
+// WriteToContext serializes a borrowed node and checks ctx while writing.
+// It leaves dst open and can leave partial output on error.
+func (w XMLSerialization) WriteToContext(ctx context.Context, dst io.Writer, n Node) error {
 	if IsNilNode(n) || nilcheck.IsNil(dst) {
 		return errors.New("nil XML serialization input")
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if d, ok := n.(*Document); ok {
-		if err := w.declaration(dst, d); err != nil {
-			return err
+		if !w.OmitDeclaration && d.standalone != StandaloneNoXMLDecl {
+			// The declaration's effective version also governs body characters.
+			w.Version = cmp.Or(w.Version, d.Version(), lexicon.XMLVersion10)
+			if err := w.declaration(dst, d); err != nil {
+				return err
+			}
 		}
 
 		if !w.OmitDoctype && w.Doctype == nil {
@@ -60,7 +74,7 @@ func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
 		}
 	}
 
-	return w.WriteSequence(context.Background(), dst, func(yield func(XMLItem, error) bool) {
+	return w.WriteSequence(ctx, dst, func(yield func(XMLItem, error) bool) {
 		if doc, ok := n.(*Document); ok {
 			for child := range Children(doc) {
 				if !yield(XMLItem{Node: child}, nil) {
@@ -74,27 +88,14 @@ func (w XMLSerialization) WriteTo(dst io.Writer, n Node) error {
 }
 
 func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
-	if w.OmitDeclaration || d.standalone == StandaloneNoXMLDecl {
-		return nil
-	}
-
-	version := w.Version
-	if version == "" {
-		version = d.Version()
-	}
-
-	if version == "" {
-		version = lexicon.XMLVersion10
-	}
-
 	enc := w.Encoding
 	if enc == "" {
 		enc = d.Encoding()
 	}
 
-	versionDigits, versionPrefix := strings.CutPrefix(version, xmlDeclarationVersionPrefix)
+	versionDigits, versionPrefix := strings.CutPrefix(w.Version, xmlDeclarationVersionPrefix)
 	if !versionPrefix || versionDigits == "" || strings.Trim(versionDigits, xmlDeclarationDigits) != "" {
-		return fmt.Errorf("%w: invalid XML declaration version %q", tree.ErrMalformed, version)
+		return fmt.Errorf("%w: invalid XML declaration version %q", tree.ErrMalformed, w.Version)
 	}
 
 	if !xmlchar.IsValidEncName(enc) {
@@ -105,7 +106,7 @@ func (w XMLSerialization) declaration(dst io.Writer, d *Document) error {
 		return fmt.Errorf("%w: invalid XML declaration standalone %q", tree.ErrMalformed, w.Standalone)
 	}
 
-	decl := fmt.Sprintf(xmlDeclarationFormat, version, enc)
+	decl := fmt.Sprintf(xmlDeclarationFormat, w.Version, enc)
 	if w.Standalone != "" {
 		decl += standaloneAttributePrefix + w.Standalone + "\""
 	}

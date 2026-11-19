@@ -16,7 +16,9 @@ import (
 
 func TestIndependentSignedSAMLFixtures(t *testing.T) {
 	base := filepath.Join("..", "..", "..", "testdata", "saml-interop")
-	read := func(p string) []byte {
+	read := func(t *testing.T, p string) []byte {
+		t.Helper()
+
 		b, e := os.ReadFile(filepath.Join(base, p))
 		if e != nil {
 			t.Fatal(e)
@@ -32,7 +34,7 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 		At          string
 		Valid       bool
 	}
-	if e := json.Unmarshal(read("manifest.json"), &cases); e != nil {
+	if e := json.Unmarshal(read(t, "manifest.json"), &cases); e != nil {
 		t.Fatal(e)
 	}
 	if len(cases) != 16 {
@@ -41,7 +43,7 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
-			cert, e := x509.ParseCertificate(read(c.Certificate))
+			cert, e := x509.ParseCertificate(read(t, c.Certificate))
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -51,7 +53,7 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 				t.Fatal(e)
 			}
 
-			d, e := document.Parse(t.Context(), read(c.Name+".xml"), document.DefaultLimits())
+			d, e := document.Parse(t.Context(), read(t, c.Name+".xml"), document.DefaultLimits())
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -66,7 +68,7 @@ func TestIndependentSignedSAMLFixtures(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				_, e = v.Verify(ctx, read(c.Name+".xml"), at)
+				_, e = v.Verify(ctx, read(t, c.Name+".xml"), at)
 			case "request":
 				_, e = protocol.VerifyAuthnRequest(ctx, d, keys, protocol.RequestOptions{Issuer: "https://sp.example/metadata", Destination: "https://idp.example/sso", ACS: []metadata.Endpoint{{Binding: metadata.HTTPPost, Location: "https://sp.example/acs", Index: 0, Indexed: true}}, At: at})
 			case "response":

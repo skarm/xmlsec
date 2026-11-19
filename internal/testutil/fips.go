@@ -19,18 +19,19 @@ const (
 	fipsChildEnabled = "1"
 )
 
-// RunFIPSTest runs the current test in a FIPS-only child when FIPS is disabled.
+// RunFIPSTest runs the current test in a FIPS-only child when strict
+// enforcement is not already active.
 // It returns true when the caller should execute its FIPS assertions locally;
 // false means those assertions already passed in the child process.
 func RunFIPSTest(t *testing.T) bool {
 	t.Helper()
 
-	if fips140.Enabled() {
+	if fips140.Enforced() {
 		return true
 	}
 
 	if os.Getenv(fipsChildEnv) == fipsChildEnabled {
-		t.Fatal("FIPS is disabled in the FIPS-only test process")
+		t.Fatal("strict enforcement is disabled in the FIPS-only test process")
 	}
 
 	executable, err := os.Executable()

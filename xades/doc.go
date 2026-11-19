@@ -41,7 +41,8 @@
 //
 // # Timestamps and preservation
 //
-// [AddSignatureTimestamp] obtains and verifies a nonce-bound TSA response;
+// [AddSignatureTimestamp] obtains and verifies a TSA response with a nonce by
+// default. The request options allow callers to omit the nonce explicitly.
 // [AttachSignatureTimestamp] verifies an already obtained token. [NewValidator]
 // configures signer/TSA trust and a required B-B, B-T, B-LT or B-LTA minimum.
 // [Validator.EmbedValidationMaterial] and archive timestamp methods augment new

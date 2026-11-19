@@ -234,6 +234,11 @@ func TestSignRejectsInvalidSetupBeforeCallingProvider(t *testing.T) {
 	if got, err := signature.Sign(t.Context(), provider, valid, nil); got != nil || !errors.Is(err, signature.Err) || provider.calls != 0 {
 		t.Errorf("Sign with malformed key = (%x, %v), provider calls = %d, want nil, %v and zero calls", got, err, provider.calls, signature.Err)
 	}
+
+	provider.Signer = publicSigner{public: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public()}
+	if got, err := signature.Sign(t.Context(), provider, valid, nil); got != nil || !errors.Is(err, signature.Err) || provider.calls != 0 {
+		t.Errorf("Sign with mismatched key family = (%x, %v), provider calls = %d, want nil, %v and zero calls", got, err, provider.calls, signature.Err)
+	}
 }
 
 func TestSignDigestPassesMessageToEd25519(t *testing.T) {
@@ -451,10 +456,17 @@ type recordingProvider struct {
 	output   []byte
 	err      error
 	calls    int
+	onPublic func()
 	complete func()
 }
 
-func (p *recordingProvider) Public() crypto.PublicKey { return p.key.Public() }
+func (p *recordingProvider) Public() crypto.PublicKey {
+	if p.onPublic != nil {
+		p.onPublic()
+	}
+
+	return p.key.Public()
+}
 
 func (p *recordingProvider) Sign(ctx context.Context, reader io.Reader, input []byte, options crypto.SignerOpts) ([]byte, error) {
 	p.calls++
@@ -538,6 +550,12 @@ func TestSignRejectsCancellationDuringProviderAndPreservesCause(t *testing.T) {
 	if value, err := signature.Sign(t.Context(), absent, algorithm, nil); value != nil || !errors.Is(err, signature.Err) {
 		t.Fatal("nil signer accepted", value, err)
 	}
+
+	ctx, cancel = context.WithCancel(t.Context())
+	provider = &recordingProvider{key: key, onPublic: cancel}
+	if value, err := signature.Sign(ctx, signature.SignerAdapter{Provider: provider}, algorithm, nil); value != nil || !errors.Is(err, context.Canceled) || provider.calls != 0 {
+		t.Fatal("cancellation during public-key retrieval should stop signing", value, err, provider.calls)
+	}
 }
 
 func TestKeyChecksStrengthAndMalformedPublicRepresentations(t *testing.T) {
@@ -596,6 +614,12 @@ func TestMatchCertificateBindsExactSignerSPKI(t *testing.T) {
 	chain := testcert.New(t)
 	if err := signature.MatchCertificate(chain.LeafKey, chain.Leaf); err != nil {
 		t.Fatal("matching certificate rejected", err)
+	}
+
+	publicCalls := 0
+	provider := &recordingProvider{key: chain.LeafKey, onPublic: func() { publicCalls++ }}
+	if err := signature.MatchCertificate(signature.SignerAdapter{Provider: provider}, chain.Leaf); err != nil || publicCalls != 1 {
+		t.Fatalf("matching certificate = %v, with %d provider key lookups; want one", err, publicCalls)
 	}
 	for _, test := range []struct {
 		name string

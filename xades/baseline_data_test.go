@@ -8,6 +8,37 @@ import (
 	"github.com/skarm/xmlsec/document"
 )
 
+func TestParseDataObjectFormatMediaType(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, body, want string
+		wantErr          error
+	}{
+		{name: "omitted"},
+		{name: "type and subtype with parameters", body: `<MimeType>application/json; charset=utf-8</MimeType>`, want: "application/json; charset=utf-8"},
+		{name: "disposition", body: `<MimeType>attachment</MimeType>`, wantErr: ErrProfile},
+		{name: "empty", body: `<MimeType/>`, wantErr: ErrProfile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := `<DataObjectFormat xmlns="` + Namespace + `" ObjectReference="#data"><Description>Catalog item</Description>` + tc.body + "</DataObjectFormat>"
+			doc, err := document.Parse(t.Context(), []byte(raw), document.DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := parseDataObjectFormat(doc.Root())
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("parseDataObjectFormat error = %v, want %v", err, tc.wantErr)
+			}
+			if err == nil && (got.ObjectReference != "#data" || got.Description != "Catalog item" || got.MIMEType != tc.want) {
+				t.Errorf("parseDataObjectFormat = %+v, want description, object reference, MIME type %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseObjectIdentifierValidatesQualifierAndDocumentation(t *testing.T) {
 	t.Parallel()
 

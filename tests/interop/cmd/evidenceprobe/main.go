@@ -159,29 +159,23 @@ func main() {
 
 		output, e = d.XML(ctx)
 	case "xades-value":
-		d, err := document.Parse(ctx, read(*input), document.DefaultLimits())
+		_, selected := readSignedDocument(ctx, *input)
+		value, err := signatureValue(selected)
 		must(err)
-
-		s := xmldsig.Signatures(d)
-		if len(s) != 1 {
-			must(errors.New("signature count"))
-		}
 
 		var b bytes.Buffer
-		must(c14n.WriteElement(ctx, &b, s[0].Children()[1], c14n.Options{Algorithm: c14n.Exclusive}))
+		must(c14n.WriteElement(ctx, &b, value, c14n.Options{Algorithm: c14n.Exclusive}))
 		output = b.Bytes()
 	case "xades-attach":
-		d, err := document.Parse(ctx, read(*input), document.DefaultLimits())
-		must(err)
+		d, selected := readSignedDocument(ctx, *input)
 		r, err := timestamp.ParseResponse(ctx, read(*data))
 		must(err)
-		d, _, err = xades.AttachSignatureTimestamp(ctx, d, xmldsig.Signatures(d)[0], read(*cert), r.TokenDER(), xades.AddTimestampOptions{Validation: xades.TimedOptions{TSA: tsa(), At: t, Evidence: pki.Evidence{CRLs: [][]byte{read(*crl)}}}})
+		d, _, err = xades.AttachSignatureTimestamp(ctx, d, selected, read(*cert), r.TokenDER(), xades.AddTimestampOptions{Validation: xades.TimedOptions{TSA: tsa(), At: t, Evidence: pki.Evidence{CRLs: [][]byte{read(*crl)}}}})
 		must(err)
 
 		output, e = d.XML(ctx)
 	case "xades-embed", "archive-add", "archive-attach", "archive-verify":
-		doc, err := document.Parse(ctx, read(*input), document.DefaultLimits())
-		must(err)
+		doc, selected := readSignedDocument(ctx, *input)
 		tv, err := xades.NewValidator(xades.ValidatorConfig{SignerPKI: pki.Config{Roots: [][]byte{read(*root)}, Revocation: pki.RequireCRL}, TSA: tsa(), MinimumLevel: xades.LevelLT})
 		must(err)
 
@@ -189,7 +183,7 @@ func main() {
 
 		switch *mode {
 		case "xades-embed":
-			doc, _, e = tv.EmbedValidationMaterial(ctx, doc, xmldsig.Signatures(doc)[0], read(*cert), t, proof)
+			doc, _, e = tv.EmbedValidationMaterial(ctx, doc, selected, read(*cert), t, proof)
 		case "archive-add":
 			tr := timestamp.TransportFunc(func(ctx context.Context, q []byte) (io.ReadCloser, error) {
 				b, err := timestamp.IssueResponse(ctx, q, key, read(*issuer), timestamp.IssueOptions{Policy: policy, SerialNumber: big.NewInt(99), GenTime: t, ExtraCertificates: [][]byte{read(*root)}})
@@ -199,11 +193,11 @@ func main() {
 
 				return io.NopCloser(bytes.NewReader(b)), nil
 			})
-			doc, _, e = tv.AddArchiveTimestamp(ctx, doc, xmldsig.Signatures(doc)[0], read(*cert), t, tr, xades.AddArchiveOptions{Canonicalization: *alg, Request: timestamp.RequestOptions{Policy: policy}})
+			doc, _, e = tv.AddArchiveTimestamp(ctx, doc, selected, read(*cert), t, tr, xades.AddArchiveOptions{Canonicalization: *alg, Request: timestamp.RequestOptions{Policy: policy}})
 		case "archive-attach":
-			doc, _, e = tv.AttachArchiveTimestamp(ctx, doc, xmldsig.Signatures(doc)[0], read(*cert), t, read(*token), *alg)
+			doc, _, e = tv.AttachArchiveTimestamp(ctx, doc, selected, read(*cert), t, read(*token), *alg)
 		default:
-			r, err := tv.ValidateEnveloped(ctx, doc, xmldsig.Signatures(doc)[0], read(*cert), t, xades.ValidationEvidence{})
+			r, err := tv.ValidateEnveloped(ctx, doc, selected, read(*cert), t, xades.ValidationEvidence{})
 			must(err)
 
 			if r.Level() != xades.LevelLTA {
@@ -219,10 +213,9 @@ func main() {
 			output, e = doc.XML(ctx)
 		}
 	case "xades-verify":
-		d, err := document.Parse(ctx, read(*input), document.DefaultLimits())
-		must(err)
+		d, selected := readSignedDocument(ctx, *input)
 
-		_, e = xades.VerifyTimedEnveloped(ctx, d, xmldsig.Signatures(d)[0], read(*cert), xades.TimedOptions{TSA: tsa(), At: t, Evidence: pki.Evidence{CRLs: [][]byte{read(*crl)}}})
+		_, e = xades.VerifyTimedEnveloped(ctx, d, selected, read(*cert), xades.TimedOptions{TSA: tsa(), At: t, Evidence: pki.Evidence{CRLs: [][]byte{read(*crl)}}})
 	default:
 		must(errors.New("mode"))
 	}
@@ -234,6 +227,33 @@ func main() {
 	}
 
 	fmt.Println("OK", *mode)
+}
+
+func readSignedDocument(ctx context.Context, path string) (*document.Document, document.Element) {
+	doc, err := document.Parse(ctx, read(path), document.DefaultLimits())
+	must(err)
+	selected, err := singleSignature(doc)
+	must(err)
+
+	return doc, selected
+}
+
+func singleSignature(doc *document.Document) (document.Element, error) {
+	signatures := xmldsig.Signatures(doc)
+	if len(signatures) != 1 {
+		return document.Element{}, fmt.Errorf("expected one signature, got %d", len(signatures))
+	}
+
+	return signatures[0], nil
+}
+
+func signatureValue(signature document.Element) (document.Element, error) {
+	children := signature.Children()
+	if len(children) < 2 || children[0].Name() != (document.Name{Space: xmldsig.Namespace, Local: "SignedInfo"}) || children[1].Name() != (document.Name{Space: xmldsig.Namespace, Local: "SignatureValue"}) {
+		return document.Element{}, errors.New("missing SignatureValue after SignedInfo")
+	}
+
+	return children[1], nil
 }
 
 func must(e error) {

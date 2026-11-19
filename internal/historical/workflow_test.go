@@ -141,15 +141,19 @@ func TestTimestampPreparationChecksAccuracyWithoutGrantingHistoricalTrust(t *tes
 			t.Parallel()
 
 			stamp := issuer.issueStamp(t, 1, testcert.Now().Add(test.delta), test.accuracy, false, []byte("timestamp input"))
+			stamp.candidate.Content = true
 			workflow := validationWorkflow{ctx: t.Context(), now: testcert.Now(), config: Config{TSA: issuer.verifier, MissingAccuracy: test.assumed, RequireAllTimestamps: true}, report: &Report{}}
 			prepared, err := workflow.prepareTimestamp(stamp.candidate)
 			if !test.want {
 				if prepared != nil || !errors.Is(err, ErrValidation) || workflow.report.SubIndication != signatureConstraintsFailure || len(workflow.report.Stamps) != 1 || workflow.report.Stamps[0].SubIndication != "TIMESTAMP_CONSTRAINTS_FAILURE" {
 					t.Fatal("timestamp precision constraint was bypassed", prepared, err, workflow.report)
 				}
+				if !workflow.report.Stamps[0].Content || workflow.report.Stamps[0].Archive {
+					t.Fatal("rejected content timestamp misclassified", workflow.report.Stamps)
+				}
 				return
 			}
-			if err != nil || prepared == nil || prepared.upper != testcert.Now() || !prepared.assertion.Valid() || prepared.certificate == nil || len(workflow.report.Stamps) != 0 {
+			if err != nil || prepared == nil || !prepared.candidate.Content || prepared.upper != testcert.Now() || !prepared.assertion.Valid() || prepared.certificate == nil || len(workflow.report.Stamps) != 0 {
 				t.Fatal("valid timestamp preparation failed", prepared, err)
 			}
 			if workflow.report.Indication != Indeterminate || workflow.report.Proofs != nil {
@@ -164,6 +168,7 @@ func TestTimestampRejectionPreservesCauseAndRequiredPolicy(t *testing.T) {
 
 	issuer := newTimestampIssuer(t)
 	stamp := issuer.issueStamp(t, 1, testcert.Now().Add(-time.Minute), nil, false, []byte("input"))
+	stamp.candidate.Content = true
 	for _, test := range []struct {
 		cause      error
 		indication Indication
@@ -179,6 +184,9 @@ func TestTimestampRejectionPreservesCauseAndRequiredPolicy(t *testing.T) {
 			}
 			if len(workflow.report.Stamps) != 1 || workflow.report.Stamps[0].Token != stamp.assertion.TokenSHA256() || workflow.report.Stamps[0].Indication != test.indication || workflow.report.Stamps[0].SubIndication != test.sub {
 				t.Fatal("timestamp rejection diagnostics lost", workflow.report.Stamps)
+			}
+			if !workflow.report.Stamps[0].Content || workflow.report.Stamps[0].Archive {
+				t.Fatal("rejected content timestamp misclassified", workflow.report.Stamps)
 			}
 			if required && (workflow.report.Indication != test.indication || workflow.report.SubIndication != test.sub) {
 				t.Fatal("required timestamp failure not propagated", workflow.report)
@@ -476,6 +484,54 @@ func TestProcessTimestampsRejectsInvertedArchiveChronology(t *testing.T) {
 				t.Errorf("proof extraction steps = %+v, want a single step from the archive", steps)
 			}
 		})
+	}
+}
+
+func TestTimestampProofCancellationPreservesAuthenticatedOutcome(t *testing.T) {
+	t.Parallel()
+
+	issuer := newTimestampIssuer(t)
+	now := testcert.Now()
+	protected := issuer.issueStamp(t, 1, now.Add(-2*time.Minute), new(time.Duration), false, []byte("signed content"))
+	archive := issuer.issueStamp(t, 2, now.Add(-time.Minute), new(time.Duration), false, protected.candidate.Token.DER())
+	archive.candidate.Archive = true
+	archive.candidate.Covered = [][sha256.Size]byte{protected.assertion.TokenSHA256()}
+
+	session, err := issuer.verifier.NewHistoricalSession(t.Context(), pki.HistoricalOptions{}, now, pki.Evidence{CRLs: [][]byte{testcert.CRL(t, issuer.chain)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	archiveOutcome, err := validateStamp(t.Context(), Config{}, archive, now, session, nil)
+	if err != nil || archiveOutcome.Indication != Passed {
+		t.Fatalf("archive outcome = %+v, error = %v", archiveOutcome, err)
+	}
+
+	protectedOutcome, err := validateStamp(t.Context(), Config{}, protected, now, session, nil)
+	if err != nil || protectedOutcome.Indication != Passed {
+		t.Fatalf("protected timestamp outcome = %+v, error = %v", protectedOutcome, err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for _, required := range []bool{false, true} {
+		w := validationWorkflow{
+			ctx: ctx, graph: timestampGraph(protected, archive),
+			report: &Report{Stamps: []Stamp{archiveOutcome, protectedOutcome}},
+			config: Config{RequireAllTimestamps: required},
+		}
+		if passed, err := w.applyTimestampProof(protected, []preparedStamp{archive}); passed || !errors.Is(err, context.Canceled) {
+			t.Errorf("required=%t: proof passed=%t, error=%v, want cancellation", required, passed, err)
+		}
+
+		if !slices.Equal(w.report.Stamps, []Stamp{archiveOutcome, protectedOutcome}) {
+			t.Errorf("required=%t: cancellation changed the authentication outcomes", required)
+		}
+
+		if w.report.SubIndication != "" || len(w.report.Steps) != 0 {
+			t.Errorf("required=%t: cancellation reported %q and %d proof steps", required, w.report.SubIndication, len(w.report.Steps))
+		}
 	}
 }
 

@@ -22,6 +22,27 @@ func TestPackageOverrideBindsOriginalAndReplacement(t *testing.T) {
 			want:     "library:caller:app|library:direct:app",
 		},
 		{
+			name:     "function_new_each_time_true_matches_the_default",
+			library:  `<xsl:function name="p:label" visibility="public"><xsl:sequence select="'original'"/></xsl:function>`,
+			override: `<xsl:function name="p:label" new-each-time="true"><xsl:sequence select="'replacement'"/></xsl:function>`,
+			body:     `<xsl:value-of select="p:label()"/>`,
+			want:     "replacement",
+		},
+		{
+			name:     "function_new_each_time_numeric_true_matches_yes",
+			library:  `<xsl:function name="p:label" visibility="public" new-each-time="1"><xsl:sequence select="'original'"/></xsl:function>`,
+			override: `<xsl:function name="p:label" new-each-time="yes"><xsl:sequence select="'replacement'"/></xsl:function>`,
+			body:     `<xsl:value-of select="p:label()"/>`,
+			want:     "replacement",
+		},
+		{
+			name:     "function_new_each_time_false_matches_numeric_false",
+			library:  `<xsl:function name="p:label" visibility="public" new-each-time="false"><xsl:sequence select="'original'"/></xsl:function>`,
+			override: `<xsl:function name="p:label" new-each-time="0"><xsl:sequence select="'replacement'"/></xsl:function>`,
+			body:     `<xsl:value-of select="p:label()"/>`,
+			want:     "replacement",
+		},
+		{
 			name: "template_original_receives_override_argument",
 			library: `<xsl:template name="p:label" visibility="public"><xsl:param name="value" as="xs:integer" required="yes"/><xsl:value-of select="'base:' || $value"/></xsl:template>
 				<xsl:template name="p:report" visibility="public"><xsl:call-template name="p:label"><xsl:with-param name="value" select="2"/></xsl:call-template></xsl:template>`,
@@ -52,6 +73,18 @@ func TestPackageOverrideBindsOriginalAndReplacement(t *testing.T) {
 			override: `<xsl:template match="r" mode="p:report" priority="-10"><xsl:text>app:</xsl:text><xsl:next-match/></xsl:template>`,
 			body:     `<xsl:apply-templates select="parse-xml('&lt;r/>')/r" mode="p:report"/>`,
 			want:     "app:base",
+		},
+		{
+			name: "mode_override_retains_all_mode_rules_in_declaring_package",
+			library: `<xsl:mode name="p:report" visibility="public"/>
+				<xsl:mode name="p:other" visibility="public"/>
+				<xsl:template match="r" mode="#all" priority="100"><xsl:text>base</xsl:text></xsl:template>`,
+			override: `<xsl:template match="r" mode="p:report"><xsl:text>first:</xsl:text><xsl:next-match/></xsl:template>
+				<xsl:template match="r" mode="p:report"><xsl:text>second:</xsl:text><xsl:next-match/></xsl:template>`,
+			body: `<xsl:variable name="input" select="parse-xml('&lt;r/>')/r"/>
+				<xsl:apply-templates select="$input" mode="p:report"/><xsl:text>|</xsl:text>
+				<xsl:apply-templates select="$input" mode="p:other"/>`,
+			want: "second:first:base|base",
 		},
 		{
 			name:     "inactive_override_does_not_replace_original",
@@ -85,6 +118,7 @@ func TestPackageOverrideRejectsIncompatibleComponents(t *testing.T) {
 		{"missing_function_arity", `<xsl:function name="p:f" visibility="public"><xsl:param name="value"/></xsl:function>`, `<xsl:function name="p:f"/>`, "XTSE3058"},
 		{"missing_attribute_set", "", `<xsl:attribute-set name="p:missing"/>`, "XTSE3058"},
 		{"incompatible_function_parameter", `<xsl:function name="p:f" visibility="public"><xsl:param name="value" as="xs:integer"/></xsl:function>`, `<xsl:function name="p:f"><xsl:param name="value" as="xs:string"/></xsl:function>`, "XTSE3070"},
+		{"function_new_each_time_maybe_differs_from_the_default", `<xsl:function name="p:f" visibility="public"/>`, `<xsl:function name="p:f" new-each-time="maybe"/>`, "XTSE3070"},
 		{"incompatible_template_parameter", `<xsl:template name="p:t" visibility="public"><xsl:param name="value" required="yes"/></xsl:template>`, `<xsl:template name="p:t"><xsl:param name="value"/></xsl:template>`, "XTSE3070"},
 		{"incompatible_global_type", `<xsl:variable name="p:v" as="xs:integer" visibility="public" select="1"/>`, `<xsl:param name="p:v" as="xs:string" select="'text'"/>`, "XTSE3070"},
 		{"abstract_global_has_no_original_value", `<xsl:variable name="p:v" as="xs:integer" visibility="abstract"/>`, `<xsl:variable name="p:v" as="xs:integer" select="$xsl:original"/>`, "XTSE3075"},

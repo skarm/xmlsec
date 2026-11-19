@@ -5,6 +5,7 @@ package xpath
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
 )
 
 // UCA query selectors keep their defined case; locale extensions enable the
@@ -167,9 +169,9 @@ func (p *collatorPool) put(c *collate.Collator, inputBytes int) {
 type collationImpl struct {
 	codepoint bool
 	compare   func(a, b string) int
-	indexOf   func(s, substr string) (pos, matchLen int)
-	hasPrefix func(s, prefix string) (bool, int)
-	hasSuffix func(s, suffix string) (bool, int)
+	indexOf   func(ctx context.Context, s, substr string) (pos, matchLen int, err error)
+	hasPrefix func(ctx context.Context, s, prefix string) (bool, int, error)
+	hasSuffix func(ctx context.Context, s, suffix string) (bool, int, error)
 	key       func(s string) []byte
 }
 
@@ -178,27 +180,27 @@ func newCodepointCollation() *collationImpl {
 	return &collationImpl{
 		codepoint: true,
 		compare:   strings.Compare,
-		indexOf: func(s, substr string) (int, int) {
+		indexOf: func(_ context.Context, s, substr string) (int, int, error) {
 			idx := strings.Index(s, substr)
 			if idx < 0 {
-				return collationMatchNotFound, 0
+				return collationMatchNotFound, 0, nil
 			}
 
-			return idx, len(substr)
+			return idx, len(substr), nil
 		},
-		hasPrefix: func(s, prefix string) (bool, int) {
+		hasPrefix: func(_ context.Context, s, prefix string) (bool, int, error) {
 			if strings.HasPrefix(s, prefix) {
-				return true, len(prefix)
+				return true, len(prefix), nil
 			}
 
-			return false, 0
+			return false, 0, nil
 		},
-		hasSuffix: func(s, suffix string) (bool, int) {
+		hasSuffix: func(_ context.Context, s, suffix string) (bool, int, error) {
 			if strings.HasSuffix(s, suffix) {
-				return true, len(suffix)
+				return true, len(suffix), nil
 			}
 
-			return false, 0
+			return false, 0, nil
 		},
 		key: func(s string) []byte {
 			return []byte(s)
@@ -213,38 +215,38 @@ func newHTMLASCIICaseInsensitiveCollation() *collationImpl {
 		compare: func(a, b string) int {
 			return strings.Compare(foldASCIIString(a), foldASCIIString(b))
 		},
-		indexOf: func(s, substr string) (int, int) {
+		indexOf: func(_ context.Context, s, substr string) (int, int, error) {
 			ls := foldASCIIString(s)
 			lsub := foldASCIIString(substr)
 
 			idx := strings.Index(ls, lsub)
 			if idx < 0 {
-				return collationMatchNotFound, 0
+				return collationMatchNotFound, 0, nil
 			}
 
-			return idx, len(substr)
+			return idx, len(substr), nil
 		},
-		hasPrefix: func(s, prefix string) (bool, int) {
+		hasPrefix: func(_ context.Context, s, prefix string) (bool, int, error) {
 			if len(s) < len(prefix) {
-				return false, 0
+				return false, 0, nil
 			}
 
 			if foldASCIIString(s[:len(prefix)]) == foldASCIIString(prefix) {
-				return true, len(prefix)
+				return true, len(prefix), nil
 			}
 
-			return false, 0
+			return false, 0, nil
 		},
-		hasSuffix: func(s, suffix string) (bool, int) {
+		hasSuffix: func(_ context.Context, s, suffix string) (bool, int, error) {
 			if len(s) < len(suffix) {
-				return false, 0
+				return false, 0, nil
 			}
 
 			if foldASCIIString(s[len(s)-len(suffix):]) == foldASCIIString(suffix) {
-				return true, len(suffix)
+				return true, len(suffix), nil
 			}
 
-			return false, 0
+			return false, 0, nil
 		},
 		key: func(s string) []byte {
 			return []byte(foldASCIIString(s))
@@ -349,26 +351,41 @@ func makeUCACollation(params string) (*collationImpl, error) {
 
 	return &collationImpl{
 		compare: cmp,
-		indexOf: func(s, substr string) (int, int) {
-			if ignoreVariables {
-				return ucaVariableIndexOf(cmp, s, substr, numeric)
+		indexOf: func(ctx context.Context, s, substr string) (int, int, error) {
+			if err := chargeCollationWork(ctx, s, substr); err != nil {
+				return collationMatchNotFound, 0, err
 			}
 
-			return ucaIndexOf(cmp, s, substr, numeric)
+			compare := boundedCollationCompare(ctx, cmp)
+			if ignoreVariables {
+				return ucaVariableIndexOf(compare, s, substr, numeric)
+			}
+
+			return ucaIndexOf(compare, s, substr, numeric)
 		},
-		hasPrefix: func(s, prefix string) (bool, int) {
-			if ignoreVariables {
-				return ucaVariableHasPrefix(cmp, s, prefix, numeric)
+		hasPrefix: func(ctx context.Context, s, prefix string) (bool, int, error) {
+			if err := chargeCollationWork(ctx, s, prefix); err != nil {
+				return false, 0, err
 			}
 
-			return ucaHasPrefix(cmp, s, prefix, numeric)
+			compare := boundedCollationCompare(ctx, cmp)
+			if ignoreVariables {
+				return ucaVariableHasPrefix(compare, s, prefix, numeric)
+			}
+
+			return ucaHasPrefix(compare, s, prefix, numeric)
 		},
-		hasSuffix: func(s, suffix string) (bool, int) {
-			if ignoreVariables {
-				return ucaVariableHasSuffix(cmp, s, suffix, numeric)
+		hasSuffix: func(ctx context.Context, s, suffix string) (bool, int, error) {
+			if err := chargeCollationWork(ctx, s, suffix); err != nil {
+				return false, 0, err
 			}
 
-			return ucaHasSuffix(cmp, s, suffix, numeric)
+			compare := boundedCollationCompare(ctx, cmp)
+			if ignoreVariables {
+				return ucaVariableHasSuffix(compare, s, suffix, numeric)
+			}
+
+			return ucaHasSuffix(compare, s, suffix, numeric)
 		},
 		key: key,
 	}, nil
@@ -409,6 +426,8 @@ func parseUCAParams(query string) (ucaParams, error) {
 		return parser.params, nil
 	}
 
+	parameters := make(map[string]string)
+
 	for parameter := range strings.SplitSeq(query, ";") {
 		if parameter == "" {
 			continue
@@ -421,6 +440,11 @@ func parseUCAParams(query string) (ucaParams, error) {
 			continue
 		}
 
+		parameters[key] = value
+	}
+	// F&O 3.1 requires the final value of a repeated keyword to take effect.
+	// Apply only those values so superseded flags and options cannot accumulate.
+	for key, value := range parameters {
 		parser.apply(key, value)
 	}
 
@@ -490,6 +514,19 @@ func (p *ucaParamParser) applyLanguage(value string) {
 }
 
 func (p *ucaParamParser) applyStrength(value string) {
+	switch value {
+	case "1":
+		value = collationStrengthPrimary
+	case "2":
+		value = collationStrengthSecondary
+	case "3":
+		value = nameTertiary
+	case "4":
+		value = "quaternary"
+	case "5":
+		value = collationStrengthIdentical
+	}
+
 	p.params.strength = value
 
 	switch value {
@@ -583,18 +620,41 @@ func projectVariableRunes(s string) projectedString {
 	}
 }
 
+type collationCompare func(a, b string) (int, error)
+
+func chargeCollationWork(ctx context.Context, a, b string) error {
+	// Charge each comparison and additional work for longer inputs. The same
+	// charge precedes preprocessing, which scans both strings before matching.
+	const bytesPerOperation = 64
+	return Charge(ctx, 1+len(a)/bytesPerOperation+len(b)/bytesPerOperation)
+}
+
+func boundedCollationCompare(ctx context.Context, compare func(a, b string) int) collationCompare {
+	return func(a, b string) (int, error) {
+		if err := chargeCollationWork(ctx, a, b); err != nil {
+			return 0, err
+		}
+
+		return compare(a, b), nil
+	}
+}
+
 // ucaIndexOf finds substr in s using UCA collation, scanning rune by rune.
 // Tries varying match lengths to handle numeric collation (e.g., "001" == "1").
-func ucaIndexOf(cmp func(a, b string) int, s, substr string, numeric bool) (int, int) {
-	start, end := ucaIndexOfRange(cmp, s, substr, numeric)
+func ucaIndexOf(cmp collationCompare, s, substr string, numeric bool) (int, int, error) {
+	start, end, err := ucaIndexOfRange(cmp, s, substr, numeric)
+	if err != nil {
+		return collationMatchNotFound, 0, err
+	}
+
 	if start < 0 {
-		return collationMatchNotFound, 0
+		return collationMatchNotFound, 0, nil
 	}
 
 	bytePos := ucaRuneByteOffset(s, start)
 	byteLen := ucaRuneByteOffset(s, end) - bytePos
 
-	return bytePos, byteLen
+	return bytePos, byteLen, nil
 }
 
 // ucaRuneByteOffset maps a decoded rune boundary to the original byte offset.
@@ -646,9 +706,18 @@ func ucaCandidateString(s string, runes []rune, boundaries []int, start, end int
 	return s[boundaries[start]:boundaries[end]]
 }
 
-func ucaIndexOfRange(cmp func(a, b string) int, s, substr string, numeric bool) (int, int) {
-	if substr == "" || cmp("", substr) == 0 {
-		return 0, 0
+func ucaIndexOfRange(cmp collationCompare, s, substr string, numeric bool) (int, int, error) {
+	if substr == "" {
+		return 0, 0, nil
+	}
+
+	emptyOrder, err := cmp("", substr)
+	if err != nil {
+		return collationMatchNotFound, collationMatchNotFound, err
+	}
+
+	if emptyOrder == 0 {
+		return 0, 0, nil
 	}
 
 	subRuneLen := len([]rune(substr))
@@ -662,28 +731,40 @@ func ucaIndexOfRange(cmp func(a, b string) int, s, substr string, numeric bool) 
 		maxLen := len(sRunes) - i
 		for matchLen := minLen; matchLen <= maxLen; matchLen++ {
 			candidate := ucaCandidateString(s, sRunes, boundaries, i, i+matchLen)
-			if cmp(candidate, substr) == 0 {
+
+			order, err := cmp(candidate, substr)
+			if err != nil {
+				return collationMatchNotFound, collationMatchNotFound, err
+			}
+
+			if order == 0 {
 				if numeric && splitsDigitRun(sRunes, i, i+matchLen) {
 					continue
 				}
 
-				return i, i + matchLen
+				return i, i + matchLen, nil
 			}
 		}
 		// Also try shorter matches (for cases where collation compresses)
 		for matchLen := minLen - 1; matchLen > 0; matchLen-- {
 			candidate := ucaCandidateString(s, sRunes, boundaries, i, i+matchLen)
-			if cmp(candidate, substr) == 0 {
+
+			order, err := cmp(candidate, substr)
+			if err != nil {
+				return collationMatchNotFound, collationMatchNotFound, err
+			}
+
+			if order == 0 {
 				if numeric && splitsDigitRun(sRunes, i, i+matchLen) {
 					continue
 				}
 
-				return i, i + matchLen
+				return i, i + matchLen, nil
 			}
 		}
 	}
 
-	return collationMatchNotFound, collationMatchNotFound
+	return collationMatchNotFound, collationMatchNotFound, nil
 }
 
 // splitsDigitRun returns true if the match boundary [start, end) in runes
@@ -706,18 +787,31 @@ func isDigit(r rune) bool {
 	return r >= '0' && r <= '9'
 }
 
-func ucaHasPrefix(cmp func(a, b string) int, s, prefix string, numeric bool) (bool, int) {
-	matchEnd, ok := ucaHasPrefixRange(cmp, s, prefix, numeric)
-	if !ok {
-		return false, 0
+func ucaHasPrefix(cmp collationCompare, s, prefix string, numeric bool) (bool, int, error) {
+	matchEnd, ok, err := ucaHasPrefixRange(cmp, s, prefix, numeric)
+	if err != nil {
+		return false, 0, err
 	}
 
-	return true, ucaRuneByteOffset(s, matchEnd)
+	if !ok {
+		return false, 0, nil
+	}
+
+	return true, ucaRuneByteOffset(s, matchEnd), nil
 }
 
-func ucaHasPrefixRange(cmp func(a, b string) int, s, prefix string, numeric bool) (int, bool) {
-	if prefix == "" || cmp("", prefix) == 0 {
-		return 0, true
+func ucaHasPrefixRange(cmp collationCompare, s, prefix string, numeric bool) (int, bool, error) {
+	if prefix == "" {
+		return 0, true, nil
+	}
+
+	emptyOrder, err := cmp("", prefix)
+	if err != nil {
+		return 0, false, err
+	}
+
+	if emptyOrder == 0 {
+		return 0, true, nil
 	}
 
 	prefixRunes := []rune(prefix)
@@ -728,41 +822,66 @@ func ucaHasPrefixRange(cmp func(a, b string) int, s, prefix string, numeric bool
 	// Try match lengths from len(prefixRunes) upward to handle numeric expansion
 	for matchLen := initialLength; matchLen <= len(sRunes); matchLen++ {
 		candidate := ucaCandidateString(s, sRunes, boundaries, 0, matchLen)
-		if cmp(candidate, prefix) == 0 {
+
+		order, err := cmp(candidate, prefix)
+		if err != nil {
+			return 0, false, err
+		}
+
+		if order == 0 {
 			if numeric && splitsDigitRun(sRunes, 0, matchLen) {
 				continue
 			}
 
-			return matchLen, true
+			return matchLen, true, nil
 		}
 	}
 	// Also try shorter matches
 	for matchLen := initialLength - 1; matchLen > 0; matchLen-- {
 		candidate := ucaCandidateString(s, sRunes, boundaries, 0, matchLen)
-		if cmp(candidate, prefix) == 0 {
+
+		order, err := cmp(candidate, prefix)
+		if err != nil {
+			return 0, false, err
+		}
+
+		if order == 0 {
 			if numeric && splitsDigitRun(sRunes, 0, matchLen) {
 				continue
 			}
 
-			return matchLen, true
+			return matchLen, true, nil
 		}
 	}
 
-	return 0, false
+	return 0, false, nil
 }
 
-func ucaHasSuffix(cmp func(a, b string) int, s, suffix string, numeric bool) (bool, int) {
-	matchStart, ok := ucaHasSuffixRange(cmp, s, suffix, numeric)
-	if !ok {
-		return false, 0
+func ucaHasSuffix(cmp collationCompare, s, suffix string, numeric bool) (bool, int, error) {
+	matchStart, ok, err := ucaHasSuffixRange(cmp, s, suffix, numeric)
+	if err != nil {
+		return false, 0, err
 	}
 
-	return true, len(s) - ucaRuneByteOffset(s, matchStart)
+	if !ok {
+		return false, 0, nil
+	}
+
+	return true, len(s) - ucaRuneByteOffset(s, matchStart), nil
 }
 
-func ucaHasSuffixRange(cmp func(a, b string) int, s, suffix string, numeric bool) (int, bool) {
-	if suffix == "" || cmp("", suffix) == 0 {
-		return utf8.RuneCountInString(s), true
+func ucaHasSuffixRange(cmp collationCompare, s, suffix string, numeric bool) (int, bool, error) {
+	if suffix == "" {
+		return utf8.RuneCountInString(s), true, nil
+	}
+
+	emptyOrder, err := cmp("", suffix)
+	if err != nil {
+		return 0, false, err
+	}
+
+	if emptyOrder == 0 {
+		return utf8.RuneCountInString(s), true, nil
 	}
 
 	suffixRunes := []rune(suffix)
@@ -775,12 +894,18 @@ func ucaHasSuffixRange(cmp func(a, b string) int, s, suffix string, numeric bool
 		start := len(sRunes) - matchLen
 
 		candidate := ucaCandidateString(s, sRunes, boundaries, start, len(sRunes))
-		if cmp(candidate, suffix) == 0 {
+
+		order, err := cmp(candidate, suffix)
+		if err != nil {
+			return 0, false, err
+		}
+
+		if order == 0 {
 			if numeric && splitsDigitRun(sRunes, start, len(sRunes)) {
 				continue
 			}
 
-			return start, true
+			return start, true, nil
 		}
 	}
 	// Also try shorter matches
@@ -788,79 +913,97 @@ func ucaHasSuffixRange(cmp func(a, b string) int, s, suffix string, numeric bool
 		start := len(sRunes) - matchLen
 
 		candidate := ucaCandidateString(s, sRunes, boundaries, start, len(sRunes))
-		if cmp(candidate, suffix) == 0 {
+
+		order, err := cmp(candidate, suffix)
+		if err != nil {
+			return 0, false, err
+		}
+
+		if order == 0 {
 			if numeric && splitsDigitRun(sRunes, start, len(sRunes)) {
 				continue
 			}
 
-			return start, true
+			return start, true, nil
 		}
 	}
 
-	return 0, false
+	return 0, false, nil
 }
 
-func ucaVariableIndexOf(cmp func(a, b string) int, s, substr string, numeric bool) (int, int) {
+func ucaVariableIndexOf(cmp collationCompare, s, substr string, numeric bool) (int, int, error) {
 	projectedS := projectVariableRunes(s)
 
 	projectedSub := projectVariableRunes(substr)
 	if projectedSub.value == "" {
-		return 0, 0
+		return 0, 0, nil
 	}
 
-	start, end := ucaIndexOfRange(cmp, projectedS.value, projectedSub.value, numeric)
+	start, end, err := ucaIndexOfRange(cmp, projectedS.value, projectedSub.value, numeric)
+	if err != nil {
+		return collationMatchNotFound, 0, err
+	}
+
 	if start < 0 {
-		return collationMatchNotFound, 0
+		return collationMatchNotFound, 0, nil
 	}
 
 	if start == end {
-		return 0, 0
+		return 0, 0, nil
 	}
 
 	byteStart := projectedS.starts[start]
 	byteEnd := projectedS.ends[end-1]
 
-	return byteStart, byteEnd - byteStart
+	return byteStart, byteEnd - byteStart, nil
 }
 
-func ucaVariableHasPrefix(cmp func(a, b string) int, s, prefix string, numeric bool) (bool, int) {
+func ucaVariableHasPrefix(cmp collationCompare, s, prefix string, numeric bool) (bool, int, error) {
 	projectedS := projectVariableRunes(s)
 
 	projectedPrefix := projectVariableRunes(prefix)
 	if projectedPrefix.value == "" {
-		return true, 0
+		return true, 0, nil
 	}
 
-	matchEnd, ok := ucaHasPrefixRange(cmp, projectedS.value, projectedPrefix.value, numeric)
+	matchEnd, ok, err := ucaHasPrefixRange(cmp, projectedS.value, projectedPrefix.value, numeric)
+	if err != nil {
+		return false, 0, err
+	}
+
 	if !ok {
-		return false, 0
+		return false, 0, nil
 	}
 
 	if matchEnd == 0 {
-		return true, 0
+		return true, 0, nil
 	}
 
-	return true, projectedS.ends[matchEnd-1]
+	return true, projectedS.ends[matchEnd-1], nil
 }
 
-func ucaVariableHasSuffix(cmp func(a, b string) int, s, suffix string, numeric bool) (bool, int) {
+func ucaVariableHasSuffix(cmp collationCompare, s, suffix string, numeric bool) (bool, int, error) {
 	projectedS := projectVariableRunes(s)
 
 	projectedSuffix := projectVariableRunes(suffix)
 	if projectedSuffix.value == "" {
-		return true, 0
+		return true, 0, nil
 	}
 
-	matchStart, ok := ucaHasSuffixRange(cmp, projectedS.value, projectedSuffix.value, numeric)
+	matchStart, ok, err := ucaHasSuffixRange(cmp, projectedS.value, projectedSuffix.value, numeric)
+	if err != nil {
+		return false, 0, err
+	}
+
 	if !ok {
-		return false, 0
+		return false, 0, nil
 	}
 
 	if matchStart == len(projectedS.starts) {
-		return true, 0
+		return true, 0, nil
 	}
 
-	return true, len(s) - projectedS.starts[matchStart]
+	return true, len(s) - projectedS.starts[matchStart], nil
 }
 
 func buildCaseFirstKey(s, caseFirst string) []byte {
@@ -902,7 +1045,7 @@ func resolveCollation(uri, baseURI string) (*collationImpl, error) {
 		if err == nil {
 			ref, err := url.Parse(uri)
 			if err == nil {
-				uri = base.ResolveReference(ref).String()
+				uri = tree.ResolveURIReference(base, ref).String()
 			}
 		}
 	}

@@ -46,13 +46,16 @@ func NodeBaseURI(n xdm.Node) string {
 	if n.Type() == xdm.NamespaceNode {
 		return ""
 	}
-	// Per XDM: attribute, text, comment, and PI nodes derive their base URI
-	// from their parent element. If they have no parent, their base URI is
-	// the empty sequence.
+	// A parentless constructed PI can retain its instruction's static base.
+	// Other parentless non-element children have no inherited base.
 	nodeType := n.Type()
 	if nodeType == xdm.AttributeNode || nodeType == xdm.TextNode ||
 		nodeType == xdm.CommentNode || nodeType == xdm.ProcessingInstructionNode {
 		if n.Parent() == nil {
+			if nodeType == xdm.ProcessingInstructionNode {
+				return xdm.NodeBaseOverride(n)
+			}
+
 			return ""
 		}
 	}
@@ -900,29 +903,36 @@ func fnNamespaceURI(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, err
 
 func fnNumber(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	if len(args) == builtinArityZero {
-		fc := getFnContext(ctx)
-		if fc == nil || (fc.contextItem == nil && fc.node == nil) {
-			return nil, &xdm.Error{Code: lexicon.ErrXPDY0002, Message: errMsgContextItemAbsent}
-		}
-
-		s, ok := fc.contextStringValue()
-		if !ok {
-			return xdm.SingleDouble(math.NaN()), nil
-		}
-
-		a, err := CastFromStringContext(ctx, s, xdm.TypeDouble)
+		item, err := FnContextItem(ctx)
 		if err != nil {
-			return xdm.SingleDouble(math.NaN()), nil //nolint:nilerr // fn:number returns NaN on cast failure per spec
+			return nil, err
 		}
 
-		return xdm.SingleDouble(a.DoubleVal()), nil
+		fc := getFnContext(ctx)
+		if node, ok := item.(xdm.NodeItem); ok {
+			item = nodeItemFor(ctx, fc, node.Node)
+		}
+
+		// number() applies the same argument conversion as number(.).
+		parameter := stAtomic(xdm.TypeAnyAtomicType, xdm.OccurrenceZeroOrOne)
+
+		value, err := coerceFuncallArg(ctx, xdm.ItemSlice{item}, parameter, fnNameNumber, 0, fc)
+		if err != nil {
+			return nil, err
+		}
+
+		return fnNumberValue(ctx, value)
 	}
 
-	if xdm.SequenceLen(args[0]) == 0 {
+	return fnNumberValue(ctx, args[0])
+}
+
+func fnNumberValue(ctx context.Context, value xdm.Sequence) (xdm.Sequence, error) {
+	if xdm.SequenceLen(value) == 0 {
 		return xdm.SingleDouble(math.NaN()), nil
 	}
 
-	a, err := AtomizeItem(args[0].Get(0))
+	a, err := AtomizeItem(value.Get(0))
 	if err != nil {
 		// FOTY0013 (atomizing function items) must propagate per XPath 3.1 §2.7.2
 		var xpErr *xdm.Error

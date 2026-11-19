@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,8 +84,8 @@ func TestJDKV1Transforms(t *testing.T) {
 			} else {
 				// Verification reports retain diagnostics on failure.
 				// noinspection GoDfaErrorMayBeNotNil
-				if e == nil || r != nil || report.Status == "valid" {
-					t.Fatal("tampered transform fixture accepted", report, e)
+				if r != nil || !errors.Is(e, xmldsig.ErrDigest) || report == nil || report.SignatureValue != xmldsig.Valid || len(report.References) != 2 || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Invalid {
+					t.Fatal("tampered transform fixture did not fail on the second digest", report, e)
 				}
 			}
 		})

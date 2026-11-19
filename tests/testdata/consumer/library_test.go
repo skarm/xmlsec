@@ -524,9 +524,10 @@ func TestCMSAndTimestampCertificateBagWorkingStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var certificates [][]byte
+	const count = 4
+	certificates := make([][]byte, 0, count)
 	total := 0
-	for i := range 4 {
+	for i := range count {
 		leaf := *template
 		leaf.SerialNumber = big.NewInt(int64(i + 10))
 		leaf.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 2, 3, 4, 5}, Value: padding}}

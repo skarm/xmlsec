@@ -22,6 +22,16 @@ import (
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
 
+type characterMapDeclaration struct {
+	precedence int
+	conflict   bool
+}
+
+type characterMapDependencies struct {
+	name string
+	uses []string
+}
+
 func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) error {
 	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, lexicon.SerializationUseCharacterMaps, xslAttrUseWhen)); err != nil {
 		return err
@@ -87,27 +97,29 @@ func (c *compiler) compileCharacterMap(ctx context.Context, elem *xdm.Element) e
 		c.stylesheet.characterMaps = make(map[string]*characterMapDef)
 	}
 
-	if c.charMapModuleKeys == nil {
-		c.charMapModuleKeys = make(map[string]string)
-	}
-	// XTSE1580: duplicate character-map declarations with same name in the
-	// same stylesheet module. Different modules may define the same name;
-	// higher import precedence overrides, same precedence merges.
-	if prevModule, exists := c.charMapModuleKeys[name]; exists && prevModule == c.moduleKey {
-		return staticError(errCodeXTSE1580,
-			"duplicate character-map declaration %q", name)
+	if c.characterMapDeclarations == nil {
+		c.characterMapDeclarations = make(map[string]characterMapDeclaration)
 	}
 
-	c.charMapModuleKeys[name] = c.moduleKey
+	// The highest-precedence declaration supplies the entire map. A later
+	// higher-precedence declaration also resolves any conflict at this level.
+	previous, found := c.characterMapDeclarations[name]
+	discarded := cm
 
-	if existing, ok := c.stylesheet.characterMaps[name]; ok {
-		// Merge: later-compiled mappings override earlier ones for the
-		// same character. Since imports compile before the importing
-		// module, the importing module's mappings naturally take precedence.
-		maps.Copy(existing.Mappings, cm.Mappings)
-		existing.UseCharacterMaps = append(existing.UseCharacterMaps, cm.UseCharacterMaps...)
-	} else {
+	if !found || c.importPrec > previous.precedence {
+		discarded = c.stylesheet.characterMaps[name]
 		c.stylesheet.characterMaps[name] = cm
+		c.characterMapDeclarations[name] = characterMapDeclaration{precedence: c.importPrec}
+	} else if c.importPrec == previous.precedence {
+		previous.conflict = true
+		c.characterMapDeclarations[name] = previous
+	}
+
+	// Even a shadowed declaration may not refer to an undefined map.
+	if discarded != nil && len(discarded.UseCharacterMaps) != 0 {
+		c.shadowedCharacterMaps = append(c.shadowedCharacterMaps, characterMapDependencies{
+			name: discarded.Name, uses: discarded.UseCharacterMaps,
+		})
 	}
 
 	return nil
@@ -132,6 +144,10 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	defer func() { c.defaultCollation = savedDefaultCollation }()
 
 	name := getAttr(elem, xslAttrName)
+	if c.stylesheet.processorLanguage() >= processorXSLT20 {
+		name = strings.Trim(name, lexicon.XMLWhitespace)
+	}
+
 	if name == "" {
 		return staticError(errCodeXTSE0010, "xsl:key requires name attribute")
 	}
@@ -178,15 +194,15 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	}
 
 	// Resolve collation: explicit attribute takes precedence over default-collation.
+	baseURI := stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
 	collationURI := ""
 
 	if collAttr := getAttr(elem, nameCollation); collAttr != "" {
+		collationURI = resolveAgainstBaseURI(collAttr, baseURI)
 		// XTSE1210: collation must be a recognized URI
-		if !xpath.IsCollationSupported(collAttr) {
+		if !xpath.IsCollationSupported(collationURI) {
 			return staticError(errCodeXTSE1210, "unrecognized collation URI %q on xsl:key", collAttr)
 		}
-
-		collationURI = collAttr
 	} else if c.defaultCollation != "" {
 		collationURI = c.defaultCollation
 	}
@@ -201,7 +217,7 @@ func (c *compiler) compileKey(ctx context.Context, elem *xdm.Element) error {
 	}
 
 	kd := &keyDef{
-		StaticBaseURI: stylesheetBaseURI(elem, c.baseURI, c.moduleRoot),
+		StaticBaseURI: baseURI,
 		Name:          expandedName,
 		Match:         matchPat,
 		Composite:     composite,
@@ -256,6 +272,8 @@ func (c *compiler) compileKeyValue(ctx context.Context, elem *xdm.Element, kd *k
 	return nil
 }
 
+const itemSeparatorAbsentToken = "#absent"
+
 func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	if err := c.validateXSLTAttrs(ctx, elem, attributeNames(xslAttrName, lexicon.SerializationMethod, lexicon.SerializationVersion, lexicon.SerializationEncoding, lexicon.SerializationOmitXMLDeclaration, lexicon.SerializationStandalone, lexicon.SerializationDoctypePublic, lexicon.SerializationDoctypeSystem, lexicon.SerializationCDATASectionElements, lexicon.SerializationIndent, lexicon.SerializationMediaType, lexicon.SerializationByteOrderMark, lexicon.SerializationEscapeURIAttributes, lexicon.SerializationIncludeContentType, lexicon.SerializationNormalizationForm, lexicon.SerializationUndeclarePrefixes, lexicon.SerializationUseCharacterMaps, lexicon.SerializationSuppressIndentation, lexicon.SerializationHTMLVersion, lexicon.SerializationItemSeparator, lexicon.SerializationJSONNodeOutputMethod, lexicon.SerializationParameterDocument, lexicon.SerializationBuildTree, lexicon.SerializationAllowDuplicateNames, xslAttrUseWhen)); err != nil {
 		return err
@@ -264,9 +282,14 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 	saved := c.pushElementNamespaces(ctx, elem)
 	defer func() { c.nsBindings = saved }()
 
-	name := getAttr(elem, xslAttrName)
+	name := strings.TrimFunc(getAttr(elem, xslAttrName), xmlchar.IsSpace)
 	if name != "" {
-		name = resolveQName(name, c.nsBindings)
+		namespaces := inScopeNamespaces(elem)
+		if prefix, _, qualified := strings.Cut(name, ":"); qualified && !strings.HasPrefix(name, lexicon.EQNamePrefix) && namespaces[prefix] == "" {
+			return staticError(errCodeXTSE0280, "undeclared namespace prefix %q in xsl:output/@name %q", prefix, name)
+		}
+
+		name = resolveQName(name, namespaces)
 	}
 
 	methodStr := strings.TrimSpace(strings.ToLower(getAttr(elem, lexicon.SerializationMethod)))
@@ -309,9 +332,7 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		return err
 	}
 
-	// Presence is merge bookkeeping, including values from parameter documents.
-	adnExplicit, err := c.compileOutputSequenceParameters(elem, outDef, yesNoOnly)
-	if err != nil {
+	if err := c.compileOutputSequenceParameters(elem, outDef, yesNoOnly); err != nil {
 		return err
 	}
 
@@ -319,40 +340,7 @@ func (c *compiler) compileOutput(ctx context.Context, elem *xdm.Element) error {
 		outDef.ParameterDocument = parameterDocumentURI(stylesheetBaseURI(elem, c.baseURI, c.moduleRoot), href)
 	}
 
-	if existing, ok := c.stylesheet.outputs[name]; ok {
-		if existing.ImportPrec == c.importPrec {
-			if err := checkOutputConflicts(existing, elem); err != nil {
-				return err
-			}
-		}
-
-		mergeOutputDefinition(outDef, existing, elem)
-		// A parameter-document value is explicit and must survive inheritance.
-		if !adnExplicit {
-			outDef.AllowDuplicateNames = existing.AllowDuplicateNames
-			_, adnExplicit = c.outputAllowDupExplicit[name]
-		}
-	}
-
-	if outDef.ParameterDocument != "" {
-		adnExplicit, _, err = c.loadParameterDocument(ctx, outDef, "", outDef.ParameterDocument, adnExplicit)
-		if err != nil {
-			return err
-		}
-	}
-
-	c.stylesheet.outputs[name] = outDef
-	if c.outputAllowDupExplicit == nil {
-		c.outputAllowDupExplicit = make(map[string]struct{})
-	}
-
-	if adnExplicit {
-		c.outputAllowDupExplicit[name] = struct{}{}
-	} else {
-		delete(c.outputAllowDupExplicit, name)
-	}
-
-	return nil
+	return c.mergeOutputDeclaration(ctx, elem, outDef)
 }
 
 func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef, yesNoOnly bool) error {
@@ -380,8 +368,12 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 	}
 
 	out.CDATASections = resolveOutputNames(getAttr(elem, lexicon.SerializationCDATASectionElements), c.nsBindings)
-	if separator := getAttr(elem, lexicon.SerializationItemSeparator); separator != "" {
-		out.ItemSeparator = &separator
+	if separator, present := elem.GetAttribute(lexicon.SerializationItemSeparator); present {
+		if separator == itemSeparatorAbsentToken {
+			out.ItemSeparatorAbsent = true
+		} else {
+			out.ItemSeparator = &separator
+		}
 	}
 
 	if form := getAttr(elem, lexicon.SerializationNormalizationForm); form != "" {
@@ -401,10 +393,10 @@ func (c *compiler) compileOutputSerialization(elem *xdm.Element, out *OutputDef,
 	return nil
 }
 
-func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *OutputDef, yesNoOnly bool) (bool, error) {
+func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *OutputDef, yesNoOnly bool) error {
 	value, explicit, err := outputBoolAttr(elem, lexicon.SerializationAllowDuplicateNames, yesNoOnly)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	if explicit {
@@ -415,14 +407,14 @@ func (c *compiler) compileOutputSequenceParameters(elem *xdm.Element, out *Outpu
 
 	buildTree, present, err := outputBoolAttr(elem, lexicon.SerializationBuildTree, yesNoOnly)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	if present {
 		out.BuildTree = &buildTree
 	}
 
-	return explicit, nil
+	return nil
 }
 
 // loadParameterDocument applies the effective external parameter values after
@@ -450,6 +442,10 @@ func (c *compiler) compileAttributeSet(ctx context.Context, elem *xdm.Element) e
 	}
 
 	name := getAttr(elem, xslAttrName)
+	if c.stylesheet.processorLanguage() >= processorXSLT20 {
+		name = strings.Trim(name, lexicon.XMLWhitespace)
+	}
+
 	if name == "" {
 		return staticError(errCodeXTSE0010, "xsl:attribute-set requires name attribute")
 	}
@@ -560,8 +556,6 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 
 	if c.stylesheet.decimalFormats == nil {
 		c.stylesheet.decimalFormats = make(map[xpath.QualifiedName]xpath.DecimalFormat)
-		c.stylesheet.decimalFmtPrec = make(map[xpath.QualifiedName]int)
-		c.stylesheet.decimalFmtSet = make(map[xpath.QualifiedName]map[string]struct{})
 	}
 
 	// XTSE1295: zero-digit must be a Unicode character with digit value zero
@@ -574,56 +568,24 @@ func (c *compiler) compileDecimalFormat(ctx context.Context, elem *xdm.Element) 
 	}
 
 	df, exists := c.stylesheet.decimalFormats[qn]
-	existingPrec := c.stylesheet.decimalFmtPrec[qn]
 
 	if !exists {
 		df = xpath.DefaultDecimalFormat()
 		df.ExponentDisabled = c.stylesheet.processorLanguage() < processorXSLT30
 	}
 
-	// XTSE1290: record potential conflicts for deferred checking after all imports.
-	// Higher precedence declarations can override lower-precedence conflicts.
-	if exists && c.importPrec == existingPrec {
-		prevSet := c.stylesheet.decimalFmtSet[qn]
-		if err := checkDecimalFormatConflictExplicit(df, elem, prevSet); err != nil {
-			// Record the conflict and its precedence for deferred checking
-			if c.stylesheet.decimalFmtConflicts == nil {
-				c.stylesheet.decimalFmtConflicts = make(map[xpath.QualifiedName]int)
-			}
-
-			c.stylesheet.decimalFmtConflicts[qn] = c.importPrec
-		}
+	if c.decimalFormatProperties == nil {
+		c.decimalFormatProperties = make(map[xpath.QualifiedName]map[string]decimalFormatProperty)
 	}
 
-	// If current declaration has higher or equal import precedence, merge properties.
-	// Lower precedence declarations' explicitly-set properties are inherited.
-	if !exists || c.importPrec >= existingPrec {
-		applyDecimalFormatAttributes(&df, elem)
-
-		c.stylesheet.decimalFormats[qn] = df
-		c.stylesheet.decimalFmtPrec[qn] = c.importPrec
-
-		// Track which properties were explicitly set
-		if c.stylesheet.decimalFmtSet[qn] == nil {
-			c.stylesheet.decimalFmtSet[qn] = make(map[string]struct{})
-		}
-		// If higher precedence, clear previously tracked properties
-		if exists && c.importPrec > existingPrec {
-			c.stylesheet.decimalFmtSet[qn] = make(map[string]struct{})
-		}
-
-		setProps := c.stylesheet.decimalFmtSet[qn]
-
-		for _, attr := range []string{
-			nameDecimalSeparator, nameGroupingSeparator, namePercent,
-			namePerMille, nameZeroDigit, nameDigit, namePatternSeparator, nameExponentSeparator,
-			nameInfinity, lexicon.DecimalFormatNaN, nameMinusSign,
-		} {
-			if elem.HasAttribute(attr) {
-				setProps[attr] = struct{}{}
-			}
-		}
+	properties := c.decimalFormatProperties[qn]
+	if properties == nil {
+		properties = make(map[string]decimalFormatProperty)
+		c.decimalFormatProperties[qn] = properties
 	}
+
+	mergeDecimalFormatAttributes(&df, elem, properties, c.importPrec)
+	c.stylesheet.decimalFormats[qn] = df
 
 	return nil
 }
@@ -685,7 +647,7 @@ func (c *compiler) compileSpaceHandling(ctx context.Context, elem *xdm.Element, 
 			SpaceOrder: len(c.stylesheet.stripSpace) + len(c.stylesheet.preserveSpace),
 		}
 
-		if strings.HasPrefix(name, "Q{") {
+		if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 			if closeIdx := strings.IndexByte(name, '}'); closeIdx > 0 {
 				nt.URI = name[2:closeIdx]
 				nt.HasURI = true
@@ -941,102 +903,141 @@ func compileOutputBooleans(elem *xdm.Element, out *OutputDef, yesNoOnly bool) er
 	return nil
 }
 
-func checkOutputConflicts(existing *OutputDef, elem *xdm.Element) error {
-	checks := []struct {
-		name     string
-		previous string
-	}{
-		{lexicon.SerializationMethod, existing.MethodRaw},
-		{lexicon.SerializationIndent, existing.IndentRaw},
-		{lexicon.SerializationEncoding, existing.EncodingRaw},
-		{lexicon.SerializationVersion, existing.VersionRaw},
-		{lexicon.SerializationStandalone, existing.StandaloneRaw},
+type outputDeclarations struct {
+	direct  *OutputDef
+	scalars map[string]outputScalar
+}
+
+type outputScalar struct {
+	value, lexical string
+	precedence     int
+	conflict       error
+}
+
+// mergeOutputDeclaration keeps explicit attributes separate from the
+// parameter-document overlay. The effective document is read at the same
+// declaration order and overrides the merged direct values.
+func (c *compiler) mergeOutputDeclaration(ctx context.Context, elem *xdm.Element, declaration *OutputDef) error {
+	if c.outputDeclarations == nil {
+		c.outputDeclarations = make(map[string]*outputDeclarations)
 	}
-	for _, check := range checks {
-		value := getAttr(elem, check.name)
-		if value != "" && check.previous != "" && check.previous != value {
-			return staticError(errCodeXTSE1560,
-				"conflicting values for xsl:output/@%s: %q vs %q", check.name, check.previous, value)
+
+	state := c.outputDeclarations[declaration.Name]
+	if state == nil {
+		state = &outputDeclarations{
+			direct: &OutputDef{
+				Name: declaration.Name, Method: lexicon.MethodXML, Encoding: lexicon.EncodingUTF8U,
+				serializationVersion: declaration.serializationVersion,
+			},
+			scalars: make(map[string]outputScalar),
+		}
+
+		c.outputDeclarations[declaration.Name] = state
+	}
+
+	state.merge(elem, declaration, c.nsBindings)
+	effective := cloneOutputDef(state.direct)
+
+	if effective.ParameterDocument != "" {
+		_, explicit := state.scalars[lexicon.SerializationAllowDuplicateNames]
+		if _, _, err := c.loadParameterDocument(ctx, effective, "", effective.ParameterDocument, explicit); err != nil {
+			return err
 		}
 	}
+
+	c.stylesheet.outputs[declaration.Name] = effective
 
 	return nil
 }
 
-// mergeOutputDefinition inherits settings omitted by a later declaration.
-func mergeOutputDefinition(out, existing *OutputDef, elem *xdm.Element) {
-	if !elem.HasAttribute(lexicon.SerializationParameterDocument) {
-		out.ParameterDocument = existing.ParameterDocument
+func (s *outputDeclarations) record(name, value, lexical string, precedence int) bool {
+	previous, exists := s.scalars[name]
+	if exists && precedence < previous.precedence {
+		return false
 	}
 
-	if len(existing.UseCharacterMaps) > 0 {
-		out.UseCharacterMaps = append(existing.UseCharacterMaps, out.UseCharacterMaps...)
+	next := outputScalar{value: value, lexical: lexical, precedence: precedence}
+	if exists && precedence == previous.precedence {
+		next.conflict = previous.conflict
+		if previous.value != value && next.conflict == nil {
+			next.conflict = staticError(errCodeXTSE1560,
+				"conflicting values for xsl:output/@%s: %q vs %q", name, previous.lexical, lexical)
+		}
 	}
 
-	if getAttr(elem, lexicon.SerializationMethod) == "" {
-		out.Method = existing.Method
-		out.MethodExplicit = existing.MethodExplicit
+	s.scalars[name] = next
+
+	return true
+}
+
+func (s *outputDeclarations) merge(elem *xdm.Element, source *OutputDef, namespaces map[string]string) {
+	target := s.direct
+	target.ImportPrec = max(target.ImportPrec, source.ImportPrec)
+	target.CDATASections = unionOutputNames(target.CDATASections, source.CDATASections)
+	target.SuppressIndentation = unionOutputNames(target.SuppressIndentation, source.SuppressIndentation)
+	target.UseCharacterMaps = append(target.UseCharacterMaps, source.UseCharacterMaps...)
+
+	for _, attr := range []struct {
+		name, value string
+		apply       func()
+	}{
+		{lexicon.SerializationMethod, outputMethodIdentity(source, namespaces), func() {
+			target.Method, target.MethodExplicit, target.MethodRaw = source.Method, source.MethodExplicit, source.MethodRaw
+		}},
+		{lexicon.SerializationIndent, strconv.FormatBool(source.Indent), func() { target.Indent, target.IndentRaw = source.Indent, source.IndentRaw }},
+		{lexicon.SerializationEncoding, source.EncodingRaw, func() { target.Encoding, target.EncodingRaw = source.Encoding, source.EncodingRaw }},
+		{lexicon.SerializationVersion, source.VersionRaw, func() { target.Version, target.VersionRaw = source.Version, source.VersionRaw }},
+		{lexicon.SerializationStandalone, source.Standalone, func() { target.Standalone, target.StandaloneRaw = source.Standalone, source.StandaloneRaw }},
+		{lexicon.SerializationOmitXMLDeclaration, strconv.FormatBool(source.OmitDeclaration), func() {
+			target.OmitDeclaration, target.OmitDeclarationExplicit = source.OmitDeclaration, source.OmitDeclarationExplicit
+		}},
+		{lexicon.SerializationUndeclarePrefixes, strconv.FormatBool(source.UndeclarePrefixes), func() { target.UndeclarePrefixes = source.UndeclarePrefixes }},
+		{lexicon.SerializationDoctypePublic, source.DoctypePublic, func() { target.DoctypePublic = source.DoctypePublic }},
+		{lexicon.SerializationDoctypeSystem, source.DoctypeSystem, func() { target.DoctypeSystem = source.DoctypeSystem }},
+		{lexicon.SerializationMediaType, source.MediaType, func() { target.MediaType = source.MediaType }},
+		{lexicon.SerializationItemSeparator, getAttr(elem, lexicon.SerializationItemSeparator), func() {
+			target.ItemSeparator, target.ItemSeparatorAbsent = source.ItemSeparator, source.ItemSeparatorAbsent
+		}},
+		{lexicon.SerializationNormalizationForm, source.NormalizationForm, func() { target.NormalizationForm = source.NormalizationForm }},
+		{lexicon.SerializationHTMLVersion, source.HTMLVersion, func() { target.HTMLVersion = source.HTMLVersion }},
+		{lexicon.SerializationJSONNodeOutputMethod, resolveQName(source.JSONNodeOutputMethod, namespaces), func() { target.JSONNodeOutputMethod = source.JSONNodeOutputMethod }},
+		{lexicon.SerializationParameterDocument, source.ParameterDocument, func() { target.ParameterDocument = source.ParameterDocument }},
+		{lexicon.SerializationAllowDuplicateNames, strconv.FormatBool(source.AllowDuplicateNames), func() { target.AllowDuplicateNames = source.AllowDuplicateNames }},
+		{lexicon.SerializationByteOrderMark, strconv.FormatBool(source.ByteOrderMark), func() { target.ByteOrderMark = source.ByteOrderMark }},
+		{lexicon.SerializationBuildTree, outputBooleanIdentity(source.BuildTree), func() { target.BuildTree = source.BuildTree }},
+		{lexicon.SerializationIncludeContentType, outputBooleanIdentity(source.IncludeContentType), func() { target.IncludeContentType = source.IncludeContentType }},
+		{lexicon.SerializationEscapeURIAttributes, outputBooleanIdentity(source.EscapeURIAttributes), func() { target.EscapeURIAttributes = source.EscapeURIAttributes }},
+	} {
+		lexical, present := elem.GetAttribute(attr.name)
+		if present && s.record(attr.name, attr.value, lexical, source.ImportPrec) {
+			attr.apply()
+		}
+	}
+}
+
+func outputMethodIdentity(output *OutputDef, namespaces map[string]string) string {
+	if strings.ContainsAny(output.MethodRaw, ":{") {
+		return resolveQName(output.MethodRaw, namespaces)
 	}
 
-	if getAttr(elem, lexicon.SerializationEncoding) == "" {
-		out.Encoding = existing.Encoding
+	return output.Method
+}
+
+func outputBooleanIdentity(value *bool) string {
+	return strconv.FormatBool(value != nil && *value)
+}
+
+func (c *compiler) checkOutputDeclarationConflicts() error {
+	for _, name := range slices.Sorted(maps.Keys(c.outputDeclarations)) {
+		scalars := c.outputDeclarations[name].scalars
+		for _, attribute := range slices.Sorted(maps.Keys(scalars)) {
+			if err := scalars[attribute].conflict; err != nil {
+				return err
+			}
+		}
 	}
 
-	if getAttr(elem, lexicon.SerializationVersion) == "" {
-		out.Version = existing.Version
-	}
-
-	if getAttr(elem, lexicon.SerializationIndent) == "" {
-		out.Indent = existing.Indent
-	}
-
-	if getAttr(elem, lexicon.SerializationOmitXMLDeclaration) == "" {
-		out.OmitDeclaration = existing.OmitDeclaration
-		out.OmitDeclarationExplicit = existing.OmitDeclarationExplicit
-	}
-
-	if getAttr(elem, lexicon.SerializationStandalone) == "" {
-		out.Standalone = existing.Standalone
-	}
-
-	if getAttr(elem, lexicon.SerializationUndeclarePrefixes) == "" {
-		out.UndeclarePrefixes = existing.UndeclarePrefixes
-	}
-
-	if !elem.HasAttribute(lexicon.SerializationDoctypePublic) {
-		out.DoctypePublic = existing.DoctypePublic
-	}
-
-	if !elem.HasAttribute(lexicon.SerializationDoctypeSystem) {
-		out.DoctypeSystem = existing.DoctypeSystem
-	}
-
-	if getAttr(elem, lexicon.SerializationMediaType) == "" {
-		out.MediaType = existing.MediaType
-	}
-
-	out.CDATASections = slices.Concat(existing.CDATASections, out.CDATASections)
-	out.SuppressIndentation = slices.Concat(existing.SuppressIndentation, out.SuppressIndentation)
-
-	if getAttr(elem, lexicon.SerializationItemSeparator) == "" {
-		out.ItemSeparator = existing.ItemSeparator
-	}
-
-	if getAttr(elem, lexicon.SerializationNormalizationForm) == "" {
-		out.NormalizationForm = existing.NormalizationForm
-	}
-
-	if getAttr(elem, lexicon.SerializationHTMLVersion) == "" {
-		out.HTMLVersion = existing.HTMLVersion
-	}
-
-	if out.IncludeContentType == nil {
-		out.IncludeContentType = existing.IncludeContentType
-	}
-
-	if getAttr(elem, lexicon.SerializationJSONNodeOutputMethod) == "" {
-		out.JSONNodeOutputMethod = existing.JSONNodeOutputMethod
-	}
+	return nil
 }
 
 func outputStandalone(value string, yesNoOnly bool) (string, error) {
@@ -1109,6 +1110,7 @@ func loadParameterDocumentRoot(ctx context.Context, injected *xdm.ParseOptions, 
 
 	reader, err := openResource(ctx, parameterDocumentURI(baseURI, href))
 	if err != nil {
+		err = closeFailedResolution(reader, err)
 		if failure := preserveControlFailure(ctx, err); failure != nil {
 			return nil, failure
 		}
@@ -1164,112 +1166,59 @@ func validateDecimalFormatCharacters(elem *xdm.Element) error {
 	return nil
 }
 
-func applyDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element) {
-	// Merge explicitly-set properties
-	if v := getAttr(elem, nameDecimalSeparator); v != "" {
-		df.DecimalSeparator = firstRune(v)
+type decimalFormatProperty struct {
+	value      string
+	precedence int
+	conflict   bool
+}
+
+func mergeDecimalFormatAttributes(df *xpath.DecimalFormat, elem *xdm.Element, properties map[string]decimalFormatProperty, precedence int) {
+	choose := func(name string) (string, bool) {
+		value, present := elem.GetAttribute(name)
+		previous, defined := properties[name]
+
+		if !present || defined && precedence < previous.precedence {
+			return "", false
+		}
+
+		// An explicitly specified higher-precedence value resolves conflicts
+		// only for this property. Other properties keep their own precedence.
+		conflict := defined && precedence == previous.precedence && (previous.conflict || previous.value != value)
+		properties[name] = decimalFormatProperty{value: value, precedence: precedence, conflict: conflict}
+
+		return value, true
 	}
 
-	if v := getAttr(elem, nameGroupingSeparator); v != "" {
-		df.GroupingSeparator = firstRune(v)
+	for _, attribute := range []struct {
+		name   string
+		target *rune
+	}{
+		{nameDecimalSeparator, &df.DecimalSeparator},
+		{nameGroupingSeparator, &df.GroupingSeparator},
+		{namePercent, &df.Percent},
+		{namePerMille, &df.PerMille},
+		{nameZeroDigit, &df.ZeroDigit},
+		{nameDigit, &df.Digit},
+		{namePatternSeparator, &df.PatternSeparator},
+		{nameExponentSeparator, &df.ExponentSeparator},
+		{nameMinusSign, &df.MinusSign},
+	} {
+		if value, chosen := choose(attribute.name); chosen {
+			*attribute.target = firstRune(value)
+		}
 	}
 
-	if v := getAttr(elem, namePercent); v != "" {
-		df.Percent = firstRune(v)
+	if value, chosen := choose(nameInfinity); chosen {
+		df.Infinity = value
 	}
 
-	if v := getAttr(elem, namePerMille); v != "" {
-		df.PerMille = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameZeroDigit); v != "" {
-		df.ZeroDigit = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameDigit); v != "" {
-		df.Digit = firstRune(v)
-	}
-
-	if v := getAttr(elem, namePatternSeparator); v != "" {
-		df.PatternSeparator = firstRune(v)
-	}
-
-	if v := getAttr(elem, nameExponentSeparator); v != "" {
-		df.ExponentSeparator = firstRune(v)
-	}
-
-	if v, present := elem.GetAttribute(nameInfinity); present {
-		df.Infinity = v
-	}
-
-	if v, present := elem.GetAttribute(lexicon.DecimalFormatNaN); present {
-		df.NaN = v
-	}
-
-	if v := getAttr(elem, nameMinusSign); v != "" {
-		df.MinusSign = firstRune(v)
+	if value, chosen := choose(lexicon.DecimalFormatNaN); chosen {
+		df.NaN = value
 	}
 }
 
 func isDigitZero(r rune) bool {
 	return xpath.DecimalZeroDigit(r)
-}
-
-// checkDecimalFormatConflictExplicit raises XTSE1290 if any property
-// explicitly set in elem conflicts with a property explicitly set in a prior
-// declaration of the same name at the same import precedence.
-func checkDecimalFormatConflictExplicit(existing xpath.DecimalFormat, elem *xdm.Element, prevSet map[string]struct{}) error {
-	type runeCheck struct {
-		attr string
-		cur  rune
-	}
-
-	runeChecks := []runeCheck{
-		{nameDecimalSeparator, existing.DecimalSeparator},
-		{nameGroupingSeparator, existing.GroupingSeparator},
-		{namePercent, existing.Percent},
-		{namePerMille, existing.PerMille},
-		{nameZeroDigit, existing.ZeroDigit},
-		{nameDigit, existing.Digit},
-		{namePatternSeparator, existing.PatternSeparator},
-		{nameExponentSeparator, existing.ExponentSeparator},
-		{nameMinusSign, existing.MinusSign},
-	}
-	for _, rc := range runeChecks {
-		v := getAttr(elem, rc.attr)
-		if v == "" {
-			continue
-		}
-		// Only conflict if the property was explicitly set in a prior declaration
-		if _, wasSet := prevSet[rc.attr]; !wasSet {
-			continue
-		}
-
-		newVal := firstRune(v)
-		if newVal != rc.cur {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations: %s was %q, now %q",
-				rc.attr, string(rc.cur), string(newVal))
-		}
-	}
-	// String properties
-	if v, present := elem.GetAttribute(nameInfinity); present {
-		if _, wasSet := prevSet[nameInfinity]; wasSet && v != existing.Infinity {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations: infinity was %q, now %q",
-				existing.Infinity, v)
-		}
-	}
-
-	if v, present := elem.GetAttribute(lexicon.DecimalFormatNaN); present {
-		if _, wasSet := prevSet[lexicon.DecimalFormatNaN]; wasSet && v != existing.NaN {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations: NaN was %q, now %q",
-				existing.NaN, v)
-		}
-	}
-
-	return nil
 }
 
 // nameTestKey returns a canonical conflict key for a nameTest. The key encodes

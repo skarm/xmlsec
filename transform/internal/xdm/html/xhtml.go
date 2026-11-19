@@ -54,15 +54,19 @@ func ConfigureXHTML(options *tree.XMLWriteOptions, html5, escapeURI bool, serial
 
 // PrepareXHTML mutates only an owned serialization copy. Metadata replacement
 // visits every recognized head, including a selected head or a nested one.
-func PrepareXHTML(ctx context.Context, doc *xdm.Document, html5 bool, contentType string) error {
+func PrepareXHTML(ctx context.Context, doc *xdm.Document, html5 bool, contentType string) (err error) {
 	if html5 {
-		normalizeXHTML5Prefixes(doc)
+		err = normalizeXHTML5Prefixes(ctx, doc)
 	} else {
-		normalizeXHTMLNamespace(doc)
+		err = normalizeXHTMLNamespace(ctx, doc)
+	}
+
+	if err != nil {
+		return err
 	}
 
 	if contentType == "" {
-		return nil
+		return ctx.Err()
 	}
 
 	var heads []*xdm.Element
@@ -82,12 +86,16 @@ func PrepareXHTML(ctx context.Context, doc *xdm.Document, html5 bool, contentTyp
 	}
 
 	for _, head := range heads {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if err := replaceXHTMLMetadata(doc, head, html5, contentType); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return ctx.Err()
 }
 
 func html5ElementName(local string) bool {
@@ -183,17 +191,27 @@ func replaceXHTMLMetadata(doc *xdm.Document, head *xdm.Element, html5 bool, cont
 // namespace elements to use the default namespace (unprefixed), as required
 // by the XHTML output method. The default namespace declaration is added
 // only to the root element; descendants inherit it.
-func normalizeXHTMLNamespace(doc *xdm.Document) {
+func normalizeXHTMLNamespace(ctx context.Context, doc *xdm.Document) error {
 	normalizer := xhtmlNamespaceNormalizer{}
-	// The freshly built tree is acyclic; namespace normalization cannot create cycles.
-	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(normalizer.visit))
+
+	return xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		return normalizer.visit(n)
+	}))
 }
 
 // Serialization 3.1 section 6 removes bindings for all three namespaces from
 // every element, except prefixes used by attributes on that element or an
 // ancestor. Element names in these namespaces use a new default binding.
-func normalizeXHTML5Prefixes(doc *xdm.Document) {
-	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
+func normalizeXHTML5Prefixes(ctx context.Context, doc *xdm.Document) error {
+	return xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		elem, ok := n.(*xdm.Element)
 		if !ok {
 			return nil

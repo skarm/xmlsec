@@ -272,10 +272,11 @@ func canonicalPipeline(ctx context.Context, original, canonical io.Writer, trans
 		return nil, nil, ErrPolicy
 	}
 
-	method = CloneTransforms([]Transform{method})[0]
 	if err := ValidateTransformParameters(method); err != nil {
 		return nil, nil, err
 	}
+
+	method = CloneTransforms([]Transform{method})[0]
 
 	chain, err := snapshotTransforms(ctx, transforms, normalized)
 	if err != nil {

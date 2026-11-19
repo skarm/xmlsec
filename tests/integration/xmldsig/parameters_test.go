@@ -13,7 +13,7 @@ import (
 
 func TestParameterizedIndependentFixtures(t *testing.T) {
 	dir := filepath.Join("..", "..", "..", "testdata", "parameters")
-	read := func(name string) []byte {
+	read := func(t *testing.T, name string) []byte {
 		t.Helper()
 
 		b, e := os.ReadFile(filepath.Join(dir, name))
@@ -35,7 +35,7 @@ func TestParameterizedIndependentFixtures(t *testing.T) {
 		SPKI    string
 		HMACKey string `json:"hmac_key"`
 	}
-	if e := json.Unmarshal(read("manifest.json"), &m); e != nil {
+	if e := json.Unmarshal(read(t, "manifest.json"), &m); e != nil {
 		t.Fatal(e)
 	}
 
@@ -43,26 +43,26 @@ func TestParameterizedIndependentFixtures(t *testing.T) {
 		t.Fatal("independent fixture corpus is incomplete")
 	}
 
-	pub, e := x509.ParsePKIXPublicKey(read(m.SPKI))
+	pub, e := x509.ParsePKIXPublicKey(read(t, m.SPKI))
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	testSecret := read(m.HMACKey) // public TEST material, not a real application key
+	testSecret := read(t, m.HMACKey) // public TEST material, not a real application key
 	for _, c := range m.Cases {
-		t.Run(c.Name, func(t *testing.T) { testParameterizedIndependentFixturesCase(t, &read, &c, &testSecret, &pub) })
+		t.Run(c.Name, func(t *testing.T) { testParameterizedIndependentFixturesCase(t, read, &c, testSecret, pub) })
 	}
 }
 
-func testParameterizedIndependentFixturesCase(t *testing.T, read *func(name string) []byte, c *struct {
+func testParameterizedIndependentFixturesCase(t *testing.T, read func(*testing.T, string) []byte, c *struct {
 	Name  string
 	XML   string
 	Kind  string
 	Stage string
 	Valid bool
-}, testSecret *[]byte, pub *any,
+}, testSecret []byte, pub any,
 ) {
-	d, e := document.Parse(t.Context(), (*read)(c.XML), document.DefaultLimits())
+	d, e := document.Parse(t.Context(), read(t, c.XML), document.DefaultLimits())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -76,19 +76,19 @@ func testParameterizedIndependentFixturesCase(t *testing.T, read *func(name stri
 	if c.Kind == "hmac" {
 		options.Policy = xmldsig.HMACPolicy()
 		options.Policy.AllowHMACTruncation = true
-		result, r, err := xmldsig.VerifyHMACSignatureDetailed(t.Context(), d, d.Root(), *testSecret, options)
+		result, r, err := xmldsig.VerifyHMACSignatureDetailed(t.Context(), d, d.Root(), testSecret, options)
 		report = r
 		e = err
 		hasResult = result != nil
 	} else {
-		result, r, err := xmldsig.VerifySignatureDetailed(t.Context(), d, d.Root(), *pub, options)
+		result, r, err := xmldsig.VerifySignatureDetailed(t.Context(), d, d.Root(), pub, options)
 		report = r
 		e = err
 		hasResult = result != nil
 	}
 
 	if c.Valid {
-		if e != nil || !hasResult || report.Status != xmldsig.Valid || len(report.References) != 2 {
+		if e != nil || !hasResult || report == nil || report.Status != xmldsig.Valid || len(report.References) != 2 {
 			t.Fatalf("valid fixture: %v %+v", e, report)
 		}
 	} else {
@@ -96,11 +96,11 @@ func testParameterizedIndependentFixturesCase(t *testing.T, read *func(name stri
 			t.Fatalf("negative fixture: %v %+v", e, report)
 		}
 
-		if c.Stage == "references" && (report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Invalid) {
+		if c.Stage == "references" && (len(report.References) != 2 || report.SignatureValue != xmldsig.Valid || report.References[0].Status != xmldsig.Valid || report.References[1].Status != xmldsig.Invalid) {
 			t.Fatalf("wrong reference status: %+v", report)
 		}
 
-		if c.Stage == "signature-value" && report.References[0].Status != xmldsig.NotChecked {
+		if c.Stage == "signature-value" && (len(report.References) != 2 || report.References[0].Status != xmldsig.NotChecked || report.References[1].Status != xmldsig.NotChecked) {
 			t.Fatalf("processed untrusted references: %+v", report)
 		}
 	}

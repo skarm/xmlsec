@@ -7,13 +7,13 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"time"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/saml/binding"
+	"github.com/skarm/xmlsec/saml/internal/httpclient"
 )
 
 // Canonical HTTP field spellings shared by the PAOS challenge and SP delivery writers; cache directives keep the ECP protocol responses out of intermediary storage.
@@ -70,7 +70,7 @@ func ReadResponse(ctx context.Context, r *http.Request, expectedMessageID string
 		maximumSOAPBytes = 16 << 20
 	)
 
-	if ctx == nil || r == nil || r.Body == nil || r.Method != http.MethodPost {
+	if ctx == nil || r == nil || nilcheck.IsNil(r.Body) || r.Method != http.MethodPost {
 		return nil, nil, ErrECP
 	}
 
@@ -100,11 +100,11 @@ func ReadResponse(ctx context.Context, r *http.Request, expectedMessageID string
 // mismatch it sends only the generated SOAP fault to that original ACS and
 // returns the routing error. Redirects are never followed. The caller owns and
 // must close any returned response body, even when a routing error is returned.
+// A typed-nil Transport or Jar returns ErrECP.
 func (x *Exchange) Deliver(ctx context.Context, idpResponse []byte, client *http.Client, o binding.SOAPOptions) (*http.Response, error) {
 	const (
-		defaultHTTPTimeout = 30 * time.Second
-		headerSOAPAction   = "SoapAction"
-		samlSOAPAction     = "\"http://www.oasis-open.org/committees/security\""
+		headerSOAPAction = "SoapAction"
+		samlSOAPAction   = "\"http://www.oasis-open.org/committees/security\""
 	)
 
 	envelope, routingErr := x.Finish(ctx, idpResponse, o)
@@ -127,16 +127,18 @@ func (x *Exchange) Deliver(ctx context.Context, idpResponse []byte, client *http
 	req.Header.Set(headerCacheControl, cacheControlNoStore)
 	req.Header.Set(headerPragma, cachePragma)
 
-	c := http.Client{Timeout: defaultHTTPTimeout}
-	if client != nil {
-		c = *client
+	c, err := httpclient.WithoutRedirects(client, ErrECP)
+	if err != nil {
+		return nil, errors.Join(routingErr, err)
 	}
-
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 	response, err := c.Do(req)
 	if err != nil {
 		return nil, errors.Join(routingErr, err)
+	}
+
+	if canceled := ctx.Err(); canceled != nil {
+		return nil, errors.Join(routingErr, canceled, response.Body.Close())
 	}
 
 	return response, routingErr

@@ -20,6 +20,13 @@ import (
 	"github.com/skarm/xmlsec/internal/nilcheck"
 )
 
+const (
+	// The generated EncryptedPrivateKeyInfo has a PBES2 AlgorithmIdentifier
+	// with explicit PBKDF2 salt, count, key length and PRF, plus the encrypted OCTET STRING.
+	encryptedPrivateKeyInfoDepth = 7
+	encryptedPrivateKeyInfoNodes = 17
+)
+
 // PrivateParseOptions explicitly enables selected PKCS#8 input forms.
 // Traditional PKCS#1 and SEC1 encodings always remain strict DER.
 type PrivateParseOptions struct {
@@ -384,6 +391,10 @@ func prepareEncryptedPrivate(ctx context.Context, key crypto.Signer, password []
 		return nil, err
 	}
 	defer clear(raw)
+
+	if state.limits.MaxASN1Depth < encryptedPrivateKeyInfoDepth || state.limits.MaxASN1Nodes < encryptedPrivateKeyInfoNodes {
+		return nil, ErrLimit
+	}
 
 	alg, encrypted, err := encryptPBES2(state, raw, options)
 	if err != nil {

@@ -781,3 +781,103 @@ func BenchmarkPasswordProtection(b *testing.B) {
 		})
 	}
 }
+
+func TestParsePublicRejectsTrailingKeyFields(t *testing.T) {
+	t.Parallel()
+
+	rsaKey := multiPrimeRSA(t)
+	spki, err := x509.MarshalPKIXPublicKey(rsaKey.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []struct {
+		label string
+		raw   []byte
+	}{
+		{"RSA PUBLIC KEY", x509.MarshalPKCS1PublicKey(&rsaKey.PublicKey)},
+		{"PUBLIC KEY", spki},
+	} {
+		fields := privateFields(t, format.raw)
+		malformed := der.Seq(append(fields, der.Octets(make([]byte, 10000)))...)
+		for _, encodedPEM := range []bool{false, true} {
+			input := bytes.Clone(malformed)
+			if encodedPEM {
+				input = pem.EncodeToMemory(&pem.Block{Type: format.label, Bytes: input})
+			}
+			for _, maximum := range []int{0, 1} {
+				parsed, err := keys.ParsePublic(input, keys.Limits{MaxKeyBytes: maximum})
+				if parsed != nil || !errors.Is(err, keys.ErrFormat) {
+					t.Errorf("%s PEM=%t MaxKeyBytes=%d accepted a key with trailing fields: key=%t err=%v", format.label, encodedPEM, maximum, parsed != nil, err)
+				}
+			}
+		}
+	}
+
+	// A certificate really does use three outer fields and has its own budget.
+	certificate := testcert.New(t).Leaf
+	for _, encodedPEM := range []bool{false, true} {
+		input := certificate.Raw
+		if encodedPEM {
+			input = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: input})
+		}
+		parsed, err := keys.ParsePublic(input, keys.Limits{MaxKeyBytes: 1, MaxCertificateBytes: len(certificate.Raw)})
+		if err != nil || parsed == nil {
+			t.Fatalf("certificate PEM=%t rejected by the standalone key budget: %v", encodedPEM, err)
+		}
+		encoded, err := x509.MarshalPKIXPublicKey(parsed)
+		if err != nil || !bytes.Equal(encoded, certificate.RawSubjectPublicKeyInfo) {
+			t.Fatalf("certificate extraction changed the public key: %v", err)
+		}
+	}
+}
+
+func TestParsePublicRejectsTrailingSPKIFields(t *testing.T) {
+	t.Parallel()
+
+	rsaKey := multiPrimeRSA(t)
+	spki, err := x509.MarshalPKIXPublicKey(rsaKey.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := privateFields(t, spki)
+	algorithm := privateFields(t, fields[0])
+	key := x509.MarshalPKCS1PublicKey(&rsaKey.PublicKey)
+	keyFields := privateFields(t, key)
+	bits := func(raw []byte) []byte {
+		t.Helper()
+		encoded, err := asn1.Marshal(asn1.BitString{Bytes: raw, BitLength: len(raw) * 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	// Parsing is independent of key-strength policy, including legacy DSA.
+	dsaOID := der.OID(asn1.ObjectIdentifier{1, 2, 840, 10040, 4, 1})
+	dsaParameters := der.Seq(der.Int(23), der.Int(11), der.Int(2))
+	dsaAlgorithm := der.Seq(dsaOID, dsaParameters)
+	dsaKey := der.Int(4)
+	validDSA := der.Seq(dsaAlgorithm, bits(dsaKey))
+	if parsed, err := keys.ParsePublic(validDSA, keys.Limits{}); parsed == nil || err != nil {
+		t.Fatalf("valid DSA parser control: %v", err)
+	}
+	for name, raw := range map[string][]byte{
+		"algorithm field":  der.Seq(der.Seq(append(algorithm, der.Int(0))...), fields[1]),
+		"RSA field":        der.Seq(fields[0], bits(der.Seq(append(keyFields, der.Int(0))...))),
+		"RSA trailing DER": der.Seq(fields[0], bits(append(bytes.Clone(key), der.Int(0)...))),
+		"DSA parameter":    der.Seq(der.Seq(dsaOID, der.Seq(der.Int(23), der.Int(11), der.Int(2), der.Int(0))), bits(dsaKey)),
+		"DSA trailing DER": der.Seq(dsaAlgorithm, bits(append(bytes.Clone(dsaKey), der.Int(0)...))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			for _, encodedPEM := range []bool{false, true} {
+				input := raw
+				if encodedPEM {
+					input = pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: input})
+				}
+				if parsed, err := keys.ParsePublic(input, keys.Limits{}); parsed != nil || !errors.Is(err, keys.ErrFormat) {
+					t.Errorf("PEM=%t accepted trailing SPKI fields: key=%t err=%v", encodedPEM, parsed != nil, err)
+				}
+			}
+		})
+	}
+}

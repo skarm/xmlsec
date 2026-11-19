@@ -6,9 +6,44 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
+
+func TestDOEMarkersRetainProvenanceAcrossCopy(t *testing.T) {
+	t.Parallel()
+
+	doc := xdm.NewDefaultDocument()
+	parsed := parseNodeDocument(t, `<r><?disable-output-escaping note?></r>`)
+	for _, tc := range []struct {
+		name string
+		node xdm.Node
+		want tree.DOEMarker
+	}{
+		{"ordinary", doc.CreatePI(lexicon.DisableOutputEscapingPITarget, "note"), tree.NoDOEMarker},
+		{"parsed", parsed.DocumentElement().FirstChild(), tree.NoDOEMarker},
+		{"start", doc.CreateDOEMarker(true), tree.DOEStart},
+		{"end", doc.CreateDOEMarker(false), tree.DOEEnd},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := xdm.DOEMarkerOf(tc.node); got != tc.want {
+				t.Fatalf("source marker = %v, want %v", got, tc.want)
+			}
+
+			copied, err := xdm.CopyNode(tc.node, xdm.NewDefaultDocument())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if copied == tc.node || copied.Type() != xdm.ProcessingInstructionNode || copied.Name() != tc.node.Name() ||
+				xdm.CharacterData(copied) != xdm.CharacterData(tc.node) || xdm.DOEMarkerOf(copied) != tc.want {
+				t.Fatalf("copy changed processing instruction or marker, want %v", tc.want)
+			}
+		})
+	}
+}
 
 func TestNodeNamesRespectLanguageBoundariesAndLexicalNamespaceDeclarations(t *testing.T) {
 	t.Parallel()
@@ -276,6 +311,9 @@ func TestNodeDraftMovesAdoptsAndReindexesSubtrees(t *testing.T) {
 	if a.OwnerDocument() != second || nested.OwnerDocument() != second || attribute.OwnerDocument() != second || second.GetElementByID("v") != a {
 		t.Fatal("adoption lost subtree/attribute ownership or typed ID")
 	}
+	if first.GetElementByID("v") != nil {
+		t.Error("source document retained an ID lookup for an adopted element")
+	}
 	if a.GetAttributeNodeNS("code", "") != attribute || attribute.Parent() != a {
 		t.Fatal("adoption replaced attribute identity")
 	}
@@ -287,9 +325,15 @@ func TestNodeDraftMovesAdoptsAndReindexesSubtrees(t *testing.T) {
 	if a.Parent() != nil || a.NextSibling() != nil || a.PrevSibling() != nil || nested.Parent() != a {
 		t.Fatal("unlink damaged detached subtree")
 	}
+	if second.GetElementByID("v") != nil {
+		t.Error("document ID lookup returned a detached element")
+	}
 	xdm.UnlinkNode(a)
 	requireNodeSuccess(t, b.AddSibling(a))
 	assertNodeChildren(t, target, b, a)
+	if second.GetElementByID("v") != a {
+		t.Fatal("reattachment did not restore the element's typed ID lookup")
+	}
 }
 
 func TestNodeDraftReplacementValidatesAllInputsBeforeMoving(t *testing.T) {

@@ -30,3 +30,22 @@ func TestBuildURIReferenceFirstPortableResolution(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildURIPreservesFilesystemRoots(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ reference, base, want string }{
+		{"child.xml", "/", "/child.xml"},
+		{"child.xml", `\doc.xml`, "/child.xml"},
+		{"../child.xml", `C:\doc.xml`, "C:/child.xml"},
+		{".", `C:\doc.xml`, "C:/"},
+		{"child.xml", `\\server\share`, "//server/share/child.xml"},
+		{"../child.xml", `\\server\share\doc.xml`, "//server/share/child.xml"},
+		{"child.xml", "//server/share/", "//server/share/child.xml"},
+		{"draft/..?v=1#part", "/styles/main.xml", "/styles/?v=1#part"},
+	} {
+		if got := xdm.BuildURI(tc.reference, tc.base); got != tc.want {
+			t.Errorf("BuildURI(%q,%q)=%q; want %q", tc.reference, tc.base, got, tc.want)
+		}
+	}
+}

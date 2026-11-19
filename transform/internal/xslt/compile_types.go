@@ -144,7 +144,7 @@ func resolveXSDTypeNameNS(qname string, nsBindings map[string]string, xpathDefau
 		return ""
 	}
 
-	if strings.HasPrefix(qname, "Q{") {
+	if strings.HasPrefix(qname, lexicon.EQNamePrefix) {
 		closeIdx := strings.IndexByte(qname, '}')
 		if closeIdx > 0 {
 			uri := qname[2:closeIdx]

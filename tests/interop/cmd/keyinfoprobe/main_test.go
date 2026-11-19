@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
@@ -71,5 +75,31 @@ func TestKeyInfoBuildParseAndPinnedVerification(t *testing.T) {
 		if err == nil || answer.Valid || len(answer.Data) != 0 {
 			t.Fatalf("invalid request leaked a success: %+v %v", request, err)
 		}
+	}
+}
+
+func TestServeReportsStreamFailures(t *testing.T) {
+	var output bytes.Buffer
+	if err := serve(strings.NewReader(`{} {}`), &output); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(&output)
+	for range 2 {
+		var got reply
+		if err := decoder.Decode(&got); err != nil || got.Error == "" {
+			t.Fatalf("missing per-request error reply: %+v, %v", got, err)
+		}
+	}
+	if err := serve(strings.NewReader("{"), io.Discard); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("truncated input returned %v", err)
+	}
+
+	reader, writer := io.Pipe()
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := serve(strings.NewReader("{}"), writer); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("closed output returned %v", err)
 	}
 }

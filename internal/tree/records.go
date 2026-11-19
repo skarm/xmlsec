@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"slices"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -16,6 +17,7 @@ import (
 // independently of the total stream length.
 type RecordOptions struct {
 	// Path is a nonempty, exact expanded-name path beginning at the document root.
+	// ReadRecords snapshots it before reading input or delivering records.
 	Path []Name
 	// Limits bounds each record. MaxBytes counts normalized UTF-8 bytes per record
 	// and bounds individual lexical tokens outside records. MaxDepth also bounds
@@ -55,6 +57,8 @@ func (o ParseOptions) ReadRecords(ctx context.Context, src io.Reader, options Re
 	if options.MaxInputBytes < 0 || options.MaxRecords < 0 || len(options.Path) > limits.MaxDepth {
 		return ErrLimit
 	}
+
+	options.Path = slices.Clone(options.Path)
 
 	for _, name := range options.Path {
 		if !NCName(name.Local) {
@@ -247,15 +251,15 @@ func inheritRecordAttributes(node *Node) error {
 		return err
 	}
 
-	if base != "" {
-		name := Name{Space: XMLNamespace, Local: lexicon.AttrBase}
-		for i := range node.Attrs {
-			if node.Attrs[i].Name == name {
-				node.Attrs[i].Value = base
-				return nil
-			}
+	name := Name{Space: XMLNamespace, Local: lexicon.AttrBase}
+	for i := range node.Attrs {
+		if node.Attrs[i].Name == name {
+			node.Attrs[i].Value = base
+			return nil
 		}
+	}
 
+	if base != "" {
 		node.Attrs = append(node.Attrs, Attribute{Name: name, Prefix: lexicon.PrefixXML, Value: base})
 	}
 
@@ -270,15 +274,42 @@ func recordBaseURI(node *Node) (string, error) {
 
 	base := ""
 
+	var absolute *url.URL
+
 	for _, n := range slices.Backward(ancestors) {
 		for _, attr := range n.Attrs {
-			if attr.Name == (Name{Space: XMLNamespace, Local: lexicon.AttrBase}) {
-				resolved, err := joinURIReferences(base, attr.Value)
-				if err != nil {
-					return "", err
+			if attr.Name != (Name{Space: XMLNamespace, Local: lexicon.AttrBase}) {
+				continue
+			}
+
+			part, err := parseXMLBase(attr.Value)
+			if err != nil {
+				return "", err
+			}
+			// An absolute hierarchical base follows ordinary RFC 3986 resolution.
+			// Canonical XML's slash folding can change the identity of a resource.
+			if part.Opaque == "" && (absolute != nil || part.IsAbs()) {
+				if absolute == nil {
+					absolute = &url.URL{}
 				}
 
-				base = resolved
+				part.Fragment, part.RawFragment = "", ""
+				if part.String() == "" {
+					continue
+				}
+
+				absolute = ResolveURIReference(absolute, part)
+				base = absolute.String()
+
+				continue
+			}
+
+			// With no absolute hierarchical base, keep the existing relative fixup.
+			absolute = nil
+
+			base, err = joinURIReferences(base, attr.Value)
+			if err != nil {
+				return "", err
 			}
 		}
 	}

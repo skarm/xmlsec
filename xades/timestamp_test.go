@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -91,14 +92,20 @@ func TestTimestampAugmentation(t *testing.T) {
 			if !bytes.Equal(before, unchanged) || len(r.Timestamps()) != 1 || !r.Basic().Signature().CoversElement(d.Root()) || r.Basic().Signature().CoversElement(base.Root()) {
 				t.Fatal("snapshot/coverage")
 			}
+			if r.Timestamps()[0].Info().Nonce() == nil {
+				t.Fatal("default timestamp request did not bind a nonce")
+			}
 
 			if _, e := xades.VerifyBasicEnveloped(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, xades.VerifyOptions{}); e == nil {
 				t.Fatal("old profile silently broadened")
 			}
 
-			d2, r2, e := xades.AddSignatureTimestamp(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, server, xades.AddTimestampOptions{Validation: o, Request: timestamp.RequestOptions{Policy: tsaPolicy()}})
+			d2, r2, e := xades.AddSignatureTimestamp(t.Context(), d, xmldsig.Signatures(d)[0], c.Leaf.Raw, server, xades.AddTimestampOptions{Validation: o, Request: timestamp.RequestOptions{Policy: tsaPolicy(), OmitNonce: true}})
 			if e != nil || d2 == nil || r2 == nil || len(r2.Timestamps()) != 2 {
 				t.Fatal(e)
+			}
+			if r2.Timestamps()[1].Info().Nonce() != nil {
+				t.Fatal("timestamp renewal included an explicitly omitted nonce")
 			}
 
 			r2.Timestamps()[0] = nil
@@ -451,6 +458,61 @@ func TestBaselineDataTimestampInputs(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBaselineDataTimestampInclusiveNamespaces(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	tsa := timeOptions(t, chain)
+	source := baselineDocument(t, `<Envelope xmlns:u="urn:retained" xmlns:v="urn:omitted"><Payload ID="payload">A</Payload><Slot/></Envelope>`)
+	const input = `<Payload xmlns:u="urn:retained" ID="payload">A</Payload>`
+	request, err := timestamp.CreateRequest(t.Context(), []byte(input), timestamp.RequestOptions{Policy: tsaPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := tsa.TSA.Fetch(t.Context(), &localTSA{chain: chain}, request, tsa.At, tsa.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	method := reference.Transform{Algorithm: c14n.Exclusive, InclusivePrefixes: []string{"u"}}
+	options := xades.BaselineSignOptions{
+		Template: xmldsig.SignatureTemplate{
+			SignatureMethod: xmldsig.ECDSASHA256,
+			References:      []xmldsig.ReferenceTemplate{{ID: "data", URI: "#payload"}},
+		},
+		Properties: xades.BaselineProperties{
+			SigningTime: testcert.Now(),
+			DataTimestamps: []xades.DataTimestampProperty{{
+				Canonicalization: method,
+				TokenDER:         token.TokenDER(),
+			}},
+		},
+	}
+	_, result, err := xades.SignBaseline(t.Context(), source, source.Root().Children()[1], chain.LeafKey, chain.Leaf.Raw, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamps := result.DataTimestamps()
+	if len(stamps) != 1 {
+		t.Fatalf("signed data timestamps = %d, want 1", len(stamps))
+	}
+	stamp := stamps[0]
+	if got := stamp.Canonicalization(); got.Algorithm != method.Algorithm || !slices.Equal(got.InclusivePrefixes, method.InclusivePrefixes) {
+		t.Errorf("published canonicalization = %+v, want %+v", got, method)
+	}
+	var replay bytes.Buffer
+	if n, err := stamp.WriteImprintInput(t.Context(), &replay); err != nil || n != int64(len(input)) || replay.String() != input {
+		t.Fatalf("replayed timestamp input = %q, %d bytes, %v, want %q", replay.String(), n, err, input)
+	}
+	imprint, err := timestamp.ImprintFor(t.Context(), replay.Bytes(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tsa.TSA.Verify(t.Context(), stamp.Token(), timestamp.Expectation{Imprint: imprint}, tsa.At, tsa.Evidence); err != nil {
+		t.Fatal(err)
 	}
 }
 

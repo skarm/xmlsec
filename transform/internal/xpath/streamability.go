@@ -496,7 +496,7 @@ func isFnNamespacePrefix(prefix string) bool {
 // lexical (unprefixed or "fn:") forms it defers to isFnNamespacePrefix and
 // returns name unchanged.
 func lexicalFnLocalName(name, prefix string) (string, bool) {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if idx := strings.Index(name, "}"); idx >= 0 {
 			return name[idx+1:], name[2:idx] == lexicon.NamespaceFn
 		}

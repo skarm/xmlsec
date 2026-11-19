@@ -19,6 +19,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/packageversion"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform"
 )
 
@@ -145,7 +146,7 @@ func suiteSourceRequirements(source *suiteNode) (string, string) {
 			return suiteFailed, fmt.Sprintf("invalid source %s=%q", name, value)
 		}
 
-		if name == "xinclude" || source.attr("role") == "." {
+		if name == "xinclude" || source.attr(suiteRoleAttribute) == "." {
 			return suiteNotApplicable, fmt.Sprintf("source %s=%q requires optional preprocessing outside the selected language profile", name, value)
 		}
 	}
@@ -602,15 +603,15 @@ func isSuiteStaticMetadata(node *suiteNode) bool {
 func applySuiteEnvironment(ctx context.Context, root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
 	switch node.XMLName.Local {
 	case suiteNamespace:
-		environment.namespaces[node.attr("prefix")] = node.attr("uri")
+		environment.namespaces[node.attr("prefix")] = node.attr(suiteURIAttribute)
 	case "static-base-uri":
-		environment.baseURI = node.attr("uri")
+		environment.baseURI = node.attr(suiteURIAttribute)
 		if environment.baseURI == "#UNDEFINED" {
 			environment.baseURI = ""
 		}
 	case "collation":
 		if node.attr("default") == suiteTrue || node.attr("default") == "1" {
-			environment.collation = node.attr("uri")
+			environment.collation = node.attr(suiteURIAttribute)
 		}
 	case "decimal-format":
 		return loadSuiteDecimalFormat(environment, node)
@@ -629,7 +630,7 @@ func applySuiteEnvironment(ctx context.Context, root, base string, resources *su
 	case "context-item":
 		environment.contextSpecified = true
 
-		expression := node.attr("select")
+		expression := node.attr(lexicon.AttrSelect)
 		if expression == "" {
 			expression = "()"
 		}
@@ -658,11 +659,11 @@ func applySuiteEnvironment(ctx context.Context, root, base string, resources *su
 }
 
 func loadSuiteModule(root, base string, environment *preparedSuiteEnvironment, node *suiteNode) error {
-	if role := node.attr("role"); role != "" && role != "principal" && role != suiteSecondary {
+	if role := node.attr(suiteRoleAttribute); role != "" && role != "principal" && role != suiteSecondary {
 		return suiteHarness("unknown module role %q", role)
 	}
 
-	if node.attr("role") != suiteSecondary {
+	if node.attr(suiteRoleAttribute) != suiteSecondary {
 		if environment.stylesheet.node != nil {
 			return suiteHarness("multiple principal modules in an environment or invocation")
 		}
@@ -671,14 +672,14 @@ func loadSuiteModule(root, base string, environment *preparedSuiteEnvironment, n
 	}
 
 	resourceNode := node
-	if node.XMLName.Local == suitePackageTag && node.attr("role") == suiteSecondary {
+	if node.XMLName.Local == suitePackageTag && node.attr(suiteRoleAttribute) == suiteSecondary {
 		// A package URI identifies a package, not a single source file. Distinct
 		// versions have distinct retrieval/base URIs even when their name agrees.
 		resourceNode = suiteRetrievalResource(node)
 	}
 
 	uri, err := registerSuiteResource(root, base, environment.resources, environment.baseURI, resourceNode)
-	if err != nil || node.XMLName.Local != suitePackageTag || node.attr("role") != suiteSecondary {
+	if err != nil || node.XMLName.Local != suitePackageTag || node.attr(suiteRoleAttribute) != suiteSecondary {
 		return err
 	}
 
@@ -694,9 +695,9 @@ func loadSuiteModule(root, base string, environment *preparedSuiteEnvironment, n
 }
 
 func suitePackageIdentity(catalog, declaration *suiteNode) (string, string) {
-	name, version := catalog.attr("name"), catalog.attr("package-version")
+	name, version := catalog.attr(lexicon.AttrName), catalog.attr("package-version")
 	if name == "" {
-		name = catalog.attr("uri")
+		name = catalog.attr(suiteURIAttribute)
 	}
 
 	if declaration.XMLName == (xml.Name{Space: lexicon.NamespaceXSLT, Local: suitePackageTag}) {
@@ -710,8 +711,8 @@ func suitePackageIdentity(catalog, declaration *suiteNode) (string, string) {
 			shadowVersion = shadowVersion || attribute.Name == (xml.Name{Local: "_package-version"})
 		}
 
-		if !shadowName && declaration.attr("name") != "" {
-			name = declaration.attr("name")
+		if !shadowName && declaration.attr(lexicon.AttrName) != "" {
+			name = declaration.attr(lexicon.AttrName)
 		}
 
 		if !shadowVersion {
@@ -730,7 +731,7 @@ func suitePackageIdentity(catalog, declaration *suiteNode) (string, string) {
 // retrieval URI of one particular file. Preserve the distinct local resources.
 func suiteRetrievalResource(node *suiteNode) *suiteNode {
 	copyNode := *node
-	copyNode.Attributes = slices.DeleteFunc(slices.Clone(node.Attributes), func(a xml.Attr) bool { return a.Name.Space == "" && a.Name.Local == "uri" })
+	copyNode.Attributes = slices.DeleteFunc(slices.Clone(node.Attributes), func(a xml.Attr) bool { return a.Name.Space == "" && a.Name.Local == suiteURIAttribute })
 
 	return &copyNode
 }
@@ -747,10 +748,10 @@ func loadSuiteSchema(root, base string, resources *suiteResourceResolver, enviro
 		return suiteHarness("schema-bearing environment is not implemented by the Basic-profile harness")
 	}
 
-	switch node.attr("role") {
+	switch node.attr(suiteRoleAttribute) {
 	case "", "stylesheet-import", "source-reference", suiteSecondary:
 	default:
-		return suiteHarness("unknown schema role %q", node.attr("role"))
+		return suiteHarness("unknown schema role %q", node.attr(suiteRoleAttribute))
 	}
 	// Declaring an available schema does not require validation. A Basic
 	// compiler must still diagnose import-schema/type requests itself. Source
@@ -761,7 +762,7 @@ func loadSuiteSchema(root, base string, resources *suiteResourceResolver, enviro
 }
 
 func suiteBuiltinJSONSchema(node *suiteNode) bool {
-	return node.XMLName.Space == suiteQT3Namespace && node.attr("role") == "import" && node.attr("uri") == lexicon.NamespaceFn && node.attr(suiteFile) == ""
+	return node.XMLName.Space == suiteQT3Namespace && node.attr(suiteRoleAttribute) == "import" && node.attr(suiteURIAttribute) == lexicon.NamespaceFn && node.attr(suiteFile) == ""
 }
 
 func loadSuiteOutput(base string, environment *preparedSuiteEnvironment, node *suiteNode) error {
@@ -810,7 +811,7 @@ func loadSuiteDecimalFormat(environment *preparedSuiteEnvironment, node *suiteNo
 	namespaces := maps.Clone(environment.namespaces)
 	suiteNamespaceDeclarations(node, namespaces)
 
-	name, err := suiteQName(node.attr("name"), namespaces)
+	name, err := suiteQName(node.attr(lexicon.AttrName), namespaces)
 	if err != nil {
 		return err
 	}
@@ -826,7 +827,7 @@ func loadSuiteDecimalFormat(environment *preparedSuiteEnvironment, node *suiteNo
 	}
 
 	for _, attribute := range node.Attributes {
-		if attribute.Name.Space != "" || attribute.Name.Local == "name" {
+		if attribute.Name.Space != "" || attribute.Name.Local == lexicon.AttrName {
 			continue
 		}
 
@@ -841,7 +842,7 @@ func loadSuiteDecimalFormat(environment *preparedSuiteEnvironment, node *suiteNo
 }
 
 func loadSuiteParameter(ctx context.Context, environment *preparedSuiteEnvironment, node *suiteNode) error {
-	name, err := suiteQName(node.attr("name"), suiteScopedNamespaces(environment, node))
+	name, err := suiteQName(node.attr(lexicon.AttrName), suiteScopedNamespaces(environment, node))
 	if err != nil {
 		return err
 	}
@@ -864,7 +865,7 @@ func suiteParameterValue(ctx context.Context, environment *preparedSuiteEnvironm
 	scoped := *environment
 	scoped.namespaces = suiteScopedNamespaces(environment, node)
 
-	expression := node.attr("select")
+	expression := node.attr(lexicon.AttrSelect)
 
 	var bindings transform.Bindings
 
@@ -883,7 +884,7 @@ func suiteParameterValue(ctx context.Context, environment *preparedSuiteEnvironm
 
 	value, err := scoped.query(ctx, expression, bindings)
 	if err != nil {
-		return transform.Sequence{}, suiteHarness("parameter %s: %w", node.attr("name"), err)
+		return transform.Sequence{}, suiteHarness("parameter %s: %w", node.attr(lexicon.AttrName), err)
 	}
 
 	return value, nil
@@ -895,12 +896,12 @@ func loadSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 	}
 	// Sources without a role only declare retrievable resources. Defer their
 	// XML parse to doc()/document(), where the test can assert loading errors.
-	if node.attr("role") == "" && node.attr(suiteFile) != "" && node.attr("validation") == "" {
+	if node.attr(suiteRoleAttribute) == "" && node.attr(suiteFile) != "" && node.attr("validation") == "" {
 		_, err := registerSuiteResource(root, base, resources, environment.baseURI, node)
 		return err
 	}
 
-	if node.attr(suiteFile) == "" && node.child("content") == nil && node.attr("select") != "" {
+	if node.attr(suiteFile) == "" && node.child("content") == nil && node.attr(lexicon.AttrSelect) != "" {
 		return loadSuiteSelectedSource(ctx, environment, node)
 	}
 
@@ -914,14 +915,14 @@ func loadSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 		return err
 	}
 
-	role := node.attr("role")
+	role := node.attr(suiteRoleAttribute)
 	if role == "." {
 		environment.document = doc
 		if fragment {
 			environment.contextItem, environment.contextSpecified = value, true
 		}
 
-		if expression := node.attr("select"); expression != "" {
+		if expression := node.attr(lexicon.AttrSelect); expression != "" {
 			scoped := *environment
 
 			scoped.contextItem = transform.Value{}
@@ -958,7 +959,7 @@ func loadSuiteSource(ctx context.Context, root, base string, resources *suiteRes
 // loadSuiteSelectedSource evaluates a source constructor once, without an
 // implicit context document. Its selected node retains its owning document.
 func loadSuiteSelectedSource(ctx context.Context, environment *preparedSuiteEnvironment, node *suiteNode) error {
-	if node.attr("role") != "." {
+	if node.attr(suiteRoleAttribute) != "." {
 		return suiteHarness("a select-only source requires role=\".\"")
 	}
 
@@ -971,7 +972,7 @@ func loadSuiteSelectedSource(ctx context.Context, environment *preparedSuiteEnvi
 	scoped.contextItem = transform.Value{}
 	scoped.namespaces = suiteScopedNamespaces(environment, node)
 
-	selected, err := scoped.query(ctx, node.attr("select"), nil)
+	selected, err := scoped.query(ctx, node.attr(lexicon.AttrSelect), nil)
 	if err != nil {
 		return suiteHarness("source selection: %w", err)
 	}
@@ -1134,7 +1135,7 @@ func registerSuiteResource(root, base string, resources *suiteResourceResolver, 
 		return "", suiteHarness("a resource must be a regular file")
 	}
 
-	uri := node.attr("uri")
+	uri := node.attr(suiteURIAttribute)
 	if uri == "" {
 		uri = suiteFileURI(path)
 		if file.Fragment != "" {
@@ -1168,7 +1169,7 @@ func registerSuiteResource(root, base string, resources *suiteResourceResolver, 
 // The catalog may declare shared remote resources that a test never reads.
 // Record their unavailability lazily; declarations do not authorize network I/O.
 func registerSuiteRemoteResource(resources *suiteResourceResolver, staticBase string, node *suiteNode, file string) (string, error) {
-	uri := node.attr("uri")
+	uri := node.attr(suiteURIAttribute)
 	if uri == "" {
 		uri = file
 	}
@@ -1224,7 +1225,7 @@ func resolveSuiteURI(base, uri string) (string, error) {
 			return "", suiteHarness("relative resource URI requires an absolute static base URI")
 		}
 
-		parsed = baseURI.ResolveReference(parsed)
+		parsed = tree.ResolveURIReference(baseURI, parsed)
 	}
 
 	return parsed.String(), nil
@@ -1270,7 +1271,7 @@ func registerSuiteTextResource(root, base string, resources *suiteResourceResolv
 }
 
 func loadSuiteCollection(ctx context.Context, root, base string, resources *suiteResourceResolver, environment *preparedSuiteEnvironment, node *suiteNode) error {
-	uri := node.attr("uri")
+	uri := node.attr(suiteURIAttribute)
 	if uri != "" {
 		resolved, err := resolveSuiteURI(environment.baseURI, uri)
 		if err != nil {
@@ -1379,7 +1380,7 @@ func suiteNamespaceDeclarations(node *suiteNode, namespaces map[string]string) {
 }
 
 func suiteQName(lexical string, namespaces map[string]string) (transform.Name, error) {
-	if strings.HasPrefix(lexical, "Q{") {
+	if strings.HasPrefix(lexical, lexicon.EQNamePrefix) {
 		space, local, ok := strings.Cut(lexical[2:], "}")
 		if !ok || local == "" {
 			return transform.Name{}, suiteHarness("invalid EQName %q", lexical)

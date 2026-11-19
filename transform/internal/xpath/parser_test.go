@@ -54,6 +54,15 @@ func TestParseControlAndPostfixExpressions(t *testing.T) {
 			want:   DynamicFunctionCall{Func: NamedFunctionRef{Prefix: "fn", Name: "concat", Arity: 2}, Args: []Expr{left, right}},
 		},
 		{
+			name:   "nested_argument_and_conditional_expressions",
+			source: `string(if (true()) then string('left') else 'right')`,
+			want: FunctionCall{Name: "string", Args: []Expr{IfExpr{
+				Cond: FunctionCall{Name: "true"},
+				Then: FunctionCall{Name: "string", Args: []Expr{left}},
+				Else: right,
+			}}},
+		},
+		{
 			name:   "curly_array_collects_members_from_a_sequence",
 			source: `array { 'left', 'right' }`,
 			want:   ArrayConstructorExpr{Items: []Expr{SequenceExpr{Items: []Expr{left, right}}}},
@@ -121,6 +130,57 @@ func TestParseRejectsMalformedClauses(t *testing.T) {
 	}
 }
 
+func TestVariableTokenSeparatorsFollowXPathProfile(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		version int
+		source  string
+		want    []xdm.AtomicValue
+		wantErr error
+	}{
+		{
+			name:    "xpath20",
+			version: 20,
+			source:  `some $ x in 1 satisfies $(: outer (: inner :) :)x eq 1`,
+			want:    []xdm.AtomicValue{{TypeName: xdm.TypeBoolean, Value: true}},
+		},
+		{
+			name:    "xpath31",
+			version: 31,
+			source:  `let $ p:name := 'kept' return $ (: comment :) p:name`,
+			want:    []xdm.AtomicValue{{TypeName: xdm.TypeString, Value: "kept"}},
+		},
+		{"xpath10_whitespace", 10, `$ name`, nil, ErrUnexpectedToken},
+		{"xpath10_comment", 10, `$ (: comment :) name`, nil, ErrUnexpectedToken},
+		{"xpath31_split_qname", 31, `let $p: name := 'invalid' return $p:name`, nil, ErrExpectedToken},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			namespaces := map[string]string{"p": "urn:example"}
+			expr, err := NewCompiler().Language(tc.version, namespaces).Compile(tc.source)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Compile(%q) error = %v, want %v", tc.source, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", tc.source, err)
+			}
+			result, err := NewEvaluator(DefaultEvaluatorOptions).Namespaces(namespaces).Evaluate(t.Context(), expr, nil)
+			if err != nil {
+				t.Fatalf("Evaluate(%q): %v", tc.source, err)
+			}
+			assertAtomicSequence(t, result.Sequence(), tc.want)
+		})
+	}
+}
+
 func TestParseSequenceTypeKindTests(t *testing.T) {
 	t.Parallel()
 
@@ -182,4 +242,22 @@ func mustParseSequenceType(t *testing.T, source string) xdm.SequenceType {
 		t.Fatalf("ParseSequenceType(%q): %v", source, err)
 	}
 	return st
+}
+
+func TestDocumentKindTestRequiresInnerParenthesis(t *testing.T) {
+	for _, source := range []string{`document-node(element bogus))`, `document-node(element 123))`, `document-node(schema-element bogus name))`} {
+		t.Run(source, func(t *testing.T) {
+			if _, err := ParseSequenceType(source); err == nil {
+				t.Error("malformed sequence type accepted")
+			}
+			if _, err := NewCompiler().Language(31, nil).Compile(`() instance of ` + source); err == nil {
+				t.Error("malformed kind test accepted")
+			}
+		})
+	}
+	for _, source := range []string{`document-node()`, `document-node(element())`, `document-node(element(r))`, `document-node(schema-element(r))`} {
+		if _, err := ParseSequenceType(source); err != nil {
+			t.Errorf("valid sequence type %q: %v", source, err)
+		}
+	}
 }

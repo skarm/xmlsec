@@ -37,8 +37,23 @@ func (ec *execContext) execValueOf(ctx context.Context, inst *valueOfInst) error
 		value, err = ec.evaluateValueOfBody(ctx, inst)
 	}
 
-	if err != nil || empty {
+	if err != nil {
 		return err
+	}
+
+	if empty {
+		if ec.stylesheet.processorLanguage() >= processorXSLT20 {
+			out := ec.currentOutput()
+			if out.sequenceMode {
+				return ec.addNode(ec.resultDoc.CreateText(""))
+			}
+
+			// Complex content discards the empty text node after spacing
+			// consecutive atomic values (XSLT 3.0 §5.7.1).
+			out.prevWasAtomic = false
+		}
+
+		return nil
 	}
 
 	return ec.writeConstructedText(value, inst.DisableOutputEscaping && ec.temporaryOutputDepth == 0)
@@ -139,7 +154,7 @@ func (ec *execContext) evaluateValueOfBody(ctx context.Context, inst *valueOfIns
 func (ec *execContext) writeConstructedText(value string, disableEscaping bool) error {
 	if disableEscaping {
 		// Insert DOE marker PI so the serializer writes this text raw.
-		pi := ec.resultDoc.CreatePI(lexicon.DisableOutputEscapingPITarget, "")
+		pi := ec.resultDoc.CreateDOEMarker(true)
 		if err := ec.addNode(pi); err != nil {
 			return err
 		}
@@ -149,7 +164,7 @@ func (ec *execContext) writeConstructedText(value string, disableEscaping bool) 
 			return err
 		}
 
-		piEnd := ec.resultDoc.CreatePI(lexicon.EnableOutputEscapingPITarget, "")
+		piEnd := ec.resultDoc.CreateDOEMarker(false)
 
 		return ec.addNode(piEnd)
 	}
@@ -253,14 +268,18 @@ func (ec *execContext) execXSLSequence(ctx context.Context, inst *xslSequenceIns
 		return err
 	}
 
+	return ec.writeXSLSequence(result.Sequence())
+}
+
+func (ec *execContext) writeXSLSequence(seq xdm.Sequence) error {
 	out := ec.currentOutput()
-	if out.captureXSLSequence(result.Sequence()) {
+	if out.captureXSLSequence(seq) {
 		return nil
 	}
 
 	state := sequenceOutputState{prevWasAtomic: out.prevWasAtomic, prevHadOutput: out.prevHadOutput}
 
-	seq := flattenArraysInSequence(result.Sequence())
+	seq = flattenArraysInSequence(seq)
 	for item := range xdm.SequenceItems(seq) {
 		switch value := item.(type) {
 		case xdm.NodeItem:
@@ -352,21 +371,20 @@ func (ec *execContext) writeXSLSequenceAtomic(out *outputFrame, state *sequenceO
 	}
 
 	if value == "" {
-		// Empty atomics separate across constructor generations, but do not
-		// create tracked output or separators within one expression.
-		if state.prevWasAtomic && out.emptyAtomicGen != out.seqConstructorGen {
+		if state.prevWasAtomic {
 			if err := ec.writeSequenceSeparator(out, false); err != nil {
 				return err
 			}
 		}
 
-		out.emptyAtomicGen = out.seqConstructorGen
+		// An empty string still forms part of an adjacent atomic run.
+		state.prevWasAtomic = true
 		state.hadAtomic = true
 
 		return nil
 	}
 
-	if state.prevWasAtomic || (state.prevHadOutput && out.itemSeparator != nil) {
+	if state.prevWasAtomic || (state.prevHadOutput && out.serializationItemSeparator() != nil) {
 		if err := ec.writeSequenceSeparator(out, true); err != nil {
 			return err
 		}
@@ -385,8 +403,8 @@ func (ec *execContext) writeXSLSequenceAtomic(out *outputFrame, state *sequenceO
 
 func (ec *execContext) writeSequenceSeparator(out *outputFrame, tracked bool) error {
 	separator := " "
-	if out.itemSeparator != nil {
-		separator = *out.itemSeparator
+	if effective := out.serializationItemSeparator(); effective != nil {
+		separator = *effective
 	}
 
 	if separator == "" {
@@ -398,7 +416,35 @@ func (ec *execContext) writeSequenceSeparator(out *outputFrame, tracked bool) er
 		return ec.addNode(text)
 	}
 
+	if scope := out.vacuousOnEmptyScope(); scope != nil {
+		if err := xpath.ChargeTree(ec.budgetCtx, text); err != nil {
+			return err
+		}
+
+		return scope.deferSeparator(out, separator)
+	}
+
 	return ec.addNodeUntracked(text)
+}
+
+// Keep provisional separators separate from existing DOM text, which AddChild
+// would otherwise coalesce immediately. Consecutive separators share a marker.
+func (scope *conditionalScope) deferSeparator(out *outputFrame, text string) error {
+	if n := len(scope.separators); n > 0 {
+		last := scope.separators[n-1]
+		if out.current.LastChild() == last {
+			return last.AppendText(text)
+		}
+	}
+
+	marker := out.doc.CreateComment(text)
+	if err := out.current.AddChild(marker); err != nil {
+		return err
+	}
+
+	scope.separators = append(scope.separators, marker)
+
+	return nil
 }
 
 func (ec *execContext) writeAtomicText(value string) error {
@@ -458,10 +504,14 @@ func (ec *execContext) writeOutputSequenceAtomic(out *outputFrame, atomic xdm.At
 	}
 
 	if value == "" {
+		if prevWasAtomic {
+			return ec.writeSequenceSeparator(out, false)
+		}
+
 		return nil
 	}
 
-	if prevWasAtomic || (out.prevHadOutput && out.itemSeparator != nil) {
+	if prevWasAtomic || (out.prevHadOutput && out.serializationItemSeparator() != nil) {
 		if err := ec.writeSequenceSeparator(out, true); err != nil {
 			return err
 		}

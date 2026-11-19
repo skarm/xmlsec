@@ -102,6 +102,87 @@ func TestStoreRejectsMissingParentAndCanceledAcquisition(t *testing.T) {
 	}
 }
 
+func TestStoreKeepsRelativeParentAcrossWorkingDirectoryChanges(t *testing.T) {
+	parent := t.TempDir()
+	t.Chdir(parent)
+	store, err := evidence.NewStore(".", 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	const contents = "evidence"
+	first, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(contents), evidence.Provenance{}, len(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	reader, err := first.Open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	if err := errors.Join(err, reader.Close()); err != nil || string(got) != contents {
+		t.Fatalf("record = (%q, %v), want %q", got, err, contents)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(contents), evidence.Provenance{}, len(contents)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+		t.Errorf("original parent after Close = (%v, %v), want empty directory", entries, err)
+	}
+}
+
+func TestRecordOpensThroughOriginalAbsoluteDirectoryPath(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	target := filepath.Join(parent, "target", "child")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Keep the absolute caller path as written so the filesystem resolves the
+	// parent of the symlink target.
+	alternate := link + string(filepath.Separator) + ".."
+	store, err := evidence.NewStore(alternate, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	const contents = "sample evidence"
+	record, err := store.PutReader(t.Context(), evidence.CRL, strings.NewReader(contents), evidence.Provenance{}, len(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := record.Open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	if err := errors.Join(err, reader.Close(), record.Close()); err != nil || string(got) != contents {
+		t.Fatalf("record = (%q, %v), want %q", got, err, contents)
+	}
+}
+
 func TestRecordCopiesShareClose(t *testing.T) {
 	t.Parallel()
 

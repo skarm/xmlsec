@@ -57,6 +57,7 @@ const (
 	nameHelp         = "help"
 
 	scopeBytes      = "bytes"
+	scopeDocument   = "document"
 	transportDirect = "direct"
 	nameRequest     = "request"
 	nameResponse    = "response"
@@ -75,7 +76,6 @@ const (
 )
 
 const (
-	ioFlagNames          = "in out"
 	scopeElement         = "element"
 	namePublic           = "public"
 	namePostEncode       = "post-encode"
@@ -97,4 +97,13 @@ const (
 
 const (
 	nameEncryption = "encryption"
+)
+
+const stdioPath = "-"
+
+const (
+	trustExternallySuppliedKey = "externally-supplied-key"
+	fieldKeyFingerprintSHA256  = "key_fingerprint_sha256"
+	fieldReferenceCount        = "reference_count"
+	fieldRootCovered           = "root_covered"
 )

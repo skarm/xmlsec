@@ -52,8 +52,22 @@ func WriteReader(ctx context.Context, dst io.Writer, src io.Reader, transforms [
 }
 
 func (p *processor) parseReader(ctx context.Context, src *streamio.Reader) (Data, error) {
+	remaining := p.opt.MaxNodeVisits - p.out.visits
+	if remaining <= 0 {
+		return Data{}, fmt.Errorf("%w: node visits", ErrLimit)
+	}
+
 	limits := p.opt.XMLLimits
-	limits.MaxBytes = min(limits.MaxBytes, p.opt.MaxInputBytes)
+	// The reader carries the limit for the original input or for the current
+	// intermediate output. A transform may expand the octet stream.
+	limits.MaxBytes = min(limits.MaxBytes, int(src.Limit))
+
+	maxNodes := limits.MaxNodeSetNodes
+	if maxNodes == 0 {
+		maxNodes = document.DefaultLimits().MaxNodeSetNodes
+	}
+
+	limits.MaxNodeSetNodes = min(maxNodes, remaining)
 
 	doc, err := document.ParseReader(ctx, src, limits)
 	if err != nil {
@@ -62,6 +76,10 @@ func (p *processor) parseReader(ctx context.Context, src *streamio.Reader) (Data
 
 	nodes, err := doc.AllNodes(ctx)
 	if err != nil {
+		if remaining < maxNodes && errors.Is(err, document.ErrLimit) {
+			return Data{}, fmt.Errorf("%w: node visits: %w", ErrLimit, err)
+		}
+
 		return Data{}, err
 	}
 
@@ -118,8 +136,8 @@ type decodedBase64 struct{ io.Reader }
 
 func (r decodedBase64) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
-	if err == nil || errors.Is(err, io.EOF) {
-		return n, err
+	if err == nil {
+		return n, nil
 	}
 
 	var corrupt base64.CorruptInputError

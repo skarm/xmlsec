@@ -28,6 +28,7 @@ import (
 	"golang.org/x/text/encoding/charmap"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform"
 )
 
@@ -71,6 +72,8 @@ const (
 	suiteMaxFileBytes       = 16 << 20
 	suiteLanguage           = "language"
 	suiteFile               = "file"
+	suiteRoleAttribute      = "role"
+	suiteURIAttribute       = "uri"
 	suiteNamespace          = "namespace"
 	suitePackageTag         = "package"
 	suiteResourceTag        = "resource"
@@ -270,7 +273,9 @@ func runSuites(ctx context.Context, root string, args []string, out, stderr io.W
 }
 
 func suiteSourceDigest(ctx context.Context, root string) (string, error) {
-	listing, err := suiteGit(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go", "go.mod", "go.sum", "build/w3c-suites.json", "transform/testdata/SaxonWorker.java")
+	listing, err := suiteGit(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate", "--",
+		"*.go", "go.mod", "go.sum", ":(glob)**/testdata/**",
+		"build/w3c-suites.json", "build/interop-inputs.txt", "build/interop-transform-inputs.txt")
 	if err != nil {
 		return "", err
 	}
@@ -285,8 +290,20 @@ func suiteSourceDigest(ctx context.Context, root string) (string, error) {
 			return "", err
 		}
 
+		if path == "" {
+			continue
+		}
+
 		raw, _, err := readSuiteFile(root, root, path)
 		if err != nil {
+			// The index includes files deleted only from the worktree. Do
+			// not ignore an existing symlink whose target cannot be read.
+			if errors.Is(err, os.ErrNotExist) {
+				if _, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(path))); errors.Is(statErr, os.ErrNotExist) {
+					continue
+				}
+			}
+
 			return "", err
 		}
 
@@ -470,7 +487,7 @@ func suiteLocalReferencePath(root, base string, node *suiteNode, reference *url.
 		return "", err
 	}
 
-	resolved := baseURI.ResolveReference(reference)
+	resolved := tree.ResolveURIReference(baseURI, reference)
 	if resolved.Scheme != suiteFile || resolved.Host != "" || resolved.User != nil || resolved.RawQuery != "" || resolved.ForceQuery {
 		return "", suiteHarness("file reference requires a local catalog base URI")
 	}
@@ -550,6 +567,34 @@ func decodeSuiteNode(data []byte, path string) (*suiteNode, string, error) {
 		return nil, "", fmt.Errorf("suite catalog XML: %w", err)
 	}
 
+	// Decode stops at the first element. Consume the rest so an extra root,
+	// truncated markup or trailing text cannot disappear from the catalog.
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		if err != nil {
+			return nil, "", fmt.Errorf("suite catalog XML: %w", err)
+		}
+
+		switch token := token.(type) {
+		case xml.Comment:
+			continue
+		case xml.ProcInst:
+			if !strings.EqualFold(token.Target, "xml") {
+				continue
+			}
+		case xml.CharData:
+			if len(bytes.Trim(token, " \t\r\n")) == 0 {
+				continue
+			}
+		}
+
+		return nil, "", errors.New("suite catalog XML has unexpected content after the root element")
+	}
+
 	if err := bindSuiteStaticContext(&node, nil, suiteFileURI(path)); err != nil {
 		return nil, "", err
 	}
@@ -571,7 +616,7 @@ func bindSuiteStaticContext(node *suiteNode, inherited map[string]string, baseUR
 				return err
 			}
 
-			node.baseURI = base.ResolveReference(ref).String()
+			node.baseURI = tree.ResolveURIReference(base, ref).String()
 		}
 	}
 
@@ -694,9 +739,9 @@ func executeSuite(ctx context.Context, options suiteOptions, pin suitePin) (*sui
 				return nil, err
 			}
 
-			item := suiteCase{set: entry.attr("name"), file: entry.attr(suiteFile), base: filepath.Dir(path), setNode: set, node: node, environments: environments}
+			item := suiteCase{set: entry.attr(lexicon.AttrName), file: entry.attr(suiteFile), base: filepath.Dir(path), setNode: set, node: node, environments: environments}
 
-			outcome := suiteOutcome{Set: item.set, File: item.file, Name: node.attr("name")}
+			outcome := suiteOutcome{Set: item.set, File: item.file, Name: node.attr(lexicon.AttrName)}
 			if !options.setMatch.MatchString(item.set) || !options.caseMatch.MatchString(outcome.Name) {
 				outcome.Status, outcome.Reason = suiteSkipped, "not selected by the explicit set/case filter"
 			} else if options.limit > 0 && selected >= options.limit {
@@ -719,7 +764,7 @@ func suiteEnvironments(node *suiteNode, base string, previous map[string]suiteEn
 	maps.Copy(result, previous)
 
 	for _, environment := range node.children("environment") {
-		result[environment.attr("name")] = suiteEnvironmentRef{node: environment, base: base}
+		result[environment.attr(lexicon.AttrName)] = suiteEnvironmentRef{node: environment, base: base}
 	}
 
 	return result

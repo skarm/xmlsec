@@ -136,10 +136,19 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 	}
 
 	total := 0
+	charge := func(size int) error {
+		if size > defaultMaxBlobBytes || size > defaultMaxTotalBytes-total {
+			return ErrLimit
+		}
+
+		total += size
+
+		return nil
+	}
+
 	for _, name := range t.Names {
-		total += len(name)
-		if total > defaultMaxTotalBytes {
-			return nil, ErrLimit
+		if err := charge(len(name)); err != nil {
+			return nil, err
 		}
 
 		v := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementKeyName)
@@ -147,11 +156,11 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 		add(root, v)
 	}
 
-	if err := x509TemplateBudget(ctx, &t, &total); err != nil {
+	if err := x509TemplateBudget(ctx, &t, charge); err != nil {
 		return nil, err
 	}
 
-	if err := buildKeys(ctx, t.Keys, root); err != nil {
+	if err := buildKeys(ctx, t.Keys, root, charge); err != nil {
 		return nil, err
 	}
 
@@ -195,7 +204,7 @@ func Build(ctx context.Context, t Template) (*document.Document, error) {
 // Preflight all X509Data sources before parsing DER or allocating encoded XML.
 // Count parser visits as well as output entries: decoding a selector is work
 // even when the same value is repeated in several groups.
-func x509TemplateBudget(ctx context.Context, t *Template, total *int) error {
+func x509TemplateBudget(ctx context.Context, t *Template, charge func(int) error) error {
 	// Visit weights count the root and each selected XML representation's
 	// nodes; RSA/DSA add components beyond the item/bare-key/binary base.
 	const (
@@ -228,16 +237,11 @@ func x509TemplateBudget(ctx context.Context, t *Template, total *int) error {
 		}
 	}
 
-	candidates := len(t.Keys)
-	charge := func(size int) error {
-		if size > defaultMaxBlobBytes || size > defaultMaxTotalBytes-*total {
-			return ErrLimit
-		}
-
-		*total += size
-
-		return nil
+	if visits > defaultMaxElements {
+		return ErrLimit
 	}
+
+	candidates := len(t.Keys)
 
 	check := func(group X509Data) error {
 		if err := ctx.Err(); err != nil {
@@ -426,7 +430,7 @@ func blob(ctx context.Context, n *tree.Node, ns, prefix, local string, b []byte)
 	return nil
 }
 
-func buildKeys(ctx context.Context, keys []PublicKeyValue, root *tree.Node) error {
+func buildKeys(ctx context.Context, keys []PublicKeyValue, root *tree.Node, charge func(int) error) error {
 	for _, value := range keys {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -436,7 +440,7 @@ func buildKeys(ctx context.Context, keys []PublicKeyValue, root *tree.Node) erro
 			return err
 		}
 
-		node, err := buildPublicKey(ctx, value)
+		node, err := buildPublicKey(ctx, value, charge)
 		if err != nil {
 			return err
 		}
@@ -447,11 +451,15 @@ func buildKeys(ctx context.Context, keys []PublicKeyValue, root *tree.Node) erro
 	return nil
 }
 
-func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, error) {
+func buildPublicKey(ctx context.Context, value PublicKeyValue, charge func(int) error) (*tree.Node, error) {
 	switch value.Format {
 	case DERKeyValue:
 		der, err := signature.MarshalPublicKey(value.Key)
 		if err != nil {
+			return nil, err
+		}
+
+		if err := charge(len(der)); err != nil {
 			return nil, err
 		}
 
@@ -468,7 +476,7 @@ func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, erro
 	case "", XMLKeyValue:
 		node := element(Namespace, lexicon.PrefixDSig, lexicon.DSigElementKeyValue)
 
-		child, err := buildXMLKey(ctx, value.Key)
+		child, err := buildXMLKey(ctx, value.Key, charge)
 		if err != nil {
 			return nil, err
 		}
@@ -481,12 +489,20 @@ func buildPublicKey(ctx context.Context, value PublicKeyValue) (*tree.Node, erro
 	}
 }
 
-func buildXMLKey(ctx context.Context, key crypto.PublicKey) (*tree.Node, error) {
+func buildXMLKey(ctx context.Context, key crypto.PublicKey, charge func(int) error) (*tree.Node, error) {
+	appendValue := func(node *tree.Node, local string, raw []byte) error {
+		if err := charge(len(raw)); err != nil {
+			return err
+		}
+
+		return blob(ctx, node, node.Name.Space, node.Prefix, local, raw)
+	}
+
 	switch k := key.(type) {
 	case *dsa.PublicKey:
 		node := element(Namespace, lexicon.PrefixDSig, nameDSAKeyValue)
 		for i, value := range []*big.Int{k.P, k.Q, k.G, k.Y} {
-			if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, []string{nameP, nameQ, nameG, nameY}[i], value.Bytes()); err != nil {
+			if err := appendValue(node, []string{nameP, nameQ, nameG, nameY}[i], value.Bytes()); err != nil {
 				return nil, err
 			}
 		}
@@ -494,11 +510,11 @@ func buildXMLKey(ctx context.Context, key crypto.PublicKey) (*tree.Node, error) 
 		return node, nil
 	case *rsa.PublicKey:
 		node := element(Namespace, lexicon.PrefixDSig, nameRSAKeyValue)
-		if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, nameModulus, k.N.Bytes()); err != nil {
+		if err := appendValue(node, nameModulus, k.N.Bytes()); err != nil {
 			return nil, err
 		}
 
-		if err := blob(ctx, node, Namespace, lexicon.PrefixDSig, nameExponent, big.NewInt(int64(k.E)).Bytes()); err != nil {
+		if err := appendValue(node, nameExponent, big.NewInt(int64(k.E)).Bytes()); err != nil {
 			return nil, err
 		}
 
@@ -514,7 +530,7 @@ func buildXMLKey(ctx context.Context, key crypto.PublicKey) (*tree.Node, error) 
 			return nil, ErrKey
 		}
 
-		if err := blob(ctx, node, Namespace11, lexicon.PrefixDSig11, lexicon.DSigElementPublicKey, point); err != nil {
+		if err := appendValue(node, lexicon.DSigElementPublicKey, point); err != nil {
 			return nil, err
 		}
 

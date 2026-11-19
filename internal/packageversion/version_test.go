@@ -59,6 +59,9 @@ func TestConstraints(t *testing.T) {
 		{"1 to 2, 4+", "4.1", true},
 		{"1.2-alpha.*", "1.2-alpha", true},
 		{"1.2-alpha.*", "1.2.1-alpha", false},
+		{"1.2-a\u1680b", "1.2-a\u1680b", true},
+		{"1.2-a\u1680b.*", "1.2-a\u1680b", true},
+		{"1.2-a\u1680b\tto\n1.3", "1.2-a\u1680b", true},
 	} {
 		constraint := packageversion.ParseConstraint(tc.constraint)
 		if !constraint.Valid() || constraint.Matches(packageversion.Parse(tc.version)) != tc.want {

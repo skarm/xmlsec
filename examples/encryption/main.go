@@ -57,8 +57,8 @@ func run() error {
 	}
 	// Decryption alone does not authenticate the sender. The application must
 	// validate signatures and protocol semantics before acting on the payload.
-	fmt.Printf("Restored %s in %s; original payload is %s; header is %s\n",
-		payload.Name().Local, restored.Root().Name().Local, selected.Text(), restored.Root().Children()[0].Text())
+	fmt.Printf("Restored %s in %s; restored payload is %s; header is %s\n",
+		payload.Name().Local, restored.Root().Name().Local, payload.Text(), restored.Root().Children()[0].Text())
 	// Content mode keeps Payload and its attributes visible while protecting all
 	// its child nodes. Decryption returns the restored parent, even for empty text.
 	contentCipher, encryptedContent, err := xmlenc.EncryptContent(ctx, source, selected, &recipient.PublicKey, xmlenc.RSAOptions{})

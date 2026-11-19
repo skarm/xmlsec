@@ -105,19 +105,16 @@ type Stylesheet struct {
 	// it is safe to read from concurrent Transform calls without locking.
 	modeIndex map[string]*templateIndex
 	// keys retains all key definitions contributing to each expanded key name.
-	keys                map[string][]*keyDef
-	outputs             map[string]*OutputDef                       // "" = default output
-	functions           map[funcKey]*xslFunction                    // xsl:function defs (keyed by name+arity)
-	namespaces          map[string]string                           // prefix -> URI from stylesheet
-	decimalFormats      map[xpath.QualifiedName]xpath.DecimalFormat // named decimal formats
-	decimalFmtPrec      map[xpath.QualifiedName]int                 // import precedence of each decimal format
-	decimalFmtSet       map[xpath.QualifiedName]map[string]struct{} // explicitly set properties per format
-	decimalFmtConflicts map[xpath.QualifiedName]int                 // pending XTSE1290 conflicts (value = precedence)
-	modeDefs            map[string]*modeDef                         // mode name -> mode definition
-	attributeSets       map[string]*attributeSetDef                 // xsl:attribute-set definitions
-	accumulators        map[string]*accumulatorDef                  // accumulator name -> definition
-	sourceDoc           *xdm.Document                               // the parsed stylesheet document (for document(""))
-	moduleDocs          map[string]*xdm.Document                    // module base URI -> parsed stylesheet document
+	keys           map[string][]*keyDef
+	outputs        map[string]*OutputDef                       // "" = default output
+	functions      map[funcKey]*xslFunction                    // xsl:function defs (keyed by name+arity)
+	namespaces     map[string]string                           // prefix -> URI from stylesheet
+	decimalFormats map[xpath.QualifiedName]xpath.DecimalFormat // named decimal formats
+	modeDefs       map[string]*modeDef                         // mode name -> mode definition
+	attributeSets  map[string]*attributeSetDef                 // xsl:attribute-set definitions
+	accumulators   map[string]*accumulatorDef                  // accumulator name -> definition
+	sourceDoc      *xdm.Document                               // the parsed stylesheet document (for document(""))
+	moduleDocs     map[string]*xdm.Document                    // module base URI -> parsed stylesheet document
 	// Visibility maps track per-component visibility for package system.
 	// Keys are component names (expanded QNames for templates/variables,
 	// QualifiedName.String() for functions with arity suffix).
@@ -236,6 +233,7 @@ type attributeSetDef struct {
 }
 
 type xslFunction struct {
+	StaticBaseURI    string
 	signatureTypeKey string
 
 	Name          xpath.QualifiedName
@@ -245,7 +243,7 @@ type xslFunction struct {
 	Cache         bool         // cache="yes" encourages result memoization by argument values
 	Streamability string       // "absorbing", "inspection", etc.; "" = unspecified
 	Visibility    string       // "public", "private", "final", "abstract"
-	NewEachTime   string       // "yes", "no", "maybe"; "" = unspecified (defaults to "maybe")
+	NewEachTime   string       // canonical "yes", "no", "maybe"; "" defaults to "yes"
 	OwnerPackage  *Stylesheet  // package that defined this function (nil = main stylesheet)
 	AcceptedFrom  *Stylesheet  // use-package that accepted this function (for XTSE3050 detection)
 	ImportPrec    int          // import precedence for XTSE0770 conflict detection
@@ -260,6 +258,7 @@ type xslFunction struct {
 }
 
 type template struct {
+	returnNamespaces map[string]string
 	Match            *pattern
 	OwnerPackage     *Stylesheet // package that defined this template (nil = main stylesheet)
 	OriginalTemplate *template   // original template being overridden (for xsl:original calls)
@@ -270,26 +269,28 @@ type template struct {
 	// the template was not produced by a union split. The identity is allocated by
 	// nextSplitOriginID so splits from independently
 	// compiled packages merged via xsl:use-package never collide.
-	splitOriginID     *splitOrigin
-	signatureTypeKey  string
-	contextTypeKey    string
-	contextItemType   *xdm.SequenceType // bound in the xsl:context-item declaration's scope
-	Name              string
-	Mode              string // "" = default, "#all" = all modes
-	As                string // return type constraint (e.g., "element()")
-	ContextItemAs     string // xsl:context-item/@as type constraint
-	ContextItemUse    string // xsl:context-item/@use: "required" (default), "optional", "absent"
-	XPathDefaultNS    string // xpath-default-namespace (inherited or explicit)
-	DefaultCollation  string // default-collation URI (inherited or explicit)
-	BaseURI           string // base URI of the stylesheet module that defined this template
-	Visibility        string // "public", "private", "final", "abstract"
-	Version           string // effective version (from template or stylesheet)
-	Params            []*param
-	Body              []instruction
-	Priority          float64
-	ImportPrec        int
-	MinImportPrec     int  // lowest import precedence among this module's imports (for apply-imports boundary)
-	conflictDuplicate bool // deferred XTSE0660, discarded by a higher-precedence declaration
+	splitOriginID      *splitOrigin
+	contextItemType    *xdm.SequenceType // bound in the xsl:context-item declaration's scope
+	returnDefaultNS    string
+	signatureTypeKey   string
+	contextTypeKey     string
+	Name               string
+	Mode               string // "" = default, "#all" = all modes
+	As                 string // return type constraint (e.g., "element()")
+	ContextItemAs      string // xsl:context-item/@as type constraint
+	ContextItemUse     string // xsl:context-item/@use: "required" (default), "optional", "absent"
+	XPathDefaultNS     string // xpath-default-namespace (inherited or explicit)
+	DefaultCollation   string // default-collation URI (inherited or explicit)
+	BaseURI            string // base URI of the stylesheet module that defined this template
+	Visibility         string // "public", "private", "final", "abstract"
+	Version            string // effective version (from template or stylesheet)
+	Params             []*param
+	Body               []instruction
+	Priority           float64
+	ImportPrec         int
+	MinImportPrec      int // lowest import precedence among this module's imports (for apply-imports boundary)
+	hasReturnDefaultNS bool
+	conflictDuplicate  bool // deferred XTSE0660, discarded by a higher-precedence declaration
 	// explicitPriority reports a priority attribute on the template. Without
 	// one, a union match pattern is split into one rule per alternative
 	// (templateRules).
@@ -479,6 +480,7 @@ type characterMapDef struct {
 }
 
 type accumulatorDef struct {
+	BaseURI           string
 	Initial           *xpath.Expression
 	Name              string
 	As                string            // type declaration
@@ -493,11 +495,12 @@ type accumulatorDef struct {
 }
 
 type accumulatorRule struct {
-	Match  *pattern
-	Phase  string // "start" or "end"
-	Select *xpath.Expression
-	Body   []instruction
-	New    bool // new="yes" starts a fresh value
+	BaseURI string
+	Match   *pattern
+	Phase   string // "start" or "end"
+	Select  *xpath.Expression
+	Body    []instruction
+	New     bool // new="yes" starts a fresh value
 }
 
 // nameTest is used for xsl:strip-space and xsl:preserve-space element names.

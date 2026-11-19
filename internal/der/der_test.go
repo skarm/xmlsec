@@ -5,8 +5,10 @@ import (
 	"encoding/asn1"
 	"errors"
 	"io"
+	"math"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/der"
@@ -25,6 +27,11 @@ func TestOIDEncodesObjectIdentifier(t *testing.T) {
 		{"too_few_arcs", asn1.ObjectIdentifier{1}, nil},
 		{"invalid_first_arc", asn1.ObjectIdentifier{3, 0}, nil},
 		{"invalid_second_arc", asn1.ObjectIdentifier{1, 40}, nil},
+		{"negative_first_arc", asn1.ObjectIdentifier{-1, 1}, nil},
+		{"negative_second_arc", asn1.ObjectIdentifier{1, -1}, nil},
+		{"negative_final_arc", asn1.ObjectIdentifier{1, 2, -1}, nil},
+		{"unsupported_first_subidentifier", asn1.ObjectIdentifier{2, math.MaxInt32 - 79}, nil},
+		{"largest_supported_first_subidentifier", asn1.ObjectIdentifier{2, math.MaxInt32 - 80}, []byte{0x06, 0x05, 0x87, 0xff, 0xff, 0xff, 0x7f}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -34,6 +41,19 @@ func TestOIDEncodesObjectIdentifier(t *testing.T) {
 				t.Errorf("OID(%v) = % x (nil=%t), want % x (nil=%t)", tc.oid, got, got == nil, tc.want, tc.want == nil)
 			}
 		})
+	}
+}
+
+func TestTrailingValueError(t *testing.T) {
+	t.Parallel()
+	encoded := append(der.Int(1), der.Int(2)...)
+	_, parseErr := der.Read(encoded, len(encoded))
+	var value int
+	decodeErr := der.Decode(asn1.RawValue{FullBytes: encoded}, &value)
+	for _, err := range []error{parseErr, decodeErr} {
+		if !errors.Is(err, der.ErrInvalidDER) || !strings.Contains(err.Error(), "trailing") {
+			t.Errorf("want ErrInvalidDER identifying trailing data, got %v", err)
+		}
 	}
 }
 
@@ -129,6 +149,20 @@ func TestReadExplicitBudgets(t *testing.T) {
 
 	if children, err := der.Sequence(value, 2, 2); err != nil || len(children) != 2 {
 		t.Fatalf("exact sequence bound: %v", err)
+	}
+}
+
+func TestChildrenLimitOnEmptySequence(t *testing.T) {
+	raw := der.Seq()
+	value, err := der.Read(raw, len(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if children, err := der.ChildrenLimit(value, 0); err != nil || len(children) != 0 {
+		t.Fatalf("zero budget: %d children, %v", len(children), err)
+	}
+	if children, err := der.ChildrenLimit(value, -1); children != nil || !errors.Is(err, der.ErrLimit) || !errors.Is(err, der.ErrInvalidDER) {
+		t.Fatalf("negative budget: %v, %v", children, err)
 	}
 }
 

@@ -517,6 +517,10 @@ func (e Evaluator) TraceWriter(w io.Writer) Evaluator {
 // Evaluate evaluates the compiled expression against the given context node.
 // ctx is used for cancellation/deadlines only, not for configuration.
 func (e Evaluator) Evaluate(ctx context.Context, expr *Expression, node xdm.Node) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if expr == nil {
 		return nil, fmt.Errorf("xpath: expression has no compiled program")
 	}
@@ -650,6 +654,10 @@ func (e Evaluator) EvaluateEBV(ctx context.Context, expr *Expression, node xdm.N
 }
 
 func (e Evaluator) prepareEvaluation(ctx context.Context, expr *Expression, node xdm.Node) (*evalContext, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if err := expr.requireCompiledProgram(); err != nil {
 		return nil, err
 	}

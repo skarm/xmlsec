@@ -15,14 +15,14 @@ import (
 func TestReadRecordsPreservesInheritedContext(t *testing.T) {
 	t.Parallel()
 
-	const source = `<feed xmlns="urn:feed" xmlns:p="urn:outer" xml:lang="en" xml:space="preserve" xml:base="https://example.test/library/" catalog="catalog">
-		<group xmlns:p="urn:entry" xml:lang="fr" xml:base="sub/">
+	const source = `<feed xmlns="urn:feed" xmlns:p="urn:outer" xml:lang="en" xml:space="preserve" xml:base="https://example.test/catalog//library/?" catalog="catalog">
+		<group xmlns:p="urn:entry" xml:lang="fr" xml:base="sub//files/">
 			<item xml:lang="de" xml:base="../a.xml"><p:value>first</p:value></item>
 			<item xmlns="urn:other"><p:value>excluded</p:value></item>
 			<other><item>excluded by path depth</item></other>
 			<item><p:value>second</p:value></item>
 		</group>
-		<group xml:space="default"><item><p:value>third</p:value></item></group>
+		<group xml:space="default" xml:base=""><item><p:value>third</p:value></item></group>
 	</feed>`
 	name := func(local string) tree.Name { return tree.Name{Space: "urn:feed", Local: local} }
 	var records []*tree.Document
@@ -39,9 +39,9 @@ func TestReadRecordsPreservesInheritedContext(t *testing.T) {
 	for index, want := range []struct {
 		value, namespace, lang, space, base string
 	}{
-		{"first", "urn:entry", "de", "preserve", "https://example.test/library/a.xml"},
-		{"second", "urn:entry", "fr", "preserve", "https://example.test/library/sub/"},
-		{"third", "urn:outer", "en", "default", "https://example.test/library/"},
+		{"first", "urn:entry", "de", "preserve", "https://example.test/catalog//library/sub//a.xml"},
+		{"second", "urn:entry", "fr", "preserve", "https://example.test/catalog//library/sub//files/"},
+		{"third", "urn:outer", "en", "default", "https://example.test/catalog//library/?"},
 	} {
 		doc := records[index]
 		root := doc.Root()
@@ -71,6 +71,43 @@ func TestReadRecordsPreservesInheritedContext(t *testing.T) {
 	}
 }
 
+func TestReadRecordsReplacesLocalBaseAfterRelativeJoin(t *testing.T) {
+	t.Parallel()
+
+	const source = `<feed xml:base="abc/"><item xml:base="../"/></feed>`
+	options := tree.RecordOptions{Path: []tree.Name{{Local: "feed"}, {Local: "item"}}}
+	count := 0
+	err := tree.ReadRecords(t.Context(), strings.NewReader(source), options, func(doc *tree.Document) error {
+		count++
+		if base, _ := doc.Root().Attribute(tree.Name{Space: tree.XMLNamespace, Local: "base"}); base != "" {
+			t.Errorf("record retained xml:base=%q after joining to an empty URI", base)
+		}
+		return nil
+	})
+	if err != nil || count != 1 {
+		t.Fatalf("ReadRecords emitted %d records, error %v", count, err)
+	}
+}
+
+func TestReadRecordsPreservesEmptySegmentsInAbsoluteBase(t *testing.T) {
+	t.Parallel()
+
+	const source = `<feed xml:base="https://example.test/root/"><item xml:base="..//records/"/></feed>`
+	options := tree.RecordOptions{Path: []tree.Name{{Local: "feed"}, {Local: "item"}}}
+	count := 0
+	err := tree.ReadRecords(t.Context(), strings.NewReader(source), options, func(doc *tree.Document) error {
+		count++
+		base, _ := doc.Root().Attribute(tree.Name{Space: tree.XMLNamespace, Local: "base"})
+		if base != "https://example.test//records/" {
+			t.Errorf("record xml:base = %q, want the original empty segment", base)
+		}
+		return nil
+	})
+	if err != nil || count != 1 {
+		t.Fatalf("ReadRecords emitted %d records, error %v", count, err)
+	}
+}
+
 func TestReadRecordsBoundsAndTerminalErrors(t *testing.T) {
 	t.Parallel()
 
@@ -89,6 +126,7 @@ func TestReadRecordsBoundsAndTerminalErrors(t *testing.T) {
 		terminal     error
 		callback     error
 		cancel       bool
+		editPath     bool
 		want         []string
 		wantErr      error
 	}{
@@ -103,6 +141,7 @@ func TestReadRecordsBoundsAndTerminalErrors(t *testing.T) {
 		{name: "bad_trailer_preserves_prior_callback", source: one + `<other/>`, want: []string{"first"}, wantErr: tree.ErrMalformed},
 		{name: "callback_failure_stops_delivery", source: two, callback: stop, want: []string{"first"}, wantErr: stop},
 		{name: "callback_cancellation_stops_delivery", source: two, cancel: true, want: []string{"first"}, wantErr: context.Canceled},
+		{name: "callback_can_update_caller_path_for_future_reads", source: two, editPath: true, want: []string{"first", "second"}},
 		{name: "joined_source_failure_is_not_eof", source: one, terminal: errors.Join(io.EOF, sourceFailure), want: []string{"first"}, wantErr: sourceFailure},
 		{name: "empty_input_rejected", wantErr: tree.ErrMalformed},
 	} {
@@ -124,6 +163,9 @@ func TestReadRecordsBoundsAndTerminalErrors(t *testing.T) {
 				records = append(records, doc.Root().Text())
 				if tc.cancel {
 					cancel()
+				}
+				if tc.editPath {
+					options.Path[1].Local = "other"
 				}
 				return tc.callback
 			})

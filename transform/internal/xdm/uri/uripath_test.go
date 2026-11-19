@@ -50,9 +50,13 @@ func TestPortablePathAndSchemeBoundaries(t *testing.T) {
 		{`C:\dir\file.xml`, "file:///C:/dir/file.xml"},
 		{"D:/dir/file.xml", "file:///D:/dir/file.xml"},
 		{`\\server\share\file.xml`, "file://server/share/file.xml"},
+		{"/reports/quarter#+/A%20B.xml", "file:///reports/quarter%23+/A%2520B.xml"},
+		{`C:\reports\quarter#1\main.xsl`, "file:///C:/reports/quarter%231/main.xsl"},
+		{`\\server\share\a #+ %.xml`, "file://server/share/a%20%23+%20%25.xml"},
+		{`\file name`, "file:/file%20name"},
 	} {
-		if got := uripath.WindowsToFileURI(test.path); got != test.want {
-			t.Fatalf("WindowsToFileURI(%q)=%q; want %q", test.path, got, test.want)
+		if got := uripath.FileURIFromPath(test.path); got != test.want {
+			t.Fatalf("FileURIFromPath(%q)=%q; want %q", test.path, got, test.want)
 		}
 	}
 }

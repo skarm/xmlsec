@@ -29,29 +29,78 @@ func (s *serializationSequence) items(seq xdm.Sequence) iter.Seq2[xdm.XMLItem, e
 	return xpath.SerializationItems(s.ctx, seq, s.definition.ItemSeparator, coalesce)
 }
 
-func firstSerializationElement(seq xdm.Sequence) *xdm.Element {
-	for item := range xdm.SequenceItems(seq) {
-		switch value := item.(type) {
-		case xdm.ArrayItem:
-			for _, member := range value.MembersView() {
-				if elem := firstSerializationElement(member); elem != nil {
-					return elem
-				}
-			}
-		case xdm.NodeItem:
-			if elem, ok := value.Node.(*xdm.Element); ok {
-				return elem
-			}
-
-			if doc, ok := value.Node.(*xdm.Document); ok {
-				if root := doc.DocumentElement(); root != nil {
-					return root
-				}
+// firstSerializationElement returns the first normalized element only when
+// all text before it is XML whitespace.
+func firstSerializationElement(ctx context.Context, seq xdm.Sequence, separator *string) (*xdm.Element, error) {
+	if xdm.SequenceLen(seq) == 1 {
+		if item, ok := seq.Get(0).(xdm.NodeItem); ok {
+			switch node := item.Node.(type) {
+			case *xdm.Element:
+				return node, ctx.Err()
+			case *xdm.Document:
+				return firstDocumentSerializationElement(ctx, node)
 			}
 		}
 	}
 
-	return nil
+	for item, err := range xpath.SerializationItems(ctx, seq, separator, false) {
+		if err != nil {
+			return nil, err
+		}
+
+		if elem, ok := item.Node.(*xdm.Element); ok {
+			return elem, nil
+		}
+
+		nonWhitespace, err := leadingSerializationText(ctx, item)
+		if err != nil || nonWhitespace {
+			return nil, err
+		}
+	}
+
+	return nil, ctx.Err()
+}
+
+func firstDocumentSerializationElement(ctx context.Context, doc *xdm.Document) (*xdm.Element, error) {
+	if doc == nil {
+		return nil, ctx.Err()
+	}
+
+	for child := range xdm.Children(doc) {
+		if elem, ok := child.(*xdm.Element); ok {
+			return elem, ctx.Err()
+		}
+
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		nonWhitespace, err := leadingSerializationText(ctx, xdm.XMLItem{Node: child})
+		if err != nil || nonWhitespace {
+			return nil, err
+		}
+	}
+
+	return nil, ctx.Err()
+}
+
+func leadingSerializationText(ctx context.Context, item xdm.XMLItem) (bool, error) {
+	const scanChunkBytes = 4096
+
+	for value := serializationText(item); len(value) > 0; {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return false, err
+		}
+
+		end := min(len(value), scanChunkBytes)
+		if !isXMLWhitespaceOnly(value[:end]) {
+			return true, nil
+		}
+
+		value = value[end:]
+	}
+
+	return false, nil
 }
 
 func streamXMLValue(ctx context.Context, w io.Writer, result ValueResult, definition *OutputDef) error {

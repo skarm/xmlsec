@@ -14,6 +14,7 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 // Calendar lexical limits are separate from arithmetic movement limits. The
@@ -220,7 +221,9 @@ func buildTimeFromParts(year int, rest string, layouts []string, original string
 
 	synthetic := goParseReferenceYear + rest
 	for _, layout := range layouts {
-		if t, err := time.Parse(layout, synthetic); err == nil {
+		// A numeric XSD offset stays fixed even when it matches the local
+		// zone at the reference date and that zone later changes offset.
+		if t, err := time.ParseInLocation(layout, synthetic, time.UTC); err == nil {
 			t = time.Date(year, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 			t = ensureExplicitTZ(t, original)
 
@@ -235,7 +238,7 @@ func buildTimeFromParts(year int, rest string, layouts []string, original string
 
 		synthetic = goParseReferenceYear + modRest
 		for _, layout := range layouts {
-			if t, err := time.Parse(layout, synthetic); err == nil {
+			if t, err := time.ParseInLocation(layout, synthetic, time.UTC); err == nil {
 				t = time.Date(year, t.Month(), leapDayOfMonth, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 				t = ensureExplicitTZ(t, original)
 
@@ -301,6 +304,10 @@ func parseXSDDate(s string) (time.Time, error) {
 }
 
 func parseXSDDateTime(s string) (time.Time, error) {
+	if _, clock, found := strings.Cut(s, "T"); !found || !lexical.ValidClockLexical(clock) {
+		return time.Time{}, fmt.Errorf("invalid xs:dateTime: %q", s)
+	}
+
 	// Handle 24:00:00 (end-of-day midnight) — XSD allows this
 	normalized, isMidnight24 := normalizeMidnight24DateTime(s)
 
@@ -356,6 +363,10 @@ func parseXSDDateTime(s string) (time.Time, error) {
 }
 
 func parseXSDTime(s string) (time.Time, error) {
+	if !lexical.ValidClockLexical(s) {
+		return time.Time{}, fmt.Errorf("invalid xs:time: %q", s)
+	}
+
 	if err := validateTimezoneInString(s); err != nil {
 		return time.Time{}, fmt.Errorf("invalid xs:time: %q: %w", s, err)
 	}
@@ -373,7 +384,7 @@ func parseXSDTime(s string) (time.Time, error) {
 		xsdTimeFractionLayout,
 		xsdTimeLayout,
 	} {
-		if t, err := time.Parse(layout, target); err == nil {
+		if t, err := time.ParseInLocation(layout, target, time.UTC); err == nil {
 			if !isMidnight24 {
 				if err := validateTimeComponents(t.Hour(), t.Minute(), t.Second(), t.Nanosecond()); err != nil {
 					return time.Time{}, fmt.Errorf("invalid xs:time: %q: %w", s, err)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/signature"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/nilcheck"
@@ -87,7 +88,12 @@ type Service struct {
 // NewService validates and snapshots role selection. Signing providers, replay
 // storage and callbacks remain application-owned concurrent adapters.
 func NewService(c Config) (*Service, error) {
-	if !profile.URI(c.EntityID) || !profile.Endpoint(c.Endpoint, true) || c.Trust == nil || c.Replay == nil || c.Query == nil && c.Mapping == nil {
+	if !profile.URI(c.EntityID) || !profile.Endpoint(c.Endpoint, true) || c.Trust == nil || nilcheck.IsNil(c.Replay) || c.Query == nil && c.Mapping == nil {
+		return nil, ErrDenied
+	}
+
+	hasSigner, hasSecret := !nilcheck.IsNil(c.Signing.Key), c.Signing.Secret != nil
+	if hasSigner == hasSecret || hasSecret && len(c.Signing.CertificateDER) != 0 {
 		return nil, ErrDenied
 	}
 
@@ -116,6 +122,11 @@ func NewService(c Config) (*Service, error) {
 	c.Signing.Policy = xmlsig.ClonePolicy(c.Signing.Policy)
 	c.Options.Policy = xmlsig.ClonePolicy(c.Options.Policy)
 
+	if c.Signing.Secret != nil {
+		secret := *c.Signing.Secret
+		c.Signing.Secret = &secret
+	}
+
 	var err error
 
 	c.Options.Decryption, err = protocol.CloneDecryption(c.Options.Decryption)
@@ -130,7 +141,7 @@ func NewService(c Config) (*Service, error) {
 // signed SOAP response. Use binding.ReadSOAPRequest/WriteSOAPResponse at HTTP
 // boundaries. Invalid unauthenticated messages do not reach application backends.
 func (s *Service) Respond(ctx context.Context, d *document.Document, peer string, at time.Time) (*document.Document, error) {
-	if s == nil || ctx == nil || d == nil || at.IsZero() {
+	if s == nil || s.c.Trust == nil || ctx == nil || d == nil || at.IsZero() {
 		return nil, ErrDenied
 	}
 
@@ -182,7 +193,7 @@ func backendStatus(err error) (protocol.Status, error) {
 	}
 
 	if status, ok := errors.AsType[*protocol.StatusError](err); ok {
-		if status.Code == protocol.Success || status.Code == "" {
+		if status == nil || status.Code == protocol.Success || status.Code == "" {
 			return protocol.Status{}, ErrDenied
 		}
 
@@ -276,6 +287,10 @@ func (s *Service) respondQuery(ctx context.Context, d *document.Document, peer s
 		assertions = nil
 	}
 
+	if len(assertions) > protocol.MaxQueryAssertions {
+		return nil, protocol.ErrProfile
+	}
+
 	assertions = slices.Clone(assertions)
 
 	verified, err := s.verifyAssertions(ctx, assertions, peer, at, o)
@@ -283,11 +298,19 @@ func (s *Service) respondQuery(ctx context.Context, d *document.Document, peer s
 		return nil, err
 	}
 
+	if status.Code == protocol.Success && q.Context != nil && len(verified) == 0 {
+		status = protocol.Status{Code: protocol.Responder, Subcodes: []string{protocol.NoAuthnContext}}
+	}
+
 	if status.Code == protocol.Success {
 		if err = protocol.MatchQueryResponse(ctx, q, verified, s.c.Matcher); err != nil {
 			var failure *protocol.StatusError
 			if !errors.As(err, &failure) {
 				return nil, err
+			}
+
+			if failure == nil {
+				return nil, ErrDenied
 			}
 
 			status = protocol.Status{Code: failure.Code, Subcodes: failure.Subcodes}
@@ -384,5 +407,5 @@ func (s *Service) assertionKeys(ctx context.Context, issuer string, at time.Time
 		return nil, ErrDenied
 	}
 
-	return []crypto.PublicKey{s.c.Signing.Key.Public()}, nil
+	return []crypto.PublicKey{signature.SignerPublic(s.c.Signing.Key)}, nil
 }

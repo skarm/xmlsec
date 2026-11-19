@@ -200,7 +200,7 @@ func NewEngine(config Config) (*Engine, error) {
 	}
 
 	if config.XMLSchemaVersion != XMLSchema10 && config.XMLSchemaVersion != XMLSchema11 {
-		return nil, wrap("configure", ErrInput)
+		return nil, wrap(opConfigure, ErrInput)
 	}
 
 	limits := config.Limits
@@ -254,7 +254,7 @@ func NewEngine(config Config) (*Engine, error) {
 
 	for _, field := range fields {
 		if *field.value < 0 {
-			return nil, wrap("configure", ErrInput)
+			return nil, wrap(opConfigure, ErrInput)
 		}
 
 		if *field.value == 0 {
@@ -263,7 +263,7 @@ func NewEngine(config Config) (*Engine, error) {
 	}
 
 	if limits.Timeout < 0 || limits.MaxDepth > maximumDepth {
-		return nil, wrap("configure", ErrInput)
+		return nil, wrap(opConfigure, ErrInput)
 	}
 
 	if limits.Timeout == 0 {
@@ -284,7 +284,7 @@ func NewEngine(config Config) (*Engine, error) {
 	}
 
 	if err := e.registerFunctions(config.Functions); err != nil {
-		return nil, wrap("configure", err)
+		return nil, wrap(opConfigure, err)
 	}
 
 	if len(config.AllowedPrograms) > 0 {

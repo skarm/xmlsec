@@ -322,6 +322,49 @@ func TestWriteXMLFragmentOptionsStopAtFailure(t *testing.T) {
 	}
 }
 
+func TestWriteXMLFragmentOptionsAttributeWriterPreservesWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	doc, err := tree.Parse(t.Context(), []byte(`<r a="value"/>`), tree.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failure := errors.New("destination failure")
+	for _, tc := range []struct {
+		name, failAt, wantOutput string
+		wantCallback             bool
+	}{
+		{"attribute_prefix", " ", "<r", false},
+		{"value", "custom", `<r a="`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var output strings.Builder
+			failed := false
+			dst := fragmentWriteFunc(func(p []byte) (int, error) {
+				if !failed && string(p) == tc.failAt {
+					failed = true
+					return 0, failure
+				}
+				return output.Write(p)
+			})
+			called := false
+			options := tree.XMLWriteOptions{
+				AttributeWriter: func(_ context.Context, w io.Writer, _ tree.Name, _ tree.Attribute) (bool, error) {
+					called = true
+					_, _ = io.WriteString(w, "custom")
+					return true, nil
+				},
+			}
+			n, err := tree.WriteXMLFragmentOptions(t.Context(), dst, tree.Children(doc), 64, options)
+			if !errors.Is(err, failure) || n != int64(len(tc.wantOutput)) || output.String() != tc.wantOutput || called != tc.wantCallback {
+				t.Errorf("WriteXMLFragmentOptions = (%d, %v), output = %q, callback = %t", n, err, output.String(), called)
+			}
+		})
+	}
+}
+
 func TestXMLWriterRestoresNamespaceScopes(t *testing.T) {
 	ctx := t.Context()
 

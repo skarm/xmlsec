@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/unparsedtext"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
@@ -116,8 +117,8 @@ func textResourceStore(ctx context.Context, ec *evalContext) *textSnapshotStore 
 }
 
 func loadTextResource(ctx context.Context, href, encoding string, explicit bool, mode textResourceMode, lineLimit int, lineFailure error) (string, error) {
-	if explicit && encoding == "" && mode != textResourceJSON {
-		return "", &unparsedtext.Error{Code: unparsedtext.ErrCodeEncoding, Message: "empty encoding name"}
+	if explicit && mode != textResourceJSON && !xmlchar.IsValidEncName(encoding) {
+		return "", &unparsedtext.Error{Code: unparsedtext.ErrCodeEncoding, Message: "invalid encoding name"}
 	}
 
 	ec := getFnContext(ctx)
@@ -150,7 +151,11 @@ func loadTextResource(ctx context.Context, href, encoding string, explicit bool,
 	}
 
 	entry, compatible := readTextResourceSource(ctx, cfg, uri, encoding, mode, lineLimit, lineFailure, cache.limit-cache.retained)
-	if ControlFailure(ctx, entry.err) != nil || errors.Is(entry.err, tree.ErrLimit) {
+	if failure := ControlFailure(ctx, entry.err); failure != nil {
+		return "", failure
+	}
+
+	if errors.Is(entry.err, tree.ErrLimit) {
 		return "", entry.err
 	}
 
@@ -431,7 +436,11 @@ func fnUnparsedTextAvailable(ctx context.Context, args []xdm.Sequence) (xdm.Sequ
 	}
 
 	_, err = loadTextResource(ctx, href, encoding, len(args) > textEncodingArgumentThreshold, textResourceAvailable, noTextResourceLineLimit, nil)
-	if ControlFailure(ctx, err) != nil || errors.Is(err, tree.ErrLimit) {
+	if failure := ControlFailure(ctx, err); failure != nil {
+		return nil, failure
+	}
+
+	if errors.Is(err, tree.ErrLimit) {
 		return nil, err
 	}
 

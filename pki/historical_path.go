@@ -81,7 +81,13 @@ func (s *HistoricalSession) historicalTarget(ctx context.Context, raw []byte) (*
 	}
 
 	digest := sha256.Sum256(raw)
-	if certificate := s.certificates[digest]; certificate != nil {
+
+	certificate := s.certificates[digest]
+	if certificate == nil {
+		certificate = s.targetCertificates[digest]
+	}
+
+	if certificate != nil {
 		if err := s.verifier.validateHistoricalLeaf(certificate); err != nil {
 			return nil, err
 		}
@@ -102,8 +108,12 @@ func (s *HistoricalSession) historicalTarget(ctx context.Context, raw []byte) (*
 		return nil, err
 	}
 
+	if s.targetCertificates == nil {
+		s.targetCertificates = make(map[[sha256.Size]byte]*x509.Certificate)
+	}
+
 	s.targetBytes += len(raw)
-	s.certificates[digest] = certificate
+	s.targetCertificates[digest] = certificate
 
 	return certificate, nil
 }
@@ -111,7 +121,11 @@ func (s *HistoricalSession) historicalTarget(ctx context.Context, raw []byte) (*
 func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certificate) ([]*HistoricalPath, error) {
 	digest := sha256.Sum256(target.Raw)
 	if cached, found := s.paths[digest]; found {
-		return append([]*HistoricalPath(nil), cached...), ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		return append([]*HistoricalPath(nil), cached...), nil
 	}
 
 	certificates := make([]*x509.Certificate, 0, len(s.certificates))
@@ -128,6 +142,10 @@ func (s *HistoricalSession) pathsFor(ctx context.Context, target *x509.Certifica
 
 	search := historicalPathSearch{session: s, certificates: certificates, roots: roots}
 	if err := search.visit(ctx, []*x509.Certificate{target}, map[[sha256.Size]byte]struct{}{digest: {}}); err != nil {
+		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
@@ -195,7 +213,11 @@ func (s *HistoricalSession) checkPathUsages(ctx context.Context, path *Historica
 
 	for _, chain := range chains {
 		if sameHistoricalChain(chain, path.chain) {
-			return &HistoricalPathAssessment{path: path, reference: reference, model: s.options.Model}, ctx.Err()
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			return &HistoricalPathAssessment{path: path, reference: reference, model: s.options.Model}, nil
 		}
 	}
 
@@ -261,16 +283,7 @@ func (search *historicalPathSearch) visit(ctx context.Context, chain []*x509.Cer
 			return fmt.Errorf("%w: %w: historical path count", ErrPolicy, ErrLimit)
 		}
 
-		hash := sha256.New()
-
-		for _, certificate := range chain {
-			digest := sha256.Sum256(certificate.Raw)
-			_, _ = hash.Write(digest[:])
-		}
-
-		var fingerprint [sha256.Size]byte
-		copy(fingerprint[:], hash.Sum(nil))
-		search.paths = append(search.paths, &HistoricalPath{session: search.session, chain: append([]*x509.Certificate(nil), chain...), fingerprint: fingerprint})
+		search.paths = append(search.paths, &HistoricalPath{session: search.session, chain: append([]*x509.Certificate(nil), chain...), fingerprint: certificatePathFingerprint(chain)})
 
 		return nil
 	}

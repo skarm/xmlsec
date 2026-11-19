@@ -17,6 +17,7 @@ func TestGeneralComparisonWithRangeBoundsASTAndVM(t *testing.T) {
 		{"range_on_right", `(4 < (2 to 4), 4 <= (2 to 4), 2 > (2 to 4), 2 >= (2 to 4), 3 < (2 to 4), 3 > (2 to 4))`, "false|true|false|true|true|true"},
 		{"range_on_left", `((2 to 4) < 2, (2 to 4) <= 2, (2 to 4) > 4, (2 to 4) >= 4, (2 to 4) < 3, (2 to 4) > 3)`, "false|true|false|true|true|true"},
 		{"empty_operands", `(() = (2 to 4), 3 = (() to 4), (2 to ()) < 3)`, "false|false|false"},
+		{"array_range_operands_atomize_before_counting", `(count([] to 3), 1 = ([] to 3), (1 to []) = 1, 2 = ([()] to 3), 2 = ([1] to [3]))`, "0|false|false|false|true"},
 		{"decimal_and_sequence_operands", `(2.5 < (2 to 3), (0,5) = (2 to 4), (0,3) = (2 to 4), parse-xml('<n>03</n>')/n = (2 to 4))`, "true|false|true|true"},
 		{"large_integer_endpoints", `(9223372036854775809 = (9223372036854775808 to 9223372036854775810), 9223372036854775811 = (9223372036854775808 to 9223372036854775810), 9223372036854775808 != (9223372036854775808 to 9223372036854775808))`, "true|false|false"},
 		{"large_integer_range_on_right", `(9223372036854775810 < (9223372036854775808 to 9223372036854775810), 9223372036854775810 <= (9223372036854775808 to 9223372036854775810), 9223372036854775808 > (9223372036854775808 to 9223372036854775810), 9223372036854775808 >= (9223372036854775808 to 9223372036854775810))`, "false|true|false|true"},
@@ -115,6 +116,7 @@ func TestComparisonTypeErrorsASTAndVM(t *testing.T) {
 		{"qnames_have_no_order", `QName('urn:one','p:a') lt QName('urn:one','p:b')`, "XPTY0004"},
 		{"generic_durations_have_no_order", `xs:duration('P1M') lt xs:duration('P2M')`, "XPTY0004"},
 		{"value_comparison_requires_singletons", `(1,2) eq 1`, "XPTY0004"},
+		{"range_comparison_requires_at_most_one_atom_per_bound", `1 = ([1, 2] to 3)`, "XPTY0004"},
 	} {
 		for _, mode := range []string{runtimeASTMode, "VM"} {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {

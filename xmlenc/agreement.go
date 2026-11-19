@@ -181,13 +181,9 @@ func EncryptContentWithECDH(ctx context.Context, doc *document.Document, selecte
 
 // DecryptContentWithECDH has the selected-node, namespace and budget contracts of DecryptContent.
 func DecryptContentWithECDH(ctx context.Context, doc *document.Document, selected document.Element, recipient ECDHRecipient, options ECDHOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
+	node, err := selectedContent(doc, selected)
 	if err != nil {
 		return nil, document.Element{}, err
-	}
-
-	if node.Parent == nil {
-		return nil, document.Element{}, ErrFormat
 	}
 
 	p, err := ecdhDecryptProfile(ctx, recipient, options, decryption)

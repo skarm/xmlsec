@@ -109,8 +109,9 @@ type Config struct {
 	CRL CRLOptions
 	// MaxChainDepth bounds certificate path depth. Zero selects 10. The maximum is 32.
 	MaxChainDepth int
-	// MaxEvidenceBytes bounds aggregate supplied intermediate certificate and revocation
-	// DER bytes. Zero selects 8 MiB. The maximum is 64 MiB.
+	// MaxEvidenceBytes bounds configured certificate DER and, separately, aggregate
+	// intermediate certificate and revocation DER supplied for one verification.
+	// Zero selects 8 MiB. The maximum is 64 MiB.
 	MaxEvidenceBytes int
 	// MaxCRLs bounds supplied CRLs. Zero selects 32. The maximum is 256.
 	MaxCRLs int
@@ -242,13 +243,13 @@ func NewVerifier(c Config) (*Verifier, error) {
 
 	crlOptions.signerDepth = c.MaxChainDepth
 
+	if len(c.KeyUsages) > maxCertificateUsages {
+		return nil, ErrPolicy
+	}
+
 	usages := append([]x509.ExtKeyUsage(nil), c.KeyUsages...)
 	if len(usages) == 0 {
 		usages = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
-	}
-
-	if len(usages) > maxCertificateUsages {
-		return nil, ErrPolicy
 	}
 
 	v := &Verifier{
@@ -644,6 +645,20 @@ func (v *Verifier) validateChainPolicy(chain []*x509.Certificate) error {
 	return nil
 }
 
+func certificatePathFingerprint(chain []*x509.Certificate) [sha256.Size]byte {
+	hash := sha256.New()
+
+	for _, certificate := range chain {
+		digest := sha256.Sum256(certificate.Raw)
+		_, _ = hash.Write(digest[:])
+	}
+
+	var fingerprint [sha256.Size]byte
+	copy(fingerprint[:], hash.Sum(nil))
+
+	return fingerprint
+}
+
 func (v *Verifier) certificateOriginals(leaf *x509.Certificate) map[[sha256.Size]byte]*x509.Certificate {
 	originals := make(map[[sha256.Size]byte]*x509.Certificate, len(v.originalCertificates)+1)
 	maps.Copy(originals, v.originalCertificates)
@@ -791,25 +806,27 @@ func normalizeVerifierPolicy(c *Config) error {
 		return ErrPolicy
 	}
 
-	configuredBytes := 0
+	return validateConfiguredCertificateBytes(c.MaxEvidenceBytes, c.Roots, c.Intermediates, c.OCSPAuthorities)
+}
 
-	for _, group := range [][][]byte{c.Roots, c.Intermediates} {
+func validateConfiguredCertificateBytes(remaining int, roots, intermediates [][]byte, authorities []OCSPAuthority) error {
+	for _, group := range [][][]byte{roots, intermediates} {
 		for _, raw := range group {
-			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+			if len(raw) > remaining {
 				return ErrPolicy
 			}
 
-			configuredBytes += len(raw)
+			remaining -= len(raw)
 		}
 	}
 
-	for _, authority := range c.OCSPAuthorities {
+	for _, authority := range authorities {
 		for _, raw := range [][]byte{authority.ResponderCertificateDER, authority.IssuerCertificateDER} {
-			if len(raw) > c.MaxEvidenceBytes-configuredBytes {
+			if len(raw) > remaining {
 				return ErrPolicy
 			}
 
-			configuredBytes += len(raw)
+			remaining -= len(raw)
 		}
 	}
 

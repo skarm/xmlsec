@@ -41,7 +41,13 @@ func BenchmarkLogin(b *testing.B) {
 	s := setup(b)
 	b.ReportAllocs()
 
-	for b.Loop() {
+	for pending := 0; b.Loop(); pending++ {
+		if pending > 0 && pending%benchmarkPendingRefreshInterval == 0 {
+			b.StopTimer()
+			s = setup(b)
+			b.StartTimer()
+		}
+
 		_, req, browser := begin(b, s, metadata.HTTPRedirect)
 
 		issued, err := s.idp.Issue(b.Context(), req, auth(), testcert.Now().Add(2*time.Second))
@@ -99,8 +105,12 @@ func BenchmarkIDPIssue(b *testing.B) {
 	s := setup(b)
 	b.ReportAllocs()
 
-	for b.Loop() {
+	for pending := 0; b.Loop(); pending++ {
 		b.StopTimer()
+		if pending > 0 && pending%benchmarkPendingRefreshInterval == 0 {
+			s = setup(b)
+		}
+
 		_, request, _ := begin(b, s, metadata.HTTPRedirect)
 		b.StartTimer()
 
@@ -114,8 +124,12 @@ func BenchmarkSPConsumePOST(b *testing.B) {
 	s := setup(b)
 	b.ReportAllocs()
 
-	for b.Loop() {
+	for pending := 0; b.Loop(); pending++ {
 		b.StopTimer()
+		if pending > 0 && pending%benchmarkPendingRefreshInterval == 0 {
+			s = setup(b)
+		}
+
 		_, request, browser := begin(b, s, metadata.HTTPRedirect)
 
 		issued, err := s.idp.Issue(b.Context(), request, auth(), testcert.Now().Add(2*time.Second))
@@ -246,6 +260,10 @@ func TestSustainedLoad(t *testing.T) {
 		peak = max(peak, after.HeapAlloc)
 		count := completed.Load() + failed.Load() + expected.Load()
 		percentile := func(p uint64) float64 {
+			if count == 0 {
+				return 0
+			}
+
 			target := (count*p + 99) / 100
 			var sum uint64
 			for i := range hist {
@@ -533,6 +551,9 @@ func soakHTTP(t *testing.T) func(context.Context, uint64) error {
 			u = uris[1]
 		}
 		observations, e := collector.Collect(ctx, []collect.Request{{Kind: evidence.CRL, URI: u}})
+		if e == nil && u == uris[3] {
+			return errors.New("HTTP 503 unexpectedly produced a successful collection")
+		}
 		if e == nil && (len(observations) != 1 || observations[0].Size() == 0) {
 			return errors.New("empty observation")
 		}

@@ -94,7 +94,7 @@ func (ec *execContext) onNoMatchShallowCopy(ctx context.Context, node xdm.Node, 
 			return err
 		}
 
-		for _, ns := range srcElem.Namespaces() {
+		for _, ns := range collectInScopeNamespaces(srcElem) {
 			_ = newElem.DeclareNamespace(ns.Prefix(), ns.URI())
 		}
 
@@ -142,8 +142,12 @@ func (ec *execContext) onNoMatchShallowCopy(ctx context.Context, node xdm.Node, 
 		comment := ec.resultDoc.CreateComment(xdm.CharacterData(node))
 		return ec.addNode(comment)
 	case xdm.ProcessingInstructionNode:
-		pi := ec.resultDoc.CreatePI(node.Name(), xdm.CharacterData(node))
-		return ec.addNode(pi)
+		copied, err := xdm.CopyNode(node, ec.resultDoc)
+		if err != nil {
+			return err
+		}
+
+		return ec.addNode(copied)
 	case xdm.AttributeNode:
 		attr, _ := xdm.AsNode[*xdm.Attribute](node)
 		return ec.copyAttributeNodeToOutput(attr)

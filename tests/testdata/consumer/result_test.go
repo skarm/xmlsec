@@ -281,7 +281,7 @@ func TestDoctypeSerialization(t *testing.T) {
 			for {
 				_, err := decoder.Token()
 				if err != nil {
-					if err == io.EOF {
+					if errors.Is(err, io.EOF) {
 						break
 					}
 
@@ -320,9 +320,15 @@ func TestStreamCancellationAndLimits(t *testing.T) {
 	if !errors.Is(err, transform.ErrLimit) || n != int64(output.Len()) || output.String() != "value" {
 		t.Fatal(n, output.String(), err)
 	}
-	options := document.RecordOptions{Path: []document.Name{{Local: "f"}, {Local: "r"}}, MaxInputBytes: 12}
-	if err := document.ReadRecords(t.Context(), strings.NewReader(`<f><r/></f>   extra`), options, func(*document.Document) error { return nil }); err == nil {
-		t.Fatal("whole stream byte limit ignored")
+	const source = "<f><r/></f> \n"
+	options := document.RecordOptions{Path: []document.Name{{Local: "f"}, {Local: "r"}}, MaxInputBytes: int64(len(source) - 1)}
+	ignoreRecord := func(*document.Document) error { return nil }
+	if err := document.ReadRecords(t.Context(), strings.NewReader(source), options, ignoreRecord); !errors.Is(err, document.ErrLimit) {
+		t.Fatalf("whole stream over byte limit: %v", err)
+	}
+	options.MaxInputBytes++
+	if err := document.ReadRecords(t.Context(), strings.NewReader(source), options, ignoreRecord); err != nil {
+		t.Fatalf("whole stream at byte limit: %v", err)
 	}
 }
 

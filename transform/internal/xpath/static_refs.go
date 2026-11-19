@@ -4,9 +4,9 @@
 package xpath
 
 import (
-	"reflect"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -176,10 +176,7 @@ func (c *staticRefCollector) addFunctionName(prefix, name string, arity int) {
 // forbidden user-defined type hidden inside such a parameterized item type (e.g.
 // "instance of array(t:T)"), so the walk descends recursively into the item test.
 func (c *staticRefCollector) walkSequenceType(st xdm.SequenceType) {
-	// A Void / empty-sequence() type carries NO item test (nil ItemTest), so skip it.
-	// derefNodeTest also tolerates a nil interface (defense in depth), but guarding here
-	// keeps the intent explicit and avoids a needless reflect call.
-	if st.Void || st.ItemTest == nil {
+	if st.Void {
 		return
 	}
 
@@ -190,12 +187,7 @@ func (c *staticRefCollector) walkSequenceType(st xdm.SequenceType) {
 // recursing through the parameterized array/map/function item types and the
 // type-annotated kind tests (element()/attribute()/document-node()).
 func (c *staticRefCollector) walkItemTest(it xdm.NodeTest) {
-	it, ok := derefNodeTest(it)
-	if !ok {
-		return
-	}
-
-	switch t := it.(type) {
+	switch t := astNodeValue(it).(type) {
 	case xdm.AtomicOrUnionType:
 		c.addAtomicType(t.Prefix, t.Name)
 	case xdm.ElementTest:
@@ -238,12 +230,7 @@ func (c *staticRefCollector) walkItemTest(it xdm.NodeTest) {
 func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo // One traversal must cover every expression kind and its lexical scope.
 	c.visits++
 
-	node, ok := derefExprNode(node)
-	if !ok {
-		return
-	}
-
-	switch n := node.(type) {
+	switch n := astNodeValue(node).(type) {
 	case VariableExpr:
 		c.addFreeVar(n.Name)
 	case CastExpr:
@@ -286,8 +273,6 @@ func (c *staticRefCollector) walk(node Expr) { //nolint:gocyclo // One traversal
 	case PathExpr:
 		c.walk(n.Filter)
 		c.walkLocationPath(n.Path)
-	case *LocationPath:
-		c.walkLocationPath(n)
 	case LocationPath:
 		c.walkLocationPath(&n)
 	case PathStepExpr:
@@ -469,7 +454,7 @@ func (c *staticRefCollector) walkInlineFunction(n InlineFunctionExpr) {
 // An unprefixed variable has no namespace, independently of the default element
 // namespace. Unknown prefixes remain lexical for the separate prefix validator.
 func VariableKey(name string, namespaces map[string]string) string {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		name = name[1:]
 	}
 
@@ -493,51 +478,6 @@ func VariableKey(name string, namespaces map[string]string) string {
 	}
 
 	return name
-}
-
-// derefNodeTest is the NodeTest analogue of derefExpr, normalizing a pointer-form
-// item test (e.g. &ArrayTest{...}) to its value form. ok is false for a nil node
-// test (a nil interface — e.g. an empty-sequence() type's ItemTest — yields the
-// reflect.Invalid kind, NOT a panic; a typed nil pointer is caught by IsNil), so a
-// caller can rely on this being nil-safe.
-func derefNodeTest(it xdm.NodeTest) (xdm.NodeTest, bool) {
-	rv := reflect.ValueOf(it)
-	if rv.Kind() != reflect.Pointer {
-		return it, it != nil
-	}
-
-	if rv.IsNil() {
-		return nil, false
-	}
-
-	if nt, ok := rv.Elem().Interface().(xdm.NodeTest); ok {
-		return nt, true
-	}
-
-	return it, true
-}
-
-// derefExprNode normalizes any pointer-form Expr to its value form via reflection.
-// CompileExpr stores caller-built ASTs unchanged and the VM lowerer accepts both
-// value and pointer node forms (e.g. &CastExpr{...}), so StaticReferences must too.
-// (The package's other derefExpr in streamability.go only covers a fixed handful of
-// pointer types, so it is not reused here.) ok is false for a nil node (including a
-// typed nil pointer).
-func derefExprNode(node Expr) (Expr, bool) {
-	rv := reflect.ValueOf(node)
-	if rv.Kind() != reflect.Pointer {
-		return node, node != nil
-	}
-
-	if rv.IsNil() {
-		return nil, false
-	}
-
-	if e, ok := rv.Elem().Interface().(Expr); ok {
-		return e, true
-	}
-
-	return node, true
 }
 
 // catchErrorVarKeys are the implicit error variables the evaluator binds inside a
@@ -569,7 +509,7 @@ func catchErrorVarKeys() [7]string {
 //
 // An unresolved prefix yields "".
 func resolveStaticNameURI(lexical string, namespaces map[string]string, defaultNS string) string {
-	if strings.HasPrefix(lexical, "Q{") {
+	if strings.HasPrefix(lexical, lexicon.EQNamePrefix) {
 		if i := strings.IndexByte(lexical, '}'); i >= 0 {
 			return lexical[2:i]
 		}
@@ -606,7 +546,7 @@ func joinQName(prefix, name string) string {
 // after "}" (plain splitQName would split on the first colon inside the URI). For
 // "prefix:local" / "local" it behaves like splitQName.
 func splitEQName(lexical string) (prefix, local string) {
-	if strings.HasPrefix(lexical, "Q{") {
+	if strings.HasPrefix(lexical, lexicon.EQNamePrefix) {
 		if _, after, ok := strings.Cut(lexical, "}"); ok {
 			return "", after
 		}

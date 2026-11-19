@@ -56,6 +56,62 @@ func TestNewVerifierRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestWithIntermediateCertificatesPreservesConfiguredByteBudget(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	var zero pki.Verifier
+	if clone, err := zero.WithIntermediateCertificates(nil); clone != nil || !errors.Is(err, pki.ErrPolicy) {
+		t.Errorf("uninitialized verifier returned a clone=%t and error %v", clone != nil, err)
+	}
+	for _, tc := range []struct {
+		name        string
+		authorities []pki.OCSPAuthority
+		fixedBytes  int
+	}{
+		{name: "roots", fixedBytes: len(chain.Root.Raw)},
+		{
+			name: "roots_and_ocsp_authorities",
+			authorities: []pki.OCSPAuthority{{
+				ResponderCertificateDER: chain.Responder.Raw, IssuerCertificateDER: chain.Root.Raw,
+			}},
+			fixedBytes: 2*len(chain.Root.Raw) + len(chain.Responder.Raw),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			certs := [][]byte{chain.TSA.Raw}
+			config := pki.Config{
+				Roots:            [][]byte{chain.Root.Raw},
+				OCSPAuthorities:  tc.authorities,
+				MaxEvidenceBytes: tc.fixedBytes + len(chain.TSA.Raw) - 1,
+			}
+			verifier, err := pki.NewVerifier(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if clone, err := verifier.WithIntermediateCertificates(certs); clone != nil || !errors.Is(err, pki.ErrPolicy) {
+				t.Errorf("clone above configured limit returned clone=%t and error %v", clone != nil, err)
+			}
+
+			config.MaxEvidenceBytes++
+			config.Intermediates = certs
+			verifier, err = pki.NewVerifier(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clone, err := verifier.WithIntermediateCertificates(certs)
+			if clone == nil || err != nil {
+				t.Fatalf("replacing intermediates at the exact limit failed: %v", err)
+			}
+			if result, _, err := clone.Verify(t.Context(), chain.Leaf.Raw, testcert.Now(), pki.Evidence{}); result == nil || err != nil {
+				t.Errorf("clone did not retain its root: %v", err)
+			}
+		})
+	}
+}
+
 func TestVerifyReportsCertificateFailureStage(t *testing.T) {
 	t.Parallel()
 

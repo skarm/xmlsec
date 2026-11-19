@@ -25,6 +25,7 @@ func TestEncoderEmitsExactByteOrderAndSingleByteMappings(t *testing.T) {
 		{"utf-16le", "A😀", []byte{0x41, 0, 0x3d, 0xd8, 0, 0xde}},
 		{"utf-16be", "A😀", []byte{0, 0x41, 0xd8, 0x3d, 0xde, 0}},
 		{"utf-16", "A😀", []byte{0xff, 0xfe, 0x41, 0, 0x3d, 0xd8, 0, 0xde}},
+		{"ucs-2", "\ufeff中\ufffd", []byte{0xfe, 0xff, 0x4e, 0x2d, 0xff, 0xfd}},
 		{"utf-32be", "A😀", []byte{0, 0, 0, 0x41, 0, 1, 0xf6, 0}},
 		{"utf-32le", "A😀", []byte{0x41, 0, 0, 0, 0, 0xf6, 1, 0}},
 		{"utf-32", "A😀", []byte{0, 0, 0xfe, 0xff, 0, 0, 0, 0x41, 0, 1, 0xf6, 0}},
@@ -118,6 +119,7 @@ func TestRepertoireProbeResetsStateAfterUnsupportedCharacters(t *testing.T) {
 		{"iso-8859-1", 'é', '中'},
 		{"windows-1252", '€', '😀'},
 		{"iso-2022-jp", 'あ', '😀'},
+		{"ISO-10646-UCS-2", '中', '😀'},
 		{"ibm1141", '€', '中'},
 		{"windows-1252", '\u0081', '\u0080'},
 	} {

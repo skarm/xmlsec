@@ -100,7 +100,7 @@ func ValidateTransformParameters(t Transform) error {
 			return fmt.Errorf("%w: foreign transform parameters", ErrInput)
 		}
 
-		return nil
+		return validateInclusivePrefixes(t)
 	}
 
 	if len(t.InclusivePrefixes) != 0 {

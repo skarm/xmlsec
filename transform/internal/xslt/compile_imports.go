@@ -43,6 +43,13 @@ func (c *compiler) enterModuleNamespaceScope(root *xdm.Element) func() {
 	}
 }
 
+func (c *compiler) enterModuleExpandText(root *xdm.Element) func() {
+	saved := c.expandText
+	c.expandText = xsdBoolTrue(getAttr(root, nameExpandText))
+
+	return func() { c.expandText = saved }
+}
+
 // moduleResultPrefixExcludes resolves a module root's exclude-result-prefixes and
 // extension-element-prefixes to the set of namespace URIs to exclude from result
 // trees. inScope is the module root's in-scope namespaces.
@@ -200,6 +207,7 @@ func (c *compiler) collectIncludeImports(ctx context.Context, elem *xdm.Element)
 	// c.stylesheet.namespaces (global, for XPath QName resolution).
 	restoreNS := c.enterModuleNamespaceScope(root)
 	defer restoreNS()
+	defer c.enterModuleExpandText(root)()
 
 	c.collectNamespaces(ctx, root)
 
@@ -242,6 +250,7 @@ func (c *compiler) loadModuleDoc(ctx context.Context, uri string) (*xdm.Document
 
 	rc, resolveErr := c.resolver.Resolve(ctx, uri)
 	if resolveErr != nil {
+		resolveErr = closeFailedResolution(rc, resolveErr)
 		if failure := preserveControlFailure(ctx, resolveErr); failure != nil {
 			return nil, failure
 		}
@@ -323,6 +332,10 @@ func (c *compiler) loadAndCacheInclude(ctx context.Context, uri, importKey strin
 
 	if root == nil {
 		return nil, staticError(errCodeXTSE0010, "included document %q is not a stylesheet", uri)
+	}
+
+	if err := validateExternalModuleRoot(root, uri, nameInclude); err != nil {
+		return nil, err
 	}
 
 	if root.URI() != lexicon.NamespaceXSLT {
@@ -408,6 +421,7 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 	// root namespaces (so literal result elements declare ITS namespaces, not the
 	// including module's) and its exclude-result-prefixes / extension-element-prefixes.
 	defer c.enterModuleNamespaceScope(root)()
+	defer c.enterModuleExpandText(root)()
 
 	// Apply xpath-default-namespace from included module root. Presence (even an
 	// empty value, which resets to no-namespace) overrides the importing
@@ -424,24 +438,11 @@ func (c *compiler) compileIncludeTemplates(ctx context.Context, elem *xdm.Elemen
 		c.hasXPathDefaultNS = savedHasXPathDefaultNS
 	}()
 
-	// The included module's version governs backwards-/forwards-compatible
-	// processing of its own declarations (XSLT 3.0 §3.10), independent of the
-	// including module's version. A _version shadow attribute takes precedence
-	// over the literal (§3.5.2), so resolve it first — mirroring the top-level
-	// root — so an included module whose computed version is < 2.0 enters
-	// backwards-compatible mode.
-	savedVersion := c.effectiveVersion
-	if _, hasShadow := root.GetAttribute(shadowAttrVersion); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, root, xslAttrVersion); err != nil {
-			return err
-		}
+	restoreVersion, err := c.enterExternalModuleVersion(ctx, root)
+	if err != nil {
+		return err
 	}
-
-	if ver := getAttr(root, xslAttrVersion); ver != "" {
-		c.effectiveVersion = ver
-	}
-
-	defer func() { c.effectiveVersion = savedVersion }()
+	defer restoreVersion()
 
 	if err := c.checkModuleInputAnnotations(root, "included"); err != nil {
 		return err
@@ -549,10 +550,14 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 	if importedRoot == nil {
 		return staticError(errCodeXTSE0010, "imported document %q is not a stylesheet", uri)
 	}
-	// XTSE0165: a package must not import another package via xsl:import.
-	if isImport && importedRoot.URI() == lexicon.NamespaceXSLT && importedRoot.LocalName() == lexicon.XSLTElementPackage {
-		return staticError(errCodeXTSE0165,
-			"cannot import xsl:package %q (use xsl:use-package instead)", uri)
+
+	relation := nameInclude
+	if isImport {
+		relation = nameImport
+	}
+
+	if err := validateExternalModuleRoot(importedRoot, uri, relation); err != nil {
+		return err
 	}
 
 	if importedRoot.URI() != lexicon.NamespaceXSLT {
@@ -570,6 +575,48 @@ func (c *compiler) loadExternalStylesheet(ctx context.Context, baseURI, href str
 	}
 
 	return c.compileExternalModule(ctx, doc, importedRoot, uri, isImport)
+}
+
+// validateExternalModuleRoot enforces XSLT 3.0 §3.11.1 after either a
+// document root or a fragment has been selected. Simplified modules are
+// validated and expanded by expandSimplifiedModule.
+func validateExternalModuleRoot(root *xdm.Element, uri, relation string) error {
+	if root.URI() != lexicon.NamespaceXSLT {
+		return nil
+	}
+
+	switch root.LocalName() {
+	case nameStylesheet, lexicon.XSLTElementTransform:
+		return nil
+	case lexicon.XSLTElementPackage:
+		return staticError(errCodeXTSE0165, "cannot %s xsl:package %q (use xsl:use-package instead)", relation, uri)
+	default:
+		return staticError(errCodeXTSE0165, "cannot %s %q: xsl:%s is not a stylesheet module", relation, uri, root.LocalName())
+	}
+}
+
+// The selected module's own version controls its declaration context even
+// when it was loaded by fragment and did not pass through document validation.
+func (c *compiler) enterExternalModuleVersion(ctx context.Context, root *xdm.Element) (func(), error) {
+	if _, hasShadow := root.GetAttribute(shadowAttrVersion); hasShadow {
+		if err := c.resolveSingleShadowAttribute(ctx, root, xslAttrVersion); err != nil {
+			return nil, err
+		}
+	}
+
+	version, present := root.GetAttribute(xslAttrVersion)
+	if !present {
+		return nil, staticError(errCodeXTSE0010, "xsl:%s requires a version attribute", root.LocalName())
+	}
+
+	if !isXSDecimal(version) {
+		return nil, staticError(errCodeXTSE0110, "xsl:%s version attribute %q is not a valid xs:decimal", root.LocalName(), version)
+	}
+
+	saved := c.effectiveVersion
+	c.effectiveVersion = version
+
+	return func() { c.effectiveVersion = saved }, nil
 }
 
 func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document, importedRoot *xdm.Element, uri string, isImport bool) error {
@@ -605,34 +652,13 @@ func (c *compiler) compileExternalModule(ctx context.Context, doc *xdm.Document,
 		return err
 	}
 
-	// Save/restore expand-text: each stylesheet module has its own setting.
-	savedExpandText := c.expandText
-	c.expandText = false // default for new module
+	defer c.enterModuleExpandText(importedRoot)()
 
-	if et, hasET := importedRoot.GetAttribute(nameExpandText); hasET {
-		if v, ok := parseXSDBool(et); ok {
-			c.expandText = v
-		}
+	restoreVersion, err := c.enterExternalModuleVersion(ctx, importedRoot)
+	if err != nil {
+		return err
 	}
-
-	defer func() { c.expandText = savedExpandText }()
-
-	// Save/restore effective version; a _version shadow attribute takes precedence
-	// over the literal (§3.5.2), so resolve it first — mirroring the top-level root
-	// and included modules — so an imported module whose computed version is < 2.0
-	// enters backwards-compatible mode.
-	savedVersion := c.effectiveVersion
-	if _, hasShadow := importedRoot.GetAttribute(shadowAttrVersion); hasShadow {
-		if err := c.resolveSingleShadowAttribute(ctx, importedRoot, xslAttrVersion); err != nil {
-			return err
-		}
-	}
-
-	if ver := getAttr(importedRoot, xslAttrVersion); ver != "" {
-		c.effectiveVersion = ver
-	}
-
-	defer func() { c.effectiveVersion = savedVersion }()
+	defer restoreVersion()
 
 	if err := c.checkModuleInputAnnotations(importedRoot, "imported"); err != nil {
 		return err
@@ -808,7 +834,7 @@ func resolveModuleURI(href, baseURI string) (string, error) {
 
 	href = uripath.EscapeResourceReference(href)
 
-	baseURI = uripath.EscapeResourceReference(baseURI)
+	baseURI = escapeResourceBase(baseURI)
 	if href == "" {
 		return baseURI, nil
 	}
@@ -832,7 +858,7 @@ func resolveModuleURI(href, baseURI string) (string, error) {
 		return href, nil
 	}
 
-	return uripath.JoinLocalBaseDir(path.Dir(uripath.ToSlash(baseURI)), href), nil
+	return uripath.JoinLocalBaseFile(baseURI, href), nil
 }
 
 // isWindowsDrivePath reports whether s begins with a Windows drive-letter prefix

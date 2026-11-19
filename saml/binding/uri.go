@@ -8,11 +8,13 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/streamio"
+	"github.com/skarm/xmlsec/saml/internal/httpclient"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
@@ -33,12 +35,12 @@ const AssertionMediaType = "application/samlassertion+xml"
 // AssertionURL constructs the exact ID query required by Bindings 3.7.5.1.
 // The configured endpoint must have no query or fragment; wildcard IDs are invalid.
 func AssertionURL(endpoint, id string, allowHTTP bool) (string, error) {
-	if !profile.Endpoint(endpoint, allowHTTP) || !profile.ID(id) {
+	if strings.ContainsRune(endpoint, '#') || !profile.Endpoint(endpoint, allowHTTP) || !profile.ID(id) {
 		return "", ErrBinding
 	}
 
 	u, err := url.Parse(endpoint)
-	if err != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+	if err != nil || u.RawQuery != "" || u.ForceQuery {
 		return "", ErrBinding
 	}
 
@@ -101,7 +103,8 @@ func WriteAssertion(ctx context.Context, w http.ResponseWriter, d *document.Docu
 // Returned XML is unverified and must pass VerifyAuthorityAssertion.
 type URIClient struct {
 	// Client supplies the HTTP transport and timeout. Nil selects a 30-second
-	// timeout. The client is copied and redirects are disabled.
+	// timeout. The client is copied and redirects are disabled. A typed-nil
+	// Transport or Jar returns ErrBinding.
 	Client *http.Client
 	// AllowHTTP permits explicitly configured plain HTTP endpoints. The default
 	// requires HTTPS.
@@ -134,6 +137,11 @@ func (c URIClient) Resolve(ctx context.Context, endpoint, id string) (message *d
 		return nil, ErrBinding
 	}
 
+	client, err := httpclient.WithoutRedirects(c.Client, ErrBinding)
+	if err != nil {
+		return nil, err
+	}
+
 	r, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -141,15 +149,15 @@ func (c URIClient) Resolve(ctx context.Context, endpoint, id string) (message *d
 
 	r.Header.Set(headerAccept, AssertionMediaType)
 
-	response, err := soapHTTPClient(c.Client).Do(r)
+	response, err := client.Do(r)
 	if err != nil {
 		return nil, err
 	}
 
 	defer func() {
-		if closeErr := response.Body.Close(); closeErr != nil {
+		if completionErr := errors.Join(response.Body.Close(), ctx.Err()); completionErr != nil {
 			message = nil
-			err = errors.Join(err, closeErr)
+			err = errors.Join(err, completionErr)
 		}
 	}()
 

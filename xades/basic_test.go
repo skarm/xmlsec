@@ -64,7 +64,7 @@ func TestBasicRoundTrip(t *testing.T) {
 		t.Fatal("mutable cert")
 	}
 
-	raw, _ := d.XML(t.Context())
+	raw := mustXML(t, d)
 
 	parsed, e := document.Parse(t.Context(), raw, document.DefaultLimits())
 	if e != nil {
@@ -82,10 +82,6 @@ func TestBasicRoundTrip(t *testing.T) {
 	}
 	if !r.ClaimedSigningTime().After(cert.NotAfter) {
 		t.Fatal("fixture")
-	}
-
-	if len(xmldsig.Signatures(input(t))) != 0 {
-		t.Fatal("input changed")
 	}
 }
 
@@ -187,7 +183,13 @@ func TestBasicInvalidCreation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*xades.SignOptions)
-	}{{"bad-mime", func(o *xades.SignOptions) { o.MIMEType = "bad\nheader" }}, {"collision", func(o *xades.SignOptions) { o.SignedPropertiesID = "signature" }}, {"zero-time", func(o *xades.SignOptions) { o.ClaimedSigningTime = time.Time{} }}, {"bad-id", func(o *xades.SignOptions) { o.SignatureID = "a:b" }}} {
+	}{
+		{"bad-mime", func(o *xades.SignOptions) { o.MIMEType = "bad\nheader" }},
+		{"disposition-not-media-type", func(o *xades.SignOptions) { o.MIMEType = "attachment" }},
+		{"collision", func(o *xades.SignOptions) { o.SignedPropertiesID = "signature" }},
+		{"zero-time", func(o *xades.SignOptions) { o.ClaimedSigningTime = time.Time{} }},
+		{"bad-id", func(o *xades.SignOptions) { o.SignatureID = "a:b" }},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			x := o
 			tc.change(&x)
@@ -618,7 +620,9 @@ func TestBaselinePolicySpecificationBinding(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	der := certificate(t, key, 1)
 	source := input(t)
+	const documentation = "https://example.test/original-policy-guide"
 	calls := 0
+	annotate := false
 	validation := xades.BaselineVerifyOptions{PolicyDocument: []byte("policy"), PolicySpecificationDigest: func(ctx context.Context, specification xades.ObjectIdentifier, data []byte, algorithm crypto.Hash) ([]byte, error) {
 		calls++
 		if err := ctx.Err(); err != nil {
@@ -627,17 +631,50 @@ func TestBaselinePolicySpecificationBinding(t *testing.T) {
 		if specification.Identifier != "urn:oid:1.2.3" || !bytes.Equal(data, []byte("policy")) {
 			return nil, errors.New("wrong specification/input")
 		}
+		if len(specification.Documentation) != 1 {
+			return nil, errors.New("missing specification documentation")
+		}
+		if annotate {
+			specification.Documentation[0] = "urn:test:local-callback-annotation"
+		}
 		hash := algorithm.New()
 		_, _ = hash.Write(data)
 		return hash.Sum(nil), nil
 	}}
-	options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#invoice-1", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: time.Now().UTC(), Policy: &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy"}, Transforms: []reference.Transform{{Algorithm: xades.PolicyDocumentDigestAsSpecified}}, Qualifiers: []xades.PolicyQualifier{{Specification: &xades.ObjectIdentifier{Identifier: "urn:oid:1.2.3", Qualifier: "OIDAsURN"}}}}}, Validation: validation}
+	specification := &xades.ObjectIdentifier{Identifier: "urn:oid:1.2.3", Qualifier: "OIDAsURN", Documentation: []string{documentation}}
+	options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, References: []xmldsig.ReferenceTemplate{{URI: "#invoice-1", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: time.Now().UTC(), Policy: &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy"}, Transforms: []reference.Transform{{Algorithm: xades.PolicyDocumentDigestAsSpecified}}, Qualifiers: []xades.PolicyQualifier{{Specification: specification}}}}, Validation: validation}
 	signed, result, err := xades.SignBaseline(t.Context(), source, source.Root(), key, der, options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 {
 		t.Fatal("specification digest not used for generation and verification", calls)
+	}
+	annotate = true
+	verified, err := xades.VerifyBaseline(t.Context(), signed, result.Basic().Signature().Signature(), der, validation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := verified.SignaturePolicy().Qualifiers[0].Specification.Documentation[0]; got != documentation {
+		t.Errorf("verified documentation = %q, want signed %q", got, documentation)
+	}
+	augmented, generated, err := xades.SignBaseline(t.Context(), source, source.Root(), key, der, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := specification.Documentation[0]; got != documentation {
+		t.Errorf("caller documentation = %q, want %q", got, documentation)
+	}
+	if got := generated.SignaturePolicy().Qualifiers[0].Specification.Documentation[0]; got != documentation {
+		t.Errorf("generated documentation = %q, want %q", got, documentation)
+	}
+	annotate = false
+	wire, err := xades.VerifyBaseline(t.Context(), augmented, generated.Basic().Signature().Signature(), der, validation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := wire.SignaturePolicy().Qualifiers[0].Specification.Documentation[0]; got != documentation {
+		t.Errorf("serialized documentation = %q, want %q", got, documentation)
 	}
 	raw, err := signed.XML(t.Context())
 	if err != nil {
@@ -933,6 +970,9 @@ func TestBaselinePropertyOptionsRejectsBeforeSigner(t *testing.T) {
 		{"invalid MIME", func(o *xades.BaselineSignOptions) {
 			o.Properties.DataObjects = []xades.DataObjectFormat{{ObjectReference: "#data", MIMEType: "bad\nheader"}}
 		}},
+		{"disposition with MIME parameters", func(o *xades.BaselineSignOptions) {
+			o.Properties.DataObjects = []xades.DataObjectFormat{{ObjectReference: "#data", MIMEType: "attachment; filename=file.xml"}}
+		}},
 		{"missing OID qualifier", func(o *xades.BaselineSignOptions) {
 			o.Properties.DataObjects = []xades.DataObjectFormat{{ObjectReference: "#data", ObjectIdentifier: &xades.ObjectIdentifier{Identifier: "urn:oid:1.2.3"}}}
 		}},
@@ -969,6 +1009,13 @@ func TestBaselinePropertyOptionsRejectsBeforeSigner(t *testing.T) {
 			o.Properties.Policy = &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy"}, Qualifiers: []xades.PolicyQualifier{{Specification: &xades.ObjectIdentifier{Identifier: "https://example.test/oid/1.2.3", Qualifier: "OIDAsURI"}}}}
 		}},
 		{"certificate SHA1 default", func(o *xades.BaselineSignOptions) { o.Properties.SigningCertificateDigest = xmldsig.SHA1 }},
+		{"combined certificate candidate count", func(o *xades.BaselineSignOptions) {
+			o.Validation.CertificateValues = make([][]byte, 64)
+			for index := range o.Validation.CertificateValues {
+				o.Validation.CertificateValues[index] = der
+			}
+			o.Properties.AdditionalCertificates = []xades.CertificateIdentifier{{DER: der}}
+		}},
 		{"duplicate format reference", func(o *xades.BaselineSignOptions) {
 			o.Properties.DataObjects = []xades.DataObjectFormat{{ObjectReference: "#data", Description: "one"}, {ObjectReference: "#data", Description: "two"}}
 		}},
@@ -993,9 +1040,18 @@ func TestBaselineCertificatePrependAndAnyTypePolicy(t *testing.T) {
 	source := input(t)
 	qualifier := baselineDocument(t, `<x:SigPolicyQualifier xmlns:x="http://uri.etsi.org/01903/v1.3.2#" xmlns:d="urn:domain" d:hint="metadata">notice<x:SPURI>https://example.test/policy</x:SPURI><d:Extra>preserved</d:Extra></x:SigPolicyQualifier>`)
 	options := xades.BaselineSignOptions{Template: xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, Certificates: [][]byte{extra}, References: []xmldsig.ReferenceTemplate{{URI: "#invoice-1", Transforms: []reference.Transform{{Algorithm: reference.EnvelopedSignature}}}}}, Properties: xades.BaselineProperties{SigningTime: time.Now().UTC(), AdditionalCertificates: []xades.CertificateIdentifier{{DER: extra}}, Policy: &xades.SignaturePolicy{Identifier: xades.ObjectIdentifier{Identifier: "urn:policy"}, Qualifiers: []xades.PolicyQualifier{{XML: qualifier.Root()}}}}, Validation: xades.BaselineVerifyOptions{PolicyDocument: []byte("policy")}}
+	retained := xades.DataObjectFormat{ObjectReference: "#other", MIMEType: "text/plain"}
+	formats := []xades.DataObjectFormat{retained}
+	options.Properties.DataObjects = formats[:0]
 	signed, result, err := xades.SignBaseline(t.Context(), source, source.Root(), key, der, options)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if formats[0] != retained {
+		t.Fatal("default data object format changed caller-owned storage")
+	}
+	if objects := result.DataObjects(); len(objects) != 1 || objects[0].MIMEType != "application/octet-stream" {
+		t.Fatal("default data object format missing")
 	}
 	if len(result.CertificateReferences()) != 2 || !bytes.Equal(result.CertificateReferences()[0].CertificateDER(), der) || !result.SignaturePolicy().Qualifiers[0].XML.Valid() {
 		t.Fatal("signer prepend or AnyType context lost")
@@ -1146,10 +1202,15 @@ func sign(t testing.TB) (*document.Document, *xades.BasicResult, *ecdsa.PrivateK
 	}
 
 	der := certificate(t, k, 1)
+	source := input(t)
+	before := mustXML(t, source)
 
-	d, r, e := xades.SignBasicEnveloped(t.Context(), input(t), k, der, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: time.Date(2026, 10, 7, 18, 30, 15, 123456, time.FixedZone("+05", 5*3600))})
+	d, r, e := xades.SignBasicEnveloped(t.Context(), source, k, der, xades.SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: time.Date(2026, 10, 7, 18, 30, 15, 123456, time.FixedZone("+05", 5*3600))})
 	if e != nil {
 		t.Fatal(e)
+	}
+	if !bytes.Equal(before, mustXML(t, source)) {
+		t.Fatal("signing modified its input snapshot")
 	}
 
 	return d, r, k, der

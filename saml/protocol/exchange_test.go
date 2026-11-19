@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
@@ -82,6 +83,47 @@ func TestSignStatusResponseRejectsIncompatiblePayload(t *testing.T) {
 			}, key)
 			if got != nil || !errors.Is(err, protocol.ErrProfile) {
 				t.Errorf("SignStatusResponse = %v, %v, want nil and %v", got, err, protocol.ErrProfile)
+			}
+		})
+	}
+}
+
+func TestProtocolProducersRequireRepresentableIssueInstant(t *testing.T) {
+	t.Parallel()
+
+	// UTC normalization crosses the supported upper year boundary.
+	at := time.Date(9999, time.December, 31, 23, 30, 0, 0, time.FixedZone("west", -3600))
+	key := protocol.SigningKey{Key: testcert.Key(t)}
+	for _, tc := range []struct {
+		name  string
+		build func() (*document.Document, error)
+	}{
+		{"AuthnRequest", func() (*document.Document, error) {
+			return protocol.BuildAuthnRequest(t.Context(), protocol.AuthnRequest{Issuer: sp, Destination: sso, ACS: acs, IssueInstant: at})
+		}},
+		{"LogoutResponse", func() (*document.Document, error) {
+			return protocol.SignStatusResponse(t.Context(), protocol.StatusResponse{
+				Issuer: sp, Destination: sso, IssueInstant: at,
+				Kind: protocol.LogoutResponse, InResponseTo: "_request",
+			}, key)
+		}},
+		{"AuthorityAssertion", func() (*document.Document, error) {
+			return protocol.SignAuthorityAssertion(t.Context(), protocol.AuthorityAssertion{ID: "_assertion", Issuer: idp, IssueInstant: at}, key)
+		}},
+		{"LogoutExpiration", func() (*document.Document, error) {
+			return protocol.SignLogoutRequest(t.Context(), protocol.LogoutRequest{
+				Issuer: sp, Destination: sso, IssueInstant: testcert.Now(),
+				NameID:       protocol.NameIdentifier{Value: "alice"},
+				NotOnOrAfter: at,
+			}, key)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := tc.build()
+			if got != nil || !errors.Is(err, protocol.ErrProfile) {
+				t.Errorf("producer = %v, %v, want nil and ErrProfile", got != nil, err)
 			}
 		})
 	}

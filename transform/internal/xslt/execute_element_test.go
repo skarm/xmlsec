@@ -2,6 +2,81 @@ package xslt //nolint:testpackage // Exercises comment node construction.
 
 import "testing"
 
+func TestExecElementResolvesLexicalNamespaces(t *testing.T) {
+	t.Parallel()
+
+	const declarations = `<xsl:variable xmlns:p="urn:unrelated" name="unrelated" select="42"/>`
+	for _, tc := range []struct{ name, element, want, code string }{
+		{"undeclared_prefix", `<xsl:element name="{$name}"/>`, "", "XTDE0830"},
+		{"instruction_namespace", `<xsl:element name="{$name}" xmlns:p="urn:local"/>`, "item|urn:local", ""},
+		{"explicit_namespace", `<xsl:element name="{$name}" namespace="urn:explicit"/>`, "item|urn:explicit", ""},
+		{"explicit_empty_namespace", `<xsl:element name="{$name}" namespace=""/>`, "item|", ""},
+		{"implicit_xml_namespace", `<xsl:element name="{concat('xml:', 'item')}"/>`, "item|http://www.w3.org/XML/1998/namespace", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `<xsl:variable name="name" select="'p:item'"/>` +
+				`<xsl:variable name="node" as="element()">` + tc.element + `</xsl:variable>` +
+				`<xsl:value-of select="(local-name($node), namespace-uri($node))" separator="|"/>`
+			ss := compileTestStylesheet(t, declarations, body)
+			got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, tc.code)
+		})
+	}
+}
+
+func TestComputedQNameWhitespaceByProcessorEdition(t *testing.T) {
+	t.Parallel()
+
+	for _, edition := range []struct {
+		name    string
+		version int
+	}{
+		{"1.0", processorXSLT10},
+		{"2.0", processorXSLT20},
+		{"3.0", processorXSLT30},
+	} {
+		for _, tc := range []struct{ kind, body, want, code string }{
+			{"element", `<xsl:element name="{r/@name}">value</xsl:element>`, "<item>value</item>", "XTDE0820"},
+			{"attribute", `<out><xsl:attribute name="{r/@name}">value</xsl:attribute></out>`, `<out item="value"/>`, "XTDE0850"},
+		} {
+			t.Run(edition.name+"/"+tc.kind, func(t *testing.T) {
+				t.Parallel()
+
+				const prefix = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="`
+				sheet := prefix + edition.name + `"><xsl:output method="xml" omit-xml-declaration="yes"/><xsl:template match="/">` + tc.body + `</xsl:template></xsl:stylesheet>`
+				compiler := NewCompiler().ProcessorVersion(edition.version)
+				compiled, err := compiler.Compile(t.Context(), parseTestDocument(t, sheet))
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				for _, input := range []struct {
+					label, name string
+					valid       bool
+				}{
+					{"bare", "item", true},
+					{"xml_whitespace", " &#x9;item&#xA; ", edition.version >= processorXSLT20},
+					{"nonbreaking_spaces", "&#160;item&#160;", false},
+					{"uri_qualified_empty", "Q{}item", false},
+					{"uri_qualified_named", "Q{urn:test}item", false},
+				} {
+					t.Run(input.label, func(t *testing.T) {
+						t.Parallel()
+						doc := parseTestDocument(t, `<r name="`+input.name+`"/>`)
+						got, err := compiled.Transform(doc).Serialize(t.Context())
+						if input.valid {
+							requireSerialization(t, got, err, tc.want, "")
+						} else {
+							requireSerialization(t, got, err, "", tc.code)
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
 func TestExecCommentNormalizesContent(t *testing.T) {
 	t.Parallel()
 	body := `<xsl:variable name="out" as="element()"><out>
@@ -51,6 +126,41 @@ func TestExecNamespace(t *testing.T) {
 			ss := compileTestStylesheet(t, "", tc.body)
 			got, err := ss.Transform(parseTestDocument(t, `<r prefix="p" uri="urn:new"/>`)).Serialize(t.Context())
 			requireSerialization(t, got, err, tc.want, tc.code)
+		})
+	}
+}
+
+func TestLiteralResultDefaultNamespace(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, ancestorAttrs, literal, want string }{
+		{"inherited", "", `<p:item/>`, "urn:item|urn:default"},
+		{"excluded", ` exclude-result-prefixes="#default"`, `<p:item/>`, "urn:item|"},
+		{"undeclared", "", `<p:item xmlns=""/>`, "urn:item|"},
+		{"locally rebound", "", `<p:item xmlns="urn:local"/>`, "urn:item|urn:local"},
+		{"retained for element name", ` exclude-result-prefixes="#default"`, `<item/>`, "urn:default|urn:default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `<xsl:variable name="node" as="element()">
+				<xsl:if xmlns:p="urn:item" xmlns="urn:default" test="true()"` + tc.ancestorAttrs + `>` + tc.literal + `</xsl:if>
+			</xsl:variable>
+			<xsl:value-of select="concat(namespace-uri($node),'|',string(namespace-uri-for-prefix('',$node)))"/>`
+			ss := compileTestStylesheet(t, "", body)
+			got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
+func TestReviewComputedNCNameStripsXMLWhitespace(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"processing instruction", `<xsl:variable name="node" as="processing-instruction()"><xsl:processing-instruction name="{r/@name}"/></xsl:variable><xsl:value-of select="name($node)"/>`},
+		{"namespace", `<xsl:variable name="node" as="namespace-node()"><xsl:namespace name="{r/@name}" select="'urn:example'"/></xsl:variable><xsl:value-of select="name($node)"/>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := compileTestStylesheet(t, "", tc.body)
+			got, err := ss.Transform(parseTestDocument(t, `<r name=" &#x9;item&#xA; "/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, "item", "")
 		})
 	}
 }

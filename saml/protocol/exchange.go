@@ -3,13 +3,13 @@ package protocol
 import (
 	"context"
 	"crypto"
+	"errors"
 	"slices"
 	"time"
 	"unicode/utf8"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/saml/binding"
@@ -84,7 +84,8 @@ type ExchangeOptions struct {
 	// Limits bounds message structure and freshness. Zero fields select the
 	// protocol defaults.
 	Limits Limits
-	// Policy restricts signature and reference processing algorithms.
+	// Policy restricts signature and reference processing algorithms. For
+	// Redirect, a configured binding.Options.Policy adds restrictions.
 	Policy xmldsig.Policy
 	// Decryption permits processing encrypted identifiers after signature
 	// verification. Nil supplies no decryption keys.
@@ -315,7 +316,7 @@ func VerifyStatusResponse(ctx context.Context, d *document.Document, keys []cryp
 // VerifyRedirectStatusResponse authenticates the exact Redirect query signature.
 // RelayState is returned separately and must match the initiating exchange.
 func VerifyRedirectStatusResponse(ctx context.Context, query string, keys []crypto.PublicKey, o ExchangeOptions, limits binding.Options) (*VerifiedStatusResponse, *string, error) {
-	d, relay, err := exchangeRedirect(ctx, query, keys, o, limits, binding.Response)
+	d, relay, err := exchangeRedirect(ctx, query, keys, o.Policy, limits, binding.Response)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -339,7 +340,7 @@ func soapExchangeRoot(h MessageHeader, kind string) (*tree.Node, error) {
 }
 
 func messageRoot(h MessageHeader, kind string, soap bool) (*tree.Node, error) {
-	if !profile.URI(h.Issuer) || (!soap || h.Destination != "") && !profile.Endpoint(h.Destination, true) || h.IssueInstant.IsZero() {
+	if !profile.URI(h.Issuer) || (!soap || h.Destination != "") && !profile.Endpoint(h.Destination, true) || !profile.ValidTime(h.IssueInstant) {
 		return nil, ErrProfile
 	}
 
@@ -517,12 +518,25 @@ func validateExtensions(e document.Element) error {
 	return nil
 }
 
-func exchangeRedirect(ctx context.Context, query string, keys []crypto.PublicKey, o ExchangeOptions, limits binding.Options, kind binding.Kind) (*document.Document, *string, error) {
+func exchangeRedirect(ctx context.Context, query string, keys []crypto.PublicKey, policy xmldsig.Policy, limits binding.Options, kind binding.Kind) (*document.Document, *string, error) {
 	if len(keys) == 0 || len(keys) > maximumRedirectVerificationKeys {
 		return nil, nil, ErrSignature
 	}
 
-	limits.Policy = o.Policy
+	if ctx != nil && ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+
+	if !limits.Policy.IsZero() {
+		combined, err := xmldsig.IntersectPolicies(policy, limits.Policy)
+		if err != nil {
+			return nil, nil, errors.Join(ErrSignature, err)
+		}
+
+		policy = combined
+	}
+
+	limits.Policy = policy
 	for _, key := range keys {
 		r, err := binding.VerifyRedirect(ctx, query, key, limits)
 		if err != nil {
@@ -642,6 +656,10 @@ func readStatus(e document.Element) (Status, error) {
 		}
 
 		v := xmlutil.Attr(c, xmlNameValue)
+		if v == "" {
+			return s, ErrProfile
+		}
+
 		if depth == 0 {
 			s.Code = v
 		} else {

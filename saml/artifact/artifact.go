@@ -14,6 +14,7 @@ import (
 	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/expiry"
 	"github.com/skarm/xmlsec/saml/internal/profile"
+	"github.com/skarm/xmlsec/saml/internal/xmlsig"
 	"github.com/skarm/xmlsec/saml/metadata"
 	"github.com/skarm/xmlsec/saml/protocol"
 )
@@ -380,6 +381,18 @@ func (r Resolver) Resolve(ctx context.Context, a binding.Artifact, at time.Time)
 
 	if endpoint == "" {
 		return nil, ErrArtifact
+	}
+
+	if err := protocol.ValidatePolicy(r.Options.Limits); err != nil {
+		return nil, err
+	}
+
+	if r.ReturnEndpoint != "" && !profile.Endpoint(r.ReturnEndpoint, true) {
+		return nil, protocol.ErrProfile
+	}
+
+	if len(r.Keys) == 0 || len(r.Keys) > xmlsig.MaxTrustedKeys {
+		return nil, protocol.ErrSignature
 	}
 
 	id, err := profile.NewID()

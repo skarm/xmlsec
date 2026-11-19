@@ -133,7 +133,7 @@ func (s *adaptiveSerialization) item(item xdm.Item, depth int) error {
 			case NSXS:
 				name = lexicon.PrefixXS + ":" + value.Name
 			default:
-				name = "Q{" + value.Namespace + "}" + value.Name
+				name = lexicon.EQNamePrefix + value.Namespace + "}" + value.Name
 			}
 		}
 
@@ -172,7 +172,7 @@ func (s *adaptiveSerialization) atomic(value xdm.AtomicValue) error {
 			return &xdm.Error{Code: errCodeFOER0000, Message: "invalid QName value"}
 		}
 
-		return s.write("Q{" + name.URI + "}" + name.Local)
+		return s.write(lexicon.EQNamePrefix + name.URI + "}" + name.Local)
 	default:
 		primitive := adaptivePrimitiveType(value.TypeName)
 		if err := s.write(primitive + "("); err != nil {

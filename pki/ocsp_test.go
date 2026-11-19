@@ -451,41 +451,100 @@ func TestOCSPNonceSizeAndCancellation(t *testing.T) {
 	}
 }
 
-func TestOCSPRejectsOversizedInputBeforeAllocation(t *testing.T) {
+func TestOCSPResponseCancellationDuringSignerPreparation(t *testing.T) {
+	c := testcert.New(t)
+	request, err := pki.CreateOCSPRequest(c.Leaf.Raw, c.Root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("create", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		signer := ocspCancelOnPublicSigner{Signer: c.RootKey, cancel: cancel}
+		response, err := pki.CreateOCSPResponse(ctx, request, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, signer, ocspTemplate())
+		if response != nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("response created: %t, error: %v", response != nil, err)
+		}
+	})
+
+	t.Run("write", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		signer := ocspCancelOnPublicSigner{Signer: c.RootKey, cancel: cancel}
+		var response bytes.Buffer
+		n, err := pki.WriteOCSPResponse(ctx, &response, request, c.Leaf.Raw, c.Root.Raw, c.Root.Raw, signer, ocspTemplate())
+		if n != 0 || response.Len() != 0 || !errors.Is(err, context.Canceled) {
+			t.Fatalf("reported bytes: %d, actual bytes: %d, error: %v", n, response.Len(), err)
+		}
+	})
+}
+
+type ocspCancelOnPublicSigner struct {
+	crypto.Signer
+	cancel context.CancelFunc
+}
+
+func (s ocspCancelOnPublicSigner) Public() crypto.PublicKey {
+	s.cancel()
+	return s.Signer.Public()
+}
+
+func TestPKIRejectsOversizedInputBeforeAllocation(t *testing.T) {
 	c := testcert.New(t)
 	input := make([]byte, 8<<20)
+	usages := make([]x509.ExtKeyUsage, 1<<17)
 
 	for _, tc := range []struct {
 		name string
-		run  func() error
+		run  func(*testing.T) error
+		want error
 	}{
-		{"request", func() error {
+		{"request", func(t *testing.T) error {
 			result, err := pki.ParseOCSPRequest(input)
 			if result != nil {
 				t.Fatal("oversized request returned a result")
 			}
 
 			return err
-		}},
-		{"response", func() error {
+		}, pki.ErrEvidence},
+		{"response", func(t *testing.T) error {
 			result, report, err := pki.VerifyOCSP(t.Context(), input, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{MaxBytes: 1 << 16})
 			if result != nil || report.Signature != pki.NotChecked {
 				t.Fatal("oversized response was processed")
 			}
 
 			return err
-		}},
+		}, pki.ErrEvidence},
+		{"expected_nonce", func(t *testing.T) error {
+			result, report, err := pki.VerifyOCSP(t.Context(), nil, c.Leaf.Raw, c.Root.Raw, testcert.Now(), pki.OCSPOptions{ExpectedNonce: input})
+			if result != nil || report.Signature != pki.NotChecked {
+				t.Fatal("oversized nonce was processed")
+			}
+
+			return err
+		}, pki.ErrPolicy},
+		{"key_usages", func(t *testing.T) error {
+			result, err := pki.NewVerifier(pki.Config{Roots: [][]byte{c.Root.Raw}, KeyUsages: usages})
+			if result != nil {
+				t.Fatal("oversized usage list produced a verifier")
+			}
+
+			return err
+		}, pki.ErrPolicy},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var before, after runtime.MemStats
 			runtime.ReadMemStats(&before)
 
-			err := tc.run()
+			err := tc.run(t)
 
 			runtime.ReadMemStats(&after)
 
-			if !errors.Is(err, pki.ErrEvidence) {
-				t.Fatalf("want ErrEvidence, got %v", err)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, err)
 			}
 
 			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<16 {
@@ -637,10 +696,16 @@ func FuzzOCSPRequest(f *testing.F) {
 }
 
 func FuzzOCSPResponse(f *testing.F) {
-	fixture := testcert.LoadFixture(f, "../testdata/evidence", "ocsp-rsa-sha256-HASH-GOOD")
-	raw := fixture.Read(f, "ocsp-rsa-sha256-HASH-GOOD/response.der")
-	leaf := fixture.Read(f, "ocsp-rsa-sha256-HASH-GOOD/leaf.der")
-	issuer := fixture.Read(f, "ocsp-rsa-sha256-HASH-GOOD/issuer.der")
+	name := "ocsp-rsa-sha256-HASH-GOOD"
+	if fips140.Enabled() {
+		// byKey requires SHA-1 even when the response uses a SHA-256 signature.
+		name = "ocsp-rsa-sha256-NAME-GOOD"
+	}
+
+	fixture := testcert.LoadFixture(f, "../testdata/evidence", name)
+	raw := fixture.Read(f, name+"/response.der")
+	leaf := fixture.Read(f, name+"/leaf.der")
+	issuer := fixture.Read(f, name+"/issuer.der")
 	options := pki.OCSPOptions{ExpectedNonce: fixture.Nonce}
 
 	result, report, e := pki.VerifyOCSP(f.Context(), raw, leaf, issuer, fixture.At, options)
@@ -968,6 +1033,44 @@ func TestOCSPFractionalEncoderTimes(t *testing.T) {
 			}
 			if raw, err := pki.CreateOCSPResponse(t.Context(), request, chain.Leaf.Raw, chain.Root.Raw, chain.Root.Raw, chain.RootKey, template); raw != nil || !errors.Is(err, pki.ErrPolicy) {
 				t.Fatal("fractional encoder time silently changed", err)
+			}
+		})
+	}
+}
+
+func TestOCSPEncoderChecksUTCYear(t *testing.T) {
+	t.Parallel()
+
+	chain := testcert.New(t)
+	request, err := pki.CreateOCSPRequest(chain.Leaf.Raw, chain.Root.Raw, crypto.SHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		ok   bool
+	}{
+		{"local year 10000, UTC year 9999", time.Date(10000, 1, 1, 0, 30, 0, 0, time.FixedZone("UTC+1", 3600)), true},
+		{"local year 1, UTC year 0", time.Date(1, 1, 1, 0, 30, 0, 0, time.FixedZone("UTC+1", 3600)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			template := pki.OCSPResponseTemplate{Status: pki.OCSPGood, ProducedAt: tc.at, ThisUpdate: tc.at}
+			raw, err := pki.CreateOCSPResponse(t.Context(), request, chain.Leaf.Raw, chain.Root.Raw, chain.Root.Raw, chain.RootKey, template)
+			if !tc.ok {
+				if raw != nil || !errors.Is(err, pki.ErrPolicy) {
+					t.Fatalf("CreateOCSPResponse returned %d bytes and error %v, want ErrPolicy", len(raw), err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pki.InspectOCSPCertificates(t.Context(), raw); err != nil {
+				t.Fatalf("encoded UTC time rejected by response parser: %v", err)
 			}
 		})
 	}

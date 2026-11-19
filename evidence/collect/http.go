@@ -123,7 +123,12 @@ type HTTP struct {
 
 // NewHTTP snapshots a bounded exact URI policy without performing I/O.
 func NewHTTP(config Config) (*HTTP, error) {
-	if config.Client == nil || config.Client.Transport != nil && nilcheck.IsNil(config.Client.Transport) || len(config.AllowedURIs) == 0 || len(config.AllowedURIs) > maximumAllowedURIs {
+	client := config.Client
+	if client == nil || len(config.AllowedURIs) == 0 || len(config.AllowedURIs) > maximumAllowedURIs {
+		return nil, evidence.ErrInput
+	}
+
+	if client.Transport != nil && nilcheck.IsNil(client.Transport) || client.Jar != nil && nilcheck.IsNil(client.Jar) {
 		return nil, evidence.ErrInput
 	}
 
@@ -132,7 +137,7 @@ func NewHTTP(config Config) (*HTTP, error) {
 		return nil, err
 	}
 
-	c := &HTTP{client: *config.Client, allowed: make(map[string]struct{}, len(config.AllowedURIs)), limits: limits, now: config.Now}
+	c := &HTTP{client: *client, allowed: make(map[string]struct{}, len(config.AllowedURIs)), limits: limits, now: config.Now}
 	if c.now == nil {
 		c.now = time.Now
 	}
@@ -214,7 +219,7 @@ func normalizeLimits(limits Limits) (Limits, error) {
 }
 
 func collectionURI(raw string) (*url.URL, error) {
-	if len(raw) > maximumURIBytes || !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
+	if len(raw) > maximumURIBytes || !utf8.ValidString(raw) || strings.ContainsAny(raw, ` \`) {
 		return nil, evidence.ErrPolicy
 	}
 
@@ -265,11 +270,6 @@ func collect[T collected](c *HTTP, ctx context.Context, requests []Request, read
 	}
 
 	plans := make([]Request, len(requests))
-	defer func() {
-		for _, plan := range plans {
-			clear(plan.Body)
-		}
-	}()
 
 	remaining := c.limits.MaxTotalRequestBytes
 
@@ -295,6 +295,7 @@ func collect[T collected](c *HTTP, ctx context.Context, requests []Request, read
 		}
 
 		remaining -= len(request.Body)
+		// The transport may still be using this snapshot after RoundTrip returns.
 		request.Body = bytes.Clone(request.Body)
 		plans[i] = request
 	}
@@ -422,6 +423,10 @@ type responseTransport struct {
 
 func (t *responseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if err := t.failure(); err != nil {
+		if !nilcheck.IsNil(request.Body) {
+			err = errors.Join(err, request.Body.Close())
+		}
+
 		return nil, err
 	}
 
@@ -442,6 +447,12 @@ func (t *responseTransport) RoundTrip(request *http.Request) (*http.Response, er
 	}
 
 	return response, nil
+}
+
+func (t *responseTransport) CancelRequest(request *http.Request) {
+	if legacy, ok := t.base.(interface{ CancelRequest(*http.Request) }); ok {
+		legacy.CancelRequest(request)
+	}
 }
 
 func (t *responseTransport) failure() error {

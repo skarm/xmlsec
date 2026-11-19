@@ -169,14 +169,7 @@ func IsValidPITarget(target string) bool {
 	if strings.EqualFold(target, lexicon.ReservedXMLPITarget) {
 		return false
 	}
-	// Ranging over an invalid byte yields utf8.RuneError (U+FFFD), which is
-	// itself a valid NCName character, so IsValidNCName would accept invalid
-	// UTF-8 and emit raw bytes. Reject invalid encodings up front; a genuinely
-	// encoded U+FFFD is valid UTF-8 and still passes.
-	if !utf8.ValidString(target) {
-		return false
-	}
-
+	// IsValidNCName rejects malformed UTF-8 while allowing an encoded U+FFFD.
 	return IsValidNCName(target)
 }
 

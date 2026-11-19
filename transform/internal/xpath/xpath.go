@@ -194,6 +194,15 @@ func (r *Result) EBV() (bool, error) {
 	return EBV(r.seq)
 }
 
+// MatchesPredicate applies XPath predicate semantics at the supplied focus position.
+func (r *Result) MatchesPredicate(position int) (bool, error) {
+	if rn, ok := r.seq.(*resultNodes); ok {
+		return len(rn.nodes) > 0, nil
+	}
+
+	return predicateTrue(r.seq, position)
+}
+
 // IsNodeSet returns true if the result consists entirely of nodes.
 func (r *Result) IsNodeSet() bool {
 	if _, ok := r.seq.(*resultNodes); ok {
@@ -409,11 +418,7 @@ func (c Compiler) Compile(expr string) (*Expression, error) {
 			return nil, err
 		}
 
-		if version == xpathVersion10 {
-			ast = xpath10Literals(ast)
-		}
-
-		compiled, err := c.CompileExpr(ast)
+		compiled, err := c.compileExpr(ast, true)
 		if err == nil {
 			compiled.source = expr
 			compiled.version = c.cfg.version
@@ -444,8 +449,12 @@ func (c Compiler) MustCompile(expr string) *Expression {
 	return e
 }
 
-// CompileExpr compiles a pre-parsed AST Expr into an Expression.
+// CompileExpr compiles a pre-parsed AST Expr into an Expression without changing the input.
 func (c Compiler) CompileExpr(ast Expr) (*Expression, error) {
+	return c.compileExpr(ast, false)
+}
+
+func (c Compiler) compileExpr(ast Expr, ownsAST bool) (*Expression, error) {
 	version := 0
 	if c.cfg != nil {
 		version = c.cfg.version
@@ -456,7 +465,7 @@ func (c Compiler) CompileExpr(ast Expr) (*Expression, error) {
 			return nil, err
 		}
 
-		ast = xpath10Literals(ast)
+		ast = xpath10Literals(ast, ownsAST)
 	}
 
 	program, prefixPlan, err := compileVMProgram(ast)

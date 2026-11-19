@@ -10,7 +10,6 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"math/big"
@@ -22,6 +21,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/reference"
 )
 
@@ -659,7 +659,7 @@ func (p *parser) derEncodedKeyValue(n *tree.Node) (crypto.PublicKey, error) {
 		return nil, err
 	}
 
-	key, err := x509.ParsePKIXPublicKey(encoded)
+	key, err := x509cert.ParsePublicKey(encoded, p.limits.MaxBlobBytes)
 	if err != nil {
 		return nil, fmt.Errorf("%w: SubjectPublicKeyInfo: %w", ErrKey, err)
 	}

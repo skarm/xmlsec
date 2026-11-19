@@ -83,13 +83,6 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 	la := lAtoms[0]
 	ra := rAtoms[0]
 
-	// Duration/date/time arithmetic — handle before numeric promotion.
-	// Contract: evalDateTimeArithmetic returns handled==false only when both
-	// operands are non-duration/non-datetime, in which case err is always nil.
-	if result, handled, err := evalDateTimeArithmetic(ctx, ec, e.Op, la, ra); err != nil || handled {
-		return chargeDurationArithmeticResult(ctx, result, err)
-	}
-
 	// Promote xs:untypedAtomic to xs:double for arithmetic
 	if la.TypeName == xdm.TypeUntypedAtomic {
 		castVal, err := CastAtomicContext(ctx, la, xdm.TypeDouble)
@@ -107,6 +100,11 @@ func evalArithmetic(evalFn exprEvaluator, ctx context.Context, ec *evalContext, 
 		}
 
 		ra = castVal
+	}
+	// Untyped operands are converted before operator dispatch, including when
+	// they are used as a duration multiplier or divisor.
+	if result, handled, err := evalDateTimeArithmetic(ctx, ec, e.Op, la, ra); err != nil || handled {
+		return chargeDurationArithmeticResult(ctx, result, err)
 	}
 
 	// Both operands must be numeric after promotion

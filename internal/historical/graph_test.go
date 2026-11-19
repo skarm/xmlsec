@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
+	"crypto/sha512"
 	"errors"
 	"math/rand/v2"
 	"slices"
@@ -216,11 +217,14 @@ func TestGraphExactBindingOwnershipAndProofExtraction(t *testing.T) {
 	signature := []byte("signature value")
 	token := []byte("validated timestamp encoding")
 	dataKey, containerKey, signatureKey, source := sha256.Sum256(payload), sha256.Sum256(container), sha256.Sum256(signature), sha256.Sum256(token)
-	hash := sha256.Sum256(payload)
-	digestObjectKey := sha256.Sum256(hash[:])
+	digest256, digest384 := sha256.Sum256(payload), sha512.Sum384(payload)
+	digestObjectKeys := [][32]byte{sha256.Sum256(digest256[:]), sha256.Sum256(digest384[:])}
 	input := Input{Signature: signatureKey, Objects: []Object{
 		{Bytes: signature, Kind: historicalproof.Signature, Contains: [][32]byte{containerKey}},
-		{Bytes: container, Kind: historicalproof.Data, Refs: []HashReference{{Hash: crypto.SHA256, Digest: hash[:], Target: dataKey}}},
+		{Bytes: container, Kind: historicalproof.Data, Refs: []HashReference{
+			{Hash: crypto.SHA256, Digest: digest256[:], Target: dataKey},
+			{Hash: crypto.SHA384, Digest: digest384[:], Target: dataKey},
+		}},
 		{Bytes: payload, Kind: historicalproof.Data},
 		{Bytes: token, Kind: historicalproof.Timestamp},
 	}}
@@ -231,7 +235,9 @@ func TestGraphExactBindingOwnershipAndProofExtraction(t *testing.T) {
 	expected := bytes.Clone(payload)
 	clear(payload)
 	input.Objects[0].Contains[0] = [32]byte{}
-	clear(input.Objects[1].Refs[0].Digest)
+	for _, ref := range input.Objects[1].Refs {
+		clear(ref.Digest)
+	}
 	if !bytes.Equal(graph.objects[dataKey].Bytes, expected) || graph.checkBindings() != nil {
 		t.Fatal("graph borrowed mutable adapter input")
 	}
@@ -247,8 +253,10 @@ func TestGraphExactBindingOwnershipAndProofExtraction(t *testing.T) {
 			t.Fatal("missing exact/transitive proof", at, ok)
 		}
 	}
-	if at, ok := set.EarliestKind(digestObjectKey, historicalproof.Digest); !ok || !at.Equal(past) {
-		t.Fatal("hash-reference role lost", at, ok)
+	for _, key := range digestObjectKeys {
+		if at, ok := set.EarliestKind(key, historicalproof.Digest); !ok || !at.Equal(past) {
+			t.Fatal("hash-reference role lost", key, at, ok)
+		}
 	}
 	if err := graph.extract(t.Context(), Candidate{Covered: [][32]byte{source}}, source, past); !errors.Is(err, ErrInput) {
 		t.Fatal("timestamp covered itself", err)
@@ -272,6 +280,8 @@ func TestGraphRejectsConflictsMissingBindingsAndCycles(t *testing.T) { //nolint:
 		{"missing contained object", []Object{{Bytes: a, Kind: historicalproof.Signature, Contains: [][32]byte{bk}}}, ak, ErrInput},
 		{"cycle", []Object{{Bytes: a, Kind: historicalproof.Signature, Contains: [][32]byte{bk}}, {Bytes: b, Kind: historicalproof.Data, Contains: [][32]byte{ak}}}, ak, ErrInput},
 		{"unbound hash", []Object{{Bytes: a, Kind: historicalproof.Signature, Refs: []HashReference{{Hash: crypto.SHA256, Digest: make([]byte, 32), Target: bk}}}, {Bytes: b, Kind: historicalproof.Data}}, ak, ErrInput},
+		{"unbound SHA384", []Object{{Bytes: a, Kind: historicalproof.Signature, Refs: []HashReference{{Hash: crypto.SHA384, Digest: make([]byte, 48), Target: bk}}}, {Bytes: b, Kind: historicalproof.Data}}, ak, ErrInput},
+		{"missing hash target", []Object{{Bytes: a, Kind: historicalproof.Signature, Refs: []HashReference{{Hash: crypto.SHA256, Digest: bk[:], Target: bk}}}}, ak, ErrInput},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if graph, err := newGraph(t.Context(), config, Input{Signature: tc.signature, Objects: tc.objects}, testcert.Now()); graph != nil || !errors.Is(err, tc.want) {

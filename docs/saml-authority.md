@@ -34,9 +34,11 @@ and after authenticated decryption. Value byte limits cover canonical XML markup
 and type annotations as well as text.
 
 `SignQueryResponse` and `VerifyQueryResponse` support zero or more assertions.
-An empty Success means no matching facts. Every returned subject must strongly
-match the query; identifier content, attribute values and attribute presence are
-retained. Authentication filters are checked across the result set. Attribute
+An authenticated empty Success carries zero assertions. When the local authority
+handles an AuthnQuery with `RequestedAuthnContext` and has no matching context,
+it returns `NoAuthnContext`. Every returned subject must strongly match the query.
+Identifier content, attribute values and attribute presence are retained.
+Authentication filters are checked across the result set. Attribute
 filters prevent returning unrequested attributes or values. Authorization results
 must concern the requested resource and actions. Assertion-ID results must contain
 only requested IDs. A response issuer cannot implicitly authorize another

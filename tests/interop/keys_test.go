@@ -285,7 +285,8 @@ func TestXMLSecProtectedKeys(t *testing.T) {
 			bits, digest := pair[0], pair[1]
 			for _, form := range []string{"pkcs8-der", pkcs8PEM, pkcs12Classic, namePKCS12PBMAC1} {
 				t.Run(name+"/"+strconv.Itoa(bits)+"/"+form, func(t *testing.T) {
-					testXMLSecProtectedKeysCase(t, &form, &dir, &fixture, &key, &digest, &bits, &chain, &expectedDER, &expected, &certificateHash, &source, &cli, &macControls, &count)
+					caseDir := t.TempDir()
+					testXMLSecProtectedKeysCase(t, &form, &caseDir, &fixture, &key, &digest, &bits, &chain, &expectedDER, &expected, &certificateHash, &source, &cli, &macControls, &count)
 				})
 			}
 		}
@@ -395,7 +396,8 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 	}
 
 	passwordFile := write(t, filepath.Join((*dir), "password"), []byte(password+"\n"))
-	ours, theirs, restored, signed := filepath.Join((*dir), "container-go"), filepath.Join((*dir), "container-ref"), filepath.Join((*dir), "restored.pem"), filepath.Join((*dir), "signed.xml")
+	ours, theirs, restored := filepath.Join((*dir), "container-go"), filepath.Join((*dir), "container-ref"), filepath.Join((*dir), "restored.pem")
+	nativeSigned, goSigned := filepath.Join((*dir), "native-signed.xml"), filepath.Join((*dir), "go-signed.xml")
 	mode := "marshal-pkcs8"
 	nativeArg := "--pkcs8-der"
 	format := nameDER
@@ -454,8 +456,8 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 	}
 
 	args := append([]string{nativeArg, ours, "--pwd", password, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
-	native(t, (*fixture), true, nameSign, append(args, "--output", signed, (*source))...)
-	raw, _ := command(t, (*fixture), true, nil, (*cli), "verify-core", "-allow-unspecified-coverage", flagKey, key.public, "-signature-index", "0", "-modern-algorithms", flagIn, signed)
+	native(t, (*fixture), true, nameSign, append(args, "--output", nativeSigned, (*source))...)
+	raw, _ := command(t, (*fixture), true, nil, (*cli), "verify-core", "-allow-unspecified-coverage", flagKey, key.public, "-signature-index", "0", "-modern-algorithms", flagIn, nativeSigned)
 	verifyReport(t, raw, true)
 
 	keyFormat := "pkcs8"
@@ -463,10 +465,10 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 		keyFormat = namePKCS12
 	}
 
-	command(t, (*fixture), true, nil, (*cli), "sign-template", flagKey, theirs, "-key-format", keyFormat, "-password-file", passwordFile, "-signature-index", "0", "-modern-algorithms", flagIn, (*source), flagOut, signed)
+	command(t, (*fixture), true, nil, (*cli), "sign-template", flagKey, theirs, "-key-format", keyFormat, "-password-file", passwordFile, "-signature-index", "0", "-modern-algorithms", flagIn, (*source), flagOut, goSigned)
 
 	args = append([]string{flagPublicKeyPEM, key.public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
-	native(t, (*fixture), true, nameVerify, append(args, signed)...)
+	native(t, (*fixture), true, nameVerify, append(args, goSigned)...)
 
 	parse[namePassword] = []byte("wrong test password")
 
@@ -490,11 +492,10 @@ func testXMLSecProtectedKeysCase(t *testing.T, form *string, dir *string, fixtur
 		parse[nameInput] = bad
 		probe(t, (*fixture), "keyprobe", parse, false)
 		command(t, (*fixture), false, nil, "openssl", namePKCS12, flagIn, bad, "-passin", passwordFilePrefix+passwordFile, "-noout")
-		os.Remove(signed)
-
+		failedOutput := filepath.Join((*dir), "failed-signed.xml")
 		args = append([]string{"--pkcs12", bad, "--pwd", password, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
-		native(t, (*fixture), false, nameSign, append(args, "--output", signed, (*source))...)
-		noOutput(t, signed)
+		native(t, (*fixture), false, nameSign, append(args, "--output", failedOutput, (*source))...)
+		noOutput(t, failedOutput)
 		write(t, bad, alterPFX(t, read(t, theirs), true))
 		probe(t, (*fixture), "keyprobe", parse, false)
 

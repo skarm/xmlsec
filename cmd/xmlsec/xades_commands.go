@@ -43,46 +43,51 @@ func runXAdES(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	fs := flag.NewFlagSet("xades "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "input XML")
-	out := fs.String("out", "-", "output XML, request DER or verification JSON")
-	certFile := fs.String("certificate", "", "explicit document signer certificate pin")
-	keyFile := fs.String("key", "", "private signing key")
-	method := fs.String("method", "", "signature URI; selected from key if omitted")
-	atValue := fs.String("at", "", "claimed signing time or trusted verification time, RFC3339")
-	configFile := fs.String("trust", "", "trusted XAdES validator JSON with signer_trust, tsa_config and level")
-	tsaFile := fs.String("tsa-trust", "", "TSA JSON for attaching/requesting a signature timestamp")
-	tokenFile := fs.String(nameToken, "", "previously obtained timestamp token DER")
-	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "application ID attribute local name")
-	idNS := fs.String("id-ns", "", "application ID namespace")
-	sigID := fs.String("signature-id", cliDefaultSignatureID, "signature ID when signing")
-	propsID := fs.String("properties-id", cliDefaultPropertiesID, "SignedProperties ID")
-	refID := fs.String("reference-id", cliDefaultReferenceID, "data Reference ID")
-	mimeType := fs.String("mime-type", lexicon.MediaTypeXML, "signed data MIME type")
-	index := fs.Int("signature-index", cliUnspecifiedSelectionIndex, "explicit zero-based signature selection; omitted requires exactly one signature")
-	canonical := fs.String(nameC14N, c14n.Exclusive, "timestamp canonicalization URI")
-	profile := fs.String("validation-profile", cliProfileCurrentTime, "validation: current-time or with-time")
+	input := fs.String(flagNameIn, stdioPath, "input XML")
+	out := fs.String(flagNameOut, stdioPath, "output XML, request DER or verification JSON")
+	certFile := fs.String(flagNameCertificate, "", "explicit document signer certificate pin")
+	keyFile := fs.String(flagNameKey, "", "private signing key")
+	method := fs.String(flagNameMethod, "", "signature URI; selected from key if omitted")
+	atValue := fs.String(flagNameAt, "", "claimed signing time or trusted verification time, RFC3339")
+	configFile := fs.String(flagNameTrust, "", "trusted XAdES validator JSON with signer_trust, tsa_config and level")
+	tsaFile := fs.String(flagNameTSATrust, "", "TSA JSON for attaching/requesting a signature timestamp")
+	tokenFile := fs.String(flagNameToken, "", "previously obtained timestamp token DER")
+	idAttr := fs.String(flagNameIDAttr, cliDefaultIDAttribute, "application ID attribute local name")
+	idNS := fs.String(flagNameIDNS, "", "application ID namespace")
+	sigID := fs.String(flagNameSignatureID, cliDefaultSignatureID, "signature ID when signing")
+	propsID := fs.String(flagNamePropertiesID, cliDefaultPropertiesID, "SignedProperties ID")
+	refID := fs.String(flagNameReferenceID, cliDefaultReferenceID, "data Reference ID")
+	mimeType := fs.String(flagNameMimeType, lexicon.MediaTypeXML, "signed data MIME type")
+	index := fs.Int(flagNameSignatureIndex, cliUnspecifiedSelectionIndex, "explicit zero-based signature selection; omitted requires exactly one signature")
+	canonical := fs.String(flagNameC14N, c14n.Exclusive, "timestamp canonicalization URI")
+	profile := fs.String(flagNameValidationProfile, cliProfileCurrentTime, "validation: current-time or with-time")
 	flags := registerPrivateKeyFlags(fs)
 
-	specific := "in out certificate at id-attr id-ns signature-index"
+	specific := []string{
+		flagNameIn, flagNameOut, flagNameCertificate, flagNameAt, flagNameIDAttr, flagNameIDNS, flagNameSignatureIndex,
+	}
 
 	switch cmd {
 	case nameSign:
-		specific = "in out key certificate method at id-attr id-ns signature-id properties-id reference-id mime-type" + privateKeyFlagNames
+		specific = append([]string{
+			flagNameIn, flagNameOut, flagNameKey, flagNameCertificate, flagNameMethod, flagNameAt, flagNameIDAttr,
+			flagNameIDNS, flagNameSignatureID, flagNamePropertiesID, flagNameReferenceID, flagNameMimeType,
+		}, privateKeyFlagNames()...)
 	case "timestamp":
-		specific += " tsa-trust token c14n"
+		specific = append(specific, flagNameTSATrust, flagNameToken, flagNameC14N)
 	case nameTimestampRequest:
-		specific += " tsa-trust c14n"
+		specific = append(specific, flagNameTSATrust, flagNameC14N)
 	case "archive":
-		specific += " trust token c14n"
+		specific = append(specific, flagNameTrust, flagNameToken, flagNameC14N)
 	case "archive-request":
-		specific += " trust c14n"
+		specific = append(specific, flagNameTrust, flagNameC14N)
 	case "material":
-		specific += " trust"
+		specific = append(specific, flagNameTrust)
 	case "validate":
-		specific += " trust validation-profile"
+		specific = append(specific, flagNameTrust, flagNameValidationProfile)
 	}
 
-	fs = commandFlags(fs, specific, true)
+	fs = commandFlags(fs, true, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -264,7 +269,7 @@ func withTimeXAdESReport(report *xades.WithTimeReport) map[string]any {
 }
 
 func basicXAdESReport(r *xades.BasicResult) any {
-	return map[string]any{"signature_method": r.Signature().SignatureMethod(), "key_fingerprint_sha256": r.Signature().KeyFingerprintSHA256(), "claimed_signing_time": r.ClaimedSigningTime(), "reference_count": len(r.Signature().References())}
+	return map[string]any{"signature_method": r.Signature().SignatureMethod(), fieldKeyFingerprintSHA256: r.Signature().KeyFingerprintSHA256(), "claimed_signing_time": r.ClaimedSigningTime(), fieldReferenceCount: len(r.Signature().References())}
 }
 
 func runXAdESCurrent(ctx context.Context, o xadesOperation, cmd string, cfg xadesConfig, signerTrust pki.Config, tsa *timestamp.Verifier, evidence xades.ValidationEvidence, canonical, tokenFile string, stdout io.Writer) error {

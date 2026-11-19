@@ -77,6 +77,119 @@ func TestStylesheetExecutesInstructions(t *testing.T) {
 	}
 }
 
+func TestApplyTemplatesStripsWhitespaceOnlyFromSource(t *testing.T) {
+	t.Parallel()
+
+	const source = `<r> <a>source</a> <r xml:space="preserve"> <a>kept</a></r></r>`
+	const sourceBody = `<xsl:value-of select="count(r/text())"/>|<xsl:apply-templates select="r/a"/>|<xsl:apply-templates select="r/r"/>`
+	const temporaryBody = `|<xsl:variable name="temp" as="element(r)"><r><xsl:text> </xsl:text><a>value</a></r></xsl:variable>`
+	const checkItems = `<xsl:value-of select="$items" separator="|"/>[<xsl:apply-templates select="$items"/>]<xsl:value-of select="$items" separator="|"/>`
+
+	for _, tc := range []struct {
+		version   string
+		processor int
+		body      string
+		want      string
+	}{
+		{"1.0", processorXSLT10, sourceBody, "0|a;|text;a;"},
+		{
+			version:   "2.0",
+			processor: processorXSLT20,
+			body: sourceBody + temporaryBody +
+				`<xsl:variable name="items" as="item()*" select="($temp/text(), $temp/a)"/>` + checkItems,
+			want: "0|a;|text;a;| |value[text;a;] |value",
+		},
+		{
+			version:   "3.0",
+			processor: processorXSLT30,
+			body: sourceBody + temporaryBody +
+				`<xsl:variable name="items" as="item()*" select="($temp/text(), $temp/a, 'end')"/>` + checkItems +
+				`|<xsl:apply-templates select="parse-xml('&lt;r> &lt;a>parsed&lt;/a>&lt;/r>')/r"/>`,
+			want: "0|a;|text;a;| |value|end[text;a;end] |value|end|text;a;",
+		},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			t.Parallel()
+
+			sheet := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="` + tc.version + `">
+				<xsl:output method="text"/>
+				<xsl:strip-space elements="r"/>
+				<xsl:template match="/">` + tc.body + `</xsl:template>
+				<xsl:template match="r"><xsl:apply-templates/></xsl:template>
+				<xsl:template match="text()">text;</xsl:template>
+				<xsl:template match="a">a;</xsl:template>
+			</xsl:stylesheet>`
+			ss, err := NewCompiler().ProcessorVersion(tc.processor).Compile(t.Context(), parseTestDocument(t, sheet))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := ss.Transform(parseTestDocument(t, source)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
+func TestPerformSortPreservesOutputItemsAndCallerFocus(t *testing.T) {
+	t.Parallel()
+	const source = `<r><n>b</n><n>a</n><scope/><scope active="yes"/><scope/></r>`
+	for _, tc := range []struct{ name, body, want string }{
+		{
+			name: "mixed_sorted_content_keeps_nodes",
+			body: `<xsl:variable name="result" as="element(out)">
+				<out>
+					<xsl:perform-sort select="('b',r/n[1],'a')">
+						<xsl:sort select="if (. instance of node()) then 'am' else string(.)"/>
+					</xsl:perform-sort>
+				</out>
+			</xsl:variable>
+			<xsl:value-of select="($result/text()[1], name($result/n), string($result/n), $result/text()[2])" separator="|"/>`,
+			want: "a|n|b|b",
+		},
+		{
+			name: "sorted_empty_atomic_retains_its_separator",
+			body: `<out>[<xsl:perform-sort select="('b','')">
+				<xsl:sort select="." order="descending"/>
+			</xsl:perform-sort>]</out>`,
+			want: "[b ]",
+		},
+		{
+			name: "atomic_sort_options_use_containing_focus",
+			body: `<xsl:for-each select="('skip','caller','skip')">
+				<xsl:if test=". = 'caller'">
+					<xsl:variable name="sorted" as="item()*">
+						<xsl:perform-sort select="('b','a')">
+							<xsl:sort select="." order="{if (. = 'caller' and position() = 2 and last() = 3) then 'ascending' else 'descending'}"/>
+						</xsl:perform-sort>
+					</xsl:variable>
+					<xsl:value-of select="$sorted" separator=""/>
+				</xsl:if>
+			</xsl:for-each>`,
+			want: "ab",
+		},
+		{
+			name: "node_sort_options_use_containing_focus",
+			body: `<xsl:for-each select="r/scope">
+				<xsl:if test="@active">
+					<xsl:for-each select="../n">
+						<xsl:sort select="current()" order="{if (@active and position() = 2 and last() = 3) then 'ascending' else 'descending'}"/>
+						<xsl:sort select="position()"/>
+						<xsl:value-of select="."/>
+					</xsl:for-each>
+				</xsl:if>
+			</xsl:for-each>`,
+			want: "ab",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ss := compileTestStylesheet(t, "", tc.body)
+			got, err := ss.Transform(parseTestDocument(t, source)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
 func TestInvocationParameterIsolation(t *testing.T) {
 	t.Parallel()
 	ss := compileTestStylesheet(t, `<xsl:param name="p" select="'default'"/><xsl:template name="start"><xsl:param name="local" select="'local-default'"/><xsl:param name="t" tunnel="yes" select="'tunnel-default'"/><xsl:value-of select="($p,$local,$t)" separator="|"/></xsl:template>`, ``)
@@ -86,7 +199,11 @@ func TestInvocationParameterIsolation(t *testing.T) {
 	base := ss.CallTemplate("start").GlobalParameters(parameters)
 	parameters.SetString("p", "changed collection")
 	sequence[0] = stringItem("changed sequence")
-	branch := base.SetParameter("p", xdm.SingleString("branch")).SetInitialTemplateParameter("local", xdm.SingleString("argument")).SetTunnelParameter("t", xdm.SingleString("tunneled"))
+	global := xdm.ItemSlice{stringItem("branch")}
+	local := xdm.ItemSlice{stringItem("argument")}
+	tunnel := xdm.ItemSlice{stringItem("tunneled")}
+	branch := base.SetParameter("p", global).SetInitialTemplateParameter("local", local).SetTunnelParameter("t", tunnel)
+	global[0], local[0], tunnel[0] = stringItem("changed global"), stringItem("changed local"), stringItem("changed tunnel")
 	for _, test := range []struct {
 		inv  Invocation
 		want string
@@ -100,6 +217,16 @@ func TestInvocationParameterIsolation(t *testing.T) {
 			t.Fatalf("parameter snapshot = %q, %v; want %q", got, err, test.want)
 		}
 	}
+}
+
+func TestElementAvailableReflectsBasicProcessor(t *testing.T) {
+	t.Parallel()
+	const declarations = `<xsl:variable name="available" select="element-available('xsl:import-schema')" static="yes"/>`
+	const body = `<xsl:value-of select="($available,element-available('xsl:import-schema'),
+			element-available('xsl:function'),system-property('xsl:is-schema-aware'))" separator="|"/>`
+	ss := compileTestStylesheet(t, declarations, body)
+	got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+	requireSerialization(t, got, err, "false|false|true|no", "")
 }
 
 func TestFunctionCachePreservesArgumentSemantics(t *testing.T) {
@@ -134,6 +261,26 @@ func TestProactiveFunctionCacheHintPreservesFreshNodes(t *testing.T) {
 	}
 }
 
+func TestProactiveFunctionCachePreservesQNamePrefixes(t *testing.T) {
+	t.Parallel()
+	const declarations = `<xsl:function name="f:identity" cache="yes">
+		<xsl:param name="value"/>
+		<xsl:sequence select="$value"/>
+	</xsl:function>`
+	const body = `<xsl:value-of select="(
+		string(f:identity(QName('urn:unit','x:n'))),
+		string(f:identity(QName('urn:unit','y:n'))),
+		string(f:identity(QName('urn:unit','x:n'))),
+		string(f:identity(QName('urn:unit','n'))),
+		f:identity(7) instance of xs:integer,
+		f:identity('7') instance of xs:string,
+		f:identity(true()) instance of xs:boolean
+	)" separator="|"/>`
+	ss := compileTestStylesheet(t, declarations, body)
+	got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+	requireSerialization(t, got, err, "x:n|y:n|x:n|n|true|true|true", "")
+}
+
 func TestCompilerStaticParameterIsolation(t *testing.T) {
 	t.Parallel()
 	doc := stylesheetDocument(t, `<xsl:param name="p" static="yes" select="'default'"/>`, `<xsl:value-of select="$p"/>`)
@@ -141,7 +288,9 @@ func TestCompilerStaticParameterIsolation(t *testing.T) {
 	parameters.SetString("p", "original")
 	base := NewCompiler().StaticParameters(parameters)
 	parameters.Clear()
-	branch := base.SetStaticParameter("p", xdm.SingleString("branch"))
+	parameter := xdm.ItemSlice{stringItem("branch")}
+	branch := base.SetStaticParameter("p", parameter)
+	parameter[0] = stringItem("changed sequence")
 	for _, test := range []struct {
 		compiler Compiler
 		want     string
@@ -206,6 +355,85 @@ func TestInvocationOutputSnapshot(t *testing.T) {
 	cancel()
 	if got, err := clone.Serialize(ctx); got != "" || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled invocation = %q, %v", got, err)
+	}
+}
+
+type cancelingOutput struct {
+	strings.Builder
+	cancel context.CancelFunc
+}
+
+func (w *cancelingOutput) Write(data []byte) (int, error) {
+	n, err := w.Builder.Write(data)
+	w.cancel()
+	return n, err
+}
+
+func (w *cancelingOutput) WriteString(data string) (int, error) {
+	return w.Write([]byte(data))
+}
+
+func TestXHTMLSerializationCancellationAfterBOM(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	w := &cancelingOutput{cancel: cancel}
+	doc := parseTestDocument(t, `<html xmlns="http://www.w3.org/1999/xhtml"><head/><body>content</body></html>`)
+	result := ValueResult{
+		Document: doc,
+		Items:    xdm.ItemSlice{xdm.NodeItem{Node: doc}},
+		Output:   &OutputDef{Method: "xhtml", MethodExplicit: true, ByteOrderMark: true},
+	}
+	if err := SerializeValue(ctx, w, result); !errors.Is(err, context.Canceled) || w.String() != "\ufeff" {
+		t.Fatalf("canceled serialization wrote %q with %v; want only the BOM and context.Canceled", w.String(), err)
+	}
+}
+
+func TestCopyOfFunctionDoesNotIndexDetachedCopyInCurrentDocument(t *testing.T) {
+	t.Parallel()
+	ss := compileTestStylesheet(t, "", `<xsl:variable name="d"><result xml:id="present"><xsl:value-of select="name(copy-of(/*))"/></result></xsl:variable><xsl:value-of select="(string($d/result), name(id('present', $d)), exists(id('source', $d)))" separator="|"/>`)
+	for _, id := range []string{"source", "present"} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			source := parseTestDocument(t, `<source xml:id="`+id+`"/>`)
+			got, err := ss.Transform(source).Serialize(t.Context())
+			if want := "source|result|false"; err != nil || got != want {
+				t.Fatalf("id() saw a copy outside the selected document: got %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+}
+
+func TestChangedFocusClearsCurrentTemplateRule(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, body string }{
+		{"for-each", `<xsl:for-each select="r/n">%s</xsl:for-each>`},
+		{"for-each-group", `<xsl:for-each-group select="r/n" group-by="string(.)">%s</xsl:for-each-group>`},
+		{"iterate", `<xsl:iterate select="r/n">%s</xsl:iterate>`},
+		{"analyze-string", `<xsl:analyze-string select="'text'" regex="text"><xsl:matching-substring>%s</xsl:matching-substring></xsl:analyze-string>`},
+		{"source-document", `<xsl:source-document href="https://source.example/input.xml">%s</xsl:source-document>`},
+		{"merge", `<xsl:merge><xsl:merge-source select="r/n"><xsl:merge-key select="string(.)"/></xsl:merge-source><xsl:merge-action>%s</xsl:merge-action></xsl:merge>`},
+		{"sort", `<xsl:for-each select="r/n"><xsl:sort>%s</xsl:sort><xsl:value-of select="."/></xsl:for-each>`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for _, call := range []string{`<xsl:next-match/>`, `<xsl:apply-imports/>`} {
+				ss := compileTestStylesheet(t, ``, strings.Replace(test.body, "%s", call, 1))
+				source := parseTestDocument(t, `<r><n>one</n><n>two</n></r>`)
+				got, err := ss.Transform(source).URIResolver(streamTestResolver{source: `<external/>`}).Serialize(t.Context())
+				if !isXSLTError(err, errCodeXTDE0560) || got != "" {
+					t.Fatalf("%s with changed focus returned %q, %v; want XTDE0560", call, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestChangedFocusRestoresCurrentTemplateRule(t *testing.T) {
+	t.Parallel()
+	ss := compileTestStylesheet(t, `<xsl:template match="/" priority="-10">outer</xsl:template><xsl:template match="n" priority="2"><xsl:next-match/></xsl:template><xsl:template match="n" priority="0">inner</xsl:template>`, `<xsl:for-each-group select="r/n" group-by="string(.)"><xsl:apply-templates select="."/></xsl:for-each-group><xsl:next-match/>`)
+	if got, err := ss.Transform(parseTestDocument(t, `<r><n>one</n></r>`)).Serialize(t.Context()); err != nil || got != "innerouter" {
+		t.Fatalf("nested and restored template rules returned %q, %v; want innerouter", got, err)
 	}
 }
 

@@ -3,6 +3,8 @@ package xmlenc //nolint:testpackage // Tests key method selection independently 
 import (
 	"errors"
 	"testing"
+
+	"github.com/skarm/xmlsec/document"
 )
 
 func TestGraphKeyMethodSelectionRespectsNamesAndExplicitMethods(t *testing.T) {
@@ -71,5 +73,46 @@ func TestGraphKeyMethodSelectionRespectsNamesAndExplicitMethods(t *testing.T) {
 				t.Errorf("algorithmForNames(%q) = (%q, %v), want (%q, %v)", tc.names, got, err, tc.want, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestGraphCachedPlanChecksDependencyDepth(t *testing.T) {
+	t.Parallel()
+
+	identity := graphPlanID{algorithm: AES256GCM, keyBytes: 32}
+	cached := &graphKeyPlan{dependencyDepth: 1}
+	graph := keyGraph{limits: KeyGraphLimits{MaxDepth: 3}, plans: map[graphPlanID]*graphKeyPlan{identity: cached}}
+	if got, err := graph.keyPlan(graphNode{}, identity.algorithm, identity.keyBytes, 2); got != cached || err != nil {
+		t.Fatalf("cached plan at depth limit = %p, %v, want %p, nil", got, err, cached)
+	}
+	if got, err := graph.keyPlan(graphNode{}, identity.algorithm, identity.keyBytes, 3); got != nil || !errors.Is(err, document.ErrLimit) {
+		t.Errorf("cached plan over depth limit = %p, %v, want nil, ErrLimit", got, err)
+	}
+}
+
+func TestGraphRetrievalRequiresURIAttribute(t *testing.T) {
+	t.Parallel()
+
+	const start = `<x:EncryptedKey xmlns:x="` + Namespace + `" xmlns:ds="` + SignatureNamespace + `"><ds:KeyInfo><ds:RetrievalMethod`
+	const end = `/></ds:KeyInfo><x:CipherData><x:CipherValue/></x:CipherData></x:EncryptedKey>`
+	for _, attribute := range []string{` URI=""`, ""} {
+		doc, err := document.Parse(t.Context(), []byte(start+attribute+end), document.DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		graph, source, err := newKeyGraph(t.Context(), doc, KeyGraphOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(graph.close)
+		retrieval := doc.Root().Children()[0].Children()[0]
+		got, err := graph.retrievedKey(source, retrieval)
+		if attribute != "" {
+			if err != nil || !got.element().Same(doc.Root()) {
+				t.Errorf("explicit empty URI = %v, %v, want the document element", got, err)
+			}
+		} else if got != (graphNode{}) || !errors.Is(err, ErrFormat) {
+			t.Errorf("missing URI = %v, %v, want no target and ErrFormat", got, err)
+		}
 	}
 }

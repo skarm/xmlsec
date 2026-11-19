@@ -171,21 +171,13 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		}
 	}
 
-	if err := validateFunctionOptions(elem); err != nil {
+	newEachTime, err := readFunctionOptions(elem)
+	if err != nil {
 		return err
 	}
 
-	// Validate the function-specific parameter vocabulary before compiling
-	// generic template parameters and their defaults.
-	for child := range xdm.Children(elem) {
-		childElem, ok := child.(*xdm.Element)
-		if !ok {
-			continue
-		}
-
-		if err := c.validateFunctionParameter(childElem); err != nil {
-			return err
-		}
+	if err := c.validateFunctionParameters(elem); err != nil {
+		return err
 	}
 
 	_, body, params, err := c.compileTemplateBodyEx(ctx, elem, true)
@@ -225,7 +217,7 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 		Cache:         xsdBoolTrue(getAttr(elem, nameCache)),
 		Streamability: streamability,
 		Visibility:    getAttr(elem, xslAttrVisibility),
-		NewEachTime:   getAttr(elem, nameNewEachTime),
+		NewEachTime:   newEachTime,
 		ImportPrec:    c.importPrec,
 	}
 	if c.stylesheet.isPackage {
@@ -264,6 +256,17 @@ func (c *compiler) compileFunction(ctx context.Context, elem *xdm.Element) error
 	return nil
 }
 
+// Validate the function-specific syntax before compiling generic parameters.
+func (c *compiler) validateFunctionParameters(elem *xdm.Element) error {
+	for child := range xdm.ChildElements(elem) {
+		if err := c.validateFunctionParameter(child); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
 	if childElem.URI() != lexicon.NamespaceXSLT || childElem.LocalName() != lexicon.XSLTElementParam {
 		return nil
@@ -279,13 +282,11 @@ func (c *compiler) validateFunctionParameter(childElem *xdm.Element) error {
 		}
 	}
 
-	if reqVal, hasReq := childElem.GetAttribute(xslAttrRequired); hasReq {
-		if reqVal != lexicon.ValueYes && reqVal != booleanDigitTrue && reqVal != lexicon.ValueTrue {
-			pname := getAttr(childElem, xslAttrName)
+	if reqVal, hasReq := childElem.GetAttribute(xslAttrRequired); hasReq && !xsdBoolTrue(reqVal) {
+		pname := getAttr(childElem, xslAttrName)
 
-			return staticError(errCodeXTSE0020,
-				"xsl:param %q in xsl:function must not have required=%q", pname, reqVal)
-		}
+		return staticError(errCodeXTSE0020,
+			"xsl:param %q in xsl:function must not have required=%q", pname, reqVal)
 	}
 	// XTSE0020: tunnel="yes" is not allowed on a function parameter
 	if xsdBoolTrue(getAttr(childElem, nameTunnel)) {
@@ -517,17 +518,17 @@ func inScopeNamespaces(elem *xdm.Element) map[string]string {
 	return bindings
 }
 
-func validateFunctionOptions(elem *xdm.Element) error {
+func readFunctionOptions(elem *xdm.Element) (string, error) {
 	// XTSE0020: validate override-extension-function (boolean)
 	if oef, has := elem.GetAttribute(nameOverrideExtensionFunction); has {
 		if err := validateBooleanAttr("xsl:function", nameOverrideExtensionFunction, oef); err != nil {
-			return err
+			return "", err
 		}
 	}
 	// XTSE0020: validate override (boolean)
 	if ov, hasOv := elem.GetAttribute(xslElemOverride); hasOv {
 		if err := validateBooleanAttr("xsl:function", xslElemOverride, ov); err != nil {
-			return err
+			return "", err
 		}
 		// Having both @override and @override-extension-function is only an error
 		// when they disagree (XTSE0020 per spec function-0117).
@@ -536,23 +537,35 @@ func validateFunctionOptions(elem *xdm.Element) error {
 
 			oefBool, _ := parseXSDBool(oef)
 			if ovBool != oefBool {
-				return staticError(errCodeXTSE0020,
+				return "", staticError(errCodeXTSE0020,
 					"xsl:function has conflicting @override=%q and @override-extension-function=%q", ov, oef)
 			}
 		}
 	}
-	// XTSE0020: validate new-each-time (yes|no|maybe)
-	if net := getAttr(elem, nameNewEachTime); net != "" {
-		switch net {
-		case lexicon.ValueYes, lexicon.ValueNo, nameMaybe:
-			// valid
-		default:
-			return staticError(errCodeXTSE0020,
-				"%q is not a valid value for xsl:function/@new-each-time", net)
-		}
+
+	return functionNewEachTime(elem)
+}
+
+func functionNewEachTime(elem *xdm.Element) (string, error) {
+	value, supplied := elem.GetAttribute(nameNewEachTime)
+	if !supplied {
+		return "", nil
 	}
 
-	return nil
+	if strings.Trim(value, lexicon.XMLWhitespace) == nameMaybe {
+		return nameMaybe, nil
+	}
+
+	proactive, valid := parseXSDBool(value)
+	if !valid {
+		return "", staticError(errCodeXTSE0020, "%q is not a valid value for xsl:function/@new-each-time", value)
+	}
+
+	if proactive {
+		return lexicon.ValueYes, nil
+	}
+
+	return lexicon.ValueNo, nil
 }
 
 func compileFunctionChildren(childElem *xdm.Element) error {
@@ -738,12 +751,14 @@ func sameAccumulatorSet(a, b string) bool {
 
 // functionName resolves a function's prefixed QName or EQName in its static context.
 func functionName(name string, namespaces map[string]string) (xpath.QualifiedName, error) {
+	name = strings.Trim(name, lexicon.XMLWhitespace)
+
 	var qn xpath.QualifiedName
 	if !xmlchar.IsValidQName(name) && !isValidEQName(name) {
 		return qn, staticError(errCodeXTSE0020, "xsl:function name %q is not a valid EQName", name)
 	}
 
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		// EQName: Q{uri}local
 		closeBrace := strings.IndexByte(name, '}')
 
@@ -879,7 +894,7 @@ func (writer canonicalTypeWriter) nodeTest(nt xdm.NodeTest) {
 	case xdm.NameTest:
 		qn := t.Local
 		if t.URIQualified || t.URI != "" {
-			qn = "Q{" + t.URI + "}" + t.Local
+			qn = lexicon.EQNamePrefix + t.URI + "}" + t.Local
 		} else if t.Prefix != "" {
 			qn = t.Prefix + ":" + t.Local
 		}
@@ -921,7 +936,7 @@ func (writer canonicalTypeWriter) qname(qname string, kind qnameKind) {
 		return
 	}
 
-	writer.b.WriteString("Q{")
+	writer.b.WriteString(lexicon.EQNamePrefix)
 	writer.b.WriteString(ns)
 	writer.b.WriteByte('}')
 	writer.b.WriteString(local)

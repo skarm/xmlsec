@@ -41,11 +41,12 @@ type dtdFrame struct {
 }
 
 type dtdScanner struct {
-	state           *dtdState
-	frames          []dtdFrame
-	err             error
-	inDeclaration   bool
-	parameterOrigin bool
+	state            *dtdState
+	frames           []dtdFrame
+	err              error
+	conditionalDepth int
+	inDeclaration    bool
+	parameterOrigin  bool
 }
 
 func (s *dtdScanner) raw() string {
@@ -168,6 +169,7 @@ func (s *dtdScanner) includeParameterSubset(text, base string, external bool) er
 	defer child.close()
 
 	child.parameterOrigin = true
+	child.conditionalDepth = s.conditionalDepth
 
 	return child.declarations("")
 }
@@ -390,6 +392,13 @@ func (s *dtdScanner) processingInstruction(text string) error {
 }
 
 func (s *dtdScanner) conditional() error {
+	if s.conditionalDepth >= s.state.options.Limits.MaxDepth {
+		return fmt.Errorf("%w: DTD conditional depth", ErrLimit)
+	}
+
+	s.conditionalDepth++
+	defer func() { s.conditionalDepth-- }()
+
 	s.inDeclaration = true
 	s.require(dtdConditionalOpen)
 	s.space(false)
@@ -413,9 +422,9 @@ func (s *dtdScanner) conditional() error {
 		return s.err
 	}
 
-	depth := 1
+	depth := s.conditionalDepth
 
-	for depth > 0 && s.err == nil {
+	for depth >= s.conditionalDepth && s.err == nil {
 		text := s.raw()
 		if text == "" {
 			s.fail("unterminated ignored section")
@@ -714,7 +723,7 @@ func (s *dtdScanner) element() {
 
 			for s.take("|") {
 				s.space(false)
-				s.name()
+				s.qualifiedName()
 
 				count++
 

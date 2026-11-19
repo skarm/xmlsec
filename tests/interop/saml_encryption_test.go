@@ -50,14 +50,14 @@ func TestXMLSecEncryptedSAML(t *testing.T) {
 				ourPath := write(t, filepath.Join(fixture.work, "saml-go.xml"), xmlBytes(t, ours))
 				native(t, fixture, true, nameVerify, flagPublicKeyPEM, signer.public, flagIDAttrID, "Response", "--node-xpath", "(/*/*[local-name()='Signature'])[1]", ourPath)
 				for i, encrypted := range nodes(tree.Root(ours), enc, nameEncryptedData) {
-					output := filepath.Join(fixture.work, "saml-decrypted.xml")
+					output := filepath.Join(t.TempDir(), "saml-decrypted.xml")
 					selection := fmt.Sprintf("(//*[local-name()='EncryptedData'])[%d]", i+1)
 					native(t, fixture, true, "decrypt", "--privkey-pem", recipient.private, "--node-xpath", selection, flagNativeOutput, output, ourPath)
 					plain := xmlDoc(t, read(t, output))
 					if encrypted.Parent.Name.Local == "EncryptedAssertion" {
 						native(t, fixture, true, nameVerify, flagPublicKeyPEM, signer.public, flagIDAttrID, "Assertion", "--node-xpath", "(//*[local-name()='Assertion']/*[local-name()='Signature'])[1]", output)
-					} else if len(nodes(tree.Root(plain), protocol.AssertionNamespace, "NameID")) == 0 && len(nodes(tree.Root(plain), protocol.AssertionNamespace, "Attribute")) == 0 {
-						t.Fatal("native decrypt returned the wrong SAML element")
+					} else {
+						checkNativeSAMLField(t, ours, plain, encrypted.Parent, spec.Assertion)
 					}
 				}
 				spec.Encryption = nil
@@ -91,6 +91,51 @@ func TestXMLSecEncryptedSAML(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func checkNativeSAMLField(t *testing.T, encrypted, plain *document.Document, wrapper *tree.Node, expected protocol.AssertionData) {
+	t.Helper()
+
+	// xmlsec1 replaces the selected EncryptedData in place, retaining its
+	// SAML wrapper and any other independently encrypted or clear fields.
+	children := tree.Children(plain)
+	var restoredWrapper *tree.Node
+	for _, position := range nodePath(wrapper, encrypted) {
+		if position < 1 || position > len(children) {
+			t.Fatalf("native decryption lost the selected %v wrapper", wrapper.Name)
+		}
+		restoredWrapper = children[position-1]
+		children = restoredWrapper.Children
+	}
+	if restoredWrapper == nil || restoredWrapper.Name != wrapper.Name || wrapper.Name.Space != protocol.AssertionNamespace {
+		t.Fatalf("native decryption changed the selected %v wrapper", wrapper.Name)
+	}
+	fields := tree.Wrap(plain, restoredWrapper).Children()
+	if len(fields) != 1 {
+		t.Fatalf("native decryption returned %d field elements inside %v, want one", len(fields), wrapper.Name)
+	}
+
+	field := fields[0]
+	switch wrapper.Name.Local {
+	case "EncryptedID":
+		if field.Name() != (document.Name{Space: protocol.AssertionNamespace, Local: "NameID"}) || field.Text() != expected.NameID {
+			t.Fatalf("native decryption restored %v with text %q, want NameID %q", field.Name(), field.Text(), expected.NameID)
+		}
+	case "EncryptedAttribute":
+		want := expected.Attributes[0]
+		name, _ := field.Attribute(document.Name{Local: "Name"})
+		values := field.Children()
+		if field.Name() != (document.Name{Space: protocol.AssertionNamespace, Local: "Attribute"}) || name != want.Name || len(values) != len(want.Values) {
+			t.Fatalf("native decryption restored %v with Name %q and %d values, want Attribute %q with %d values", field.Name(), name, len(values), want.Name, len(want.Values))
+		}
+		for i, value := range values {
+			if value.Name() != (document.Name{Space: protocol.AssertionNamespace, Local: "AttributeValue"}) || value.Text() != want.Values[i] {
+				t.Fatalf("native decryption restored value %d as %v with text %q, want AttributeValue %q", i, value.Name(), value.Text(), want.Values[i])
+			}
+		}
+	default:
+		t.Fatalf("unexpected encrypted SAML field wrapper %v", wrapper.Name)
 	}
 }
 

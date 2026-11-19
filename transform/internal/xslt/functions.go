@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"path"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -440,7 +439,7 @@ func (ec *execContext) loadDocument(ctx context.Context, uri string, baseDir str
 	// Pre-compute accumulator states for documents loaded via doc()/document()
 	// so that accumulator-before()/accumulator-after() work when processing
 	// these documents (XSLT 3.0 §14.1: accumulators are always applicable).
-	if err := loadDocumentEffectiveAccumulators(ctx, ec, doc); err != nil {
+	if err := ec.ensureAccumulatorStates(ctx, doc); err != nil {
 		return nil, err
 	}
 
@@ -590,7 +589,7 @@ func (ec *execContext) inputParseOptions() *xdm.ParseOptions {
 // resolveDocumentURI resolves a URI against a base directory.
 func (ec *execContext) resolveDocumentURI(uri string, baseDir string) string {
 	uri = uripath.EscapeResourceReference(uri)
-	baseDir = uripath.EscapeResourceReference(baseDir)
+	baseDir = escapeResourceBase(baseDir)
 
 	if uri == "" {
 		return ""
@@ -719,23 +718,6 @@ func documentSnapshotFailure(ctx context.Context, err error, parsing bool) error
 	return &documentSnapshotError{err: err, parsing: parsing}
 }
 
-func loadDocumentEffectiveAccumulators(ctx context.Context, ec *execContext, doc *xdm.Document) error {
-	if len(ec.effectiveAccumulators()) > 0 {
-		names := append([]string(nil), ec.effectiveStylesheet().accumulatorOrder...)
-		if err := ec.computeAccumulatorStates(ctx, doc, names); err != nil {
-			return err
-		}
-
-		if ec.accumulatorComputedDocs == nil {
-			ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-		}
-
-		ec.accumulatorComputedDocs[documentRoot(doc)] = struct{}{}
-	}
-
-	return nil
-}
-
 func documentParsingError(uri string, err error) error {
 	if _, hostFailure := errors.AsType[*xdm.ResourceAccessError](err); hostFailure {
 		return err
@@ -785,20 +767,9 @@ func openDocumentVia(ctx context.Context, uri string, resolver xpath.URIResolver
 // sibling "doc.xml" wrongly resolves to "mem:/pkg/doc.xml" instead of
 // "mem://pkg/doc.xml".
 //
-// For a genuine local filesystem base the containing directory is derived with
-// path.Dir over the forward-slash-normalized base ([uripath.ToSlash]) — the
-// SAME derivation compile-time module resolution uses for a local baseURI (see
-// resolveModuleHref in compile_imports.go), so a relative reference resolves to
-// the same directory whether the surrounding expression is compiled statically
-// or evaluated dynamically. A Compiler.BaseURI / stylesheet FILE base such as
-// "/styles/main" is treated as a file path: its last segment is dropped
-// ("/styles"), so doc("data.xml") lands at "/styles/data.xml". A genuine
-// directory-form base (a trailing-slash path such as "…/tests/fn/", as an
-// xml:base=".." override resolves to) is still handled correctly: path.Dir
-// collapses the trailing slash and keeps the directory ("…/tests/fn/" ->
-// "…/tests/fn"). Forward-slash semantics keep the result '/'-separated on every
-// OS (on Windows filepath.Dir would emit '\' and corrupt the later slash-based
-// join).
+// Local filesystem bases use the same directory rules as compile-time module
+// resolution, retaining drive and UNC roots. A trailing slash denotes a
+// directory; otherwise the last segment is treated as a filename.
 func documentBaseDir(base string) string {
 	if base == "" {
 		return ""
@@ -808,7 +779,17 @@ func documentBaseDir(base string) string {
 		return base
 	}
 
-	return path.Dir(uripath.ToSlash(base))
+	return uripath.LocalFileDir(base)
+}
+
+// A caller-supplied Windows base uses backslashes as separators. Normalize
+// them before escaping the IRI; otherwise they become literal %5C bytes.
+func escapeResourceBase(base string) string {
+	if !uripath.HasURIScheme(base) {
+		base = uripath.ToSlash(base)
+	}
+
+	return uripath.EscapeResourceReference(base)
 }
 
 // lookupXSLTFunctionArity returns the static arities for XSLT-defined functions that
@@ -951,7 +932,7 @@ func (f *introspectionFunc) FuncReturnTypeForArity(_ int) *xdm.SequenceType { re
 
 func newIntrospectionFunc(name string, call func(context.Context, []xdm.Sequence) (xdm.Sequence, error)) xpath.Function {
 	atomic := func(local string) xdm.SequenceType {
-		return xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: "Q{" + lexicon.NamespaceXSD + "}" + local}}
+		return xdm.SequenceType{ItemTest: xdm.AtomicOrUnionType{Name: lexicon.EQNamePrefix + lexicon.NamespaceXSD + "}" + local}}
 	}
 
 	params := []xdm.SequenceType{atomic(lexicon.TypeString)}

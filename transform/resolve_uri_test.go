@@ -101,6 +101,11 @@ func TestResolveURIBaseValidationAndIRIIdentity(t *testing.T) {
 		{`resolve-uri('g', 'https://example.test/é/%C3%A9/file')`, "", "https://example.test/é/%C3%A9/g", ""},
 		{`resolve-uri('é/%C3%A9', 'https://example.test/path/file')`, "", "https://example.test/path/é/%C3%A9", ""},
 		{`resolve-uri('g', 'HTTPS://example.test/path/file')`, "", "HTTPS://example.test/path/g", ""},
+		{"resolve-uri('item', 'https://example.test//file')", "", "", uriInvalidError},
+		{"resolve-uri('https://example.test/item#', '%GG')", "", "", uriInvalidError},
+		{"resolve-uri('https://.example.test/item', '')", "", "", uriInvalidError},
+		{"resolve-uri('?mark=', 'https://example.test/path/file')", "", "https://example.test/path/file?mark=", ""},
+		{`resolve-uri('%EE%80%80', 'https://example.test/')`, "", "https://example.test/%EE%80%80", ""},
 	} {
 		t.Run(tc.expr+tc.base, func(t *testing.T) {
 			q, err := e.CompileXPath(t.Context(), tc.expr, transform.XPathOptions{BaseURI: tc.base})
@@ -129,5 +134,53 @@ func TestResolveURIBaseValidationAndIRIIdentity(t *testing.T) {
 		if got := text(t, evaluate(t, e, expr, transform.XPath31)); got != nameTrue {
 			t.Fatalf("%s: %s", expr, got)
 		}
+	}
+}
+
+func TestResolveIRIAuthoritySyntax(t *testing.T) {
+	t.Parallel()
+
+	e := engine(t, transform.Config{})
+	for _, tc := range []struct{ name, expr, want string }{
+		{"absolute_reference", `resolve-uri('test://ex%61mple/root/../item', '%GG')`, "test://ex%61mple/root/../item"},
+		{"base_registered_name", `resolve-uri('item', 'test://ex%61mple/root/')`, "test://ex%61mple/root/item"},
+		{"network_reference", `resolve-uri('//reader@ex%61mple:80/root', 'test://base/x')`, "test://reader@ex%61mple:80/root"},
+		{"ipvfuture_literal", `resolve-uri('item', 'test://[v1.a:b]:80/root/')`, "test://[v1.a:b]:80/root/item"},
+		{"ipv6_literal", `resolve-uri('item', 'test://[2001:db8::1]:80/root/')`, "test://[2001:db8::1]:80/root/item"},
+		{"internationalized_userinfo", `resolve-uri('item', 'test://réader@example/root/')`, "test://réader@example/root/item"},
+		{"internationalized_userinfo_ipv6", `resolve-uri('//réader@[2001:db8::1]:80/root', 'test://base/x')`, "test://réader@[2001:db8::1]:80/root"},
+		{"internationalized_userinfo_ipvfuture", `resolve-uri('item', 'test://réader@[v1.a:b]:80/root/')`, "test://réader@[v1.a:b]:80/root/item"},
+		{"internationalized_userinfo_registered_name", `resolve-uri('item', 'test://réader@ex%61mple/root/')`, "test://réader@ex%61mple/root/item"},
+		{"invalid_userinfo_noncharacter", "resolve-uri('item', 'test://réader\uFFFE@example/root/')", ""},
+		{"invalid_escape", `resolve-uri('item', 'test://ex%6Xmple/root/')`, ""},
+		{"invalid_registered_name", `resolve-uri('item', 'test://ex%61mple]/root/')`, ""},
+		{"invalid_ipvfuture_version", `resolve-uri('item', 'test://[vg.a:b]/root/')`, ""},
+		{"invalid_ipvfuture_address", `resolve-uri('item', 'test://[v1.]/root/')`, ""},
+		{"invalid_port", `resolve-uri('item', 'test://ex%61mple:no/root/')`, ""},
+		{"multiple_ports", `resolve-uri('item', 'test://[v1.a:b]:12:80/root/')`, ""},
+		{"multiple_ports_with_internationalized_userinfo", `resolve-uri('item', 'test://réader@example:12:80/root/')`, ""},
+		{"unescaped_at_in_userinfo", `resolve-uri('item', 'test://one@two@ex%61mple/root/')`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q, err := e.CompileXPath(t.Context(), tc.expr, transform.XPathOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := q.Evaluate(t.Context(), nil, transform.XPathContext{})
+			if tc.want == "" {
+				var detail *transform.Error
+				if !errors.As(err, &detail) || detail.Code != uriInvalidError {
+					t.Fatalf("got %v, %v; want %s", result, err, uriInvalidError)
+				}
+
+				return
+			}
+
+			if err != nil || text(t, result) != tc.want {
+				t.Fatalf("got %v, %v; want %q", result, err, tc.want)
+			}
+		})
 	}
 }

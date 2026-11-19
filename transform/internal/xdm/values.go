@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xdm/lexical"
 )
 
 // XSD atomic type names retain their conventional qualified spelling. The
@@ -46,6 +47,12 @@ const (
 	durationMapKeySeparator = "|"
 	positiveInfinityMapKey  = "+Inf"
 	negativeInfinityMapKey  = "-Inf"
+)
+
+// XPath time equality compares clocks on the same reference date.
+const (
+	timeKeyReferenceYear = 1972
+	timeKeyReferenceDay  = 31
 )
 
 // Collection cardinalities describe separate contracts: arrays are one-based,
@@ -854,9 +861,9 @@ type MapKey struct {
 // NormalizeMapKey converts an atomic value to the internal comparable map-key form,
 // including numeric and string-family equivalence.
 func NormalizeMapKey(key AtomicValue) MapKey {
-	// Per XPath 3.1 spec, map keys use value-based equality (eq operator semantics).
-	// Numerics that compare equal are the same key: xs:integer(1), xs:double(1.0e0),
-	// xs:float(1.0), and xs:decimal(1.0) all refer to the same map entry.
+	// F&O 3.1 op:same-key uses exact value equality for finite numeric keys.
+	// Numerics with the same underlying value, such as xs:integer(1),
+	// xs:double(1.0e0), xs:float(1.0) and xs:decimal(1.0), share one entry.
 	// xs:string and xs:untypedAtomic are compared as strings.
 	// xs:anyURI promotes to xs:string for comparison.
 	tn := key.TypeName
@@ -884,9 +891,18 @@ func NormalizeMapKey(key AtomicValue) MapKey {
 
 	switch v := key.Value.(type) {
 	case time.Time:
-		// Per XPath 3.1, dateTimes with and without timezone are not equal
-		// (they are incomparable), so they must be different map keys.
-		if HasTimezone(v) {
+		// F&O 3.1 op:same-key keeps zoned and unzoned calendar keys distinct.
+		hasTimezone := HasTimezone(v)
+		if tn == TypeTime {
+			// The date is incidental to the Go representation of an xs:time.
+			// Preserve the offset at the original date when moving the clock
+			// to the reference date used by op:time-equal.
+			hour, minute, second := v.Clock()
+			_, offset := v.Zone()
+			v = time.Date(timeKeyReferenceYear, time.December, timeKeyReferenceDay, hour, minute, second, v.Nanosecond(), time.FixedZone("", offset))
+		}
+
+		if hasTimezone {
 			return MapKey{typeName: tn, value: v.UTC().Format(time.RFC3339Nano)}
 		}
 
@@ -896,6 +912,18 @@ func NormalizeMapKey(key AtomicValue) MapKey {
 	case QNameValue:
 		// QName equality is based on URI and local name, not prefix
 		return MapKey{typeName: tn, value: v.URI + qnameMapKeySeparator + v.Local}
+	case string:
+		switch tn {
+		case TypeGDay, TypeGMonth, TypeGMonthDay, TypeGYear, TypeGYearMonth:
+			// Gregorian partial dates retain their lexical spelling in the
+			// atomic value. Compare map keys by the normalized instant and
+			// keep absent timezones distinct from explicit ones.
+			if canonical, ok := lexical.CanonicalKey(v, strings.TrimPrefix(tn, xsdTypePrefix)); ok {
+				v = canonical
+			}
+		}
+
+		return MapKey{typeName: tn, value: v}
 	case Duration:
 		// Duration holds a *big.Rat (FracSec) whose pointer breaks Go map
 		// equality, and Seconds (a float64) can carry an exact fractional part
@@ -1267,7 +1295,7 @@ func CloneSequences(seqs []Sequence) []Sequence {
 
 // QAnnotation returns the Q{ns}local annotation format for a namespace URI and local name.
 func QAnnotation(ns, local string) string {
-	return "Q{" + ns + "}" + local
+	return lexicon.EQNamePrefix + ns + "}" + local
 }
 
 // IsSubtypeOf reports ancestry in the fixed XSD type hierarchy.
@@ -1357,7 +1385,7 @@ func IsKnownXSDType(name string) bool {
 // SchemaAnnotationParts splits a custom annotation into local name and namespace.
 // Built-in xs: and xsd: names return ok=false; URI-qualified names retain their URI.
 func SchemaAnnotationParts(name string) (local, ns string, ok bool) {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		end := strings.IndexByte(name, '}')
 		if end <= 1 || end == len(name)-1 {
 			return "", "", false

@@ -3,6 +3,7 @@ package session_test
 import (
 	"bytes"
 	"crypto"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,17 @@ import (
 	"github.com/skarm/xmlsec/saml/protocol"
 	"github.com/skarm/xmlsec/saml/session"
 )
+
+func TestSOAPBackChannelRejectsTypedNilMetadata(t *testing.T) {
+	t.Parallel()
+
+	var snapshot *metadata.Snapshot
+	back := session.BackChannel{EntityID: idpID, Role: metadata.IdentityProvider, Metadata: snapshot}
+	status, err := back.Logout(t.Context(), session.Participant{Peer: spID}, testcert.Now())
+	if status.Code != "" || !errors.Is(err, session.ErrState) {
+		t.Errorf("BackChannel.Logout without metadata = %+v, %v, want ErrState", status, err)
+	}
+}
 
 func TestSOAPBackChannelManagementAndLogout(t *testing.T) {
 	at := testcert.Now()
@@ -86,27 +98,40 @@ func TestSOAPBackChannelManagementAndLogout(t *testing.T) {
 		{ID: "_sp", EntityID: spID, ValidUntil: at.Add(time.Hour), SP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: spKey.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{metadata.AssertionConsumerService: {{Binding: metadata.HTTPPost, Location: "https://sp.test/acs", Indexed: true}}, metadata.ManageNameIDService: {{Binding: metadata.SOAP, Location: spService.Endpoint, ResponseLocation: spService.ResponseEndpoint}}, metadata.SingleLogoutService: {{Binding: metadata.SOAP, Location: server.URL + "/sp-slo", ResponseLocation: "https://sp.test/slo-result"}}}}},
 		{ID: "_idp", EntityID: idpID, ValidUntil: at.Add(time.Hour), IDP: &metadata.RoleDescriptor{Keys: []metadata.KeyDescriptor{{Use: "signing", CertificateDER: idpKey.CertificateDER}}, Endpoints: map[string][]metadata.Endpoint{metadata.SingleSignOnService: {{Binding: metadata.HTTPPost, Location: "https://idp.test/sso"}}, metadata.ManageNameIDService: {{Binding: metadata.SOAP, Location: idpService.Endpoint}}, metadata.SingleLogoutService: {{Binding: metadata.SOAP, Location: server.URL + "/idp-slo", ResponseLocation: "https://idp.test/slo-result"}}}}},
 	}
-	var raw bytes.Buffer
-	raw.WriteString(`<md:EntitiesDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata">`)
-	for _, spec := range specs {
-		d, err := metadata.Build(t.Context(), spec, at, metadata.Options{AllowHTTP: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _ := d.XML(t.Context())
-		raw.Write(b)
-	}
-	raw.WriteString(`</md:EntitiesDescriptor>`)
-	partners, err := metadata.ParseTrusted(t.Context(), raw.Bytes(), at, metadata.Options{AllowHTTP: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	partners := soapMetadata(t, specs, at)
 	channel := session.BackChannel{EntityID: spID, Role: metadata.ServiceProvider, Metadata: partners, Signing: spKey, SOAP: binding.SOAPClient{AllowHTTP: true}}
 	old, _ := spStore.Lookup(t.Context(), "local-account", idpID, at)
 	request, err := spService.BeginManage(t.Context(), idpID, protocol.ManageNameIDRequest{ID: "_soap_alias", Issuer: spID, Destination: idpService.Endpoint, IssueInstant: at, NameID: old.NameID, NewID: "soap-alias"}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("preflight", func(t *testing.T) {
+		withoutKeys := *specs[1].IDP
+		withoutKeys.Keys = nil
+		peer := specs[1]
+		peer.IDP = &withoutKeys
+		for _, tc := range []struct {
+			name     string
+			metadata *metadata.Snapshot
+			limits   protocol.Limits
+			want     error
+		}{
+			{"invalid limits", partners, protocol.Limits{MaxMessageAge: -time.Second}, protocol.ErrProfile},
+			{"no peer signing keys", soapMetadata(t, []metadata.EntityDescriptor{specs[0], peer}, at), protocol.Limits{}, protocol.ErrSignature},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				invalid := channel
+				invalid.Metadata = tc.metadata
+				invalid.Options.Limits = tc.limits
+				invalid.Signing.Key = failingSigner{spKey.Key}
+				if got, err := invalid.Exchange(t.Context(), idpID, request, at); got != nil || !errors.Is(err, tc.want) {
+					t.Errorf("Exchange = %v, %v; want nil, %v", got, err, tc.want)
+				}
+			})
+		}
+	})
+
 	response, err := channel.Exchange(t.Context(), idpID, request, at)
 	if err != nil {
 		t.Fatal(err)
@@ -123,6 +148,30 @@ func TestSOAPBackChannelManagementAndLogout(t *testing.T) {
 	if err != nil || status.Code != protocol.Success || spStore.Active(t.Context(), "sp-session", at) {
 		t.Fatalf("SOAP SLO: %v", err)
 	}
+}
+
+func soapMetadata(t *testing.T, specs []metadata.EntityDescriptor, at time.Time) *metadata.Snapshot {
+	t.Helper()
+	var raw bytes.Buffer
+	raw.WriteString(`<md:EntitiesDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata">`)
+	options := metadata.Options{AllowHTTP: true}
+	for _, spec := range specs {
+		d, err := metadata.Build(t.Context(), spec, at, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := d.XML(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.Write(b)
+	}
+	raw.WriteString(`</md:EntitiesDescriptor>`)
+	partners, err := metadata.ParseTrusted(t.Context(), raw.Bytes(), at, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return partners
 }
 
 func serverURL(r *http.Request) string { return "http://" + r.Host }

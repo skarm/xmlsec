@@ -103,6 +103,13 @@ func privateKeyInfoFields(v asn1.RawValue) ([]asn1.RawValue, error) {
 	if err != nil || !der.Is(algo[0], asn1.ClassUniversal, asn1.TagOID, false) {
 		return nil, ErrFormat
 	}
+	// RFC 8017 Appendix A.1 specifies NULL for rsaEncryption. Preserve
+	// import compatibility with absent parameters, but reject other values.
+	if len(algo) == algorithmIdentifierMaximumFields &&
+		!der.Is(algo[1], asn1.ClassUniversal, asn1.TagNull, false) &&
+		der.OIDEqual(algo[0], asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 1}) {
+		return nil, ErrFormat
+	}
 
 	if len(f) == privateKeyInfoMaximumFields {
 		if err := validatePrivateAttributes(f[3]); err != nil {

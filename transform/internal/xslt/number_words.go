@@ -265,13 +265,13 @@ func germanCardinal(n int64) string {
 
 		w := ""
 		if q == 1 {
-			w = "eine Million "
+			w = "eine Million"
 		} else {
-			w = germanCardinal(q) + " Millionen "
+			w = germanCardinal(q) + " Millionen"
 		}
 
 		if n%1000000 != 0 {
-			w += germanCardinal(n % 1000000)
+			w += " " + germanCardinal(n%1000000)
 		}
 
 		return w

@@ -41,6 +41,18 @@ const (
 	safeBagMaximumFields       = 3 // Two required fields and optional bag attributes.
 )
 
+const (
+	// AuthenticatedSafe has two ContentInfo values. Its encrypted certificate
+	// ContentInfo holds the deepest structure and more values than the fixed
+	// PFX and key SafeContents, for either MAC format.
+	pkcs12AuthenticatedSafeDepth = 11
+	pkcs12AuthenticatedSafeNodes = 28
+	// Certificate SafeContents has its SEQUENCE and the leaf's localKeyId
+	// attribute, plus each SafeBag and its wrapped CertBag.
+	pkcs12CertificateSafeFixedNodes = 6
+	pkcs12NodesPerCertificateBag    = 7
+)
+
 // PKCS12Identity contains caller-owned mutable objects from a password-authenticated
 // container. Certificate and PrivateKey match by SubjectPublicKeyInfo.
 // ExtraCertificates is unordered untrusted evidence. The container MAC establishes
@@ -402,7 +414,7 @@ func (p *identityParser) safeContents(raw []byte) error {
 
 	bags, err := der.Sequence(v, 0, p.state.limits.MaxBags)
 	if err != nil {
-		return ErrLimit
+		return derError(err)
 	}
 
 	if len(bags) > p.state.limits.MaxBags-p.bags {
@@ -701,7 +713,7 @@ func preparePKCS12(ctx context.Context, identity PKCS12Identity, password []byte
 		return nil, ErrPolicy
 	}
 
-	if len(identity.ExtraCertificates) >= state.limits.MaxCertificates || len(identity.ExtraCertificates) > state.limits.MaxBags-2 || state.limits.MaxContentInfos < 2 {
+	if !pkcs12ExportFits(1+len(identity.ExtraCertificates), state.limits) {
 		return nil, ErrLimit
 	}
 
@@ -799,6 +811,12 @@ func preparePKCS12(ctx context.Context, identity PKCS12Identity, password []byte
 	}
 
 	return out, nil
+}
+
+func pkcs12ExportFits(certificates int, limits Limits) bool {
+	return certificates <= limits.MaxCertificates && certificates < limits.MaxBags && limits.MaxContentInfos >= 2 &&
+		limits.MaxASN1Depth >= pkcs12AuthenticatedSafeDepth && limits.MaxASN1Nodes >= pkcs12AuthenticatedSafeNodes &&
+		certificates <= (limits.MaxASN1Nodes-pkcs12CertificateSafeFixedNodes)/pkcs12NodesPerCertificateBag
 }
 
 // derParts holds a small list of DER headers and borrowed payload segments.

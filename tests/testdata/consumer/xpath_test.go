@@ -8,6 +8,7 @@ import (
 	"io"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -269,8 +270,11 @@ func TestXPathPeakWorkingHeap(t *testing.T) {
 					return err
 				}
 				actual, err := result.Text()
-				if err != nil || actual != tc.want {
-					return fmt.Errorf("result: %q, %v", actual, err)
+				if err != nil {
+					return err
+				}
+				if actual != tc.want {
+					return fmt.Errorf("result %q, want %q", actual, tc.want)
 				}
 				return nil
 			})
@@ -555,7 +559,7 @@ func TestXPathXMLParsingUsesReaderStorage(t *testing.T) {
 	engine := newEngine(t, transform.Config{Limits: transform.Limits{Timeout: 15 * time.Second}})
 	text := strings.Repeat("x", 1<<20)
 	for _, fragment := range []bool{false, true} {
-		t.Run(fmt.Sprint(fragment), func(t *testing.T) {
+		t.Run(strconv.FormatBool(fragment), func(t *testing.T) {
 			source := "<r>" + text + "</r>"
 			expression := `parse-xml($xml)`
 			if fragment {
@@ -576,8 +580,12 @@ func TestXPathXMLParsingUsesReaderStorage(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if value, err := result.Text(); err != nil || value != text {
-					return fmt.Errorf("XML value changed: %v", err)
+				value, err := result.Text()
+				if err != nil {
+					return err
+				}
+				if value != text {
+					return errors.New("XML text differs from input")
 				}
 				return nil
 			})

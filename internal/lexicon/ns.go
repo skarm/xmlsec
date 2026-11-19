@@ -43,8 +43,6 @@ const (
 	NamespaceMathML = "http://www.w3.org/1998/Math/MathML"
 	// NamespaceXInclude is the XInclude 1.0 (Second Edition) namespace.
 	NamespaceXInclude = "http://www.w3.org/2001/XInclude"
-	// NamespaceXInclude11 is the XInclude 1.1 namespace.
-	NamespaceXInclude11 = "http://www.w3.org/2003/XInclude"
 	// NamespaceRelaxNG is the RELAX NG structure namespace.
 	NamespaceRelaxNG = "http://relaxng.org/ns/structure/1.0"
 	// NamespaceSerialization is the XSLT/XQuery serialization parameters namespace.

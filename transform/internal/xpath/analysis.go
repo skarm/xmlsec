@@ -5,6 +5,8 @@ import (
 	"context"
 	"slices"
 	"strings"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
 // Static analysis charges one logical operation for each visited AST node.
@@ -151,7 +153,7 @@ func (a *expressionAnalyzer) function(prefix, name string, arity int) {
 		}
 	}
 
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if end := strings.IndexByte(name, '}'); end >= 0 {
 			uri, name = name[2:end], name[end+1:]
 		}

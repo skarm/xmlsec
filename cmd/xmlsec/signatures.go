@@ -116,14 +116,14 @@ func runSignatureBuild(ctx context.Context, args []string, stdin io.Reader, stdo
 	fs := flag.NewFlagSet("signature build", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	config := fs.String("config", "", "trusted JSON template specification (paths relative to its directory)")
-	input := fs.String("in", "", "existing XML document; empty creates a standalone Signature")
-	out := fs.String("out", "-", "output template XML")
-	parentID := fs.String("parent-id", "", "explicit parent ID; empty selects root")
-	idAttr := fs.String("id-attr", cliDefaultIDAttribute, "application ID attribute local name")
-	idNS := fs.String("id-ns", "", "application ID namespace")
+	config := fs.String(flagNameConfig, "", "trusted JSON template specification (paths relative to its directory)")
+	input := fs.String(flagNameIn, "", "existing XML document; empty creates a standalone Signature")
+	out := fs.String(flagNameOut, stdioPath, "output template XML")
+	parentID := fs.String(flagNameParentID, "", "explicit parent ID; empty selects root")
+	idAttr := fs.String(flagNameIDAttr, cliDefaultIDAttribute, "application ID attribute local name")
+	idNS := fs.String(flagNameIDNS, "", "application ID namespace")
 
-	fs = commandFlags(fs, "config in out parent-id id-attr id-ns", false)
+	fs = commandFlags(fs, false, flagNameConfig, flagNameIn, flagNameOut, flagNameParentID, flagNameIDAttr, flagNameIDNS)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -228,10 +228,10 @@ func runInspect(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs := flag.NewFlagSet("signature inspect", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "input XML")
-	out := fs.String("out", "-", "diagnostic JSON")
+	input := fs.String(flagNameIn, stdioPath, "input XML")
+	out := fs.String(flagNameOut, stdioPath, "diagnostic JSON")
 
-	fs = commandFlags(fs, ioFlagNames, false)
+	fs = commandFlags(fs, false, flagNameIn, flagNameOut)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -269,6 +269,10 @@ func runInspect(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			}
 
 			for _, n := range si.Children() {
+				if n.Name().Space != xmldsig.Namespace {
+					continue
+				}
+
 				switch n.Name().Local {
 				case lexicon.DSigElementSignatureMethod:
 					v.Method, _ = n.Attribute(document.Name{Local: lexicon.SecurityAttrAlgorithm})
@@ -338,7 +342,7 @@ func requiredFlag(name, value string) error {
 // Check before and after payload publication: creating the first file exposes
 // aliases of missing paths on filesystems that ignore filename case.
 func separateOutput(path, report, flagName string) error {
-	if path == "-" || report != "-" && samePath(path, report) {
+	if path == stdioPath || report != stdioPath && samePath(path, report) {
 		return usageError("-%s requires a local file distinct from report output", flagName)
 	}
 

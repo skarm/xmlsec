@@ -5,11 +5,16 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
+	"encoding/asn1"
 	"encoding/base64"
 	"errors"
+	"io"
+	"math/big"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
@@ -17,8 +22,125 @@ import (
 	"github.com/skarm/xmlsec/internal/historicalproof"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
+	"github.com/skarm/xmlsec/timestamp"
 	"github.com/skarm/xmlsec/xmldsig"
 )
+
+func TestHistoricalArchivesShareCertificateReference(t *testing.T) {
+	t.Parallel()
+
+	ctx, now := t.Context(), testcert.Now()
+	chain := testcert.New(t)
+	payload, err := document.Parse(ctx, []byte(`<r ID="document"><value>`+strings.Repeat("a", 8<<10)+`</value></r>`), document.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, signed, err := SignBasicEnveloped(ctx, payload, chain.LeafKey, chain.Leaf.Raw, SignOptions{SignatureMethod: xmldsig.ECDSASHA256, ClaimedSigningTime: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := asn1.ObjectIdentifier{1, 2, 3, 4}
+	pkiConfig := pki.Config{Roots: [][]byte{chain.Root.Raw}, Revocation: pki.RequireCRL}
+	proof := pki.Evidence{CRLs: [][]byte{testcert.CRL(t, chain)}}
+	tsa, err := timestamp.NewVerifier(timestamp.Config{PKI: pkiConfig, AllowedPolicies: []asn1.ObjectIdentifier{policy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := func(serial int64, at time.Time) timestamp.TransportFunc {
+		return func(ctx context.Context, request []byte) (io.ReadCloser, error) {
+			response, err := timestamp.IssueResponse(ctx, request, chain.TSAKey, chain.TSA.Raw, timestamp.IssueOptions{Policy: policy, SerialNumber: big.NewInt(serial), GenTime: at})
+			return io.NopCloser(bytes.NewReader(response)), err
+		}
+	}
+	doc, _, err = AddSignatureTimestamp(ctx, doc, signed.Signature().Signature(), chain.Leaf.Raw, transport(1, now), AddTimestampOptions{Validation: TimedOptions{TSA: tsa, At: now, Evidence: proof}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewValidator(ValidatorConfig{SignerPKI: pkiConfig, TSA: tsa, MinimumLevel: LevelLT})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _, err = verifier.EmbedValidationMaterial(ctx, doc, xmldsig.Signatures(doc)[0], chain.Leaf.Raw, now, ValidationEvidence{Signer: proof, TSA: proof})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for renewal := range 2 {
+		at := now.Add(time.Duration(renewal+1) * time.Second)
+		doc, _, err = verifier.AddArchiveTimestamp(ctx, doc, xmldsig.Signatures(doc)[0], chain.Leaf.Raw, at, transport(int64(renewal+2), at), AddArchiveOptions{Canonicalization: c14n.Exclusive})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	options := BaselineVerifyOptions{Signature: xmldsig.SignatureOptions{IDAttribute: document.Name{Local: "ID"}}}
+	baseline, err := VerifyBaseline(ctx, doc, xmldsig.Signatures(doc)[0], chain.Leaf.Raw, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _, err := historicalInput(ctx, baseline, options, historical.Config{MaxBytes: 1 << 20, MaxObjects: 64, MaxTimestamps: 3}, ValidationEvidence{})
+	if err != nil || len(model.Timestamps) != 3 || !model.Timestamps[1].Archive || !model.Timestamps[2].Archive {
+		t.Fatalf("historicalInput: timestamps=%d, err=%v; want one signature timestamp and two archives", len(model.Timestamps), err)
+	}
+	digest := sha256.Sum256(chain.Leaf.Raw)
+	count := 0
+	for _, object := range model.Objects {
+		for _, ref := range object.Refs {
+			if ref.Hash != crypto.SHA256 || ref.Target != digest || !bytes.Equal(ref.Digest, digest[:]) {
+				t.Fatalf("incorrect certificate reference: %+v", ref)
+			}
+			count++
+		}
+		if len(object.Refs) != 0 {
+			key := sha256.Sum256(object.Bytes)
+			if !slices.Contains(model.Timestamps[1].Covered, key) || !slices.Contains(model.Timestamps[2].Covered, key) {
+				t.Fatal("both archives should cover the same signed properties")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("repeated archive changed distinct certificate reference count: got %d, want 1", count)
+	}
+	t.Run("aggregate bytes", func(t *testing.T) {
+		t.Parallel()
+
+		var total int
+		for _, object := range model.Objects {
+			total += len(object.Bytes)
+		}
+		for _, test := range []struct {
+			name string
+			max  int
+			want error
+		}{
+			{"exact", total, nil},
+			{"one byte short", total - 1, historical.ErrLimit},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+
+				got, _, err := historicalInput(t.Context(), baseline, options, historical.Config{MaxBytes: test.max, MaxObjects: 64, MaxTimestamps: 3}, ValidationEvidence{})
+				if !errors.Is(err, test.want) {
+					t.Fatalf("historicalInput with limit %d, graph bytes %d: %v, want %v", test.max, total, err, test.want)
+				}
+				if test.want != nil {
+					return
+				}
+				if !reflect.DeepEqual(got.Objects, model.Objects) {
+					t.Fatalf("exact byte limit changed objects: got %d, want %d", len(got.Objects), len(model.Objects))
+				}
+				if len(got.Timestamps) != len(model.Timestamps) {
+					t.Fatalf("exact byte limit retained %d timestamps, want %d", len(got.Timestamps), len(model.Timestamps))
+				}
+				for i, stamp := range got.Timestamps {
+					want := model.Timestamps[i]
+					if stamp.Archive != want.Archive || stamp.Imprint.Hash != want.Imprint.Hash || !bytes.Equal(stamp.Imprint.Digest, want.Imprint.Digest) || !slices.Equal(stamp.Covered, want.Covered) {
+						t.Errorf("exact byte limit changed timestamp %d imprint or coverage", i)
+					}
+				}
+			})
+		}
+	})
+}
 
 func TestHistoricalObjectsMergeExactEvidence(t *testing.T) {
 	t.Parallel()

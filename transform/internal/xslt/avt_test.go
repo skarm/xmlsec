@@ -23,6 +23,8 @@ func TestAVTExpressionClosingBrace(t *testing.T) {
 		{"doubled quote escapes", `'it''s }{'`},
 		{"nested maps and arrays", `map{'braces':'}{', 'items':array{1,map{'x':2}}}`},
 		{"EQName namespace braces", `Q{urn:example}value`},
+		{"quoted character in EQName namespace", `Q{urn:key'o}value`},
+		{"comment marker in EQName namespace", `Q{urn:key(:open)}value`},
 		{"nested comments containing quotes and braces", `(: ' } (: " { :) } :) 7`},
 		{"Unicode before the boundary", `'é}中'`},
 	} {
@@ -41,6 +43,24 @@ func TestAVTExpressionClosingBrace(t *testing.T) {
 				t.Fatalf("unterminated expression %q ended at %d", input, got)
 			}
 		})
+	}
+}
+
+func TestAVTPreservesXPathLexicalBoundaries(t *testing.T) {
+	t.Parallel()
+	const declarations = `<xsl:variable name="Q{urn:key'o}value" select="'yes'"/>`
+	ss := compileTestStylesheet(t, declarations, `<xsl:variable name="out" as="element()">
+		<out attr="{$Q{urn:key'o}value}"/>
+	</xsl:variable><xsl:value-of select="$out/@attr"/>`)
+	got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+	requireSerialization(t, got, err, "yes", "")
+
+	for _, attr := range []string{`{&#xA0;}`, `{&#xA0;(: comment :)}`} {
+		_, err := NewCompiler().Compile(t.Context(), stylesheetDocument(t, "", `<out attr="`+attr+`"/>`))
+		var failure *XSLTError
+		if !errors.As(err, &failure) || failure.Code != "XPST0003" {
+			t.Errorf("attribute %s: %v; want XPST0003", attr, err)
+		}
 	}
 }
 

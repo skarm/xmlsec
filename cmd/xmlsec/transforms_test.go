@@ -199,3 +199,22 @@ func TestXSLTCLIRunsNamedTemplateWithStaticBindings(t *testing.T) {
 		t.Errorf("XSLT JSON = %s (%v), want primary result %q", got, err, "done")
 	}
 }
+
+func TestXSLTCLIDoesNotSubstituteDefaultForMalformedName(t *testing.T) {
+	t.Parallel()
+
+	sheet := testutil.WriteFile(t, t.TempDir(), "sheet.xsl", []byte(`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">
+		<xsl:output method="text"/><xsl:template match="/">default</xsl:template>
+	</xsl:stylesheet>`))
+	for _, flag := range []string{"-template", "-mode"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+
+			var out bytes.Buffer
+			args := []string{"transform", "xslt", "-stylesheet", sheet, flag, "{urn:example}"}
+			if err := run(t.Context(), args, strings.NewReader("<r/>"), &out, io.Discard); exitCode(err) != cliExitUsage || out.Len() != 0 {
+				t.Errorf("run with malformed %s published %q and returned %v", flag, &out, err)
+			}
+		})
+	}
+}

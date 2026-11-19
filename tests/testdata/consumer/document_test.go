@@ -143,7 +143,7 @@ func TestRecordsReleaseDiscardedInput(t *testing.T) {
 
 func TestSmallCharacterReferenceResultsReleaseInput(t *testing.T) {
 	retained := retainedHeapDuring(t, func() any {
-		var results []*document.Document
+		results := make([]*document.Document, 0, 8)
 		for range 8 {
 			source := "<r>&#" + strings.Repeat("0", 1<<20) + "65;</r>"
 			result, err := document.ParseReader(t.Context(), strings.NewReader(source), document.DefaultLimits())
@@ -247,7 +247,8 @@ func TestRecordContextAndChunkBoundaries(t *testing.T) {
 	}
 	// UTF-16 is decoded incrementally, even when code units span reads.
 	units := utf16.Encode([]rune(`<?xml version="1.0" encoding="UTF-16"?><f><r>🙂</r></f>`))
-	data := []byte{0xff, 0xfe}
+	data := make([]byte, 2, 2+2*len(units))
+	data[0], data[1] = 0xff, 0xfe
 	for _, unit := range units {
 		data = append(data, byte(unit), byte(unit>>8))
 	}

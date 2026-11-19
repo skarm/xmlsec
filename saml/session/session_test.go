@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -297,5 +298,52 @@ func TestPersistentImplicitQualifiersAndStoreOwner(t *testing.T) {
 	service := session.Service{EntityID: spID, Role: metadata.ServiceProvider, Endpoint: slo, Store: store, Signing: key}
 	if _, _, err := service.Logout(t.Context(), request, "https://idp.test/return", at); err != nil || store.Active(t.Context(), "session", at) {
 		t.Fatalf("implicit qualifiers: %v", err)
+	}
+}
+
+func TestManagePersistentIdentifierWithImplicitQualifiers(t *testing.T) {
+	t.Parallel()
+	at := testcert.Now()
+	chain := testcert.New(t)
+	key := protocol.SigningKey{Key: chain.LeafKey}
+	store, err := session.NewMemoryStore(session.Config{EntityID: idpID, Role: metadata.IdentityProvider})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const account = "local-account"
+	current := name(spID)
+	if err := store.Register(t.Context(), session.Relationship{Principal: account, Peer: spID, NameID: current, ExpiresAt: at.Add(time.Hour)}, at); err != nil {
+		t.Fatal(err)
+	}
+
+	wire := current
+	wire.NameQualifier, wire.SPNameQualifier = "", ""
+	const alias = "replacement-alias"
+	update := managementRequest(t, key, "_implicit_update", wire, alias, false)
+	status, err := store.Manage(t.Context(), update, false, at, at.Add(time.Minute))
+	if err != nil || status.Code != protocol.Success {
+		t.Fatalf("manage implicit qualifiers = %+v, %v", status, err)
+	}
+
+	current.SPProvidedID = alias
+	if relation, ok := store.Lookup(t.Context(), account, spID, at); !ok || relation.NameID != current {
+		t.Fatalf("updated identifier = %+v, want %+v", relation.NameID, current)
+	}
+
+	wire.SPProvidedID = alias
+	terminate := managementRequest(t, key, "_implicit_terminate", wire, "", true)
+	status, err = store.Manage(t.Context(), terminate, false, at, at.Add(time.Minute))
+	if err != nil || status.Code != protocol.Success {
+		t.Fatalf("terminate implicit qualifiers = %+v, %v", status, err)
+	}
+	if _, err := store.Manage(t.Context(), terminate, false, at, at.Add(time.Minute)); !errors.Is(err, session.ErrReplay) {
+		t.Fatalf("terminated request replay = %v; want ErrReplay", err)
+	}
+
+	retry := managementRequest(t, key, "_implicit_terminate_again", wire, "", true)
+	status, err = store.Manage(t.Context(), retry, false, at, at.Add(time.Minute))
+	if err != nil || status.Code != protocol.Requester || !slices.Equal(status.Subcodes, []string{protocol.UnknownPrincipal}) {
+		t.Fatalf("manage retired identifier = %+v, %v; want UnknownPrincipal", status, err)
 	}
 }

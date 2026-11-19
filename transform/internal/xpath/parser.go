@@ -66,12 +66,6 @@ type parseOptions struct {
 
 // parseExpression parses → ExprSingle (',' ExprSingle)* (sequence constructor).
 func (p *parseOptions) parseExpression() (Expr, error) {
-	p.depth++
-	if p.depth > maxParseDepth {
-		return nil, ErrExprTooDeep
-	}
-	defer func() { p.depth-- }()
-
 	first, err := p.parseExprSingle()
 	if err != nil {
 		return nil, err
@@ -100,6 +94,15 @@ func (p *parseOptions) parseExpression() (Expr, error) {
 
 // parseExprSingle parses → ForExpr | LetExpr | QuantifiedExpr | IfExpr | TryCatchExpr | OrExpr.
 func (p *parseOptions) parseExprSingle() (Expr, error) {
+	// Argument lists and conditional branches recurse directly into
+	// ExprSingle. Count them along with parenthesized expressions.
+	if p.depth >= maxParseDepth {
+		return nil, ErrExprTooDeep
+	}
+
+	p.depth++
+	defer func() { p.depth-- }()
+
 	tok := p.lexer.Peek()
 	switch tok.Type {
 	case TokenFor, TokenLet:
@@ -312,6 +315,10 @@ func (p *parseOptions) parseUnionExpr() (Expr, error) {
 		tok := p.peekOperator()
 		if tok.Type != TokenPipe && tok.Type != TokenUnion {
 			break
+		}
+
+		if p.version == xpathVersion10 && tok.Type == TokenUnion {
+			return nil, profileError(lexicon.ErrXPST0003, "union keyword", xpathVersion10)
 		}
 
 		p.lexer.Next()
@@ -547,7 +554,7 @@ func (p *parseOptions) parseArrowTarget() (Expr, string, string, error) {
 // ValueExpr ::= SimpleMapExpr.
 func (p *parseOptions) parseUnaryExpr() (Expr, error) {
 	negate := 0
-	hasUnary := false
+	hasPlus := false
 
 loop:
 	for {
@@ -557,12 +564,10 @@ loop:
 			p.lexer.Next()
 
 			negate++
-			hasUnary = true
 		case TokenPlus:
 			p.lexer.Next()
 
-			hasUnary = true
-			// unary + is a no-op for negate count but still marks as having unary
+			hasPlus = true
 		default:
 			break loop
 		}
@@ -573,8 +578,9 @@ loop:
 		return nil, err
 	}
 
-	if hasUnary && negate == 0 {
-		// Pure unary plus: wrap to enforce numeric type check
+	if hasPlus {
+		// Retain unary plus for numeric checking and language-profile validation,
+		// including when it is combined with unary minus.
 		expr = UnaryExpr{Operand: expr, Negate: false}
 	}
 
@@ -863,7 +869,7 @@ func (p *parseOptions) parsePrimaryExpr() (Expr, error) {
 
 	case TokenIf:
 		if p.lexer.PeekAt(1).Type == TokenLParen {
-			return p.parseIfExpr()
+			return nil, fmt.Errorf("%w: conditional expression requires parentheses in this position", ErrUnexpectedToken)
 		}
 
 		return p.parseNamePrimary()
@@ -1010,8 +1016,8 @@ func (p *parseOptions) parseArgumentList() ([]Expr, error) {
 			if p.lexer.Peek().Type == TokenQMark {
 				// Disambiguate: ? followed by a key specifier (NCName, integer, *, '(')
 				// is a unary lookup expression, not a placeholder.
-				next := p.lexer.PeekAt(1).Type
-				if next == TokenName || next == TokenNumber || next == TokenStar || next == TokenLParen {
+				next := p.lexer.PeekAt(1)
+				if tokenAsNCName(next) != "" || next.Type == TokenNumber || next.Type == TokenStar || next.Type == TokenLParen {
 					arg, err := p.parseExprSingle()
 					if err != nil {
 						return nil, err
@@ -1275,7 +1281,7 @@ func (p *parseOptions) parseNodeTest(_ AxisType) (xdm.NodeTest, error) {
 		p.lexer.Backup()
 	}
 
-	if strings.HasPrefix(tok.Value, "Q{") {
+	if strings.HasPrefix(tok.Value, lexicon.EQNamePrefix) {
 		if idx := strings.Index(tok.Value, "}"); idx >= 0 {
 			uri := tok.Value[2:idx]
 			local := tok.Value[idx+1:]
@@ -1372,14 +1378,6 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 		}
 
 		return xdm.NamespaceNodeTest{}, true, nil
-	case lexicon.KindItem:
-		p.lexer.Next()
-
-		if err := p.expectToken(TokenRParen); err != nil {
-			return nil, true, err
-		}
-
-		return xdm.AnyItemTest{}, true, nil
 	}
 
 	return nil, false, nil
@@ -1387,7 +1385,9 @@ func (p *parseOptions) parseKindTest(name string) (xdm.NodeTest, bool, error) {
 
 // parseElementOrAttributeTest parses element and attribute kind tests.
 func (p *parseOptions) parseElementOrAttributeTest(isElement bool) (xdm.NodeTest, bool, error) {
-	p.lexer.Next() // consume '('
+	if err := p.expectToken(TokenLParen); err != nil {
+		return nil, true, err
+	}
 
 	name := ""
 	typeName := ""
@@ -1475,7 +1475,9 @@ func (p *parseOptions) parseDocumentNodeTest() (xdm.NodeTest, bool, error) {
 
 // parseSchemaTest parses schema-element(name) or schema-attribute(name).
 func (p *parseOptions) parseSchemaTest(isElement bool) (xdm.NodeTest, bool, error) {
-	p.lexer.Next() // consume '('
+	if err := p.expectToken(TokenLParen); err != nil {
+		return nil, true, err
+	}
 
 	name := p.scanQName()
 	if name == "" {
@@ -1641,15 +1643,15 @@ func (p *parseOptions) parseLetBindings() ([]FLWORClause, error) {
 		}
 
 		varName := p.lexer.Next().Value
-		// Expect ':=' — colon then equals
+		// ':=' is one terminal even though the lexer emits ':' and '=' separately.
 		if p.lexer.Peek().Type != TokenColon {
 			return nil, fmt.Errorf("%w: ':=' after variable but got %s", ErrExpectedToken, p.lexer.Peek())
 		}
 
 		p.lexer.Next()
 
-		if p.lexer.Peek().Type != TokenEquals {
-			return nil, fmt.Errorf("%w: '=' after ':' in let binding but got %s", ErrExpectedToken, p.lexer.Peek())
+		if next := p.lexer.Peek(); next.Type != TokenEquals || next.SpaceBefore {
+			return nil, fmt.Errorf("%w: contiguous ':=' in let binding", ErrExpectedToken)
 		}
 
 		p.lexer.Next()
@@ -2243,6 +2245,16 @@ func (p *parseOptions) parseNamedItemType(tok Token) (xdm.NodeTest, error) {
 	if p.lexer.PeekAt(1).Type == TokenLParen {
 		p.lexer.Next() // consume name
 
+		if tok.Value == lexicon.KindItem {
+			p.lexer.Next() // consume '('
+
+			if err := p.expectToken(TokenRParen); err != nil {
+				return nil, err
+			}
+
+			return xdm.AnyItemTest{}, nil
+		}
+
 		nt, ok, err := p.parseKindTest(tok.Value)
 		if err != nil {
 			return nil, err
@@ -2566,7 +2578,7 @@ func isNodeComp(t TokenType) bool {
 // dot but no e/E → xs:decimal (*big.Rat),
 // e/E → xs:double (float64).
 func parseNumberLiteral(s string) (LiteralExpr, error) {
-	hasE := strings.ContainsAny(s, "eE")
+	hasE := strings.ContainsAny(s, floatExponentMarkers)
 
 	hasDot := strings.Contains(s, ".")
 	if !hasDot && !hasE {
@@ -2601,10 +2613,9 @@ func parseNumberLiteral(s string) (LiteralExpr, error) {
 // NCName in lookup keys and other non-keyword contexts. Returns "" if the
 // token is not a valid NCName.
 func tokenAsNCName(tok Token) string {
-	switch tok.Type {
-	case TokenName:
+	if tok.Type == TokenName {
 		// Reject URIQualifiedNames (Q{uri}local) — they are not NCNames
-		if strings.HasPrefix(tok.Value, "Q{") {
+		if strings.HasPrefix(tok.Value, lexicon.EQNamePrefix) {
 			return ""
 		}
 		// Reject prefixed names (prefix:local) — they are QNames, not NCNames
@@ -2613,8 +2624,10 @@ func tokenAsNCName(tok Token) string {
 		}
 
 		return tok.Value
-	case TokenDiv, TokenMod, TokenAnd, TokenOr, TokenReturn, TokenElse, TokenEq, TokenNe, TokenLt, TokenLe, TokenGt, TokenGe, TokenIdiv, TokenIf, TokenThen, TokenFor, TokenLet, TokenIn, TokenSome, TokenEvery, TokenSatisfies, TokenIs, TokenTo, TokenUnion, TokenIntersect, TokenExcept, TokenInstanceOf, TokenTreatAs, TokenCastableAs, TokenCastAs, TokenAs, TokenOf:
-		return tok.Type.String()
+	}
+
+	if isKeywordToken(tok.Type) {
+		return tok.Value
 	}
 
 	return ""
@@ -2675,7 +2688,7 @@ func splitQName(qname string) (string, string) {
 }
 
 func variableExprFromToken(name string) VariableExpr {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		return VariableExpr{Name: name}
 	}
 

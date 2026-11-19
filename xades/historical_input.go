@@ -19,7 +19,6 @@ import (
 	"github.com/skarm/xmlsec/internal/historical"
 	"github.com/skarm/xmlsec/internal/historicalproof"
 	"github.com/skarm/xmlsec/internal/lexicon"
-	"github.com/skarm/xmlsec/internal/streamio"
 	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/pki"
 	referencepkg "github.com/skarm/xmlsec/reference"
@@ -46,6 +45,7 @@ type historicalObjects struct {
 	ctx               context.Context
 	maximum           int
 	remaining         int
+	largest           int
 	objects           []historical.Object
 	index             map[[sha256.Size]byte]int
 	references        [][sha256.Size]byte
@@ -79,6 +79,7 @@ func (b *historicalObjects) add(raw []byte, kind historicalproof.Kind, contains 
 	}
 
 	b.remaining -= len(raw)
+	b.largest = max(b.largest, len(raw))
 	b.index[key] = len(b.objects)
 	b.objects = append(b.objects, historical.Object{Bytes: raw, Kind: kind, Contains: slices.Clone(contains)})
 
@@ -86,14 +87,118 @@ func (b *historicalObjects) add(raw []byte, kind historicalproof.Kind, contains 
 }
 
 func (b *historicalObjects) write(write func(io.Writer) error) ([]byte, error) {
-	var output bytes.Buffer
+	output := historicalOutput{ctx: b.ctx, objects: b.objects, limit: b.remaining}
+	if len(b.objects) >= b.maximum {
+		output.limit = 0
+	}
 
-	writer := &streamio.Writer{Context: b.ctx, Target: &output, Limit: int64(b.remaining), LimitError: historical.ErrLimit}
-	if err := write(writer); err != nil {
+	if err := write(&output); err != nil {
 		return nil, err
 	}
 
-	return output.Bytes(), nil
+	return output.bytes()
+}
+
+func (b *historicalObjects) outputLimit() int {
+	if len(b.objects) >= b.maximum {
+		return b.largest
+	}
+
+	return max(b.remaining, b.largest)
+}
+
+// historicalOutput buffers only bytes that could form a new object. If the
+// encoding exceeds that budget, it must match an existing object byte for byte.
+// Let the producer finish its checks before returning any retained bytes.
+type historicalOutput struct {
+	ctx        context.Context
+	objects    []historical.Object
+	newObject  bytes.Buffer
+	limit      int
+	candidates [][]byte
+	matched    int
+}
+
+func (w *historicalOutput) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	if w.candidates == nil {
+		if len(p) <= w.limit-w.newObject.Len() {
+			return w.newObject.Write(p)
+		}
+
+		if err := w.matchPrefix(p); err != nil {
+			return 0, err
+		}
+	} else {
+		w.retainMatches(p)
+	}
+
+	if len(w.candidates) == 0 {
+		return 0, historical.ErrLimit
+	}
+
+	w.matched += len(p)
+
+	return len(p), nil
+}
+
+func (w *historicalOutput) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+func (w *historicalOutput) matchPrefix(p []byte) error {
+	prefix := w.newObject.Bytes()
+	w.matched = len(prefix)
+
+	for _, object := range w.objects {
+		if err := w.ctx.Err(); err != nil {
+			return err
+		}
+
+		if matchesHistoricalOutput(object.Bytes, w.matched, p) && bytes.Equal(object.Bytes[:w.matched], prefix) {
+			w.candidates = append(w.candidates, object.Bytes)
+		}
+	}
+
+	w.newObject = bytes.Buffer{}
+
+	return nil
+}
+
+func (w *historicalOutput) retainMatches(p []byte) {
+	match := w.candidates[:0]
+	for _, object := range w.candidates {
+		if matchesHistoricalOutput(object, w.matched, p) {
+			match = append(match, object)
+		}
+	}
+
+	w.candidates = match
+}
+
+func matchesHistoricalOutput(object []byte, offset int, p []byte) bool {
+	return len(p) <= len(object)-offset && bytes.Equal(object[offset:offset+len(p)], p)
+}
+
+func (w *historicalOutput) bytes() ([]byte, error) {
+	if err := w.ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if w.candidates == nil {
+		return w.newObject.Bytes(), nil
+	}
+
+	for _, object := range w.candidates {
+		if len(object) == w.matched {
+			return object, nil
+		}
+	}
+
+	return nil, historical.ErrLimit
 }
 
 func (b *historicalObjects) canonical(e document.Element, options c14n.Options) ([sha256.Size]byte, []byte, error) {
@@ -241,14 +346,23 @@ func (b *historicalObjects) linkCanonicalEncoding(parent, original [sha256.Size]
 		return b.ctx.Err()
 	}
 
-	var out bytes.Buffer
+	size := len(b.objects[target].Bytes)
+	if size == 0 {
+		return b.ctx.Err() // A canonicalized element cannot reproduce empty bytes.
+	}
 
-	writer := &streamio.Writer{Context: b.ctx, Target: &out, Limit: int64(len(b.objects[target].Bytes)) + 1, LimitError: historical.ErrLimit}
-	if err := c14n.WriteElement(b.ctx, writer, doc.Root(), options); err != nil {
+	options.MaxOutputBytes = size
+
+	output := historicalOutput{ctx: b.ctx, objects: b.objects[target : target+1]}
+	if err := c14n.WriteElement(b.ctx, &output, doc.Root(), options); err != nil {
 		return b.ctx.Err()
 	}
 
-	if bytes.Equal(out.Bytes(), b.objects[target].Bytes) && !slices.Contains(b.objects[protected].Contains, original) {
+	if _, err := output.bytes(); err != nil {
+		return b.ctx.Err()
+	}
+
+	if !slices.Contains(b.objects[protected].Contains, original) {
 		b.objects[protected].Contains = append(b.objects[protected].Contains, original)
 	}
 
@@ -676,7 +790,7 @@ func (b *historicalArchiveBuilder) reference(reference xmldsig.ReferenceResult, 
 
 	steps := reference.Steps()
 	if len(steps) > 0 && steps[len(steps)-1].Implicit {
-		if err := b.objects.linkCanonicalEncoding(key, b.objects.references[index], c14n.Options{Algorithm: c14n.Canonical10, MaxOutputBytes: b.objects.remaining}); err != nil {
+		if err := b.objects.linkCanonicalEncoding(key, b.objects.references[index], c14n.Options{Algorithm: c14n.Canonical10}); err != nil {
 			return err
 		}
 	}
@@ -694,6 +808,7 @@ func (b *historicalArchiveBuilder) reference(reference xmldsig.ReferenceResult, 
 }
 
 func (b *historicalArchiveBuilder) linkCertificateReferences(key [sha256.Size]byte) error {
+	object := &b.objects.objects[b.objects.index[key]]
 	for _, certificate := range b.baseline.CertificateReferences() {
 		digest, err := historicalHash(certificate.DigestMethod())
 		if err != nil {
@@ -701,8 +816,13 @@ func (b *historicalArchiveBuilder) linkCertificateReferences(key [sha256.Size]by
 		}
 
 		target := sha256.Sum256(certificate.CertificateDER())
-		object := &b.objects.objects[b.objects.index[key]]
-		object.Refs = append(object.Refs, historical.HashReference{Hash: digest, Digest: certificate.Digest(), Target: target})
+		ref := historical.HashReference{Hash: digest, Digest: certificate.Digest(), Target: target}
+
+		if !slices.ContainsFunc(object.Refs, func(existing historical.HashReference) bool {
+			return existing.Hash == ref.Hash && existing.Target == ref.Target && bytes.Equal(existing.Digest, ref.Digest)
+		}) {
+			object.Refs = append(object.Refs, ref)
+		}
 	}
 
 	return nil
@@ -720,7 +840,7 @@ func (b *historicalArchiveBuilder) signatureElements() error {
 			continue
 		}
 
-		options := c14n.Options{Algorithm: b.method, MaxOutputBytes: b.objects.remaining}
+		options := c14n.Options{Algorithm: b.method, MaxOutputBytes: b.objects.outputLimit()}
 
 		key, raw, err := b.objects.canonical(element, options)
 		if err != nil {
@@ -741,7 +861,7 @@ func (b *historicalArchiveBuilder) signatureElements() error {
 }
 
 func (b *historicalArchiveBuilder) appendCanonical(element document.Element) error {
-	key, raw, err := b.objects.canonical(element, c14n.Options{Algorithm: b.method, MaxOutputBytes: b.objects.remaining})
+	key, raw, err := b.objects.canonical(element, c14n.Options{Algorithm: b.method, MaxOutputBytes: b.objects.outputLimit()})
 	if err != nil {
 		return err
 	}

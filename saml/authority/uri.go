@@ -81,9 +81,22 @@ func (h URIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = binding.WriteAssertion(r.Context(), w, d); err != nil {
-		return
+	response := &assertionResponseWriter{ResponseWriter: w}
+	if err := binding.WriteAssertion(r.Context(), response, d); err != nil && !response.committed {
+		http.Error(w, "assertion unavailable", http.StatusInternalServerError)
 	}
+}
+
+// assertionResponseWriter distinguishes serialization failures from body-write
+// failures after the status has already been sent.
+type assertionResponseWriter struct {
+	http.ResponseWriter
+	committed bool
+}
+
+func (w *assertionResponseWriter) WriteHeader(status int) {
+	w.committed = true
+	w.ResponseWriter.WriteHeader(status)
 }
 
 // MemoryAssertions is a bounded immutable-ID store. It deliberately has no

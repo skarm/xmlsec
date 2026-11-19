@@ -7,7 +7,6 @@ package xpath
 import (
 	"context"
 	"maps"
-	"reflect"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
@@ -67,7 +66,7 @@ const (
 
 // CheckTypeLanguage applies the same version boundaries to standalone types.
 func CheckTypeLanguage(st xdm.SequenceType, version int) error {
-	return walkProfile(reflect.ValueOf(st), func(node any) error {
+	return profileVisitor(func(node any) error {
 		switch node.(type) {
 		case xdm.FunctionTest:
 			if version < xpathVersion30 {
@@ -80,7 +79,7 @@ func CheckTypeLanguage(st xdm.SequenceType, version int) error {
 		}
 
 		return nil
-	})
+	}).walk(st)
 }
 
 // ValidNCName checks a prefix-free XML name used by the public API.
@@ -103,7 +102,7 @@ func CheckStaticNamespaces(namespaces map[string]string) error {
 // the standalone API. XSLT supplies its own user functions and validates them
 // through its compiler, so it does not use this check.
 func CheckStandaloneFunctions(expr *Expression, namespaces map[string]string, extensions ...map[string]Function) error {
-	return walkProfile(reflect.ValueOf(expr.astExpr()), func(node any) error {
+	return profileVisitor(func(node any) error {
 		var prefix, name string
 
 		arity := unspecifiedFunctionArity
@@ -118,7 +117,7 @@ func CheckStandaloneFunctions(expr *Expression, namespaces map[string]string, ex
 		}
 
 		return checkStandaloneCall(expr.version, prefix, name, arity, namespaces, extensions)
-	})
+	}).walk(expr.astExpr())
 }
 
 // Language pins the grammar and function library to XPath 1.0, 2.0, 3.0 or 3.1.
@@ -179,7 +178,7 @@ func checkStandaloneCall(version int, prefix, name string, arity int, namespaces
 		}
 	}
 
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if end := strings.IndexByte(name, '}'); end >= 0 {
 			uri, name = name[2:end], name[end+1:]
 		}
@@ -218,8 +217,8 @@ func validateVersionTokens(tokens []Token, version int) error {
 
 	for i, token := range tokens {
 		if version == xpathVersion10 {
-			if token.Type == TokenNumber && strings.ContainsAny(token.Value, "eE") || token.Type == TokenUnion {
-				return profileError(lexicon.ErrXPST0003, "numeric literal or union keyword", version)
+			if token.Type == TokenNumber && strings.ContainsAny(token.Value, floatExponentMarkers) {
+				return profileError(lexicon.ErrXPST0003, "numeric literal", version)
 			}
 
 			if token.Value == nameProcessingInstruction && i+2 < len(tokens) && tokens[i+1].Type == TokenLParen && tokens[i+2].Type != TokenString && tokens[i+2].Type != TokenRParen {
@@ -231,56 +230,8 @@ func validateVersionTokens(tokens []Token, version int) error {
 			return profileError(lexicon.ErrXPST0003, "arrow operator", version)
 		}
 
-		if version < xpathVersion30 && token.Type != TokenString && strings.HasPrefix(token.Value, "Q{") {
+		if version < xpathVersion30 && token.Type != TokenString && strings.HasPrefix(token.Value, lexicon.EQNamePrefix) {
 			return profileError(lexicon.ErrXPST0003, "URI-qualified names", version)
-		}
-	}
-
-	return nil
-}
-
-// walkProfile visits only exported AST fields, never literal payloads. The
-// closed Expr/NodeTest interfaces keep this traversal exhaustive as new AST
-// forms are added, including types nested inside function declarations.
-func walkProfile(value reflect.Value, visit func(any) error) error {
-	if !value.IsValid() {
-		return nil
-	}
-
-	if value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return nil
-		}
-
-		return walkProfile(value.Elem(), visit)
-	}
-
-	switch value.Kind() {
-	case reflect.Struct:
-		if value.CanInterface() {
-			if err := visit(value.Interface()); err != nil {
-				return err
-			}
-
-			if _, ok := value.Interface().(LiteralExpr); ok {
-				return nil
-			}
-		}
-
-		for i := 0; i < value.NumField(); i++ {
-			if !value.Type().Field(i).IsExported() {
-				continue
-			}
-
-			if err := walkProfile(value.Field(i), visit); err != nil {
-				return err
-			}
-		}
-	case reflect.Slice:
-		for i := 0; i < value.Len(); i++ {
-			if err := walkProfile(value.Index(i), visit); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -292,9 +243,9 @@ func validateVersionExpr(ast Expr, version int, namespaces map[string]string, ho
 		return validateXPath10Expr(ast)
 	}
 
-	return walkProfile(reflect.ValueOf(ast), func(node any) error {
+	return profileVisitor(func(node any) error {
 		return validateProfileNode(node, version, namespaces, hostFunction)
-	})
+	}).walk(ast)
 }
 
 func lookupXPath30Function(key string) (bool, bool) {
@@ -382,17 +333,28 @@ func xsConstructorVisible(version int, name string) bool {
 	return version != xpathVersion20 || !isBuiltinListLocalName(name) && name != lexicon.TypeError
 }
 
-func checkVersionRegex(ctx context.Context, pattern, flags string) error {
-	ec := getFnContext(ctx)
-	if ec == nil || ec.version != xpathVersion20 {
+func checkVersionRegex(ctx context.Context, pattern, flags string, version int) error {
+	if version != xpathVersion20 {
 		return nil
 	}
 
 	if strings.Contains(flags, regexLiteralFlag) {
 		return &xdm.Error{Code: errCodeFORX0001, Message: "flag q requires XPath 3.0"}
 	}
-	// Escaped characters and character classes cannot start a non-capturing group.
-	inClass, escaped := false, false
+
+	if err := Charge(ctx, len(pattern)); err != nil {
+		return err
+	}
+
+	if strings.ContainsRune(flags, regexFreeSpacingRune) {
+		pattern = stripFreeSpacing(pattern)
+	}
+
+	// Character class subtraction may nest brackets. Escaped delimiters
+	// and anything inside a class are literal to the group syntax check.
+	classDepth := 0
+	escaped := false
+
 	for i, r := range pattern {
 		if escaped {
 			escaped = false
@@ -404,16 +366,15 @@ func checkVersionRegex(ctx context.Context, pattern, flags string) error {
 			continue
 		}
 
-		if r == '[' {
-			inClass = true
-		}
-
-		if r == ']' {
-			inClass = false
-		}
-
-		if !inClass && r == '(' && strings.HasPrefix(pattern[i:], regexNoncapturingPrefix) {
-			return &xdm.Error{Code: lexicon.ErrFORX0002, Message: "non-capturing groups require XPath 3.0"}
+		switch r {
+		case '[':
+			classDepth++
+		case ']':
+			classDepth = max(classDepth-1, 0)
+		case '(':
+			if classDepth == 0 && strings.HasPrefix(pattern[i:], regexNoncapturingPrefix) {
+				return &xdm.Error{Code: lexicon.ErrFORX0002, Message: "non-capturing groups require XPath 3.0"}
+			}
 		}
 	}
 
@@ -479,7 +440,7 @@ func validateProfileFunction(node any, version int, namespaces map[string]string
 			}
 		}
 
-		if strings.HasPrefix(name, "Q{") {
+		if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 			if end := strings.IndexByte(name, '}'); end >= 0 {
 				uri, name = name[2:end], name[end+1:]
 			}

@@ -2,15 +2,16 @@ package streamio
 
 import (
 	"context"
+	"errors"
 	"io"
 )
 
 const (
 	// Caps one copy or string-write chunk and the retained scratch buffer, in bytes.
-	copyChunkBytes            = 32 << 10
-	initialReadBufferBytes    = 4 << 10
-	maximumStalledReads       = 100
-	whitespaceReadBufferBytes = 4096
+	copyChunkBytes           = 32 << 10
+	initialReadBufferBytes   = 4 << 10
+	maximumStalledReads      = 100
+	whitespaceReadChunkBytes = 4096
 )
 
 // Reader checks cancellation and a byte limit without retaining input.
@@ -27,6 +28,7 @@ type Reader struct {
 	// ReadBytes counts bytes returned from Source within the limit.
 	ReadBytes int64
 	// LimitError is returned when the sentinel read detects input beyond Limit.
+	// A source failure delivered with that byte is also preserved.
 	LimitError error
 	// stalled counts consecutive reads that return neither data nor an error.
 	stalled int
@@ -38,7 +40,7 @@ type Reader struct {
 // Read rejects invalid reader counts and repeated reads that make no progress.
 func (r *Reader) Read(p []byte) (int, error) {
 	if err := r.Context.Err(); err != nil {
-		return 0, err
+		return 0, withReadCancellation(r.readErr, err)
 	}
 
 	if r.readErr != nil {
@@ -59,7 +61,12 @@ func (r *Reader) Read(p []byte) (int, error) {
 		}
 
 		if n > 0 {
-			return 0, r.progress(n, r.LimitError)
+			failure := r.LimitError
+			if err != nil && !plainEOF(err) {
+				failure = errors.Join(failure, err)
+			}
+
+			return 0, r.progress(n, failure)
 		}
 
 		return 0, r.progress(n, err)
@@ -86,7 +93,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 // collecting destinations from growing to a misaligned backing-array size.
 func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 	if err := r.Context.Err(); err != nil {
-		return 0, err
+		return 0, withReadCancellation(r.readErr, err)
 	}
 
 	size := initialReadBufferBytes
@@ -105,25 +112,21 @@ func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 		if n > 0 {
 			count, err := dst.Write(buffer[:n])
 			if count < 0 || count > n {
-				return written, io.ErrShortWrite
+				return written, copyCompletionError(readErr, io.ErrShortWrite, r.Context.Err())
 			}
 
 			written += int64(count)
-			if err != nil {
-				return written, err
+			if err == nil && count != n {
+				err = io.ErrShortWrite
 			}
 
-			if count != n {
-				return written, io.ErrShortWrite
+			if err != nil {
+				return written, copyCompletionError(readErr, err, r.Context.Err())
 			}
 		}
 
 		if readErr != nil {
-			if readErr == io.EOF { //nolint:errorlint // Wrapped or joined EOF can carry a resource failure.
-				return written, nil
-			}
-
-			return written, readErr
+			return written, copyCompletionError(readErr, nil, r.Context.Err())
 		}
 
 		if !resident && n == size && size < copyChunkBytes {
@@ -138,7 +141,31 @@ func (r *Reader) WriteTo(dst io.Writer) (int64, error) {
 	}
 }
 
+func copyCompletionError(readErr, writeErr, canceled error) error {
+	if readErr != nil && !plainEOF(readErr) {
+		if writeErr == nil {
+			writeErr = readErr
+		} else {
+			writeErr = errors.Join(writeErr, readErr)
+		}
+	}
+
+	if writeErr == nil {
+		return canceled
+	}
+
+	if canceled != nil && !errors.Is(writeErr, canceled) {
+		return errors.Join(writeErr, canceled)
+	}
+
+	return writeErr
+}
+
 func (r *Reader) progress(n int, err error) error {
+	if canceled := r.Context.Err(); canceled != nil {
+		err = withReadCancellation(err, canceled)
+	}
+
 	if n > 0 {
 		r.stalled = 0
 	} else if err == nil {
@@ -154,11 +181,26 @@ func (r *Reader) progress(n int, err error) error {
 	return err
 }
 
+func plainEOF(err error) bool {
+	return err == io.EOF //nolint:errorlint // Wrapped or joined EOF can carry a resource failure.
+}
+
+func withReadCancellation(err, canceled error) error {
+	if err == nil || plainEOF(err) {
+		return canceled
+	}
+
+	if errors.Is(err, canceled) {
+		return err
+	}
+
+	return errors.Join(err, canceled)
+}
+
 // XMLWhitespaceReader skips only XML S characters in fixed storage. Source
 // supplies its own context and byte budget; non-XML whitespace is retained.
 type XMLWhitespaceReader struct {
 	Source io.Reader
-	buffer [whitespaceReadBufferBytes]byte
 }
 
 func (r *XMLWhitespaceReader) Read(dst []byte) (int, error) {
@@ -166,15 +208,17 @@ func (r *XMLWhitespaceReader) Read(dst []byte) (int, error) {
 		return 0, nil
 	}
 
+	// Compact in place. The write index never passes the current read index.
+	dst = dst[:min(len(dst), whitespaceReadChunkBytes)]
 	for stalled := 0; ; {
-		n, err := r.Source.Read(r.buffer[:min(len(dst), len(r.buffer))])
-		if n < 0 || n > min(len(dst), len(r.buffer)) {
+		n, err := r.Source.Read(dst)
+		if n < 0 || n > len(dst) {
 			return 0, io.ErrShortBuffer
 		}
 
 		used := 0
 
-		for _, c := range r.buffer[:n] {
+		for _, c := range dst[:n] {
 			if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
 				dst[used] = c
 				used++

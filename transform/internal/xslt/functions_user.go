@@ -163,6 +163,8 @@ func (f *xslUserFunc) Call(ctx context.Context, args []xdm.Sequence) (xdm.Sequen
 	savedPackage := ec.currentPackage
 	callIsOverride(f, ec)
 
+	defer ec.pushDeclarationBaseURI(f.def.StaticBaseURI)()
+
 	// Save and restore execution state.
 	// xsl:function creates a new scope — tunnel params and current mode
 	// are NOT inherited (XSLT 2.0 erratum XT.E19).
@@ -552,12 +554,12 @@ func (ec *execContext) writeFunctionCacheItem(b *strings.Builder, item xdm.Item)
 		b.WriteString(memoAtomicPrefix)
 		writeFunctionCacheString(b, v.TypeName)
 		b.WriteByte('=')
-		// AtomicToString for QName returns prefix:local, which omits the
-		// namespace URI. Two QNames can share a local name but differ in URI,
-		// so we must include the URI in the cache key.
+		// Expanded-name equality omits the prefix, which callers can observe
+		// through string() and prefix-from-QName() on the function result.
 		if q, ok := v.Value.(xdm.QNameValue); ok {
 			writeFunctionCacheString(b, q.URI)
 			writeFunctionCacheString(b, q.Local)
+			writeFunctionCacheString(b, q.Prefix)
 		} else {
 			writeFunctionCacheString(b, s)
 		}
@@ -758,6 +760,8 @@ func proactiveSelfBinding(def *xslFunction) bool {
 // prepareCompiledFunction recognizes a narrow scalar memoization case. A cache
 // hint alone cannot remove proactive node construction, messages or callbacks.
 func (c *compiler) prepareCompiledFunction(ctx context.Context, fn *xslFunction, elem *xdm.Element) error {
+	fn.StaticBaseURI = stylesheetBaseURI(elem, c.baseURI, c.moduleRoot)
+
 	defaultNS, _ := c.declarationDefaultNamespace(elem)
 	if err := fn.prepareCall(ctx, inScopeNamespaces(elem), defaultNS); err != nil {
 		return err

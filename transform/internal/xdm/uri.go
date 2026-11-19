@@ -13,24 +13,9 @@ import (
 
 // BuildURI resolves a relative system ID against a base URI.
 //
-// ARGUMENT ORDER: the reference comes FIRST, the base SECOND —
-// BuildURI(reference, base). This is a byte-faithful port of libxml2's
-// xmlBuildURI(URI, base) and keeps its (reference, base) order for parity, which
-// is the OPPOSITE of Go's url.URL.ResolveReference and RFC 3986's resolve(base,
-// ref). Passing the arguments in the conventional (base, reference) order returns
-// a plausible-but-wrong result with no error. Internal callers preserve this
-// reference-first order when resolving XML base URIs.
-//
-// For local file paths (no scheme or file: scheme), it joins with
-// forward-slash (path) semantics. For other schemes, it uses
-// url.ResolveReference.
-//
-// Native Windows paths (a drive-letter prefix such as "C:\\dir\\doc.xml" or a
-// backslash/UNC path) are recognized and resolved with local-path semantics,
-// and never handed to url.Parse, which would read the drive
-// letter "C" as a URI scheme and emit garbage like "c:///child.xml". POSIX
-// behavior is unchanged: only inputs whose string shape is Windows-native take
-// the native branch, so the shape is recognized — and tested — on any GOOS.
+// The argument order is (reference, base), matching libxml2's xmlBuildURI.
+// URI bases, including file: URIs, use IRI resolution. Local filesystem bases
+// use forward-slash path joins that preserve POSIX roots and Windows volumes.
 func BuildURI(systemID, base string) string {
 	// An absolute systemID under either OS convention stands on its own.
 	if uripath.IsWindowsAbsolute(systemID) {
@@ -48,6 +33,20 @@ func BuildURI(systemID, base string) string {
 		return systemID
 	}
 
+	// A reference with no path inherits the full base path, even for a
+	// filesystem base. Joining it as a relative filename would lose the
+	// current document's name. URI bases use this resolver for all references.
+	if systemID == "" || strings.HasPrefix(systemID, "?") || strings.HasPrefix(systemID, "#") || uripath.HasURIScheme(base) {
+		resolved, err := uripath.ResolveIRIReference(systemID, base)
+		if err != nil {
+			return ""
+		}
+
+		return resolved
+	}
+
+	basePath, _ := splitLocalPathReference(base)
+
 	// When the base is a native Windows path, resolve the (relative) systemID
 	// against it with local-path semantics, bypassing the URI machinery so the
 	// drive letter is never mistaken for a scheme. This also covers a RELATIVE
@@ -58,24 +57,17 @@ func BuildURI(systemID, base string) string {
 	// base directory. buildLocalPathURI normalizes with uripath.ToSlash first, so
 	// the directory is preserved on every OS. A backslash in a POSIX filename is
 	// pathological and not a real base shape, so gating on '\' is safe.
-	if uripath.IsWindowsAbsolute(base) ||
-		(!uripath.HasURIScheme(base) && strings.ContainsRune(base, '\\')) {
-		return buildLocalPathURI(systemID, base)
+	if uripath.IsWindowsAbsolute(basePath) || strings.ContainsRune(basePath, '\\') {
+		return buildLocalPathURI(systemID, basePath)
 	}
 
-	// URI bases, including file:, keep their scheme, query, fragment and IRI
-	// spelling. Filesystem conversion belongs to resource retrieval.
-	if uripath.HasURIScheme(base) {
-		resolved, err := uripath.ResolveIRIReference(systemID, base)
-		if err != nil {
-			return ""
-		}
-
-		return resolved
+	// A previous resolution can have produced a slash-separated UNC base.
+	// Keep its server and share instead of parsing the server as a URI host.
+	if volume, _ := uripath.SplitLocalVolume(basePath); volume != "" && !uripath.IsPOSIXAbsolute(systemID) {
+		return buildLocalPathURI(systemID, basePath)
 	}
 
-	baseURL, err := url.Parse(base)
-	if err != nil {
+	if _, err := url.Parse(base); err != nil {
 		return ""
 	}
 
@@ -83,25 +75,16 @@ func BuildURI(systemID, base string) string {
 		return systemID
 	}
 
-	basePath := baseURL.Path
-	if basePath == "" {
-		basePath = base
-	}
 	// Resolve with forward-slash (path) semantics, not filepath, so the
 	// returned URI/path uses '/' on every OS. On Windows filepath.Dir/Join
 	// would emit '\' here and corrupt a POSIX-shaped or file:-URI base (a
 	// sibling "a.Doctype" against "/dir/doc.xml" would become "\\dir\\a.Doctype").
 	dir := path.Dir(basePath)
 	if strings.HasSuffix(basePath, "/") {
-		dir = strings.TrimRight(basePath, "/")
+		dir = basePath
 	}
 
-	result := path.Join(dir, systemID)
-	if strings.HasSuffix(systemID, "/") && !strings.HasSuffix(result, "/") {
-		result += "/"
-	}
-
-	return result
+	return joinLocalPathReference(dir, systemID)
 }
 
 // buildLocalPathURI resolves a relative systemID against a native Windows base
@@ -117,23 +100,46 @@ func buildLocalPathURI(systemID, base string) string {
 	slashBase := uripath.ToSlash(base)
 	slashRef := uripath.ToSlash(systemID)
 
-	dir := slashBase
-	if idx := strings.LastIndexByte(slashBase, '/'); idx >= 0 {
-		// Keep everything up to (not including) the last slash. For a
-		// drive-only base like "C:" with no slash, dir stays the whole base.
-		dir = slashBase[:idx]
+	// Clean the rooted path independently of its volume. Otherwise path.Join
+	// treats "C:" as a regular segment and can remove it when resolving "..".
+	volume, slashBase := uripath.SplitLocalVolume(slashBase)
+
+	if volume != "" && slashBase == "" {
+		slashBase = "/"
 	}
 
-	result := path.Join(dir, slashRef)
+	dir := slashBase
+	if idx := strings.LastIndexByte(slashBase, '/'); idx >= 0 {
+		// Include the last slash so a file directly under a root keeps it.
+		dir = slashBase[:idx+1]
+	}
+
+	result := joinLocalPathReference(dir, slashRef)
 	// path.Join cleans the result, which collapses a leading "//" (UNC) to a
 	// single "/". Restore the UNC double-slash when the base was a UNC path.
 	if strings.HasPrefix(slashBase, "//") && !strings.HasPrefix(result, "//") {
 		result = "/" + result
 	}
 
-	if strings.HasSuffix(slashRef, "/") && !strings.HasSuffix(result, "/") {
+	return volume + result
+}
+
+func joinLocalPathReference(dir, ref string) string {
+	refPath, suffix := splitLocalPathReference(ref)
+	result := path.Join(dir, refPath)
+
+	last := path.Base(refPath)
+	if !strings.HasSuffix(result, "/") && (strings.HasSuffix(refPath, "/") || last == "." || last == "..") {
 		result += "/"
 	}
 
-	return result
+	return result + suffix
+}
+
+func splitLocalPathReference(ref string) (string, string) {
+	if i := strings.IndexAny(ref, "?#"); i >= 0 {
+		return ref[:i], ref[i:]
+	}
+
+	return ref, ""
 }

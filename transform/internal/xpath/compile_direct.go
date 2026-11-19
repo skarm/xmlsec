@@ -327,7 +327,7 @@ func (p *parseOptions) tryParseDirectNodeTest(axis AxisType) (xdm.NodeTest, bool
 		return returned0, returned1, nil
 	}
 
-	if strings.HasPrefix(tok.Value, "Q{") {
+	if strings.HasPrefix(tok.Value, lexicon.EQNamePrefix) {
 		idx := strings.Index(tok.Value, "}")
 		if idx < 0 {
 			return nil, false, fmt.Errorf("%w: malformed URIQualifiedName %q", ErrUnexpectedToken, tok.Value)

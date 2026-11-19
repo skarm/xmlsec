@@ -68,3 +68,58 @@ func TestXPath10RejectsLaterGrammarAndInvalidNodeSets(t *testing.T) {
 		})
 	}
 }
+
+func TestXPath10MixedUnaryPlus(t *testing.T) {
+	for _, source := range []string{`+1`, `-+1`, `+-1`, `-+-1`, `--+1`} {
+		t.Run(source, func(t *testing.T) {
+			if _, err := NewCompiler().Language(10, nil).Compile(source); err == nil {
+				t.Error("XPath 1.0 accepted unary plus")
+			}
+			ast, err := Parse(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewCompiler().Language(10, nil).CompileExpr(ast); err == nil {
+				t.Error("XPath 1.0 accepted unary plus AST")
+			}
+			if _, err := NewCompiler().Language(31, nil).Compile(source); err != nil {
+				t.Fatal("modern unary control", err)
+			}
+		})
+	}
+	for _, source := range []string{`-1`, `--1`, `1+1`} {
+		if _, err := NewCompiler().Language(10, nil).Compile(source); err != nil {
+			t.Errorf("valid XPath 1.0 %q: %v", source, err)
+		}
+	}
+}
+
+func TestXPath10UnionNameAfterMultiplication(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), `<r><union>2</union></r>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{`count(*) * union`, `count(*) * (union)`, `count(*) * child::union`, `1 * union * 2`, `count(*) * union + 1`} {
+		expr, err := NewCompiler().Language(10, nil).Compile(source)
+		if err != nil {
+			t.Errorf("name operand %q: %v", source, err)
+			continue
+		}
+		got, err := NewEvaluator(DefaultEvaluatorOptions).Evaluate(t.Context(), expr, doc.DocumentElement())
+		want := "2"
+		if source == `1 * union * 2` {
+			want = "4"
+		}
+		if source == `count(*) * union + 1` {
+			want = "3"
+		}
+		if err != nil || got.StringValue() != want {
+			t.Errorf("%q: %v, %v; want %s", source, got, err, want)
+		}
+	}
+	for _, source := range []string{`* union *`, `union union union`, `(union) union union`, `* * union union union`} {
+		if _, err := NewCompiler().Language(10, nil).Compile(source); err == nil {
+			t.Errorf("union operator accepted: %s", source)
+		}
+	}
+}

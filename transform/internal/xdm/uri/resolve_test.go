@@ -101,6 +101,8 @@ func TestIRIResolutionAuthorityAndAbsoluteOverrides(t *testing.T) {
 	for _, test := range []struct{ base, ref, want string }{
 		{"http://a", "g", "http://a/g"},
 		{"http://a/b/c", "//g", "http://g"},
+		{"mem://%65xample.test/a/doc", "item", "mem://%65xample.test/a/item"},
+		{"mem://base/a/doc", "//%65xample.test/item", "mem://%65xample.test/item"},
 		{"http://a/b/c", "https://other/x/../y?#", "https://other/y?#"},
 		{"http://a/b/c", "/g/.", "http://a/g/"},
 		{"http://a/b/c", "/g/..", "http://a/"},

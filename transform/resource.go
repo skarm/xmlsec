@@ -160,16 +160,16 @@ func (r *resourceStream) Read(p []byte) (int, error) {
 
 		n, err = r.reader.Read(probe[:])
 		if n < 0 || n > 1 {
-			n, err = 0, errors.Join(ErrResource, io.ErrShortBuffer)
+			n, err = 0, resourceReadError(io.ErrShortBuffer, err)
 		}
 
 		if n > 0 {
-			n, err = 0, ErrLimit
+			n, err = 0, resourceReadError(ErrLimit, err)
 		}
 	} else {
 		n, err = r.reader.Read(p[:allowed])
 		if n < 0 || n > allowed {
-			n, err = 0, errors.Join(ErrResource, io.ErrShortBuffer)
+			n, err = 0, resourceReadError(io.ErrShortBuffer, err)
 		}
 
 		r.remaining -= n
@@ -195,12 +195,20 @@ func (r *resourceStream) Read(p []byte) (int, error) {
 			return n, executionControlCause(errors.Join(ErrResource, err, closeErr))
 		}
 
-		if !errors.Is(err, io.EOF) {
+		if err != io.EOF { //nolint:errorlint // Wrapped or joined EOF is a read failure.
 			return n, executionControlCause(errors.Join(ErrResource, err))
 		}
 	}
 
 	return n, executionControlCause(err)
+}
+
+func resourceReadError(boundary, readErr error) error {
+	if readErr == nil || readErr == io.EOF { //nolint:errorlint // Preserve real failures joined with EOF.
+		return boundary
+	}
+
+	return errors.Join(boundary, readErr)
 }
 
 func (r *resourceStream) Close() error {

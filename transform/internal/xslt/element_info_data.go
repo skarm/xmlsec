@@ -81,10 +81,13 @@ func lookupDeclarationElementInfo(name string) (xsltElementInfo, bool) {
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion10, context: elementTopLevel | elementChildOnly, implemented: true,
 		}, true
-	case lexicon.XSLTElementFunction,
-		lexicon.XSLTElementImportSchema:
+	case lexicon.XSLTElementFunction:
 		return xsltElementInfo{
 			minVersion: lexicon.XSLTVersion20, context: elementTopLevel, implemented: true,
+		}, true
+	case lexicon.XSLTElementImportSchema:
+		return xsltElementInfo{
+			minVersion: lexicon.XSLTVersion20, context: elementTopLevel, implemented: false,
 		}, true
 	case lexicon.XSLTElementMode,
 		lexicon.XSLTElementAccumulator,

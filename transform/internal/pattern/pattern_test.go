@@ -32,6 +32,12 @@ func TestMatchSemantics(t *testing.T) {
 		{`^([md])[aeiou]\1$`, "Mum", patternpkg.Options{IgnoreCase: true}, true},
 		{`^(a)?b\1$`, "b", patternpkg.Options{}, true},
 		{`^(a)\12$`, "aa2", patternpkg.Options{}, true},
+		{`^(a)\1+$`, "aaaa", patternpkg.Options{}, true},
+		{`^(a)\12+$`, "aa222", patternpkg.Options{}, true},
+		{`^(a)\12+$`, "aa2a2", patternpkg.Options{}, false},
+		{`^(a)\123+$`, "aa2333", patternpkg.Options{}, true},
+		{`^(a)\123+$`, "aa23a23", patternpkg.Options{}, false},
+		{`^(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)\123$`, "abcdefghijkll3", patternpkg.Options{}, true},
 		{`^[a-z-[aeiou]]+$`, "bcdf", patternpkg.Options{}, true},
 		{`^[a-z-[aeiou]]+$`, "bcaf", patternpkg.Options{}, false},
 		{`^[A-Z-[IO]]+$`, "abc", patternpkg.Options{IgnoreCase: true}, true},
@@ -132,7 +138,10 @@ func TestLimitsAndCancellation(t *testing.T) {
 		}
 	}
 
-	for _, source := range []string{`[`, `()\2`, `(a\1)`, `\1(a)`, `[z-a]`, `a{3,2}`, `a**`, `\x{110000}`} {
+	for _, source := range []string{
+		`[`, `()\2`, `(a\1)`, `\1(a)`, `[z-a]`, `a{3,2}`, `a**`, `\x{110000}`,
+		`(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l\123)`,
+	} {
 		if _, err := patternpkg.Compile(source, patternpkg.Options{}); err == nil {
 			t.Fatalf("malformed pattern accepted: %s", source)
 		}

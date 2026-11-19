@@ -127,3 +127,25 @@ func TestAuthenticateEvidenceUsesSessionObservationTime(t *testing.T) {
 		})
 	}
 }
+
+func TestCertificatePathFingerprintIncludesAllCertificatesInOrder(t *testing.T) {
+	t.Parallel()
+
+	leaf := &x509.Certificate{Raw: []byte("leaf")}
+	root := &x509.Certificate{Raw: []byte("root")}
+	first := &x509.Certificate{Raw: []byte("first intermediate")}
+	second := &x509.Certificate{Raw: []byte("second intermediate")}
+	path := []*x509.Certificate{leaf, first, second, root}
+	want := certificatePathFingerprint(path)
+	firstCopy := *first
+	firstCopy.Raw = []byte("first intermediate")
+	if got := certificatePathFingerprint([]*x509.Certificate{leaf, &firstCopy, second, root}); got != want {
+		t.Error("exact path identity changed across certificate copies")
+	}
+	if got := certificatePathFingerprint([]*x509.Certificate{leaf, second, first, root}); got == want {
+		t.Error("intermediate order did not affect path identity")
+	}
+	if got := certificatePathFingerprint([]*x509.Certificate{leaf, second, root}); got == want {
+		t.Error("removing an intermediate did not affect path identity")
+	}
+}

@@ -17,6 +17,51 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 )
 
+func TestSimultaneousCRLViewsAcceptEquivalentIssuerNames(t *testing.T) {
+	t.Parallel()
+
+	name := func(commonName string) crlGeneralName {
+		t.Helper()
+
+		raw, err := asn1.Marshal(pkix.Name{CommonName: commonName}.ToRDNSequence())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := crlDirectoryName(t.Context(), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return out
+	}
+
+	issuer := name("Project CA")
+	target := &x509.Certificate{RawIssuer: issuer.value, SerialNumber: big.NewInt(17)}
+	now := testcert.Now()
+	full := &parsedCRL{number: big.NewInt(2), entries: []crlEntry{{
+		serial: target.SerialNumber, revoked: now, reason: 1,
+		issuers: []crlGeneralName{issuer, name("Optional directory name A")},
+	}}}
+	delta := &parsedCRL{number: big.NewInt(2), entries: []crlEntry{{
+		serial: target.SerialNumber, revoked: now, reason: 1,
+		issuers: []crlGeneralName{issuer, name("Optional directory name B")},
+	}}}
+	views := []completeCRLView{
+		{base: &authenticatedCRL{list: full}},
+		{base: &authenticatedCRL{list: &parsedCRL{number: big.NewInt(1)}}, delta: &authenticatedCRL{list: delta}},
+	}
+
+	if err := checkEquivalentCRLViews(t.Context(), views, target); err != nil {
+		t.Fatalf("same revocation information with different optional names: %v", err)
+	}
+
+	delta.entries[0].revoked = now.Add(time.Minute)
+	if err := checkEquivalentCRLViews(t.Context(), views, target); !errors.Is(err, ErrEvidence) {
+		t.Fatalf("different revocation information: %v, want ErrEvidence", err)
+	}
+}
+
 func TestParseCRLRetainsEd25519SignatureAndMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -134,5 +179,48 @@ func TestParseCRLRejectsInconsistentDeltaNumber(t *testing.T) {
 				t.Errorf("parsed CRL number = %v, base = %v, want 7, %d", got.number, got.base, tc.base)
 			}
 		})
+	}
+}
+
+func TestCRLMailboxDomainComparison(t *testing.T) {
+	t.Parallel()
+
+	const address = `"team\"@Lab"@example.test`
+	if !equalCRLMailbox(address, `"team\"@Lab"@EXAMPLE.TEST`) {
+		t.Fatal("mailbox comparison did not fold the domain")
+	}
+	if equalCRLMailbox(address, `"team\"@lab"@example.test`) {
+		t.Fatal("mailbox comparison folded the quoted local part")
+	}
+}
+
+func TestRelativeCRLNamePreservesOpaqueRDN(t *testing.T) {
+	t.Parallel()
+
+	commonName := asn1.ObjectIdentifier{2, 5, 4, 3}
+	rdn := func(tag int, value string) []byte {
+		return der.Set(der.Seq(der.OID(commonName), der.Wrap(0, tag, false, []byte(value))))
+	}
+	issuer := rdn(asn1.TagT61String, "legacy issuer")
+	partition := rdn(asn1.TagUTF8String, "partition")
+	resolved, err := crlPointNames(t.Context(), crlDistributionPoint{relative: partition}, der.Seq(issuer))
+	if err != nil || len(resolved) != 1 {
+		t.Fatalf("relative CRL name = %d names, %v, want one resolved name", len(resolved), err)
+	}
+
+	for _, tc := range []struct {
+		value []byte
+		match bool
+	}{
+		{partition, true},
+		{rdn(asn1.TagUTF8String, "other partition"), false},
+	} {
+		fullName, err := crlDirectoryName(t.Context(), der.Seq(issuer, tc.value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := equalCRLGeneralName(resolved[0], fullName); got != tc.match {
+			t.Errorf("relative name equals complete name %x = %t, want %t", fullName.value, got, tc.match)
+		}
 	}
 }

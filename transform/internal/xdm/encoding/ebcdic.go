@@ -59,37 +59,45 @@ func cp1141Table() [singleByteCodePageEntries]rune {
 // newCodePage1141 builds the forward and reverse tables once for this codec.
 // The codec and its transformers only read these tables after construction.
 func newCodePage1141() enc.Encoding {
-	forward := cp1141Table()
-
-	reverse := make(map[rune]byte, len(forward))
-	for i, r := range forward {
-		reverse[r] = byte(i)
-	}
-
-	return &ebcdicEncoding{forward: forward, reverse: reverse}
+	return newSingleByteEncoding("IBM1141", cp1141Table())
 }
 
-type ebcdicEncoding struct {
+func newSingleByteEncoding(label string, forward [singleByteCodePageEntries]rune) enc.Encoding {
+	reverse := make(map[rune]byte, len(forward))
+	for octet, char := range forward {
+		if char != utf8.RuneError {
+			reverse[char] = byte(octet)
+		}
+	}
+
+	return &singleByteEncoding{label: label, forward: forward, reverse: reverse}
+}
+
+type singleByteEncoding struct {
+	label   string
 	forward [singleByteCodePageEntries]rune
 	reverse map[rune]byte
 }
 
-func (e *ebcdicEncoding) NewDecoder() *enc.Decoder {
-	return &enc.Decoder{Transformer: &ebcdicDecoder{table: &e.forward}}
+func (e *singleByteEncoding) NewDecoder() *enc.Decoder {
+	return &enc.Decoder{Transformer: &singleByteDecoder{table: &e.forward}}
 }
 
-func (e *ebcdicEncoding) NewEncoder() *enc.Encoder {
-	return &enc.Encoder{Transformer: &ebcdicEncoder{table: e.reverse}}
+func (e *singleByteEncoding) NewEncoder() *enc.Encoder {
+	return &enc.Encoder{Transformer: &singleByteEncoder{label: e.label, table: e.reverse}}
 }
 
-type ebcdicDecoder struct {
+type singleByteDecoder struct {
 	transform.NopResetter
 	table *[singleByteCodePageEntries]rune
 }
 
-func (d *ebcdicDecoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+func (d *singleByteDecoder) Transform(dst, src []byte, _ bool) (nDst, nSrc int, err error) {
 	for nSrc < len(src) {
 		r := d.table[src[nSrc]]
+		if r == utf8.RuneError {
+			return nDst, nSrc, ErrInvalidEncodedChar
+		}
 
 		size := utf8.RuneLen(r)
 		if nDst+size > len(dst) {
@@ -105,12 +113,13 @@ func (d *ebcdicDecoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, 
 	return
 }
 
-type ebcdicEncoder struct {
+type singleByteEncoder struct {
 	transform.NopResetter
+	label string
 	table map[rune]byte
 }
 
-func (e *ebcdicEncoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
+func (e *singleByteEncoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, err error) {
 	for nSrc < len(src) {
 		r, size := utf8.DecodeRune(src[nSrc:])
 		if r == utf8.RuneError && size <= malformedUTF8Width {
@@ -127,7 +136,7 @@ func (e *ebcdicEncoder) Transform(dst, src []byte, atEOF bool) (nDst, nSrc int, 
 
 		b, ok := e.table[r]
 		if !ok {
-			return nDst, nSrc, fmt.Errorf("encoding: character %U cannot be represented in IBM1141", r)
+			return nDst, nSrc, fmt.Errorf("encoding: character %U cannot be represented in %s", r, e.label)
 		}
 
 		dst[nDst] = b

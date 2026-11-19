@@ -23,6 +23,7 @@ import (
 const (
 	defaultPKCS12MACSaltBytes    = 16
 	minimumNonDefaultMACKeyBytes = 16
+	defaultPKCS12MACIterations   = 1
 	// BMP code units are big-endian two-octet values, including the password terminator.
 	bmpCodeUnitBytes = 2
 )
@@ -220,7 +221,7 @@ func pkcs12MACKey(state *passwordState, mac asn1.RawValue) (crypto.Hash, []byte,
 		return 0, nil, nil, ErrFormat
 	}
 
-	iterations := 1
+	iterations := defaultPKCS12MACIterations
 	if len(f) == macDataMaximumFields {
 		iterations, err = integer(f[2])
 		if err != nil {
@@ -299,5 +300,11 @@ func encodePKCS12MACParts(state *passwordState, message derParts, options PKCS12
 		return nil, err
 	}
 
-	return der.Seq(der.Seq(alg, der.Octets(h.Sum(nil))), der.Octets(salt), der.Int(options.Encryption.Iterations)), state.ctx.Err()
+	var iterations []byte
+	// DER omits the MacData iterations DEFAULT, including the PBMAC1 placeholder.
+	if options.Encryption.Iterations != defaultPKCS12MACIterations {
+		iterations = der.Int(options.Encryption.Iterations)
+	}
+
+	return der.Seq(der.Seq(alg, der.Octets(h.Sum(nil))), der.Octets(salt), iterations), state.ctx.Err()
 }

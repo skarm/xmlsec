@@ -40,7 +40,7 @@ type CipherResolver = resource.Resolver
 type CipherResolverFunc = resource.ResolverFunc
 
 // ExternalCipherReference permits one exact absolute ciphertext URI. The strict
-// entry points require inline EncryptedKey and deny empty/same-document URIs;
+// entry points keep wrapped keys inline and deny empty/same-document URIs;
 // KeyGraphOptions separately enables bounded key relationships and local cipher
 // references. External ciphertext is raw bytes or one XMLDSig base64 transform,
 // without fragments or arbitrary transform programs. Resolving bytes asserts no trust:
@@ -259,14 +259,23 @@ func readCiphertext(ctx context.Context, source io.Reader, maximum int) ([]byte,
 		chunk := make([]byte, min(externalCipherChunkBytes, maximum-total+1))
 
 		n, err := io.ReadFull(reader, chunk)
+		if err == io.ErrUnexpectedEOF { //nolint:errorlint // Only the exact ReadFull sentinel is ambiguous.
+			// ReadFull synthesizes UnexpectedEOF for a short read terminated
+			// by EOF. Read the retained terminal error to distinguish it from
+			// an UnexpectedEOF reported by the resource itself.
+			var probe [1]byte
+
+			_, err = reader.Read(probe[:])
+		}
+
 		if n > 0 {
 			chunks = append(chunks, chunk[:n])
 			total += n
 		}
 
 		if err != nil {
-			// ReadFull's bare sentinels finish the stream; joined source failures do not.
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
+			// Only bare EOF finishes the stream successfully.
+			if err != io.EOF { //nolint:errorlint // Wrapped or joined EOF is a resource failure.
 				return nil, err
 			}
 

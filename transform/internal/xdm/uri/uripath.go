@@ -14,18 +14,16 @@
 package uripath
 
 import (
+	"net/url"
 	"path"
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 )
 
-// File-URI prefixes preserve their serialized spelling. Scheme detection requires
-// at least two characters to distinguish a one-letter Windows drive; drive prefix
+// Scheme detection requires at least two characters to distinguish a one-letter Windows drive; drive prefix
 // widths count bytes and the filename separator is the legacy filename hint.
 const (
-	fileURISchemePrefix   = lexicon.SchemeFile + ":"
-	fileURIDrivePrefix    = fileURISchemePrefix + "///"
 	minURISchemeLength    = 2
 	drivePrefixBytes      = 2
 	filenameHintSeparator = '.'
@@ -130,19 +128,32 @@ func IsAbsolutePath(s string) bool {
 	return IsPOSIXAbsolute(s) || IsWindowsAbsolute(s)
 }
 
-// WindowsToFileURI converts a Windows absolute path into a "file:" URI. It
-// normalizes backslashes to forward slashes and prefixes "file:///" for a
-// drive-letter path ("C:\\a\\b" -> "file:///C:/a/b") or "file://" for a UNC
-// path ("\\\\server\\share" -> "file://server/share"). s MUST be a Windows
-// absolute path (see IsWindowsAbsolute); callers gate on that first.
-func WindowsToFileURI(s string) string {
-	slashed := ToSlash(s)
-	if HasWindowsDrivePrefix(s) {
-		return fileURIDrivePrefix + slashed
+// FileURIFromPath encodes an absolute POSIX or Windows native path as a file
+// URI. A Windows UNC server becomes the authority. Path data is escaped even
+// when it already contains a percent sign. Callers must check IsAbsolutePath.
+func FileURIFromPath(s string) string {
+	file := url.URL{Scheme: lexicon.SchemeFile}
+
+	switch {
+	case HasWindowsDrivePrefix(s):
+		file.Path = "/" + ToSlash(s)
+	case IsWindowsAbsolute(s):
+		slashed := ToSlash(s)
+		if unc, ok := strings.CutPrefix(slashed, "//"); ok {
+			host, tail, hasPath := strings.Cut(unc, "/")
+			file.Host = host
+
+			if hasPath {
+				file.Path = "/" + tail
+			}
+		} else {
+			file.Path, file.OmitHost = slashed, true
+		}
+	default:
+		file.Path = s
 	}
-	// UNC: "//server/share" already begins with the two slashes after
-	// normalization, so "file:" + slashed yields "file://server/share".
-	return fileURISchemePrefix + slashed
+
+	return file.String()
 }
 
 // ToSlash replaces every backslash with a forward slash. Unlike
@@ -151,6 +162,33 @@ func WindowsToFileURI(s string) string {
 // testable — on POSIX as well.
 func ToSlash(s string) string {
 	return strings.ReplaceAll(s, "\\", "/")
+}
+
+// SplitLocalVolume separates the drive or ordinary UNC share from a local path
+// already normalized to forward slashes.
+func SplitLocalVolume(s string) (volume, tail string) {
+	if HasWindowsDrivePrefix(s) {
+		return s[:drivePrefixBytes], s[drivePrefixBytes:]
+	}
+
+	rest, ok := strings.CutPrefix(s, "//")
+	if !ok {
+		return "", s
+	}
+
+	server, rest, ok := strings.Cut(rest, "/")
+	if !ok || server == "" || server == "." || server == "?" {
+		return "", s
+	}
+
+	share, _, _ := strings.Cut(rest, "/")
+	if share == "" {
+		return "", s
+	}
+
+	end := len("//") + len(server) + len("/") + len(share)
+
+	return s[:end], s[end:]
 }
 
 // JoinLocalBaseDir resolves a relative local-filesystem ref against the
@@ -167,7 +205,29 @@ func ToSlash(s string) string {
 // known not to be absolute under either OS convention; an absolute ref should
 // be returned verbatim by the caller before reaching here.
 func JoinLocalBaseDir(baseDir, ref string) string {
-	return path.Join(ToSlash(baseDir), ToSlash(ref))
+	volume, dir := SplitLocalVolume(ToSlash(baseDir))
+	if volume != "" {
+		return volume + path.Join("/", dir, ToSlash(ref))
+	}
+
+	return path.Join(dir, ToSlash(ref))
+}
+
+// JoinLocalBaseFile resolves a relative local path from the directory of a
+// local file, preserving a drive or UNC share in the resulting path.
+func JoinLocalBaseFile(base, ref string) string {
+	return JoinLocalBaseDir(LocalFileDir(base), ref)
+}
+
+// LocalFileDir returns the containing directory in forward-slash form without
+// discarding a drive or UNC share.
+func LocalFileDir(base string) string {
+	volume, tail := SplitLocalVolume(ToSlash(base))
+	if volume != "" && tail == "" {
+		return volume + "/"
+	}
+
+	return volume + path.Dir(tail)
 }
 
 // LocalBaseDir derives the containing directory of a local-filesystem base
@@ -192,7 +252,7 @@ func LocalBaseDir(base string) string {
 		return slashed
 	}
 
-	return path.Dir(slashed)
+	return LocalFileDir(slashed)
 }
 
 // SlashDir returns the directory portion of a forward-slash path, equivalent to

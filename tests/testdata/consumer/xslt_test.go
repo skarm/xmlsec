@@ -470,7 +470,9 @@ func TestEvaluationCachesReleaseSourceBuffers(t *testing.T) {
 }
 
 func TestXSLTSmallResultsReleaseSourceText(t *testing.T) {
-	engine := newEngine(t, transform.Config{})
+	// The retention fixture parses eight 1 MiB documents. Allow the
+	// instrumented parser time to finish under the race detector.
+	engine := newEngine(t, transform.Config{Limits: transform.Limits{Timeout: 15 * time.Second}})
 	sheet := compileSheet(t, engine, `<xsl:template match="/"><r><xsl:value-of select="substring-before(/r, '|')"/></r></xsl:template>`)
 	retained := retainedHeapDuring(t, func() any {
 		results := make([]*transform.Result, 8)
@@ -569,8 +571,11 @@ func TestXSLTReusesImmutableTextStorage(t *testing.T) {
 						return err
 					}
 					actual, err := result.Primary().Text()
-					if err != nil || actual != text {
-						return fmt.Errorf("text result changed: %v", err)
+					if err != nil {
+						return err
+					}
+					if actual != text {
+						return errors.New("text result differs from input")
 					}
 					return nil
 				})
@@ -598,8 +603,11 @@ func TestXSLTTextCopyHonorsOutputBudgetBeforeAllocation(t *testing.T) {
 		sheet := compileSheet(t, engine, body)
 		allocated := allocatedDuring(t, func() error {
 			result, err := sheet.Execute(t.Context(), input, transform.XSLTContext{})
-			if result != nil || !errors.Is(err, transform.ErrLimit) {
-				return fmt.Errorf("copy bypassed the output budget: %v", err)
+			if result != nil || err == nil {
+				return errors.New("copy returned a result or success despite output budget")
+			}
+			if !errors.Is(err, transform.ErrLimit) {
+				return fmt.Errorf("expected output limit: %w", err)
 			}
 			return nil
 		})
@@ -655,8 +663,9 @@ func TestNormalizationPeakHeap(t *testing.T) {
 					t.Fatal("normalization copied the complete value or each normalized block", allocation)
 				}
 			}
-			var peaks []uint64
-			for _, size := range []int{16 << 10, 1 << 20} {
+			sizes := []int{16 << 10, 1 << 20}
+			peaks := make([]uint64, 0, len(sizes))
+			for _, size := range sizes {
 				input := strings.Repeat("e\u0301", size)
 				result, err := sheet.CallTemplate(t.Context(), nil, document.Name{Local: returnedFunctionTemplate}, transform.XSLTContext{Parameters: transform.Bindings{{Local: "data"}: transform.Values(transform.String(input))}})
 				if err != nil {

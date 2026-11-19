@@ -1,6 +1,9 @@
 package xslt //nolint:testpackage // Exercises xsl:number through the internal stylesheet compiler.
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNumberSelectCountAndFrom(t *testing.T) {
 	t.Parallel()
@@ -32,6 +35,10 @@ func TestNumberFormatsRoundedValuesAndStartOffsets(t *testing.T) {
 		{"rounding_and_offsets_apply_per_component", `value="(2.5, 4.4, 9)" start-at="2 10" format="(01-01)"`, "(04-13-18)", ""},
 		{"english_ordinal_exceptions", `value="(11, 22, 113)" format="1" ordinal="yes" lang="en"`, "11th.22nd.113th", ""},
 		{"words_for_number_list", `value="(12, 40)" format="w" lang="en"`, "twelve.forty", ""},
+		{"unary_alphabet_small_values", `value="(0, 1, 2)" format="ª"`, "0.ª.ªª", ""},
+		{"unary_alphabet_at_implementation_limit", `value="64" format="ª"`, strings.Repeat("ª", 64), ""},
+		{"unary_alphabet_decimal_fallback_keeps_grouping", `value="65" format="[ª]" grouping-size="1" grouping-separator="·"`, "[6·5]", ""},
+		{"supported_extra_alphabets", `value="(2, 2)" format="α/а"`, "β/б", ""},
 		{"invalid_dynamic_letter_value", `value="1" letter-value="{'unknown'}"`, "", "XTDE0030"},
 		{"invalid_dynamic_start_at", `value="2" start-at="{'1 invalid'}"`, "", "XTDE0030"},
 		{"infinite_value_has_no_ordinal", `value="xs:double('INF')"`, "", "XTDE0980"},

@@ -137,6 +137,47 @@ func decode(t *testing.T, data []byte, out any) {
 	}
 }
 
+func matchesProbeOutcome(result map[string]json.RawMessage, success bool) bool {
+	if result == nil {
+		return false
+	}
+
+	raw, present := result["error"]
+	if success {
+		return !present
+	}
+
+	var message string
+
+	return present && json.Unmarshal(raw, &message) == nil && message != ""
+}
+
+func TestProbeOutcomeContract(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		raw           string
+		success, want bool
+	}{
+		{`{}`, true, true},
+		{`{"data":"YQ=="}`, true, true},
+		{`null`, true, false},
+		{`{}`, false, false},
+		{`{"error":"operation refused"}`, false, true},
+		{`{"error":"operation refused"}`, true, false},
+		{`{"error":null}`, false, false},
+		{`{"error":""}`, false, false},
+		{`{"error":false}`, false, false},
+		{`{"error":null}`, true, false},
+	} {
+		var response map[string]json.RawMessage
+		decode(t, []byte(test.raw), &response)
+		if got := matchesProbeOutcome(response, test.success); got != test.want {
+			t.Errorf("probe response %s for success = %t: accepted = %t, want %t", test.raw, test.success, got, test.want)
+		}
+	}
+}
+
 func probe(t *testing.T, fixture *interopFixture, name string, task any, success bool) map[string]json.RawMessage {
 	t.Helper()
 
@@ -150,7 +191,7 @@ func probe(t *testing.T, fixture *interopFixture, name string, task any, success
 	var result map[string]json.RawMessage
 	decode(t, raw, &result)
 
-	if (len(result["error"]) == 0) != success {
+	if !matchesProbeOutcome(result, success) {
 		t.Fatalf("probe %s: expected success=%v: %s", name, success, raw)
 	}
 

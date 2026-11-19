@@ -21,9 +21,37 @@ type overrideSet struct {
 	variables      map[string]*variable
 	params         map[string]*param
 	attributeSets  map[string]*attributeSetDef
-	// excluded holds the xsl:override elements and override declarations
-	// that use-when="false()" removed; collectOverrideNames skips them.
-	excluded map[*xdm.Element]struct{}
+}
+
+// componentNames retains the symbolic names resolved during compilation.
+// Anonymous template rules belong to a mode and have no name of their own.
+func (o *overrideSet) componentNames() map[string]struct{} {
+	if o == nil {
+		return nil
+	}
+
+	names := make(map[string]struct{}, len(o.namedTemplates)+len(o.functions)+len(o.variables)+len(o.params)+len(o.attributeSets))
+	for name := range o.namedTemplates {
+		names[xslElemTemplate+":"+name] = struct{}{}
+	}
+
+	for key := range o.functions {
+		names[xslElemFunction+":"+functionVisKey(key.Name, key.Arity)] = struct{}{}
+	}
+
+	for name := range o.variables {
+		names[xslElemVariable+":"+name] = struct{}{}
+	}
+
+	for name := range o.params {
+		names[xslElemVariable+":"+name] = struct{}{}
+	}
+
+	for name := range o.attributeSets {
+		names[xslElemAttributeSet+":"+name] = struct{}{}
+	}
+
+	return names
 }
 
 // standardAttrScope holds the compiler settings pushStandardAttrs replaced,
@@ -47,7 +75,6 @@ func (c *compiler) processOverrides(ctx context.Context, usePackageElem *xdm.Ele
 		variables:      make(map[string]*variable),
 		params:         make(map[string]*param),
 		attributeSets:  make(map[string]*attributeSetDef),
-		excluded:       make(map[*xdm.Element]struct{}),
 	}
 
 	scope, err := c.pushStandardAttrs(ctx, usePackageElem)
@@ -144,7 +171,6 @@ func (c *compiler) compileOverrideChildren(ctx context.Context, overrideElem *xd
 	}
 
 	if excluded {
-		oset.excluded[overrideElem] = struct{}{}
 		return nil
 	}
 
@@ -190,7 +216,6 @@ func (c *compiler) compileOverrideChild(ctx context.Context, elem *xdm.Element, 
 	}
 
 	if excluded {
-		oset.excluded[elem] = struct{}{}
 		return nil
 	}
 
@@ -323,30 +348,18 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 
 	c.collectNamespaces(ctx, elem)
 
-	var qn xpath.QualifiedName
+	qn, err := functionName(name, c.nsBindings)
+	if err != nil {
+		return nil, xpath.QualifiedName{}, err
+	}
 
-	if strings.HasPrefix(name, "Q{") {
-		closeBrace := strings.IndexByte(name, '}')
-		if closeBrace < 0 {
-			return nil, xpath.QualifiedName{}, staticError(errCodeXTSE0010, "malformed EQName in xsl:function name %q", name)
-		}
+	newEachTime, err := functionNewEachTime(elem)
+	if err != nil {
+		return nil, xpath.QualifiedName{}, err
+	}
 
-		uri := name[2:closeBrace]
-		local := name[closeBrace+1:]
-		qn = xpath.QualifiedName{URI: uri, Name: local}
-	} else if prefix, local, ok := strings.Cut(name, ":"); ok {
-		uri := c.nsBindings[prefix]
-		if uri == "" {
-			uri = c.stylesheet.namespaces[prefix]
-		}
-
-		if uri == "" {
-			return nil, xpath.QualifiedName{}, staticError(errCodeXTSE0010, "unresolved namespace prefix %q in xsl:function name %q", prefix, name)
-		}
-
-		qn = xpath.QualifiedName{URI: uri, Name: local}
-	} else {
-		return nil, xpath.QualifiedName{}, staticError(errCodeXTSE0010, "xsl:function name %q must have a namespace prefix", name)
+	if err := c.validateFunctionParameters(elem); err != nil {
+		return nil, xpath.QualifiedName{}, err
 	}
 
 	savedExpandText := c.expandText
@@ -357,7 +370,7 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 		}
 	}
 
-	body, params, err := c.compileTemplateBody(ctx, elem)
+	_, body, params, err := c.compileTemplateBodyEx(ctx, elem, true)
 	c.expandText = savedExpandText
 
 	if err != nil {
@@ -374,7 +387,7 @@ func (c *compiler) compileOverrideFunction(ctx context.Context, elem *xdm.Elemen
 		OwnerPackage: c.stylesheet,
 	}
 	fn.signatureTypeKey = c.declarationTypeKey(elem, fn.As)
-	fn.NewEachTime = getAttr(elem, nameNewEachTime)
+	fn.NewEachTime = newEachTime
 	fn.Streamability = getAttr(elem, nameStreamability)
 
 	pkgFn := pkg.functions[funcKey{Name: qn, Arity: len(params)}]
@@ -502,7 +515,12 @@ func (c *compiler) compileOverrideTemplate(ctx context.Context, elem *xdm.Elemen
 	tmpl.Body = body
 
 	tmpl.As = getAttr(elem, nameAs)
+
 	tmpl.signatureTypeKey = c.declarationTypeKey(elem, tmpl.As)
+	if tmpl.As != "" {
+		tmpl.returnNamespaces = inScopeNamespaces(elem)
+		tmpl.returnDefaultNS, tmpl.hasReturnDefaultNS = c.declarationDefaultNamespace(elem)
+	}
 
 	tmpl.contextTypeKey = c.declarationTypeKey(elem, lexicon.NodeTestItem)
 	if vis := getAttr(elem, xslAttrVisibility); vis != "" {

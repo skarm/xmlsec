@@ -349,6 +349,10 @@ func compilePrepared(ctx context.Context, doc *xdm.Document, cfg *compileConfig)
 		return nil, err
 	}
 
+	if err := c.checkOutputDeclarationConflicts(); err != nil {
+		return nil, err
+	}
+
 	if err := c.completeTopLevelDeclarations(ctx, root, cfg); err != nil {
 		return nil, err
 	}
@@ -392,12 +396,14 @@ type compiler struct {
 	staticImportScope          *staticImportScope
 	staticValueScopes          map[string]*staticImportScope
 	staticDeclarations         map[string][]staticDeclarationBinding
-	staticVars                 map[string]xdm.Sequence         // static="yes" params evaluated at compile time
-	externalStaticParams       map[string]xdm.Sequence         // externally supplied static param overrides
-	charMapModuleKeys          map[string]string               // character-map name -> moduleKey that first defined it (for XTSE1580)
+	staticVars                 map[string]xdm.Sequence // static="yes" params evaluated at compile time
+	externalStaticParams       map[string]xdm.Sequence // externally supplied static param overrides
+	characterMapDeclarations   map[string]characterMapDeclaration
+	shadowedCharacterMaps      []characterMapDependencies
+	decimalFormatProperties    map[xpath.QualifiedName]map[string]decimalFormatProperty
 	moduleSources              map[*xdm.Document]*xdm.Document // original source of privately prepared modules
 	usedModes                  map[string]struct{}             // all mode names referenced (for XTSE3085)
-	outputAllowDupExplicit     map[string]struct{}             // per-output-name: allow-duplicate-names explicitly set (compile-time merge bookkeeping, keyed like stylesheet.outputs)
+	outputDeclarations         map[string]*outputDeclarations  // direct values and scalar precedence by output definition
 	localTemplateNames         map[string]struct{}             // pre-scanned named templates in this module (for XTSE3055)
 	overrideDecls              map[string]struct{}             // "kind:name" of every xsl:override declaration so far (for XTSE3055)
 	localVarNames              map[string]struct{}             // pre-scanned variable names in this module (for XTSE3050)
@@ -651,7 +657,7 @@ func (c *compiler) checkQNamePrefix(_ context.Context, name, context string) err
 		return staticError(errCodeXTSE0020, "invalid name %q on %s", name, context)
 	}
 
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		return nil // EQName, no prefix to resolve
 	}
 
@@ -768,12 +774,13 @@ func (c *compiler) staticFnTransform(ctx context.Context, args []xdm.Sequence) (
 	// relative stylesheet-location paths resolve correctly. The compile-time
 	// URIResolver is propagated so fn:transform stylesheet-location loading is
 	// permitted at compile time exactly when the compiler opts in (it is
-	// default-deny without a resolver). The compiler's MaxResourceBytes cap is
+	// default-deny without a resolver). Package loading uses the configured
+	// package resolver. The compiler's MaxResourceBytes cap is
 	// seeded on both the temp Stylesheet (consulted by nested compiles via
 	// newNestedCompiler) and the transformConfig (consulted by runtime reads)
 	// so Compiler.MaxResourceBytes governs static-variable transform() loads.
 	ec := &execContext{
-		stylesheet:          &Stylesheet{baseURI: c.baseURI, uriResolver: c.resolver, maxResourceBytes: c.maxResourceBytes, parseOptions: c.parseOptions},
+		stylesheet:          &Stylesheet{baseURI: c.baseURI, uriResolver: c.resolver, packageResolver: c.packageResolver, maxResourceBytes: c.maxResourceBytes, parseOptions: c.parseOptions},
 		resultDoc:           xdm.NewDefaultDocument(),
 		globalVars:          make(map[string]xdm.Sequence),
 		outputStack:         []*outputFrame{{doc: xdm.NewDefaultDocument(), current: xdm.NewDefaultDocument()}},
@@ -1199,11 +1206,11 @@ func (c *compiler) completeTopLevelDeclarations(ctx context.Context, root *xdm.E
 	}
 
 	// XTSE1290: check deferred decimal-format conflicts after all imports
-	for qn, conflictPrec := range c.stylesheet.decimalFmtConflicts {
-		actualPrec := c.stylesheet.decimalFmtPrec[qn]
-		if actualPrec == conflictPrec {
-			return staticError(errCodeXTSE1290,
-				"conflicting xsl:decimal-format declarations")
+	for _, properties := range c.decimalFormatProperties {
+		for _, property := range properties {
+			if property.conflict {
+				return staticError(errCodeXTSE1290, "conflicting xsl:decimal-format declarations")
+			}
 		}
 	}
 
@@ -1300,8 +1307,7 @@ func (c *compiler) validateDeferredReferences(ctx context.Context) error {
 		return err
 	}
 
-	// XTSE1590: validate character map references.
-	if err := checkCharacterMapRefs(c.stylesheet); err != nil {
+	if err := c.checkCharacterMapRefs(ctx); err != nil {
 		return err
 	}
 
@@ -1574,6 +1580,12 @@ func reservedNamespaceForProcessor(uri string, processor int) bool {
 
 func compilePreparedModeDefs(c *compiler) error {
 	for name, md := range c.stylesheet.modeDefs {
+		// Package overrides are registered in the used package's rule list.
+		// The local list may only hold ordinary rules for locally defined modes.
+		if md.OwnerPackage != nil && len(c.stylesheet.modeTemplates[name]) != 0 {
+			return staticError(errCodeXTSE3050, "local template rules cannot extend accepted mode %q outside xsl:override", name)
+		}
+
 		if md.conflictOnNoMatch {
 			return staticError(errCodeXTSE0545, "conflicting on-no-match values for mode %q", name)
 		}
@@ -1643,54 +1655,107 @@ func checkDeclaredModes(ss *Stylesheet, usedModes map[string]struct{}) error {
 	return nil
 }
 
-// checkCharacterMapRefs validates XTSE1590: all character map references
-// (in use-character-maps attributes) must resolve to defined character maps.
-func checkCharacterMapRefs(ss *Stylesheet) error {
+// checkCharacterMapRefs reports unresolved declarations and checks dependencies
+// after every stylesheet module has contributed its import precedence.
+func (c *compiler) checkCharacterMapRefs(ctx context.Context) error {
+	for name, declaration := range c.characterMapDeclarations {
+		if declaration.conflict {
+			return staticError(errCodeXTSE1580, "duplicate character-map declaration %q", name)
+		}
+	}
+
+	ss := c.stylesheet
 	for _, cm := range ss.characterMaps {
-		for _, ref := range cm.UseCharacterMaps {
-			if _, ok := ss.characterMaps[ref]; !ok {
-				return staticError(errCodeXTSE1590,
-					"character map %q references undefined character map %q", cm.Name, ref)
-			}
-		}
-	}
-	// XTSE1600: detect circular character-map references
-	var detectCycle func(name string, visited map[string]struct{}) error
-
-	detectCycle = func(name string, visited map[string]struct{}) error {
-		if _, inPath := visited[name]; inPath {
-			return staticError(errCodeXTSE1600,
-				"circular reference in character-map %q", name)
-		}
-
-		cm, ok := ss.characterMaps[name]
-		if !ok {
-			return nil
-		}
-
-		visited[name] = struct{}{}
-		for _, ref := range cm.UseCharacterMaps {
-			if err := detectCycle(ref, visited); err != nil {
-				return err
-			}
-		}
-
-		delete(visited, name)
-
-		return nil
-	}
-	for name := range ss.characterMaps {
-		if err := detectCycle(name, make(map[string]struct{})); err != nil {
+		if err := checkCharacterMapUses(ctx, ss.characterMaps, cm.Name, cm.UseCharacterMaps); err != nil {
 			return err
 		}
 	}
 
+	for _, cm := range c.shadowedCharacterMaps {
+		if err := checkCharacterMapUses(ctx, ss.characterMaps, cm.name, cm.uses); err != nil {
+			return err
+		}
+	}
+
+	if err := checkCharacterMapCycles(ctx, ss.characterMaps); err != nil {
+		return err
+	}
+
 	for _, outDef := range ss.outputs {
 		for _, ref := range outDef.UseCharacterMaps {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
 			if _, ok := ss.characterMaps[ref]; !ok {
 				return staticError(errCodeXTSE1590,
 					"xsl:output references undefined character map %q", ref)
 			}
+		}
+	}
+
+	return nil
+}
+
+func checkCharacterMapUses(ctx context.Context, definitions map[string]*characterMapDef, name string, uses []string) error {
+	if err := xpath.Charge(ctx, 1); err != nil {
+		return err
+	}
+
+	for _, ref := range uses {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		if _, ok := definitions[ref]; !ok {
+			return staticError(errCodeXTSE1590, "character map %q references undefined character map %q", name, ref)
+		}
+	}
+
+	return nil
+}
+
+// checkCharacterMapCycles visits each declaration's dependencies once. A
+// reference to an active declaration closes a cycle (XTSE1600).
+func checkCharacterMapCycles(ctx context.Context, definitions map[string]*characterMapDef) error {
+	type visitState uint8
+
+	const (
+		active visitState = iota + 1
+		done
+	)
+
+	states := make(map[string]visitState, len(definitions))
+
+	var visit func(string) error
+
+	visit = func(name string) error {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return err
+		}
+
+		switch states[name] {
+		case active:
+			return staticError(errCodeXTSE1600, "circular reference in character-map %q", name)
+		case done:
+			return nil
+		}
+
+		states[name] = active
+		for _, ref := range definitions[name].UseCharacterMaps {
+			if err := visit(ref); err != nil {
+				return err
+			}
+		}
+
+		states[name] = done
+
+		return nil
+	}
+
+	for name := range definitions {
+		if err := visit(name); err != nil {
+			return err
 		}
 	}
 
@@ -1903,7 +1968,7 @@ func hasSignificantChildren(elem *xdm.Element) bool {
 }
 
 func isValidEQName(s string) bool {
-	if !strings.HasPrefix(s, "Q{") {
+	if !strings.HasPrefix(s, lexicon.EQNamePrefix) {
 		return false
 	}
 

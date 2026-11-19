@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -227,7 +229,7 @@ func consumeInput(ctx context.Context, path string, stdin io.Reader, maximum int
 
 	r := stdin
 
-	if path != "-" {
+	if path != stdioPath {
 		f, err := openRegular(path)
 		if err != nil {
 			return err
@@ -255,13 +257,21 @@ func consumeInput(ctx context.Context, path string, stdin io.Reader, maximum int
 	defer stop()
 
 	reader := &streamio.Reader{Context: ctx, Source: r, Limit: int64(maximum), LimitError: fmt.Errorf("input exceeds %d bytes", maximum)}
-	err := consume(reader)
 
-	if ce := ctx.Err(); ce != nil {
-		return ce
+	return withContextError(ctx, consume(reader))
+}
+
+func withContextError(ctx context.Context, err error) error {
+	canceled := ctx.Err()
+	if canceled == nil || errors.Is(err, canceled) {
+		return err
 	}
 
-	return err
+	if err == nil {
+		return canceled
+	}
+
+	return errors.Join(err, canceled)
 }
 
 func openRegular(path string) (*os.File, error) {
@@ -274,7 +284,7 @@ func openRegular(path string) (*os.File, error) {
 		return nil, fmt.Errorf("%s: input must be a regular file; use stdin for streams", path)
 	}
 
-	f, err := os.Open(path) // #nosec G304 G703 -- Only an explicit operator-selected local input is opened.
+	f, err := openLocalFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +320,7 @@ func interruptIO(ctx context.Context, v any) func() {
 }
 
 func readJSONFile(ctx context.Context, path string, target any) error {
-	if path == "" || path == "-" {
+	if path == "" || path == stdioPath {
 		return usageError("configuration must be a trusted local JSON file")
 	}
 
@@ -323,7 +333,7 @@ func readJSONFile(ctx context.Context, path string, target any) error {
 }
 
 func decodeJSON(raw []byte, target any) error {
-	// encoding/json otherwise accepts duplicate policy keys. Reject them before decoding.
+	// Bound nesting and reject exact duplicates even inside custom JSON unmarshaling.
 	d := json.NewDecoder(bytes.NewReader(raw))
 	if err := uniqueJSON(d, 0); err != nil {
 		return err
@@ -334,10 +344,9 @@ func decodeJSON(raw []byte, target any) error {
 		return errors.New("configuration must contain exactly one JSON value")
 	}
 
-	d = json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
-
-	return d.Decode(target)
+	// Keep legacy field matching while rejecting different names that map to
+	// the same struct field. Map keys still use their exact spelling.
+	return jsonv2.Unmarshal(raw, target, json.DefaultOptionsV1(), jsontext.AllowDuplicateNames(false), jsonv2.RejectUnknownMembers(true))
 }
 
 func uniqueJSON(d *json.Decoder, depth int) error {
@@ -408,36 +417,36 @@ type executionKey struct{}
 
 func registerExecutionFlags(fs *flag.FlagSet) *executionFlags {
 	e := &executionFlags{xml: document.DefaultLimits()}
-	fs.IntVar(&e.xml.MaxBytes, "max-input-bytes", e.xml.MaxBytes, "maximum main input and transform input bytes")
-	fs.IntVar(&e.xml.MaxDepth, "max-depth", e.xml.MaxDepth, "maximum XML nesting depth (1..512)")
-	fs.IntVar(&e.xml.MaxNodes, "max-nodes", e.xml.MaxNodes, "maximum parsed XML nodes")
-	fs.IntVar(&e.xml.MaxAttributesPerElement, "max-attributes", e.xml.MaxAttributesPerElement, "maximum attributes/namespaces per XML element")
-	fs.IntVar(&e.xml.MaxNodeSetNodes, "max-nodeset-nodes", e.xml.MaxNodeSetNodes, "maximum expanded node-set nodes")
-	fs.IntVar(&e.xml.MaxInScopeNamespaces, "max-namespaces", e.xml.MaxInScopeNamespaces, "maximum in-scope namespaces")
-	fs.IntVar(&e.output, "max-output-bytes", cliDefaultOutputBytes, "maximum output and transform output bytes")
-	fs.IntVar(&e.references, "max-references", cliDefaultReferences, "maximum direct signature references (1..64)")
-	fs.IntVar(&e.canonical, "max-canonical-bytes", cliDefaultCanonicalBytes, "aggregate signature digest/canonical byte budget")
-	fs.IntVar(&e.nodeVisits, "max-node-visits", cliDefaultNodeVisits, "aggregate signature transform node visits")
-	fs.IntVar(&e.transforms, "max-transforms", cliDefaultTransforms, "maximum transforms per reference (1..64)")
-	fs.DurationVar(&e.timeout, "timeout", cliDefaultOperationTimeout, "operation deadline, e.g. 30s; 0 has no deadline")
-	fs.StringVar(&e.policy, "policy", nameDefault, "signature policy: default, modern, pss or hmac (explicit shared secret)")
-	fs.Func("allowed-methods", "comma-separated signature method allowlist; overrides selected policy", func(value string) error {
+	fs.IntVar(&e.xml.MaxBytes, flagNameMaxInputBytes, e.xml.MaxBytes, "maximum main input and transform input bytes")
+	fs.IntVar(&e.xml.MaxDepth, flagNameMaxDepth, e.xml.MaxDepth, "maximum XML nesting depth (1..512)")
+	fs.IntVar(&e.xml.MaxNodes, flagNameMaxNodes, e.xml.MaxNodes, "maximum parsed XML nodes")
+	fs.IntVar(&e.xml.MaxAttributesPerElement, flagNameMaxAttributes, e.xml.MaxAttributesPerElement, "maximum attributes/namespaces per XML element")
+	fs.IntVar(&e.xml.MaxNodeSetNodes, flagNameMaxNodeSetNodes, e.xml.MaxNodeSetNodes, "maximum expanded node-set nodes")
+	fs.IntVar(&e.xml.MaxInScopeNamespaces, flagNameMaxNamespaces, e.xml.MaxInScopeNamespaces, "maximum in-scope namespaces")
+	fs.IntVar(&e.output, flagNameMaxOutputBytes, cliDefaultOutputBytes, "maximum output and transform output bytes")
+	fs.IntVar(&e.references, flagNameMaxReferences, cliDefaultReferences, "maximum direct signature references (1..64)")
+	fs.IntVar(&e.canonical, flagNameMaxCanonicalBytes, cliDefaultCanonicalBytes, "aggregate signature digest/canonical byte budget")
+	fs.IntVar(&e.nodeVisits, flagNameMaxNodeVisits, cliDefaultNodeVisits, "aggregate signature transform node visits")
+	fs.IntVar(&e.transforms, flagNameMaxTransforms, cliDefaultTransforms, "maximum transforms per reference (1..64)")
+	fs.DurationVar(&e.timeout, flagNameTimeout, cliDefaultOperationTimeout, "operation deadline, e.g. 30s; 0 has no deadline")
+	fs.StringVar(&e.policy, flagNamePolicy, nameDefault, "signature policy: default, modern, pss or hmac (explicit shared secret)")
+	fs.Func(flagNameAllowedMethods, "comma-separated signature method allowlist; overrides selected policy", func(value string) error {
 		e.methods = splitList(value)
 		return nil
 	})
-	fs.Func("allowed-digests", "comma-separated digest method allowlist", func(value string) error {
+	fs.Func(flagNameAllowedDigests, "comma-separated digest method allowlist", func(value string) error {
 		e.digests = splitList(value)
 		return nil
 	})
-	fs.StringVar(&e.programs, "allowed-programs", "", "trusted local JSON array of exact approved XPath/Filter2/XSLT transforms")
-	fs.IntVar(&e.minRSABits, "min-rsa-bits", cliMinRSABits, "minimum RSA modulus size")
-	fs.IntVar(&e.maxRSABits, "max-rsa-bits", cliDefaultMaxRSABits, "maximum RSA modulus size (up to 16384)")
-	fs.IntVar(&e.minPSSSalt, "min-pss-salt-bytes", cliDefaultMinimumPSSSaltBytes, "minimum generic RSA-PSS salt length")
-	fs.IntVar(&e.maxPSSSalt, "max-pss-salt-bytes", cliDefaultMaxPSSSaltBytes, "maximum generic RSA-PSS salt length")
-	fs.IntVar(&e.minHMACKey, "min-hmac-key-bytes", cliMinHMACKeyBytes, "minimum HMAC key bytes")
-	fs.IntVar(&e.maxHMACKey, "max-hmac-key-bytes", cliDefaultMaxHMACKeyBytes, "maximum HMAC key bytes")
-	fs.IntVar(&e.minHMACBits, "min-hmac-output-bits", cliMinHMACOutputBits, "minimum explicitly permitted HMAC tag size")
-	fs.BoolVar(&e.allowHMACTruncation, "allow-hmac-truncation", false, "explicitly allow bounded truncated HMAC tags")
+	fs.StringVar(&e.programs, flagNameAllowedPrograms, "", "trusted local JSON array of exact approved XPath/Filter2/XSLT transforms")
+	fs.IntVar(&e.minRSABits, flagNameMinRSABits, cliMinRSABits, "minimum RSA modulus size")
+	fs.IntVar(&e.maxRSABits, flagNameMaxRSABits, cliDefaultMaxRSABits, "maximum RSA modulus size (up to 16384)")
+	fs.IntVar(&e.minPSSSalt, flagNameMinPSSSaltBytes, cliDefaultMinimumPSSSaltBytes, "minimum generic RSA-PSS salt length")
+	fs.IntVar(&e.maxPSSSalt, flagNameMaxPSSSaltBytes, cliDefaultMaxPSSSaltBytes, "maximum generic RSA-PSS salt length")
+	fs.IntVar(&e.minHMACKey, flagNameMinHMACKeyBytes, cliMinHMACKeyBytes, "minimum HMAC key bytes")
+	fs.IntVar(&e.maxHMACKey, flagNameMaxHMACKeyBytes, cliDefaultMaxHMACKeyBytes, "maximum HMAC key bytes")
+	fs.IntVar(&e.minHMACBits, flagNameMinHMACOutputBits, cliMinHMACOutputBits, "minimum explicitly permitted HMAC tag size")
+	fs.BoolVar(&e.allowHMACTruncation, flagNameAllowHMACTruncation, false, "explicitly allow bounded truncated HMAC tags")
 
 	return e
 }
@@ -459,7 +468,7 @@ func writeOutputContext(ctx context.Context, path string, w io.Writer, b []byte)
 		return fmt.Errorf("output exceeds %d bytes", execution(ctx).output)
 	}
 
-	if path == "-" {
+	if path == stdioPath {
 		if file, ok := w.(*os.File); ok {
 			stream, cleanup, err := prepareFileIO(file)
 			if err != nil {
@@ -474,12 +483,7 @@ func writeOutputContext(ctx context.Context, path string, w io.Writer, b []byte)
 		defer stop()
 	}
 
-	err := writeAtomicOutput(ctx, path, w, b)
-	if ce := ctx.Err(); ce != nil {
-		return ce
-	}
-
-	return err
+	return withContextError(ctx, writeAtomicOutput(ctx, path, w, b))
 }
 
 func parseFlags(fs *flag.FlagSet, args []string) (bool, error) {
@@ -511,8 +515,21 @@ func parseHash(s string) (crypto.Hash, error) {
 	return 0, usageError("hash must be sha256, sha384 or sha512")
 }
 
+func readNonceFile(ctx context.Context, path string) ([]byte, error) {
+	nonce, err := readInputContext(ctx, path, nil, cliMaxNonceBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(nonce) == 0 {
+		return nil, usageError("-nonce-file must contain a nonempty nonce")
+	}
+
+	return nonce, nil
+}
+
 func jsonOutput(ctx context.Context, path string, w io.Writer, v any) error {
-	if path == "-" {
+	if path == stdioPath {
 		return produceOutput(ctx, path, w, func(dst io.Writer) error { return writeJSON(dst, v) })
 	}
 
@@ -523,11 +540,8 @@ func jsonOutput(ctx context.Context, path string, w io.Writer, v any) error {
 	err := writeAtomicOutputFunc(ctx, path, w, func(dst io.Writer) error {
 		return writeJSON(&streamio.Writer{Context: ctx, Target: dst, Limit: int64(limit), LimitError: fmt.Errorf("output exceeds %d bytes", limit)}, v)
 	})
-	if ce := ctx.Err(); ce != nil {
-		return ce
-	}
 
-	return err
+	return withContextError(ctx, err)
 }
 
 func readDocument(ctx context.Context, path string, stdin io.Reader) (doc *document.Document, err error) {
@@ -551,10 +565,10 @@ func produceOutput(ctx context.Context, path string, w io.Writer, produce func(i
 	limit := execution(ctx).output
 	limitErr := fmt.Errorf("output exceeds %d bytes", limit)
 
-	if path == "-" {
+	if path == stdioPath {
 		var output bytes.Buffer
 		if err := produce(&streamio.Writer{Context: ctx, Target: &output, Limit: int64(limit), LimitError: limitErr}); err != nil {
-			return err
+			return withContextError(ctx, err)
 		}
 
 		return writeOutputContext(ctx, path, w, output.Bytes())
@@ -570,11 +584,8 @@ func produceOutput(ctx context.Context, path string, w io.Writer, produce func(i
 
 		return buffered.Flush()
 	})
-	if ce := ctx.Err(); ce != nil {
-		return ce
-	}
 
-	return err
+	return withContextError(ctx, err)
 }
 
 func documentOutput(ctx context.Context, path string, w io.Writer, doc *document.Document) error {

@@ -161,19 +161,27 @@ func validate(ctx context.Context, ts []Transform, opt Options) error {
 		if !allowed(opt, t.Algorithm) {
 			return &StepError{i, t.Algorithm, ErrPolicy}
 		}
+	}
 
-		if len(t.InclusivePrefixes) > 0 && t.Algorithm != c14n.Exclusive && t.Algorithm != c14n.ExclusiveWithComments {
-			return &StepError{i, t.Algorithm, fmt.Errorf("%w: InclusiveNamespaces not applicable", ErrInput)}
-		}
+	return nil
+}
 
-		if len(t.InclusivePrefixes) > maximumInclusivePrefixes {
-			return &StepError{i, t.Algorithm, ErrLimit}
-		}
+func validateInclusivePrefixes(t Transform) error {
+	if len(t.InclusivePrefixes) == 0 {
+		return nil
+	}
 
-		for _, p := range t.InclusivePrefixes {
-			if p != lexicon.C14NDefaultPrefixToken && (!tree.NCName(p) || p == lexicon.PrefixXMLNS) {
-				return &StepError{i, t.Algorithm, fmt.Errorf("%w: inclusive prefix", ErrInput)}
-			}
+	if t.Algorithm != c14n.Exclusive && t.Algorithm != c14n.ExclusiveWithComments {
+		return fmt.Errorf("%w: InclusiveNamespaces not applicable", ErrInput)
+	}
+
+	if len(t.InclusivePrefixes) > maximumInclusivePrefixes {
+		return ErrLimit
+	}
+
+	for _, prefix := range t.InclusivePrefixes {
+		if prefix != lexicon.C14NDefaultPrefixToken && (!tree.NCName(prefix) || prefix == lexicon.PrefixXMLNS) {
+			return fmt.Errorf("%w: inclusive prefix", ErrInput)
 		}
 	}
 

@@ -2,12 +2,16 @@ package ecp_test
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,17 +30,80 @@ func TestPAOSNegotiation(t *testing.T) {
 	if !ecp.Negotiated(h) || strings.Contains(h.Get("Paos"), "'") {
 		t.Fatal("Errata E21/E54 negotiation")
 	}
-	for _, accept := range []string{"application/vnd.paos+xml;q=0", "application/vnd.paos+xml;q=0, */*;q=1", "text/html", "application/vnd.paos+xml;q=bogus"} {
+	for _, accept := range []string{
+		"application/vnd.paos+xml;q=0",
+		"application/vnd.paos+xml;q=0, */*;q=1",
+		"text/html",
+		"application/vnd.paos+xml;q=bogus",
+		"application/vnd.paos+xml;q=0x1p-1",
+		"application/vnd.paos+xml;q=5e-1",
+		"application/vnd.paos+xml;q=0.0001",
+		"application/vnd.paos+xml;charset=ISO-8859-1",
+		"application/vnd.paos+xml;charset=UTF-8;q=0, application/vnd.paos+xml;q=1",
+		"application/vnd.paos+xml;q=0;CHARSET=UTF-8, application/vnd.paos+xml;q=1",
+	} {
 		bad := h.Clone()
 		bad.Set("Accept", accept)
 		if ecp.Negotiated(bad) {
-			t.Fatalf("accepted %q", accept)
+			t.Errorf("accepted %q", accept)
+		}
+	}
+	for _, accept := range []string{
+		`text/plain;label="quoted, comma", application/vnd.paos+xml`,
+		`text/plain;label="escaped \", comma", application/vnd.paos+xml`,
+		`, application/vnd.paos+xml, , text/plain`,
+		`application/vnd.paos+xml;q=0.001`,
+		`application/vnd.paos+xml;q=1.`,
+		`Application/Vnd.Paos+Xml; ChArSeT="UTF-8"; Q=1.000`,
+		`application/vnd.paos+xml; charset=csUTF8`,
+		`application/vnd.paos+xml; q=1; charset=utf-8`,
+		`application/vnd.paos+xml; charset=ISO-8859-1;q=0, application/vnd.paos+xml;q=0.100`,
+		`application/*; charset=UTF-8;q=0, application/vnd.paos+xml;q=1`,
+	} {
+		good := h.Clone()
+		good.Set("Accept", accept)
+		if !ecp.Negotiated(good) {
+			t.Errorf("PAOS not negotiated for valid Accept list %q", accept)
 		}
 	}
 	bad := h.Clone()
 	bad.Set("Paos", `ver="urn:wrong"; "`+ecp.Namespace+`"`)
 	if ecp.Negotiated(bad) {
 		t.Fatal("wrong version")
+	}
+}
+
+func TestWriteChallengeNegotiatesActualCharset(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, generic, specific string
+		wantSuccess             bool
+	}{
+		{"matching range overrides generic", "application/vnd.paos+xml;q=0", "application/vnd.paos+xml; charset=UTF-8;q=1", true},
+		{"matching range refuses representation", "application/vnd.paos+xml;q=1", "application/vnd.paos+xml; charset=UTF-8;q=0", false},
+		{"inapplicable range leaves generic refusal", "application/vnd.paos+xml;q=0", "application/vnd.paos+xml; charset=ISO-8859-1;q=1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			request, envelope := challengeHTTPFixture(t)
+			request.Header.Set("Accept", tc.generic)
+			request.Header.Add("Accept", tc.specific)
+			writer := httptest.NewRecorder()
+			err := ecp.WriteChallenge(t.Context(), writer, request, envelope)
+			if !tc.wantSuccess {
+				if !errors.Is(err, ecp.ErrECP) || writer.Body.Len() != 0 || writer.Header().Get("Content-Type") != "" {
+					t.Fatalf("non-negotiated challenge wrote %d bytes with %q, error %v", writer.Body.Len(), writer.Header().Get("Content-Type"), err)
+				}
+				return
+			}
+
+			contentType := writer.Header().Get("Content-Type")
+			if err != nil || writer.Code != http.StatusOK || contentType != ecp.MediaType+"; charset=utf-8" || writer.Body.Len() == 0 {
+				t.Fatalf("negotiated challenge status %d with %q, %d bytes, error %v", writer.Code, contentType, writer.Body.Len(), err)
+			}
+		})
 	}
 }
 
@@ -103,6 +170,8 @@ func TestECPRoutingAndSignedBodies(t *testing.T) {
 			if err != nil || assertion.NameID() != "alice" {
 				t.Fatalf("SP assertion verification: %v", err)
 			}
+			checkPAOSDelivery(t, exchange, idpRaw, relay)
+
 			// Replace only the unsigned header, not signed Destination/Recipient.
 			mismatch := bytes.Replace(idpRaw, []byte(`AssertionConsumerServiceURL="`+acs+`"`), []byte(`AssertionConsumerServiceURL="https://attacker.test/collect"`), 1)
 			fault, err := exchange.Finish(t.Context(), mismatch, binding.SOAPOptions{})
@@ -126,6 +195,8 @@ func TestECPRoutingAndSignedBodies(t *testing.T) {
 			if !errors.As(err, &routingFault) || forwardedFault == nil {
 				t.Fatalf("IdP SOAP fault was not made deliverable to the SP: %v", err)
 			}
+			checkPAOSInvalidClient(t, exchange, idpRaw, faultInput)
+			checkPAOSCanceledResponse(t, exchange, idpRaw)
 			applicationFault := `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Header><private xmlns="urn:private">do not forward</private></s:Header><s:Body><s:Fault><faultcode xmlns:app="urn:application">app:AuthenticationFailed</faultcode><faultstring>denied</faultstring><detail><reason xmlns="urn:application">account disabled</reason></detail></s:Fault></s:Body></s:Envelope>`
 			forwardedFault, err = exchange.Finish(t.Context(), []byte(applicationFault), binding.SOAPOptions{})
 			if !errors.As(err, &routingFault) || forwardedFault == nil || routingFault.Code.Space != "urn:application" {
@@ -144,6 +215,120 @@ func TestECPRoutingAndSignedBodies(t *testing.T) {
 	}
 }
 
+func checkPAOSDelivery(t *testing.T, exchange *ecp.Exchange, raw []byte, relay string) {
+	t.Helper()
+
+	var requests atomic.Int32
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/acs" {
+			t.Errorf("unexpected PAOS destination %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+
+			return
+		}
+
+		payload, gotRelay, err := ecp.ReadResponse(r.Context(), r, "paos-correlation", binding.SOAPOptions{})
+		if err != nil || payload == nil || gotRelay == nil || *gotRelay != relay {
+			t.Errorf("ReadResponse = %v, %v, %v", payload != nil, gotRelay, err)
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		if id, _ := payload.Root().Attribute(document.Name{Local: "InResponseTo"}); id != "_ecp" {
+			t.Errorf("delivered InResponseTo = %q, want _ecp", id)
+		}
+
+		http.Redirect(w, r, "/after-login", http.StatusTemporaryRedirect)
+	}))
+
+	response, err := exchange.Deliver(t.Context(), raw, server.Client(), binding.SOAPOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusTemporaryRedirect || response.Header.Get("Location") != "/after-login" || requests.Load() != 1 {
+		t.Fatalf("PAOS delivery returned status=%d location=%q after %d requests", response.StatusCode, response.Header.Get("Location"), requests.Load())
+	}
+}
+
+func checkPAOSInvalidClient(t *testing.T, exchange *ecp.Exchange, response, fault []byte) {
+	t.Helper()
+
+	var transport *http.Transport
+	var jar *cookiejar.Jar
+	for _, client := range []*http.Client{{Transport: transport}, {Jar: jar}} {
+		got, err := exchange.Deliver(t.Context(), response, client, binding.SOAPOptions{})
+		if got != nil {
+			err = errors.Join(err, got.Body.Close())
+		}
+
+		if got != nil || !errors.Is(err, ecp.ErrECP) {
+			t.Errorf("deliver response with invalid client = %v, %v; want nil, ErrECP", got, err)
+		}
+
+		got, err = exchange.Deliver(t.Context(), fault, client, binding.SOAPOptions{})
+		if got != nil {
+			err = errors.Join(err, got.Body.Close())
+		}
+
+		var routingFault *binding.SOAPFault
+		if got != nil || !errors.Is(err, ecp.ErrECP) || !errors.As(err, &routingFault) || routingFault.Message != "authentication unavailable" {
+			t.Errorf("deliver fault with invalid client = %v, %v; want nil, ErrECP and the original SOAP fault", got, err)
+		}
+	}
+
+	var body *os.File
+	client := &http.Client{Transport: paosRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+	})}
+	got, err := exchange.Deliver(t.Context(), response, client, binding.SOAPOptions{})
+	if got != nil {
+		err = errors.Join(err, got.Body.Close())
+	}
+
+	if got != nil || !errors.Is(err, ecp.ErrECP) {
+		t.Errorf("deliver with typed-nil body = %v, %v; want nil, ErrECP", got, err)
+	}
+}
+
+type paosRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f paosRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type paosClosingBody struct {
+	io.Reader
+	closeFunc func() error
+}
+
+func (b paosClosingBody) Close() error { return b.closeFunc() }
+
+func checkPAOSCanceledResponse(t *testing.T, exchange *ecp.Exchange, response []byte) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	failure := errors.New("response close failed")
+	closed := 0
+	body := paosClosingBody{Reader: strings.NewReader("unused"), closeFunc: func() error {
+		closed++
+		return failure
+	}}
+	client := &http.Client{Transport: paosRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+	})}
+	got, err := exchange.Deliver(ctx, response, client, binding.SOAPOptions{})
+	if got != nil {
+		err = errors.Join(err, got.Body.Close())
+	}
+	if got != nil || !errors.Is(err, context.Canceled) || !errors.Is(err, failure) || closed != 1 {
+		t.Errorf("got response=%t, err=%v, closes=%d; want no response, both causes, and one close", got != nil, err, closed)
+	}
+}
+
 // A wire fixture independent of the generator checks the ECP-specific passive
 // default (true), required actors and unknown mandatory header behavior.
 func TestECPIndependentHeaders(t *testing.T) {
@@ -151,6 +336,26 @@ func TestECPIndependentHeaders(t *testing.T) {
 	x, err := ecp.ParseChallenge(t.Context(), []byte(raw), "https://sp.test/resource", binding.SOAPOptions{})
 	if err != nil || !x.IsPassive() {
 		t.Fatalf("passive default: %v", err)
+	}
+	for _, tc := range []struct{ path, endpoint string }{
+		{"/acs#", ""},
+		{"/acs%23archive", "https://sp.test/acs%23archive"},
+		{"section/../acs", "https://sp.test/acs"},
+		{"..//acs", "https://sp.test//acs"},
+		{"https://sp.test//acs", "https://sp.test//acs"},
+	} {
+		wire := strings.Replace(raw, `responseConsumerURL="/acs"`, `responseConsumerURL="`+tc.path+`"`, 1)
+		if tc.endpoint != "" {
+			wire = strings.Replace(wire, `AssertionConsumerServiceURL="https://sp.test/acs"`, `AssertionConsumerServiceURL="`+tc.endpoint+`"`, 1)
+		}
+		exchange, err := ecp.ParseChallenge(t.Context(), []byte(wire), "https://sp.test/resource", binding.SOAPOptions{})
+		if tc.endpoint == "" {
+			if exchange != nil || !errors.Is(err, ecp.ErrECP) {
+				t.Errorf("consumer reference %q = %v, %v; want no exchange and ErrECP", tc.path, exchange, err)
+			}
+		} else if err != nil || exchange == nil || exchange.Endpoint() != tc.endpoint {
+			t.Errorf("consumer reference %q did not resolve to %q: %v", tc.path, tc.endpoint, err)
+		}
 	}
 	for _, bad := range []string{strings.Replace(raw, `s:mustUnderstand="1"`, `s:mustUnderstand="0"`, 1), strings.Replace(raw, `s:actor="http://schemas.xmlsoap.org/soap/actor/next"`, `s:actor="urn:other"`, 1), strings.Replace(raw, "</s:Header>", `<x:unknown xmlns:x="urn:unknown" s:mustUnderstand="1"/></s:Header>`, 1)} {
 		if _, err := ecp.ParseChallenge(t.Context(), []byte(bad), "https://sp.test/resource", binding.SOAPOptions{}); err == nil {
@@ -197,5 +402,19 @@ func TestWriteChallengeRejectsTypedNilWriter(t *testing.T) {
 	var writer *httptest.ResponseRecorder
 	if err := ecp.WriteChallenge(t.Context(), writer, r, d); !errors.Is(err, ecp.ErrECP) {
 		t.Fatalf("typed-nil challenge writer returned %v; want ErrECP", err)
+	}
+}
+
+func TestReadResponseRejectsTypedNilBody(t *testing.T) {
+	t.Parallel()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://sp.test/acs", nil)
+	r.Header.Set("Content-Type", ecp.MediaType)
+	var body *os.File
+	r.Body = body
+
+	got, relay, err := ecp.ReadResponse(t.Context(), r, "", binding.SOAPOptions{})
+	if got != nil || relay != nil || !errors.Is(err, ecp.ErrECP) {
+		t.Errorf("ReadResponse with absent payload = %v, %v, %v", got, relay, err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
@@ -373,7 +374,7 @@ func atomizeListToken(tok, listItem string, ni xdm.NodeItem) (xdm.AtomicValue, e
 	}
 	// Last resort: the value was already validated at construction; store it
 	// verbatim under the user type name so atomization does not fail.
-	if strings.HasPrefix(listItem, "Q{") {
+	if strings.HasPrefix(listItem, lexicon.EQNamePrefix) {
 		return xdm.AtomicValue{TypeName: listItem, Value: tok}, nil
 	}
 
@@ -485,7 +486,7 @@ func atomizeUnionAtomicMember(s string, m xdm.NodeItemUnionMember, ni xdm.NodeIt
 
 	cast, err := CastFromString(s, t)
 	if err != nil {
-		if strings.HasPrefix(m.TypeName, "Q{") {
+		if strings.HasPrefix(m.TypeName, lexicon.EQNamePrefix) {
 			return xdm.AtomicValue{TypeName: m.TypeName, Value: s}, nil
 		}
 

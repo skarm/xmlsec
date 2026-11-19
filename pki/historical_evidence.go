@@ -98,7 +98,11 @@ func InspectOCSPCertificates(ctx context.Context, raw []byte) ([][]byte, error) 
 		certificates[index] = bytes.Clone(certificate.Raw)
 	}
 
-	return certificates, ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	return certificates, nil
 }
 
 func (c historicalClaim) retainsStatus(expired time.Time) bool {
@@ -136,11 +140,6 @@ func (s *HistoricalSession) prepareHistoricalSources(ctx context.Context) error 
 func (s *HistoricalSession) sourcePath(ctx context.Context, signer *x509.Certificate, anchor *x509.Certificate, issued time.Time) (*HistoricalPath, error) {
 	if issued.Before(signer.NotBefore) || issued.After(signer.NotAfter) {
 		return nil, ErrEvidence
-	}
-
-	digest := sha256.Sum256(signer.Raw)
-	if s.certificates[digest] == nil {
-		s.certificates[digest] = signer
 	}
 
 	paths, err := s.pathsFor(ctx, signer)

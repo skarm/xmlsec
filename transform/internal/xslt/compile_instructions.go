@@ -443,6 +443,7 @@ func (c *compiler) setInstructionXPathNS(_ context.Context, inst instruction, ha
 		set(&v.xpathNS)
 	case *variableInst:
 		set(&v.xpathNS)
+		v.HasXPathDefaultNS = c.hasXPathDefaultNS
 	}
 }
 
@@ -772,10 +773,6 @@ func (c *compiler) compileUnknownXSLTInstruction(ctx context.Context, elem *xdm.
 }
 
 func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element) (instruction, error) {
-	const (
-		itemSeparatorAbsentToken = "#absent"
-	)
-
 	inst := &resultDocumentInst{}
 
 	if href, present := elem.GetAttribute(lexicon.AttrHref); present {
@@ -791,17 +788,8 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 		return nil, err
 	}
 
-	if fmtAttr := getAttr(elem, nameFormat); fmtAttr != "" {
-		if strings.ContainsAny(fmtAttr, "{}") {
-			avt, err := c.compileAVT(fmtAttr, c.nsBindings)
-			if err != nil {
-				return nil, err
-			}
-
-			inst.FormatAVT = avt
-		} else {
-			inst.Format = resolveQName(fmtAttr, c.nsBindings)
-		}
+	if err := c.compileResultDocumentFormat(elem, inst); err != nil {
+		return nil, err
 	}
 
 	inst.Method = getAttr(elem, lexicon.SerializationMethod)
@@ -864,6 +852,39 @@ func (c *compiler) compileResultDocument(ctx context.Context, elem *xdm.Element)
 	inst.NSBindings = c.nsBindings
 
 	return inst, nil
+}
+
+func (c *compiler) compileResultDocumentFormat(elem *xdm.Element, inst *resultDocumentInst) error {
+	format, present := elem.GetAttribute(nameFormat)
+	if !present {
+		return nil
+	}
+
+	if !strings.ContainsAny(format, "{}") {
+		format = strings.Trim(format, lexicon.XMLWhitespace)
+		if format == "" {
+			return staticError(errCodeXTDE1460, "xsl:result-document format must be a non-empty EQName")
+		}
+
+		if prefix, _, prefixed := strings.Cut(format, ":"); prefixed && xmlchar.IsValidQName(format) {
+			if _, bound := resolvePrefixWithXML(prefix, nsResolverFromMap(c.nsBindings)); !bound {
+				return staticError(errCodeXTSE0280, "prefix %q in result-document format has no namespace binding", prefix)
+			}
+		}
+
+		inst.Format = format
+
+		return nil
+	}
+
+	avt, err := c.compileAVT(format, c.nsBindings)
+	if err != nil {
+		return err
+	}
+
+	inst.FormatAVT = avt
+
+	return nil
 }
 
 func (c *compiler) compileResultDocumentOutputAVTs(elem *xdm.Element, inst *resultDocumentInst) error {
@@ -1066,6 +1087,13 @@ func (c *compiler) compileChildren(ctx context.Context, parent *xdm.Element) ([]
 	// body backwards-compatible.
 	defer c.pushElementVersion(parent)()
 
+	// Structural clauses also supply the expand-text setting for their body.
+	savedExpandText := c.expandText
+	if err := c.setInstructionExpandText(parent); err != nil {
+		return nil, err
+	}
+	defer func() { c.expandText = savedExpandText }()
+
 	state := &sequenceConstructorState{}
 
 	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
@@ -1155,6 +1183,12 @@ func (c *compiler) compileLocalVariable(ctx context.Context, elem *xdm.Element) 
 	inst := &variableInst{
 		Name: resolveQName(name, c.nsBindings),
 		As:   asAttr,
+	}
+	if asAttr != "" {
+		inst.TypeNamespaces = inScopeNamespaces(elem)
+		if err := xpath.Charge(ctx, len(inst.TypeNamespaces)); err != nil {
+			return nil, err
+		}
 	}
 
 	// Capture xml:base for static base URI override during body/select evaluation.

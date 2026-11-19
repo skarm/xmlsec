@@ -171,6 +171,48 @@ func TestTransformedManifestProgramsAndIdentity(t *testing.T) {
 	}
 }
 
+func TestExternalManifestXPathUsesExpressionSnapshot(t *testing.T) {
+	t.Parallel()
+
+	const expr = `count(here()/ancestor::ds:Manifest) = 1`
+	const xpathNode = `<ds:Transform Algorithm="` + reference.XPath + `"><ds:XPath>` + expr + `</ds:XPath></ds:Transform>`
+	payload := []byte("sample data")
+	leaf := strings.Replace(externalManifestReference(uriUrnAttachment, "", payload), `<ds:Reference `, `<ds:Reference Id="data" `, 1)
+	leafCanonical := strings.Replace(leaf, `<ds:Reference `, `<ds:Reference xmlns:ds="`+xmldsig.Namespace+`" `, 1)
+	leafCanonical = strings.Replace(leafCanonical, `"/><ds:DigestValue>`, `"></ds:DigestMethod><ds:DigestValue>`, 1)
+	nested := externalManifestReference("#data", "", []byte(leafCanonical), reference.XPath, c14n.Exclusive)
+	nested = strings.Replace(nested, `<ds:Transform Algorithm="`+reference.XPath+`"/>`, xpathNode, 1)
+	manifest := `<ds:Manifest xmlns:ds="` + xmldsig.Namespace + `">` + nested + leaf + `</ds:Manifest>`
+	resources := map[string][]byte{uriExternalManifest: []byte(manifest), uriUrnAttachment: payload}
+	options, _, _ := externalManifestOptions(resources)
+	program := reference.Transform{Algorithm: reference.XPath, XPath: []reference.XPathExpression{{
+		Expression: expr, Namespaces: map[string]string{"ds": xmldsig.Namespace},
+	}}}
+	engine, err := transform.NewEngine(transform.Config{AllowedPrograms: []reference.Transform{program}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Processing = reference.DefaultOptions()
+	options.Processing.AllowedTransforms = append(options.Processing.AllowedTransforms, reference.XPath)
+	options.Processing.Extension = engine
+
+	key := graphKey(t)
+	signed := signExternalManifest(t, key, options, false)
+	checked, err := xmldsig.VerifySignature(t.Context(), signed, signed.Root(), key.Public(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifests := checked.Manifests()
+	if len(manifests) != 1 || len(manifests[0].References()) != 2 {
+		t.Fatalf("expected two checked Manifest references, got %v", manifests)
+	}
+	ref := manifests[0].References()[0]
+	var output bytes.Buffer
+	if _, err := ref.WriteDigestInput(t.Context(), &output); err != nil || output.String() != leafCanonical {
+		t.Fatalf("digest input = %q, %v; want %q", output.String(), err, leafCanonical)
+	}
+}
+
 func TestTransformedManifestAuthenticationAndLimits(t *testing.T) {
 	resources := externalManifestResources(t)
 	resources[uriExternalManifest] = []byte(base64.StdEncoding.EncodeToString(resources[uriExternalManifest]))
@@ -519,10 +561,12 @@ func TestExternalManifestFragmentScopes(t *testing.T) {
 		t.Fatal(result, report, err, calls, *closed)
 	}
 
-	left := result.Manifests()[0].References()[1]
-
-	right := result.Manifests()[1].References()[1]
-	if left.Target() == right.Target() || !left.CoversElement(left.Target()) || left.CoversElement(right.Target()) || right.CoversElement(left.Target()) {
+	manifests := result.Manifests()
+	left := manifests[0].References()[1]
+	right := manifests[1].References()[1]
+	if manifests[0].ResourceURI() != first || manifests[1].ResourceURI() != second ||
+		!left.Target().Same(manifests[0].Target().Children()[0]) || !right.Target().Same(manifests[1].Target().Children()[0]) ||
+		left.Target().Same(right.Target()) || !left.CoversElement(left.Target()) || left.CoversElement(right.Target()) || right.CoversElement(left.Target()) {
 		t.Fatal("fragment scopes or coverage were conflated")
 	}
 
@@ -990,12 +1034,21 @@ func TestManifestPolicyAndCycles(t *testing.T) {
 		name   string
 		edit   func(*xmldsig.SignatureOptions)
 		mutate func(string) string
+		want   error
 	}{
 		{name: "depth", edit: func(o *xmldsig.SignatureOptions) { o.Manifests.MaxDepth = 1 }},
 		{name: "nodes", edit: func(o *xmldsig.SignatureOptions) { o.Manifests.MaxManifests = 1 }},
 		{name: "references", edit: func(o *xmldsig.SignatureOptions) { o.Manifests.MaxReferences = 3 }},
 		{name: "cycle", mutate: func(s string) string { return strings.ReplaceAll(s, `URI="#a"`, `URI="#top"`) }},
-		{name: "wrong type target", mutate: func(s string) string { return strings.Replace(s, `URI="#top"`, `URI="#a"`, 1) }},
+		{
+			name: "non-Manifest derived target",
+			edit: func(o *xmldsig.SignatureOptions) {
+				o.ExpectedURIs = []string{"#a"}
+				o.Manifests.AllowTransformed = true
+			},
+			mutate: func(s string) string { return strings.Replace(s, `URI="#top"`, `URI="#a"`, 1) },
+			want:   xmldsig.ErrStructure,
+		},
 		{name: "external disabled", mutate: func(s string) string { return strings.ReplaceAll(s, `URI="#a"`, `URI="urn:unlisted"`) }},
 	}
 	for _, tc := range tests {
@@ -1018,6 +1071,9 @@ func TestManifestPolicyAndCycles(t *testing.T) {
 			out, e := xmldsig.SignTemplate(t.Context(), d, s, k, xmldsig.TemplateSignOptions{Validation: o})
 			if e == nil || out != nil || k.calls != 0 {
 				t.Fatalf("not rejected before signing: %v calls=%d", e, k.calls)
+			}
+			if tc.want != nil && !errors.Is(e, tc.want) {
+				t.Fatalf("rejected with %v, want %v", e, tc.want)
 			}
 		})
 	}

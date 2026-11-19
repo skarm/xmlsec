@@ -138,7 +138,11 @@ type Store interface {
 	// Logout retains the session block through NotOnOrAfter plus clockSkew.
 	// The times are the current time and replay expiration; clockSkew must
 	// cover the policy used to accept late assertions for these sessions.
+	// With no error the status is Success (optionally with PartialLogout) or
+	// Requester (optionally with UnknownPrincipal), with no status message.
 	Logout(ctx context.Context, request *protocol.VerifiedLogoutRequest, authority bool, at, until time.Time, clockSkew time.Duration) (LogoutResult, error)
+	// Manage returns Success or Requester (optionally with UnknownPrincipal),
+	// with no status message, when the operation itself returns no error.
 	Manage(context.Context, *protocol.VerifiedManageNameIDRequest, bool, time.Time, time.Time) (protocol.Status, error)
 	// Start also invalidates outgoing logout sessions and retains their block
 	// independently of pending state, including after Finish or pending expiry.
@@ -236,7 +240,7 @@ func (s Service) Manage(ctx context.Context, r *protocol.VerifiedManageNameIDReq
 // BeginManage signs a change and persists its correlation state. The local copy
 // is updated only after Complete receives the successful authenticated response.
 func (s Service) BeginManage(ctx context.Context, peer string, request protocol.ManageNameIDRequest, at time.Time) (*document.Document, error) {
-	if !s.valid() || !s.fresh(request.MessageHeader, at) || request.Issuer != s.EntityID {
+	if !s.valid() || !s.fresh(request.MessageHeader, at) || request.Issuer != s.EntityID || !profile.URI(peer) || peer == s.EntityID {
 		return nil, ErrState
 	}
 
@@ -257,10 +261,6 @@ func (s Service) BeginManage(ctx context.Context, peer string, request protocol.
 	}
 
 	id, _ := d.Root().Attribute(document.Name{Local: lexicon.SAMLAttrID})
-
-	if !profile.URI(peer) || peer == s.EntityID {
-		return nil, ErrState
-	}
 
 	err = s.Store.Start(ctx, Pending{ID: id, Peer: peer, Kind: protocol.ManageNameIDResponse, NameID: request.NameID, NewID: request.NewID, Terminate: request.Terminate, LocalIsIDP: s.Role == metadata.IdentityProvider, ExpiresAt: at.Add(pendingRequestLifetime)}, at)
 	if err != nil {
@@ -324,7 +324,7 @@ func (s Service) InitiateLogout(ctx context.Context, principal, authoritySession
 // assertions atomically with pending state. The block survives Complete and
 // pending expiry; the authority's final status is consumed through Complete.
 func (s Service) BeginLogout(ctx context.Context, peer string, request protocol.LogoutRequest, at time.Time) (*document.Document, error) {
-	if !s.valid() || !s.freshLogout(request, at) || request.Issuer != s.EntityID || s.Role == metadata.ServiceProvider && len(request.SessionIndexes) == 0 || s.Role == metadata.IdentityProvider && request.NotOnOrAfter.IsZero() {
+	if !s.valid() || !s.freshLogout(request, at) || request.Issuer != s.EntityID || !profile.URI(peer) || peer == s.EntityID || s.Role == metadata.ServiceProvider && len(request.SessionIndexes) == 0 || s.Role == metadata.IdentityProvider && request.NotOnOrAfter.IsZero() {
 		return nil, ErrState
 	}
 
@@ -727,12 +727,7 @@ func (s *MemoryStore) Manage(ctx context.Context, verified *protocol.VerifiedMan
 		return protocol.Status{}, err
 	}
 
-	current, ok := s.managedName(r.Issuer, r.NameID)
-	if !ok {
-		return unknown(), nil
-	}
-
-	return s.change(r.Issuer, current, r.NewID, r.Terminate, idpSender), nil
+	return s.change(r.Issuer, r.NameID, r.NewID, r.Terminate, idpSender), nil
 }
 
 // Start records an outgoing management/logout correlation without evicting live
@@ -965,33 +960,6 @@ func (s *MemoryStore) find(peer string, name protocol.NameIdentifier) (string, b
 	}
 
 	return r.Principal, true
-}
-
-func (s *MemoryStore) managedName(peer string, name protocol.NameIdentifier) (protocol.NameIdentifier, bool) {
-	for _, r := range s.relationships {
-		if r.terminated || r.Peer != peer {
-			continue
-		}
-
-		candidate := name
-		if candidate.Format == protocol.NameIDPersistent {
-			// Core 3.6.3 permits a qualifier to be omitted when its value
-			// would be the containing message's authenticated Issuer.
-			if candidate.NameQualifier == "" && r.NameID.NameQualifier == peer {
-				candidate.NameQualifier = peer
-			}
-
-			if candidate.SPNameQualifier == "" && r.NameID.SPNameQualifier == peer {
-				candidate.SPNameQualifier = peer
-			}
-		}
-
-		if sameName(r.NameID, candidate) {
-			return r.NameID, true
-		}
-	}
-
-	return protocol.NameIdentifier{}, false
 }
 
 func (s *MemoryStore) change(peer string, old protocol.NameIdentifier, value string, terminate, idpSender bool) protocol.Status {

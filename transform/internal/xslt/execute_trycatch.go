@@ -130,7 +130,12 @@ func (ec *execContext) messageErrorCode(ctx context.Context, inst *messageInst, 
 func (ec *execContext) messageDocument(ctx context.Context, inst *messageInst) (ValueResult, error) {
 	body := inst.Body
 	if inst.Select != nil {
-		body = append([]instruction{&copyOfInst{Select: inst.Select, CopyNamespaces: true}}, body...)
+		selected := &copyOfInst{
+			sourceInfo:     sourceInfo{StaticBaseURI: ec.effectiveStaticBaseURI()},
+			Select:         inst.Select,
+			CopyNamespaces: true,
+		}
+		body = append([]instruction{selected}, body...)
 	}
 
 	temporary := ec.stylesheet.processorLanguage() < processorXSLT30
@@ -224,12 +229,14 @@ func (ec *execContext) beginTryOutput() (*xdm.Element, error) {
 		return nil, err
 	}
 
-	// A captured transaction keeps all items in one ordered sequence.
+	// Keep the result items in order when the parent captures them or must
+	// insert a serialization separator, including at the transaction boundary.
+	// A pending xsl:on-empty also needs to distinguish empty atomics from text.
 	parent := ec.currentOutput()
+	capture := parent.captureItems || parent.serializationItemSeparator() != nil || parent.vacuousOnEmptyScope() != nil
 	ec.outputStack = append(ec.outputStack, &outputFrame{
-		doc: doc, current: root, captureItems: parent.captureItems,
-		sequenceMode:  parent.captureItems || parent.sequenceMode,
-		itemSeparator: parent.itemSeparator, implicitPrimary: parent.implicitPrimary,
+		doc: doc, current: root, tryWrapper: root, captureItems: capture,
+		sequenceMode: capture || parent.sequenceMode, implicitPrimary: parent.implicitPrimary,
 	})
 
 	return root, nil
@@ -253,13 +260,19 @@ func (ec *execContext) executeTryBody(ctx context.Context, inst *tryCatchInst) e
 }
 
 func (ec *execContext) commitTryOutput(root *xdm.Element, frame *outputFrame) error {
-	if err := ec.copyTryChildren(root); err != nil {
+	out := ec.currentOutput()
+	if frame.sequenceMode && !out.captureItems && !out.sequenceMode {
+		// Normalize once, together with the preceding and following output.
+		return ec.writeXSLSequence(frame.pendingItems)
+	}
+
+	if err := ec.copyTryOutputNodes(root, frame.tryNamespacePrefixes); err != nil {
 		return err
 	}
 
 	// Preserve ordering with surrounding DOM nodes in document constructors.
 	if len(frame.pendingItems) > 0 {
-		ec.currentOutput().captureSequenceItems(frame.pendingItems)
+		out.captureSequenceItems(frame.pendingItems)
 	}
 
 	return nil
@@ -343,7 +356,26 @@ func (ec *execContext) execTryCatchNoRollback(ctx context.Context, inst *tryCatc
 	return ec.executeMatchedCatch(ctx, inst.Catches, tryErr)
 }
 
-func (ec *execContext) copyTryChildren(root *xdm.Element) error {
+func (ec *execContext) copyTryOutputNodes(root *xdm.Element, namespacePrefixes map[string]struct{}) error {
+	// Attribute copying fixes up its own prefix in the actual destination.
+	// Replay only namespace nodes emitted explicitly by the try body.
+	for _, namespace := range root.Namespaces() {
+		if _, explicit := namespacePrefixes[namespace.Prefix()]; !explicit {
+			continue
+		}
+
+		node := xdm.NewNamespaceNodeWrapper(namespace, root)
+		if err := ec.copyNamespaceNodeToOutput(node); err != nil {
+			return err
+		}
+	}
+
+	for _, attr := range root.Attributes() {
+		if err := ec.copyAttributeNodeToOutput(attr); err != nil {
+			return err
+		}
+	}
+
 	for child := range xdm.Children(root) {
 		copied, err := xdm.CopyNode(child, ec.resultDoc)
 		if err != nil {
@@ -493,7 +525,8 @@ func catchMatches(clause *catchClause, errClark string) bool {
 	return false
 }
 
-// caughtErrorDetails resolves the most specific typed cause for catch matching.
+// caughtErrorDetails resolves the signaled code or a more specific typed cause
+// for catch matching.
 func caughtErrorDetails(tryErr error) (string, string, string, xdm.QNameValue) {
 	errNS := lexicon.NamespaceErr
 	errCode := errCodeXSLT0000
@@ -505,9 +538,9 @@ func caughtErrorDetails(tryErr error) (string, string, string, xdm.QNameValue) {
 		errCode = xErr.Code
 		errDesc = xErr.Message
 		errQName = xErr.CodeQName()
-		// If this is a wrapper error (like XTDE0045 for avt), check inner
-		// cause for a more specific error code.
-		if xErr.Cause != nil {
+		// An explicitly signaled QName takes precedence over a diagnostic
+		// cause. Other wrappers can carry a more specific structured error.
+		if xErr.Cause != nil && xErr.QualifiedCode.Local == "" {
 			if innerXP, ok := errors.AsType[*xdm.Error](xErr.Cause); ok {
 				errCode = innerXP.Code
 				errDesc = innerXP.Message

@@ -89,6 +89,8 @@ func TestExactNormalization(t *testing.T) {
 }
 
 func TestNormalizationErrors(t *testing.T) {
+	t.Parallel()
+
 	failure := errors.New("sink failure")
 	for _, short := range []bool{false, true} {
 		sink := &failingWriter{err: failure}
@@ -122,6 +124,28 @@ func TestNormalizationErrors(t *testing.T) {
 			t.Fatalf("invalid/incomplete UTF-8 %x: %v", source, err)
 		}
 	}
+
+	t.Run("incomplete_close_is_terminal", func(t *testing.T) {
+		t.Parallel()
+
+		var output bytes.Buffer
+		writer := normalization.NewWriter(t.Context(), &output, normalization.NFC)
+		if _, err := writer.WriteString("e\xcc"); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := writer.Close(); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("Close = %v; want io.ErrUnexpectedEOF", err)
+		}
+
+		if n, err := writer.WriteString("\x81"); n != 0 || !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("WriteString after failed Close = (%d, %v)", n, err)
+		}
+
+		if err := writer.Close(); !errors.Is(err, io.ErrUnexpectedEOF) || output.Len() != 0 {
+			t.Fatalf("repeated Close = %v; output = %q", err, output.String())
+		}
+	})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -276,6 +300,23 @@ func TestEachBytesReportsCancellationOnLastEmission(t *testing.T) {
 	}
 }
 
+func TestEachBytesReportsCancellationBetweenEmissions(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	calls := 0
+	err := normalization.NFC.EachBytes(ctx, "one sentence", func([]byte) error {
+		calls++
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("EachBytes invoked the consumer %d times, error = %v; want one call and %v", calls, err, context.Canceled)
+	}
+}
+
 func TestNormalizationPreservesMarkOrderWithinEachStarter(t *testing.T) {
 	t.Parallel()
 
@@ -305,6 +346,20 @@ func TestWriterCloseDiscardsPendingTextOnCancellation(t *testing.T) {
 	cancel()
 	if err := writer.Close(); !errors.Is(err, context.Canceled) || output.Len() != 0 {
 		t.Errorf("Close = %v with output %q, want %v and no output", err, output.String(), context.Canceled)
+	}
+}
+
+func TestWriterCloseReportsCancellationDuringFinalWrite(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	writer := normalization.NewWriter(ctx, normalizationCancelWriter{cancel}, normalization.NFC)
+	if _, err := writer.WriteString("e\u0301"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("final write canceled context, Close returned %v", err)
 	}
 }
 
@@ -354,7 +409,7 @@ func TestWriteStringPreservesFailureAfterNonASCIIFlush(t *testing.T) {
 	if n, err := writer.WriteString(prefix); err != nil || n != len(prefix) || sink.calls != 0 {
 		t.Fatalf("WriteString(prefix) = %d, %v with %d sink calls", n, err, sink.calls)
 	}
-	if n, err := writer.WriteString("é and trailing text"); !errors.Is(err, failure) || n > len("é") || sink.calls != 1 {
+	if n, err := writer.WriteString("é and trailing text"); !errors.Is(err, failure) || n != 0 || sink.calls != 1 {
 		t.Fatalf("WriteString after flush = %d, %v with %d sink calls", n, err, sink.calls)
 	}
 	if n, err := writer.WriteString("again"); n != 0 || !errors.Is(err, failure) {

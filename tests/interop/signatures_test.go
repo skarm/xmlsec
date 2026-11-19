@@ -689,10 +689,14 @@ func TestDetachedSignatures(t *testing.T) {
 	for _, name := range []string{nameRSASHA256, nameRSASHA384, nameRSASHA512, nameECDSASHA256, nameECDSASHA384, nameECDSASHA512} {
 		key := generateKey(t, dir, name)
 		for _, cm := range canonicalizations() {
-			ours, theirs := filepath.Join(dir, "go.xml"), filepath.Join(dir, "jdk.xml")
+			exchangeDir := t.TempDir()
+			ours, theirs := filepath.Join(exchangeDir, "go.xml"), filepath.Join(exchangeDir, "jdk.xml")
 			command(t, fixture, true, nil, cli, "sign-detached", flagKey, key.private, "-method", key.method, "-resources", manifest, "-c14n", cm, flagOut, ours)
 			java(t, fixture, "DetachedOracle", append([]string{nameSign, key.private, theirs, cm, key.method}, signResources...)...)
-			verifyJava(t, java(t, fixture, "DetachedOracle", append([]string{nameVerify, key.public, ours}, verifyResources...)...), true)
+			oracle := verifyJava(t, java(t, fixture, "DetachedOracle", append([]string{nameVerify, key.public, ours}, verifyResources...)...), true)
+			if len(oracle.References) != len(entries) {
+				t.Fatalf("detached JDK Reference count = %d, want %d", len(oracle.References), len(entries))
+			}
 			raw, _ := command(t, fixture, true, nil, cli, "verify-detached", flagKey, key.public, "-resources", verificationManifest, "-c14n", cm, flagIn, theirs)
 
 			var r struct {
@@ -712,11 +716,11 @@ func TestDetachedSignatures(t *testing.T) {
 			count++
 		}
 
-		bad := filepath.Join(dir, "bad.xml")
+		bad := filepath.Join(t.TempDir(), "bad.xml")
 		java(t, fixture, "DetachedOracle", append([]string{"sign-bad-second", key.private, bad, exc, key.method}, signResources...)...)
 
 		v := verifyJava(t, java(t, fixture, "DetachedOracle", append([]string{nameVerify, key.public, bad}, verifyResources...)...), false)
-		if !v.References[0] || v.References[1] {
+		if len(v.References) != len(entries) || !v.References[0] || v.References[1] {
 			t.Fatal(v)
 		}
 
@@ -878,10 +882,46 @@ func TestXAdESBaselineDataTimestampInputs(t *testing.T) {
 }
 
 type javaVerdict struct {
-	Core           bool   `json:"core"`
-	Valid          bool   `json:"valid"`
+	Core           *bool  `json:"core"`
+	Valid          *bool  `json:"valid"`
 	SignatureValue bool   `json:"signature_value"`
 	References     []bool `json:"references"`
+}
+
+func (r javaVerdict) matchesOverall(valid bool) bool {
+	// The Core and Detached oracles use core; the Manifest oracle uses valid.
+	// Each response must carry one explicit outcome, including rejections.
+	if r.Core == nil {
+		return r.Valid != nil && *r.Valid == valid
+	}
+
+	return r.Valid == nil && *r.Core == valid
+}
+
+func TestJavaVerdictContract(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		raw             string
+		expected, match bool
+	}{
+		{`{"core":true}`, true, true},
+		{`{"valid":true}`, true, true},
+		{`{"core":false}`, false, true},
+		{`{"valid":false}`, false, true},
+		{`{"core":true}`, false, false},
+		{`{"core":false}`, true, false},
+		{`{"signature_value":true,"references":[true,false,true]}`, false, false},
+		{`{"core":null}`, false, false},
+		{`{"core":true,"valid":false}`, true, false},
+		{`{"core":false,"valid":false}`, false, false},
+	} {
+		var result javaVerdict
+		decode(t, []byte(test.raw), &result)
+		if got := result.matchesOverall(test.expected); got != test.match {
+			t.Errorf("%s matches expected verdict %t = %t; want %t", test.raw, test.expected, got, test.match)
+		}
+	}
 }
 
 func verifyJava(t *testing.T, raw []byte, valid bool) javaVerdict {
@@ -890,7 +930,7 @@ func verifyJava(t *testing.T, raw []byte, valid bool) javaVerdict {
 	var r javaVerdict
 	decode(t, raw, &r)
 
-	if (r.Core || r.Valid) != valid || !r.SignatureValue {
+	if !r.matchesOverall(valid) || !r.SignatureValue || len(r.References) == 0 {
 		t.Fatalf("JDK verdict: %s", raw)
 	}
 
@@ -949,7 +989,7 @@ func (suite *coreSignatureSuite) algorithm(t *testing.T, name string, number int
 		key.method = "http://www.w3.org/2007/05/xmldsig-more#sha" + strings.TrimPrefix(name, "rsa-pss") + "-rsa-MGF1"
 	}
 
-	scenario := coreSignatureCase{suite: suite, dir: dir, key: key, digest: digests()[number%3]}
+	scenario := coreSignatureCase{suite: suite, key: key, digest: digests()[number%3]}
 
 	for _, recipe := range coreSignatureRecipes() {
 		t.Run(recipe.form+"/"+strconv.Itoa(slices.Index(canonicalizations(), recipe.cm)), func(t *testing.T) {
@@ -978,9 +1018,11 @@ func coreSignatureRecipes() []coreSignatureRecipe {
 }
 
 type verification struct {
-	Status         string `json:"status"`
-	SignatureValue string `json:"signature_value"`
-	References     []struct {
+	Status             string `json:"status"`
+	SignatureValue     string `json:"signature_value"`
+	ManifestValidation string `json:"manifest_validation"`
+	FailureStage       string `json:"failure_stage"`
+	References         []struct {
 		Status string `json:"status"`
 	} `json:"references"`
 }
@@ -995,20 +1037,20 @@ type coreSignatureExchange struct {
 
 type coreSignatureCase struct {
 	suite  *coreSignatureSuite
-	dir    string
 	key    testKey
 	digest string
 }
 
 func (scenario coreSignatureCase) exchange(t *testing.T, recipe coreSignatureRecipe) {
 	t.Helper()
-	source := write(t, filepath.Join(scenario.dir, "template.xml"), []byte(strings.ReplaceAll(coreTemplate(recipe.form, scenario.key.method, recipe.cm), digests()[0], scenario.digest)))
+	dir := t.TempDir()
+	source := write(t, filepath.Join(dir, "template.xml"), []byte(strings.ReplaceAll(coreTemplate(recipe.form, scenario.key.method, recipe.cm), digests()[0], scenario.digest)))
 
 	exchange := coreSignatureExchange{
 		recipe: recipe,
 		source: source,
-		ours:   filepath.Join(scenario.dir, "go.xml"),
-		theirs: filepath.Join(scenario.dir, "reference.xml"),
+		ours:   filepath.Join(dir, "go.xml"),
+		theirs: filepath.Join(dir, "reference.xml"),
 		total:  1,
 	}
 	if recipe.form == nameMulti {
@@ -1059,16 +1101,26 @@ func (scenario coreSignatureCase) signExchange(t *testing.T, exchange coreSignat
 func (scenario coreSignatureCase) verifyExchange(t *testing.T, exchange coreSignatureExchange) {
 	t.Helper()
 
+	wantReferences := 2
+	if exchange.recipe.form == nameEnveloping {
+		wantReferences = 3
+	}
 	for index := range exchange.total {
 		if scenario.suite.externalXMLSec {
 			args := append([]string{flagPublicKeyPEM, scenario.key.public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 			native(t, scenario.suite.fixture, true, nameVerify, append(args, "--node-id", "s"+strconv.Itoa(index), exchange.ours)...)
 		} else {
-			verifyJava(t, java(t, scenario.suite.fixture, "CoreOracle", nameVerify, scenario.key.public, exchange.ours, strconv.Itoa(index)), true)
+			oracle := verifyJava(t, java(t, scenario.suite.fixture, "CoreOracle", nameVerify, scenario.key.public, exchange.ours, strconv.Itoa(index)), true)
+			if len(oracle.References) != wantReferences {
+				t.Fatalf("JDK Reference count = %d, want %d", len(oracle.References), wantReferences)
+			}
 		}
 
 		raw, _ := command(t, scenario.suite.fixture, true, nil, scenario.suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, scenario.key.public, "-signature-index", strconv.Itoa(index), "-modern-algorithms", "-c14n", exchange.recipe.cm, flagIn, exchange.theirs)
-		verifyReport(t, raw, true)
+		report := verifyReport(t, raw, true)
+		if len(report.References) != wantReferences {
+			t.Fatalf("Go Reference count = %d, want %d", len(report.References), wantReferences)
+		}
 
 		scenario.suite.count++
 	}
@@ -1083,7 +1135,7 @@ func (scenario coreSignatureCase) rejectTamper(t *testing.T, exchange coreSignat
 		t.Fatal("negative control did not alter input")
 	}
 
-	bad := write(t, filepath.Join(scenario.dir, "bad.xml"), changed)
+	bad := write(t, filepath.Join(t.TempDir(), "bad.xml"), changed)
 	args := append([]string{flagPublicKeyPEM, scenario.key.public, flagEnabledReferenceURIs, nameEmptySameDoc}, idArgs()...)
 	native(t, scenario.suite.fixture, false, nameVerify, append(args, "--node-id", "s0", bad)...)
 	raw, _ := command(t, scenario.suite.fixture, false, nil, scenario.suite.cli, "verify-core", "-allow-unspecified-coverage", flagKey, scenario.key.public, "-signature-index", "0", "-modern-algorithms", "-c14n", exchange.recipe.cm, flagIn, bad)
@@ -1100,7 +1152,7 @@ func (scenario coreSignatureCase) rejectTamper(t *testing.T, exchange coreSignat
 func (scenario coreSignatureCase) rejectBadSecond(t *testing.T) {
 	t.Helper()
 
-	bad := filepath.Join(scenario.dir, "bad-second.xml")
+	bad := filepath.Join(t.TempDir(), "bad-second.xml")
 	java(t, scenario.suite.fixture, "CoreOracle", "sign-bad-second", scenario.key.private, bad, exc, scenario.key.method, nameEnveloping)
 
 	oracle := verifyJava(t, java(t, scenario.suite.fixture, "CoreOracle", nameVerify, scenario.key.public, bad, "0"), false)
@@ -1178,7 +1230,12 @@ func verifyReport(t *testing.T, raw []byte, valid bool) verification {
 		t.Fatalf("verification report schema: %s", raw)
 	}
 
-	if (r.Status == nameValid) != valid || r.SignatureValue != nameValid {
+	want := string(xmldsig.Invalid)
+	if valid {
+		want = nameValid
+	}
+
+	if r.Status != want || r.SignatureValue != nameValid {
 		t.Fatalf("verification: %s", raw)
 	}
 

@@ -119,7 +119,7 @@ func SignMessageWithParametersReader(ctx context.Context, src io.Reader, signer 
 		return nil, ErrPolicy
 	}
 
-	key := signer.Public()
+	key := signature.SignerPublic(signer)
 	if err = s.validatePublicKey(key, p); err != nil {
 		return nil, err
 	}

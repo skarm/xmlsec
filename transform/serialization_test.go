@@ -349,6 +349,71 @@ func TestSerializeMarkupContracts(t *testing.T) {
 	}
 }
 
+func TestXSLTISO88591MarkupEncoding(t *testing.T) {
+	e := engine(t, transform.Config{})
+	source, err := e.Parse(t.Context(), []byte("<root/>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const markup = `<doc a="€">€é</doc>`
+	const expectedXML = "<doc a=\"&#8364;\">&#8364;\xe9</doc>"
+	for _, test := range []struct{ method, want string }{
+		{"xml", expectedXML},
+		{"xhtml", expectedXML},
+		{"html", "<doc a=\"\x80\">\x80\xe9</doc>"},
+	} {
+		for _, mode := range []struct{ name, attributes string }{
+			{"default", ""},
+			{"fully-normalized", ` normalization-form="fully-normalized"`},
+		} {
+			t.Run(test.method+"/"+mode.name, func(t *testing.T) {
+				sheet := stylesheet(t, e, sheetStart+version30+`" exclude-result-prefixes="xs"><xsl:output method="`+test.method+
+					`" encoding="ISO-8859-1" omit-xml-declaration="yes"`+mode.attributes+`/>`+
+					`<xsl:template match="/">`+markup+`</xsl:template></xsl:stylesheet>`)
+				result, err := sheet.Transform(t.Context(), source, transform.XSLTContext{})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if got := string(result.Primary); got != test.want {
+					t.Fatalf("output = %q; want %q", got, test.want)
+				}
+			})
+		}
+	}
+}
+
+func TestXSLTMarkupRejectsInvalidEncodingName(t *testing.T) {
+	e := engine(t, transform.Config{})
+	for _, tc := range []struct{ name, method, options string }{
+		{"XML streaming", "xml", ""},
+		{"XML streaming without declaration", "xml", ` omit-xml-declaration="yes"`},
+		{"XML buffered", "xml", ` normalization-form="fully-normalized"`},
+		{"XML buffered without declaration", "xml", ` normalization-form="fully-normalized" omit-xml-declaration="yes"`},
+		{"XHTML buffered", "xhtml", ""},
+		{"XHTML buffered without declaration", "xhtml", ` omit-xml-declaration="yes"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sheet := stylesheet(t, e, markupSerializationSheet(markupSerializationCase{
+				declarations: `<xsl:output method="` + tc.method + `" encoding=" UTF-8 "` + tc.options + `/>`,
+				body:         `<r>café</r>`,
+			}, false))
+			result, err := sheet.Execute(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var dst bytes.Buffer
+			n, err := result.WriterTo(t.Context()).WriteTo(&dst)
+			var detail *transform.Error
+			if !errors.As(err, &detail) || detail.Code != "SERE0006" || n != 0 || dst.Len() != 0 {
+				t.Fatalf("WriteTo = %d bytes, %v, output %q; want SERE0006 with no bytes", n, err, dst.String())
+			}
+		})
+	}
+}
+
 func TestResultOutputEncoding(t *testing.T) {
 	e := engine(t, transform.Config{})
 	for _, explicit := range []bool{false, true} {
@@ -1632,6 +1697,27 @@ func TestSerializeHTMLVersions(t *testing.T) {
 	}
 }
 
+func TestSerializeHTMLVersionPrecision(t *testing.T) {
+	const nearHTML4 = "4.0100000000000000000000001"
+	const unsupportedVersion = "SESU0013"
+
+	e := engine(t, transform.Config{})
+	for _, attribute := range []string{"version", "html-version"} {
+		t.Run("XSLT/"+attribute, func(t *testing.T) {
+			source := markupSerializationSheet(markupSerializationCase{
+				declarations: `<xsl:output method="html" ` + attribute + `="` + nearHTML4 + `"/>`,
+				body:         `<p/>`,
+			}, false)
+			out, err := stylesheet(t, e, source).Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			assertSerializationOutput(t, attribute, out, err, "", unsupportedVersion)
+		})
+	}
+
+	expression := `serialize(parse-xml('<p/>'),map{'method':'html','html-version':` + nearHTML4 + `})`
+	value, err := query(t, e, expression, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+	assertSerializationSequence(t, "XPath map parameter", value, err, "", unsupportedVersion)
+}
+
 func TestImplicitHTMLSerializationDefault(t *testing.T) {
 	e := engine(t, transform.Config{})
 	source := markupSerializationSheet(markupSerializationCase{body: `<html><h:br xmlns:h="http://www.w3.org/1999/xhtml"/></html>`}, false)
@@ -1646,6 +1732,69 @@ func TestImplicitHTMLSerializationDefault(t *testing.T) {
 		if err != nil || string(output.Primary) != want {
 			t.Fatal(mode, output, err)
 		}
+	}
+
+	const (
+		xmlDecl   = `<?xml version="1.0" encoding="UTF-8"?>`
+		html      = `<html><body><br/></body></html>`
+		xhtml     = `<html xmlns="http://www.w3.org/1999/xhtml"><body><br/></body></html>`
+		upperHTML = `<HtMl><body><br/></body></HtMl>`
+		upperOut  = `<HtMl><body><br></body></HtMl>`
+	)
+	input, err := e.Parse(t.Context(), []byte(`<input/>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, version, method, body, want string
+		processor                         transform.XSLTVersion
+	}{
+		{"mixed case HTML", "3.0", "", upperHTML, "<!DOCTYPE html>" + upperOut, transform.XSLT30},
+		{"leading text", "3.0", "", `<xsl:text>leading</xsl:text>` + html, xmlDecl + "leading" + html, transform.XSLT30},
+		{"leading text before XHTML", "3.0", "", `<xsl:text>leading</xsl:text>` + xhtml, xmlDecl + "leading" + xhtml, transform.XSLT30},
+		{"leading whitespace", "3.0", "", `<xsl:text> </xsl:text>` + html, " <!DOCTYPE html><html><body><br></body></html>", transform.XSLT30},
+		{"explicit XML", "3.0", `method="xml"`, upperHTML, xmlDecl + upperHTML, transform.XSLT30},
+		{"leading text with DOE", "3.0", "", `<xsl:text disable-output-escaping="yes">leading</xsl:text>` + html, xmlDecl + "leading" + html, transform.XSLT30},
+		{"XHTML in 2.0", "2.0", "", xhtml, xmlDecl + strings.Replace(xhtml, "<br/>", "<br />", 1), transform.XSLT20},
+		{"XHTML in 1.0", "1.0", "", xhtml, xmlDecl + xhtml, transform.XSLT10},
+		{"mixed case HTML in 1.0", "1.0", "", upperHTML, upperOut, transform.XSLT10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.body
+			if tc.processor != transform.XSLT10 {
+				body += `<xsl:result-document href="urn:side">` + tc.body + `</xsl:result-document>`
+			}
+
+			source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="` + tc.version +
+				`"><xsl:output indent="no" ` + tc.method + `/><xsl:template match="/">` + body + `</xsl:template></xsl:stylesheet>`
+			compiled, err := e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: tc.processor})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, mode := range []transform.ResultMode{transform.ResultRaw, transform.ResultDefault, transform.ResultDocument} {
+				result, err := compiled.Execute(t.Context(), input, transform.XSLTContext{ResultMode: mode})
+				if err != nil {
+					t.Fatal(mode, err)
+				}
+
+				out, err := result.Serialize(t.Context())
+				if err != nil {
+					t.Fatal(mode, err)
+				}
+
+				if got := string(out.Primary); got != tc.want {
+					t.Errorf("mode %v primary = %q; want %q", mode, got, tc.want)
+				}
+
+				if tc.processor != transform.XSLT10 {
+					if got := string(out.Secondary["urn:side"]); got != tc.want {
+						t.Errorf("mode %v secondary = %q; want %q", mode, got, tc.want)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -2005,11 +2154,9 @@ func TestAdaptiveSerializationRules(t *testing.T) {
 				}
 				output, err := result.Serialize(t.Context())
 				assertSerializationOutput(t, "Serialize", output, err, test.want, "")
-				if output == nil {
-					t.Fatal(err)
-				}
-				if string(output.Secondary["secondary"]) != test.want {
-					t.Errorf("secondary %q, want %q", output.Secondary["secondary"], test.want)
+				secondary, present := output.Secondary["secondary"]
+				if !present || string(secondary) != test.want {
+					t.Errorf("secondary %q (present %t), want %q", secondary, present, test.want)
 				}
 				var buf strings.Builder
 				_, err = result.WriterTo(t.Context()).WriteTo(&buf)
@@ -2566,11 +2713,15 @@ func serializationContainerBOMStylesheet(method string, bom bool) string {
 }
 
 func TestSerializationContainerByteBOM(t *testing.T) {
+	const xmlDeclaration = `<?xml version="1.0" encoding="UTF-8"?>`
 	e := engine(t, transform.Config{})
-	for _, method := range []string{"json", "adaptive"} {
+	for _, test := range []struct{ method, want string }{
+		{"json", `[1,2]`},
+		{"adaptive", xmlDeclaration + "<a/>\n" + xmlDeclaration + "<b/>"},
+	} {
 		for _, bom := range []bool{false, true} {
-			t.Run(method+"/"+strconv.FormatBool(bom), func(t *testing.T) {
-				source := serializationContainerBOMStylesheet(method, bom)
+			t.Run(test.method+"/"+strconv.FormatBool(bom), func(t *testing.T) {
+				source := serializationContainerBOMStylesheet(test.method, bom)
 				const startTag = `<xsl:template name="start">`
 				_, body, _ := strings.Cut(source, startTag)
 				body = strings.TrimSuffix(body, `</xsl:template></xsl:stylesheet>`)
@@ -2581,25 +2732,19 @@ func TestSerializationContainerByteBOM(t *testing.T) {
 					t.Fatal(err)
 				}
 				output, err := result.Serialize(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				want := 0
+				want, markCount := test.want, "0"
 				if bom {
-					want = 1
+					want, markCount = "\uFEFF"+want, "1"
 				}
-				if bytes.Count(output.Primary, []byte{0xef, 0xbb, 0xbf}) != want || bytes.HasPrefix(output.Primary, []byte{0xef, 0xbb, 0xbf}) != bom {
-					t.Fatal("byte-order mark", output.Primary, want)
+				assertSerializationOutput(t, "primary output", output, err, want, "")
+				secondary, present := output.Secondary["secondary"]
+				if !present || string(secondary) != want {
+					t.Errorf("secondary %q (present %t), want %q", secondary, present, want)
 				}
-				secondary := output.Secondary["secondary"]
-				if bytes.Count(secondary, []byte{0xef, 0xbb, 0xbf}) != want || bytes.HasPrefix(secondary, []byte{0xef, 0xbb, 0xbf}) != bom {
-					t.Fatal("secondary byte-order mark", secondary, want)
-				}
-				publishedProofVector(t, strconv.Itoa(want))
+				publishedProofVector(t, markCount)
 				var writer bytes.Buffer
-				if _, err := result.WriterTo(t.Context()).WriteTo(&writer); err != nil || !bytes.Equal(writer.Bytes(), output.Primary) {
-					t.Fatal("writer BOM", writer.Bytes(), err)
-				}
+				_, err = result.WriterTo(t.Context()).WriteTo(&writer)
+				assertSerializationResult(t, "primary writer", writer.String(), err, want, "")
 			})
 		}
 	}
@@ -3045,6 +3190,10 @@ func assertSerializationSequence(t *testing.T, path string, value transform.Sequ
 
 func assertSerializationOutput(t *testing.T, path string, output *transform.Output, err error, want, code string) {
 	t.Helper()
+
+	if code == "" && output == nil {
+		t.Fatalf("%s: nil output (%v), want %q", path, err, want)
+	}
 
 	got := ""
 	if output != nil {
@@ -3538,6 +3687,27 @@ func TestHTMLSerializationEscapesNamespaceValues(t *testing.T) {
 		if err != nil || text(t, value) != nameTrue {
 			t.Fatal("HTML namespace serialization changed namespace identity", source, value, err)
 		}
+	}
+}
+
+func TestXSLTTextCharacterMapPreservesTrailingText(t *testing.T) {
+	t.Parallel()
+	e := engine(t, transform.Config{})
+	compiled := stylesheet(t, e, sheet(version30, `<xsl:output use-character-maps="m"/><xsl:character-map name="m"><xsl:output-character character="&#xfffd;" string="x"/></xsl:character-map><xsl:param name="v"/><xsl:template name="start"><xsl:sequence select="$v"/></xsl:template>`))
+	for _, input := range []string{"A\uFFFDBCD", "A\xffBCD"} {
+		result, err := compiled.Execute(t.Context(), nil, transform.XSLTContext{
+			Template:   transform.Name{Local: nameStart},
+			ResultMode: transform.ResultRaw,
+			Parameters: transform.Bindings{{Local: "v"}: transform.Values(transform.String(input))},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := result.Serialize(t.Context())
+		assertSerializationOutput(t, fmt.Sprintf("buffered %q", input), output, err, "AxBCD", "")
+		var streamed bytes.Buffer
+		_, err = result.WriterTo(t.Context()).WriteTo(&streamed)
+		assertSerializationResult(t, fmt.Sprintf("streamed %q", input), streamed.String(), err, "AxBCD", "")
 	}
 }
 

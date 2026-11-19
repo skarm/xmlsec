@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"crypto"
+	"slices"
 	"strconv"
 	"time"
 
@@ -41,7 +42,9 @@ type RequestOptions struct {
 	Issuer string
 	// Destination is the trusted identity provider endpoint expected in the request.
 	Destination string
-	// ACS lists assertion consumer endpoints from trusted SP metadata.
+	// ACS lists assertion consumer endpoints from trusted SP metadata. When
+	// any endpoint is marked Indexed, only such endpoints match a requested
+	// index. Lists without the flag retain support for explicit Index values.
 	ACS []metadata.Endpoint
 	// ResponseBinding optionally fixes the expected response binding, notably
 	// PAOS for ECP. Empty permits the supported binding requested by the peer.
@@ -88,39 +91,24 @@ func VerifyAuthnRequest(ctx context.Context, d *document.Document, keys []crypto
 }
 
 // VerifyRedirectRequest authenticates the received Redirect signature before decoding and
-// validating the AuthnRequest.
+// validating the AuthnRequest. A configured limits.Policy further restricts
+// the request policy.
 func VerifyRedirectRequest(ctx context.Context, rawQuery string, keys []crypto.PublicKey, o RequestOptions, limits binding.Options) (*VerifiedRequest, error) {
-	if len(keys) == 0 || len(keys) > maximumRedirectVerificationKeys {
-		return nil, ErrSignature
+	d, relay, err := exchangeRedirect(ctx, rawQuery, keys, o.Policy, limits, binding.Request)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, k := range keys {
-		limits.Policy = o.Policy
-
-		r, e := binding.VerifyRedirect(ctx, rawQuery, k, limits)
-		if e != nil {
-			if ctx != nil && ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-
-			continue
-		}
-
-		if r.Kind() != binding.Request {
-			return nil, ErrProfile
-		}
-
-		verified, e := verifyRequest(ctx, r.Document(), nil, o, true)
-		if e != nil {
-			return nil, e
-		}
-
-		verified.relay, verified.hasRelay = r.RelayState()
-
-		return verified, nil
+	verified, err := verifyRequest(ctx, d, nil, o, true)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, ErrSignature
+	if relay != nil {
+		verified.relay, verified.hasRelay = *relay, true
+	}
+
+	return verified, nil
 }
 
 // ID returns the authenticated AuthnRequest identifier.
@@ -255,7 +243,7 @@ func BuildAuthnRequest(ctx context.Context, s AuthnRequest) (*document.Document,
 		return nil, ErrProfile
 	}
 
-	if ctx == nil || s.IssueInstant.IsZero() || !profile.URI(s.Issuer) || !profile.Endpoint(s.Destination, true) || !profile.Endpoint(s.ACS, true) || s.ForceAuthn && s.IsPassive {
+	if ctx == nil || !profile.ValidTime(s.IssueInstant) || !profile.URI(s.Issuer) || !profile.Endpoint(s.Destination, true) || !profile.Endpoint(s.ACS, true) {
 		return nil, ErrProfile
 	}
 
@@ -497,18 +485,28 @@ func selectRequestACS(root document.Element, authorized []metadata.Endpoint, exp
 		index = &number
 	}
 
+	// Preserve explicit indices in legacy lists built before the Indexed flag.
+	requireIndexed := hasIndex && slices.ContainsFunc(authorized, func(e metadata.Endpoint) bool { return e.Indexed })
+
 	var candidates []metadata.Endpoint
 
 	for _, endpoint := range authorized {
-		if !hasACS || endpoint.Location == acs {
+		if (!requireIndexed || endpoint.Indexed) && (!hasACS || endpoint.Location == acs) {
 			candidates = append(candidates, endpoint)
 		}
 	}
 
 	if !hasBinding {
 		bindingURI = expectedBinding
-		if bindingURI == "" {
-			bindingURI = metadata.HTTPPost
+	}
+
+	if bindingURI == "" {
+		bindingURI = metadata.HTTPPost
+		if index != nil {
+			bindingURI = indexedACSBinding(candidates, *index, allowHoK)
+			if bindingURI == "" {
+				return metadata.Endpoint{}, ErrProfile
+			}
 		}
 	}
 
@@ -530,6 +528,33 @@ func selectRequestACS(root document.Element, authorized []metadata.Endpoint, exp
 	return chosen, nil
 }
 
+// Indexed requests omit ProtocolBinding. The selected index determines the
+// transport unless the caller already fixed one.
+func indexedACSBinding(endpoints []metadata.Endpoint, index uint16, allowHoK bool) string {
+	binding := ""
+
+	for _, endpoint := range endpoints {
+		if endpoint.Index != index || endpoint.HolderOfKey() && !allowHoK {
+			continue
+		}
+
+		transport := endpoint.TransportBinding()
+		switch transport {
+		case metadata.HTTPPost, metadata.HTTPArtifact, metadata.PAOS:
+		default:
+			continue
+		}
+
+		if binding != "" && binding != transport {
+			return ""
+		}
+
+		binding = transport
+	}
+
+	return binding
+}
+
 func readAuthnRequestFlags(root document.Element, request *VerifiedRequest) error {
 	var err error
 
@@ -539,7 +564,7 @@ func readAuthnRequestFlags(root document.Element, request *VerifiedRequest) erro
 	}
 
 	request.passive, err = xmlutil.BoolAttr(root, xmlNameIsPassive)
-	if err != nil || request.force && request.passive {
+	if err != nil {
 		return ErrProfile
 	}
 

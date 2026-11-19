@@ -1200,15 +1200,21 @@ func TestXSLTHostNameVersions(t *testing.T) {
 			if strings.Contains(test.expression, "key(") {
 				continue // key is not available in the XSLT 2.0 static context.
 			}
-			source = sheet(version20, `<xsl:template name="start"><xsl:text use-when="`+test.expression+`">available</xsl:text></xsl:template>`)
-			_, err = e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
+			source = sheet(version20, `<xsl:output method="text"/><xsl:template name="start"><xsl:text use-when="`+test.expression+`">available</xsl:text></xsl:template>`)
+			s, err = e.CompileXSLT(t.Context(), []byte(source), transform.XSLTOptions{ProcessorVersion: processor})
 			if processor == transform.XSLT20 {
 				var detail *transform.Error
 				if !errors.As(err, &detail) || detail.Code != test.code20 {
 					t.Fatalf("static %d %s: got %v, want %s", processor, test.expression, err, test.code20)
 				}
-			} else if err != nil {
+				continue
+			}
+			if err != nil {
 				t.Fatal("XSLT 3.0 rejected static EQName", test.expression, err)
+			}
+			result, err = s.Transform(t.Context(), nil, transform.XSLTContext{Template: transform.Name{Local: nameStart}})
+			if err != nil || string(result.Primary) != "available" {
+				t.Fatalf("static %d %s: got %v (%v), want available", processor, test.expression, result, err)
 			}
 		}
 	}
@@ -1486,8 +1492,13 @@ func TestReturnedInlineGlobalNodeIdentity(t *testing.T) {
 	for range 12 {
 		wg.Go(func() {
 			value, err := comparison.Evaluate(t.Context(), nil, transform.XPathContext{Variables: bindings})
-			if err != nil || text(t, value) != "true" {
-				t.Error(value, err)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			got, err := value.Text()
+			if err != nil || got != nameTrue {
+				t.Errorf("returned node identity comparison = %q (%v), want %q", got, err, nameTrue)
 			}
 		})
 	}
@@ -1612,8 +1623,13 @@ func TestReturnedIntrospectionStaticContexts(t *testing.T) {
 			for range 8 {
 				group.Go(func() {
 					result, err := invoke.Evaluate(t.Context(), nil, bindings)
-					if err != nil || text(t, result) != nameTrue {
-						t.Error(static, reference, result, err)
+					if err != nil {
+						t.Error(static, reference, err)
+						return
+					}
+					value, err := result.Text()
+					if err != nil || value != nameTrue {
+						t.Errorf("static=%v reference=%s: got %q (%v), want %q", static, reference, value, err, nameTrue)
 					}
 				})
 			}
@@ -1663,5 +1679,22 @@ func TestDateTimeStampMapKeysUseDateTimeValueEquality(t *testing.T) {
 	var detail *transform.Error
 	if !errors.As(err, &detail) || detail.Code != "XQDY0137" {
 		t.Fatal("equal dateTime keys did not reject duplicate constructor", err)
+	}
+}
+
+func TestGregorianMapKeysUseCalendarValueEquality(t *testing.T) {
+	e := engine(t, transform.Config{})
+	const bindings = `let $a := xs:gDay('---10-14:00'), $b := xs:gDay('---11+10:00') return `
+	for _, expression := range []string{
+		bindings + `map:contains(map:entry($a,'found'),$b)`,
+		bindings + `map:get(map{$a:'found','other':2},$b) = 'found'`,
+		bindings + `map:size(map:put(map{$a:'first'},$b,'updated')) eq 1`,
+		`map:contains(map{xs:gMonthDay('--02-29-14:00'):1},xs:gMonthDay('--03-01+10:00'))`,
+		`not(map:contains(map{xs:gDay('---11Z'):1},xs:gDay('---11')))`,
+		`not(map:contains(map{xs:gDay('---11Z'):1},xs:gMonthDay('--12-11Z')))`,
+	} {
+		if got := text(t, evaluate(t, e, expression, transform.XPath31)); got != nameTrue {
+			t.Errorf("%s = %s; want true", expression, got)
+		}
 	}
 }

@@ -301,7 +301,7 @@ type resolvedFunction struct {
 //  3. Built-in functions by QualifiedName (builtinFunctions3)
 //  4. Default fn: namespace (no prefix = fn:)
 func resolveFunctionInfo(ctx context.Context, ec *evalContext, prefix, name string, arity int) (resolvedFunction, error) {
-	if prefix == "" && strings.HasPrefix(name, "Q{") {
+	if prefix == "" && strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if idx := strings.Index(name, "}"); idx >= 0 {
 			uri := name[2:idx]
 			local := name[idx+1:]

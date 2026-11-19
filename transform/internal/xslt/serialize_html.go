@@ -112,31 +112,38 @@ func serializeEncodedHTML(w io.Writer, doc *xdm.Document, definition *OutputDef,
 	return finish()
 }
 
-func effectiveStreamMethod(result ValueResult, definition *OutputDef) string {
-	root := firstSerializationElement(result.Items)
-	if !definition.MethodExplicit && root != nil && root.LocalName() == lexicon.MethodHTML {
-		if root.URI() == "" && allowsHTMLAutoDetection(definition, result.Document) {
-			return lexicon.MethodHTML
+func effectiveStreamMethod(ctx context.Context, result ValueResult, definition *OutputDef) (string, error) {
+	if !definition.MethodExplicit && (definition.Method == "" || definition.Method == lexicon.MethodXML) {
+		root, err := firstSerializationElement(ctx, result.Items, definition.ItemSeparator)
+		if err != nil {
+			return "", err
 		}
 
-		if definition.languageVersion != processorXSLT10 && !definition.implicitXMLMethod && root.URI() == lexicon.NamespaceXHTML {
-			return lexicon.MethodXHTML
-		}
+		return defaultMarkupOutputMethod(definition, root), nil
 	}
 
 	if definition.Method == "" {
-		return lexicon.MethodXML
+		return lexicon.MethodXML, nil
 	}
 
-	return definition.Method
+	return definition.Method, nil
 }
 
 func serializationHasNonWhitespaceText(item xdm.XMLItem) bool {
+	return !isXMLWhitespaceOnly(serializationText(item))
+}
+
+func serializationText(item xdm.XMLItem) string {
 	if item.Node == nil {
-		return !isXMLWhitespaceOnly(item.Text)
+		return item.Text
 	}
 
-	return item.Node.Type() == xdm.TextNode && !isXMLWhitespaceOnly(xdm.CharacterData(item.Node))
+	kind := item.Node.Type()
+	if kind == xdm.TextNode || kind == xdm.CDATASectionNode {
+		return xdm.CharacterData(item.Node)
+	}
+
+	return ""
 }
 
 func writeHTMLResultDoctype(w io.Writer, node xdm.Node, definition *OutputDef, explicit, automatic bool) error {

@@ -22,38 +22,45 @@ func runCMS(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	fs := flag.NewFlagSet("cms "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	exec := registerExecutionFlags(fs)
-	input := fs.String("in", "-", "content input for sign, CMS DER for inspect/verify")
-	out := fs.String("out", "-", "output DER or report JSON")
-	keyFile := fs.String("key", "", "single signer private key")
-	certFile := fs.String("certificate", "", "single signer certificate")
-	config := fs.String("signers", "", "trusted JSON signer array for multiple signers; paths relative to JSON")
-	hashName := fs.String("hash", cliDefaultHashName, "signer digest hash")
-	pss := fs.Bool("pss", false, "use fixed RSA-PSS for signing")
-	ski := fs.Bool("subject-key-identifier", false, "identify signer by certificate SKI")
-	detached := fs.Bool("detached", false, "create detached SignedData")
-	contentFile := fs.String("content", "", "exact detached content file for verification")
-	contentType := fs.String("content-type", cliDefaultCMSContentType, "expected/created content type OID")
-	extract := fs.String("extract", "", "write authenticated content to this local file after verification")
-	omitCerts := fs.Bool("omit-certificates", false, "omit embedded certificates when signing")
-	legacyESS := fs.Bool("allow-legacy-ess", false, "allow legacy ESS certificate binding when verifying")
-	trustFile := fs.String("trust", "", "optional PKIX trust/evidence JSON for every pinned signer")
-	atValue := fs.String("at", "", "explicit PKIX verification time, RFC3339")
+	input := fs.String(flagNameIn, stdioPath, "content input for sign, CMS DER for inspect/verify")
+	out := fs.String(flagNameOut, stdioPath, "output DER or report JSON")
+	keyFile := fs.String(flagNameKey, "", "single signer private key")
+	certFile := fs.String(flagNameCertificate, "", "single signer certificate")
+	config := fs.String(flagNameSigners, "", "trusted JSON signer array for multiple signers; paths relative to JSON")
+	hashName := fs.String(flagNameHash, cliDefaultHashName, "signer digest hash")
+	pss := fs.Bool(flagNamePSS, false, "use fixed RSA-PSS for signing")
+	ski := fs.Bool(flagNameSubjectKeyIdentifier, false, "identify signer by certificate SKI")
+	detached := fs.Bool(flagNameDetached, false, "create detached SignedData")
+	contentFile := fs.String(flagNameContent, "", "exact detached content file for verification")
+	contentType := fs.String(flagNameContentType, cliDefaultCMSContentType, "expected/created content type OID")
+	extract := fs.String(flagNameExtract, "", "write authenticated content to this local file after verification")
+	omitCerts := fs.Bool(flagNameOmitCertificates, false, "omit embedded certificates when signing")
+	legacyESS := fs.Bool(flagNameAllowLegacyESS, false, "allow legacy ESS certificate binding when verifying")
+	trustFile := fs.String(flagNameTrust, "", "optional PKIX trust/evidence JSON for every pinned signer")
+	atValue := fs.String(flagNameAt, "", "explicit PKIX verification time, RFC3339")
 
 	var certs, extra repeatedFlag
-	fs.Var(&certs, "expect-certificate", "required signer certificate pin; repeat for every signer")
-	fs.Var(&extra, "extra-certificate", "extra embedded certificate when signing; repeatable")
+	fs.Var(&certs, flagNameExpectCertificate, "required signer certificate pin; repeat for every signer")
+	fs.Var(&extra, flagNameExtraCertificate, "extra embedded certificate when signing; repeatable")
 	flags := registerPrivateKeyFlags(fs)
 
-	specific := ioFlagNames
+	specific := []string{flagNameIn, flagNameOut}
 
 	switch cmd {
 	case nameSign:
-		specific += " key certificate signers hash pss subject-key-identifier detached content-type omit-certificates extra-certificate" + privateKeyFlagNames
+		specific = append(specific,
+			flagNameKey, flagNameCertificate, flagNameSigners, flagNameHash, flagNamePSS, flagNameSubjectKeyIdentifier,
+			flagNameDetached, flagNameContentType, flagNameOmitCertificates, flagNameExtraCertificate,
+		)
+		specific = append(specific, privateKeyFlagNames()...)
 	case nameVerify:
-		specific += " expect-certificate content content-type extract allow-legacy-ess trust at"
+		specific = append(specific,
+			flagNameExpectCertificate, flagNameContent, flagNameContentType, flagNameExtract, flagNameAllowLegacyESS,
+			flagNameTrust, flagNameAt,
+		)
 	}
 
-	fs = commandFlags(fs, specific, false)
+	fs = commandFlags(fs, false, specific...)
 
 	done, err := parseFlags(fs, args[1:])
 	if done || err != nil {
@@ -136,14 +143,21 @@ func (c cmsCommand) run(ctx context.Context, stdin io.Reader, stdout io.Writer) 
 		return err
 	}
 
-	limits := cms.Limits{MaxBytes: execution(ctx).xml.MaxBytes, MaxContentBytes: min(execution(ctx).xml.MaxBytes, execution(ctx).output)}
+	policy := execution(ctx)
+	limits := cms.Limits{MaxBytes: policy.xml.MaxBytes, MaxContentBytes: policy.xml.MaxBytes}
+
 	if c.command == nameSign {
+		if !c.detached {
+			// Embedded content must itself fit within the output budget.
+			limits.MaxContentBytes = min(limits.MaxContentBytes, policy.output)
+		}
+
 		return c.sign(ctx, stdin, stdout, cms.SignOptions{ContentType: oid, Detached: c.detached, OmitCertificates: c.omitCertificates, Limits: limits})
 	}
 
 	var container *cms.SignedData
 
-	err = consumeInput(ctx, c.input, stdin, execution(ctx).xml.MaxBytes, func(r io.Reader) error {
+	err = consumeInput(ctx, c.input, stdin, policy.xml.MaxBytes, func(r io.Reader) error {
 		var parseErr error
 
 		container, parseErr = cms.ParseReader(ctx, r, limits)
@@ -302,7 +316,7 @@ func (c cmsCommand) verify(ctx context.Context, container *cms.SignedData, opt c
 		details = map[string]any{"content_type": result.ContentType().String(), "content_bytes": len(result.Content()), "signers": len(result.Signers())}
 
 		if c.extract != "" {
-			if err := separateOutput(c.extract, c.output, "extract"); err != nil {
+			if err := separateOutput(c.extract, c.output, flagNameExtract); err != nil {
 				return err
 			}
 
@@ -310,7 +324,7 @@ func (c cmsCommand) verify(ctx context.Context, container *cms.SignedData, opt c
 				return err
 			}
 
-			if err := separateOutput(c.extract, c.output, "extract"); err != nil {
+			if err := separateOutput(c.extract, c.output, flagNameExtract); err != nil {
 				return err
 			}
 		}

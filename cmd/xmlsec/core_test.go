@@ -38,6 +38,30 @@ type stage4CLICase struct {
 	Programs  []reference.Transform
 }
 
+func TestSignatureInspectionUsesExpandedNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`<ds:Signature xmlns:ds="` + xmldsig.Namespace + `" xmlns:ext="urn:extension">
+		<ds:SignedInfo><ds:SignatureMethod Algorithm="` + xmldsig.ECDSASHA256 + `"/><ds:Reference URI="#actual"/>
+			<ext:SignatureMethod Algorithm="urn:other"/><ext:Reference URI="#extension"/>
+		</ds:SignedInfo>
+	</ds:Signature>`)
+	report := cli(t, input, nameSignatureGroup, nameInspect)
+	var got struct {
+		Status     string
+		Signatures []struct {
+			Method     string
+			References []string
+		}
+	}
+	if err := json.Unmarshal(report, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusUnverified || len(got.Signatures) != 1 || got.Signatures[0].Method != xmldsig.ECDSASHA256 || len(got.Signatures[0].References) != 1 || got.Signatures[0].References[0] != "#actual" {
+		t.Errorf("unexpected signature inspector report %s", report)
+	}
+}
+
 func TestStage4CLI(t *testing.T) {
 	var corpus struct {
 		PublicKey string `json:"public_key_pem"`

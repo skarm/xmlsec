@@ -125,7 +125,7 @@ func TestProtectedKeyLimits(t *testing.T) {
 	limits := keys.Limits{MaxPasswordBytes: len(password), MaxIterations: 4000001, MaxKDFWork: 12000001}
 
 	options := keys.EncryptionOptions{Iterations: 1000, Hash: crypto.SHA256}
-	if _, err := keys.MarshalEncryptedPrivate(t.Context(), key, []byte("short"), options, keys.Limits{MaxInputBytes: 1}); err != nil {
+	if _, err := keys.MarshalEncryptedPrivate(t.Context(), key, []byte("encoded limit fixture password"), options, keys.Limits{MaxInputBytes: 1}); err != nil {
 		t.Fatal("encoded-input limit incorrectly applied to export", err)
 	}
 
@@ -154,5 +154,41 @@ func TestProtectedKeyLimits(t *testing.T) {
 		if got, err := keys.MarshalEncryptedPrivate(t.Context(), key, password, options, small); got != nil || !errors.Is(err, keys.ErrLimit) {
 			t.Fatalf("export limits %+v: %v", small, err)
 		}
+	}
+}
+
+func TestEncryptedPrivateExportASN1Limits(t *testing.T) {
+	t.Parallel()
+
+	key := testcert.Key(t)
+	password := []byte("bounded storage password")
+	for _, tc := range []struct {
+		name   string
+		limits keys.Limits
+		want   error
+	}{
+		{"depth_below_envelope", keys.Limits{MaxASN1Depth: 6}, keys.ErrLimit},
+		{"nodes_below_envelope", keys.Limits{MaxASN1Nodes: 16}, keys.ErrLimit},
+		{"exact_envelope", keys.Limits{MaxASN1Depth: 7, MaxASN1Nodes: 17}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var output bytes.Buffer
+			n, err := keys.WriteEncryptedPrivate(t.Context(), &output, key, password, keys.EncryptionOptions{Iterations: 1000}, tc.limits)
+			if tc.want != nil {
+				if n != 0 || output.Len() != 0 || !errors.Is(err, tc.want) {
+					t.Fatalf("export = %d bytes, %v; want no output and %v", n, err, tc.want)
+				}
+				return
+			}
+			if n == 0 || n != int64(output.Len()) || err != nil {
+				t.Fatalf("export = %d bytes, %v; want a complete encrypted key", n, err)
+			}
+			parsed, err := keys.ParseEncryptedPrivate(t.Context(), output.Bytes(), password, tc.limits)
+			if err != nil || parsed == nil || !key.PublicKey.Equal(parsed.Public()) {
+				t.Fatalf("export at exact bounds did not import with matching limits: %v", err)
+			}
+		})
 	}
 }

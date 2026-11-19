@@ -25,6 +25,8 @@ func TestNumberToWordsLangCardinal(t *testing.T) {
 		{"german_hundreds_and_units", 302, "de", "lower", "dreihundertzwei"},
 		{"german_exact_thousand", 1000, "de", "lower", "eintausend"},
 		{"german_thousands_and_remainder", 2042, "de", "lower", "zweitausendzweiundvierzig"},
+		{"german_exact_million", 1000000, "de", "lower", "eine Million"},
+		{"german_exact_millions", 2000000, "de", "lower", "zwei Millionen"},
 		{"german_million_and_units", 1000002, "de", "lower", "eine Million zwei"},
 		{"german_millions_and_units", 2000002, "de", "lower", "zwei Millionen zwei"},
 		{"german_large_number_fallback", 1000000000, "de", "lower", "1000000000"},

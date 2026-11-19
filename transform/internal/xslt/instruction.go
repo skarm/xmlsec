@@ -207,10 +207,11 @@ func (*forEachInst) instructionTag() {}
 type variableInst struct {
 	sourceInfo
 	xpathNS
-	Name   string
-	Select *xpath.Expression
-	Body   []instruction
-	As     string // type declaration (e.g., "item()*"); empty = wrap body in document node
+	Name           string
+	Select         *xpath.Expression
+	Body           []instruction
+	As             string // type declaration (e.g., "item()*"); empty = wrap body in document node
+	TypeNamespaces map[string]string
 }
 
 func (*variableInst) instructionTag() {}
@@ -340,7 +341,7 @@ type resultDocumentInst struct {
 	sourceInfo
 	Href             *avt
 	Body             []instruction
-	Format           string   // name of xsl:output to use (static format attribute)
+	Format           string   // lexical EQName of the static format attribute
 	FormatAVT        *avt     // dynamic format attribute (when it contains {…})
 	Method           string   // output method override (from method attribute)
 	ItemSeparator    *avt     // item-separator override (avt); nil = not specified
@@ -554,21 +555,22 @@ type mergeSource struct {
 }
 
 type mergeKey struct {
-	Select       *xpath.Expression
-	OrderAVT     *avt // non-nil when order is an avt
-	DataTypeAVT  *avt // non-nil when data-type is an avt
-	CollationAVT *avt // non-nil when collation is an AVT
-	LangAVT      *avt
-	CaseOrderAVT *avt
-	BaseURI      string
-	Order        string        // "ascending" or "descending" (static)
-	DataType     string        // "text" or "number" (static)
-	Collation    string        // collation URI (for XTDE2210 mismatch detection)
-	Lang         string        // effective lang attribute value
-	CaseOrder    string        // effective case-order attribute value
-	Body         []instruction // used when select is absent
-	specified    uint8
-	HasCollation bool // true when lang, collation, or case-order is specified
+	dataTypeNamespaces map[string]string
+	Select             *xpath.Expression
+	OrderAVT           *avt // non-nil when order is an avt
+	DataTypeAVT        *avt // non-nil when data-type is an avt
+	CollationAVT       *avt // non-nil when collation is an AVT
+	LangAVT            *avt
+	CaseOrderAVT       *avt
+	BaseURI            string
+	Order              string        // "ascending" or "descending" (static)
+	DataType           string        // "text" or "number" (static)
+	Collation          string        // collation URI (for XTDE2210 mismatch detection)
+	Lang               string        // effective lang attribute value
+	CaseOrder          string        // effective case-order attribute value
+	Body               []instruction // used when select is absent
+	specified          uint8
+	HasCollation       bool // true when lang, collation, or case-order is specified
 }
 
 type mergeInst struct {

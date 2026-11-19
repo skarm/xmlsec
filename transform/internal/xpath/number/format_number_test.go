@@ -25,6 +25,8 @@ func TestFormatNumber(t *testing.T) {
 		{-12.5, "0.00;(0.00)", "(12.50)"},
 		{0.125, "0.0%", "12.5%"},
 		{0.125, "0.0‰", "125.0‰"},
+		{0.25, "units% 0", "units% 25"},
+		{0.25, "0e0 units", "2e-1 units"},
 		{math.Inf(1), twoDecimals, "Infinity"},
 		{math.Inf(-1), twoDecimals, "-Infinity"},
 		{math.NaN(), twoDecimals, "NaN"},
@@ -46,9 +48,29 @@ func TestFormatNumber(t *testing.T) {
 }
 
 func TestParsePictureRejectsInvalidGrammar(t *testing.T) {
-	for _, picture := range []string{"0.0.0", "0%‰", "0,,0"} {
+	for _, picture := range []string{"0.0.0", "0%‰", "0,,0", "%0e0", "‰0e0", "0e#", "0e0#", "0Xe0", "0 e0", "0ee0"} {
 		if _, err := number.ParsePicture(picture, number.DefaultDecimalFormat()); err == nil {
 			t.Errorf("invalid picture %q accepted", picture)
+		}
+	}
+}
+
+func TestFormatNumberValidatesBothSubpictures(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		value   float64
+		picture string
+	}{
+		{1, "0;0.0.0"},
+		{-1, "0.0.0;0"},
+		{math.NaN(), "plain text"},
+		{math.Inf(1), "0;0.0.0"},
+		{1, "0;"},
+	} {
+		got, err := number.FormatNumber(tc.value, math.IsNaN(tc.value), math.IsInf(tc.value, 1), math.IsInf(tc.value, -1), math.Signbit(tc.value), nil, tc.picture, number.DefaultDecimalFormat())
+		if err == nil || got != "" {
+			t.Errorf("format-number(%v, %q) = %q, %v; want an invalid-picture error", tc.value, tc.picture, got, err)
 		}
 	}
 }
@@ -221,12 +243,14 @@ func TestScientificAndFractionGroupingPictures(t *testing.T) {
 		{"0", "0.00e00", "0.00e00"},
 		{"12.5", "00.0e00", "12.5e00"},
 		{"0.00125", "0.00e00", "1.25e-03"},
-		{"1250", "##.00e0", "12.50e2"},
+		{"1250", "##.00e0", "0.12e4"},
+		{"1250", "###e0", "0.1e4"},
 		{"0.0125", ".###e0", ".125e-1"},
 		{"1250", "#.###e0", "0.125e4"},
 		{"0.123456", "0.00,00,00", "0.12,34,56"},
 		{"0.1", "0.##,##", "0.1"},
 		{"0.12345", "0.##,##", "0.12,34"},
+		{"1", "#.#", "1.0"},
 	} {
 		t.Run(tc.value+"/"+tc.picture, func(t *testing.T) {
 			t.Parallel()
@@ -243,6 +267,31 @@ func TestScientificAndFractionGroupingPictures(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	df := number.DefaultDecimalFormat()
+	df.ExponentDisabled = true
+	if got, err := number.FormatNumber(1, false, false, false, false, nil, "#.#", df); err != nil || got != "1" {
+		t.Fatalf("legacy optional fractional digits = %q, %v; want 1", got, err)
+	}
+}
+
+func TestFormatNumberScalesOnlySelectedSubpicture(t *testing.T) {
+	for _, tc := range []struct {
+		value int64
+		want  string
+	}{
+		{1, "25 units%"},
+		{-1, "(250 units‰)"},
+	} {
+		precise := big.NewRat(tc.value, 4)
+		f, _ := precise.Float64()
+		for _, input := range []*big.Rat{nil, precise} {
+			got, err := number.FormatNumber(f, false, false, false, f < 0, input, "0 units%;(0 units‰)", number.DefaultDecimalFormat())
+			if err != nil || got != tc.want {
+				t.Errorf("format %g, exact=%t = %q, %v; want %q", f, input != nil, got, err, tc.want)
+			}
+		}
 	}
 }
 
@@ -327,6 +376,64 @@ func TestWideIntegerPictures(t *testing.T) {
 	got := number.FormatBigInt(integer, 6, []int{3, 3}, true, df)
 	if got != "٠٠٠·٠٤٢" || integer.Int64() != 42 {
 		t.Fatalf("localized grouping/ownership: %q, %s", got, integer)
+	}
+
+	df.GroupingSeparator = '1'
+	got = number.FormatBigInt(integer, 6, []int{3, 3}, true, df)
+	if got != "٠٠٠1٠٤٢" || integer.Int64() != 42 {
+		t.Fatalf("digit-shaped grouping separator/ownership: %q, %s", got, integer)
+	}
+}
+
+func TestWideMantissaExponentPictures(t *testing.T) {
+	t.Parallel()
+	for _, width := range []int{309, 310, 400} {
+		for _, tc := range []struct {
+			name   string
+			value  float64
+			digits string
+			exp    int
+		}{
+			{"one", 1, "1", 1 - width},
+			{"fraction", 1.25, "125", 1 - width},
+			{"negative", -1, "1", 1 - width},
+			{"subnormal", math.SmallestNonzeroFloat64, "5", -323 - width},
+			{"largest", math.MaxFloat64, "17976931348623157", 309 - width},
+		} {
+			t.Run(tc.name+"/"+strconv.Itoa(width), func(t *testing.T) {
+				t.Parallel()
+				picture := strings.Repeat("0", width) + "e0"
+				want := tc.digits + strings.Repeat("0", width-len(tc.digits)) + "e" + strconv.Itoa(tc.exp)
+				if math.Signbit(tc.value) {
+					want = "-" + want
+				}
+				got, err := number.FormatNumber(tc.value, false, false, false, math.Signbit(tc.value), nil, picture, number.DefaultDecimalFormat())
+				if err != nil || got != want {
+					t.Fatalf("formatted %q, %v; want %q", got, err, want)
+				}
+			})
+		}
+	}
+	for _, tc := range []struct {
+		value float64
+		want  string
+	}{
+		{math.NaN(), "NaN"},
+		{math.Inf(1), "Infinity"},
+		{math.Inf(-1), "-Infinity"},
+		{math.Copysign(0, -1), "-" + strings.Repeat("0", 400) + "e0"},
+	} {
+		got, err := number.FormatNumber(tc.value, math.IsNaN(tc.value), math.IsInf(tc.value, 1), math.IsInf(tc.value, -1), math.Signbit(tc.value), nil, strings.Repeat("0", 400)+"e0", number.DefaultDecimalFormat())
+		if err != nil || got != tc.want {
+			t.Errorf("special value %v formatted %q, %v; want %q", tc.value, got, err, tc.want)
+		}
+	}
+	df := number.DefaultDecimalFormat()
+	df.ZeroDigit = '٠'
+	want := "١" + strings.Repeat("٠", 309) + "e-٣٠٩"
+	got, err := number.FormatNumber(1, false, false, false, false, nil, strings.Repeat("٠", 310)+"e٠", df)
+	if err != nil || got != want {
+		t.Errorf("localized mantissa formatted %q, %v; want %q", got, err, want)
 	}
 }
 

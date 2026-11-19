@@ -18,10 +18,17 @@ func Reparse(ctx context.Context, draft *Document, limits Limits) (*Document, er
 		return reparseContextual(ctx, draft, limits)
 	}
 
-	return ParseProduced(ctx, func(dst io.Writer) error {
+	result, err := ParseProduced(ctx, func(dst io.Writer) error {
 		_, err := draft.WriteXML(ctx, dst, limits.MaxBytes)
 		return err
 	}, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	result.baseURI = draft.baseURI
+
+	return result, nil
 }
 
 // ParseProduced parses XML as produce writes it, without retaining serialized
@@ -116,6 +123,7 @@ func ReplaceDraft(ctx context.Context, doc *Document, selected, replacement *Nod
 	}
 
 	out := FromNodes(children, doc.limits)
+	out.baseURI = doc.baseURI
 	out.contextual = doc.contextual
 	out.contextSource = doc.contextSource
 	out.contextAnchor = doc.contextAnchor

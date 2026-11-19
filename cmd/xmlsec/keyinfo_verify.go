@@ -70,7 +70,7 @@ func verifyWithKeyInfoCLI(ctx context.Context, doc *document.Document, selected 
 
 	var details any
 	if verifyErr == nil {
-		details = map[string]any{"key_fingerprint_sha256": result.KeyFingerprintSHA256(), "reference_count": len(result.References()), "root_covered": result.CoversElement(doc.Root()), "keyinfo_declarations_checked": true}
+		details = map[string]any{fieldKeyFingerprintSHA256: result.KeyFingerprintSHA256(), fieldReferenceCount: len(result.References()), fieldRootCovered: result.CoversElement(doc.Root()), "keyinfo_declarations_checked": true}
 	}
 
 	return errors.Join(verifyErr, jsonOutput(ctx, output, stdout, resultReport("signature verify-keyinfo", "externally-pinned-keyinfo-candidate", details, verifyErr)))

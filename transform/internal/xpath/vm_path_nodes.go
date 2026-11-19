@@ -604,7 +604,7 @@ func isExistsFunctionName(ec *evalContext, prefix, name string) bool {
 
 	local := name
 	switch {
-	case prefix == "" && strings.HasPrefix(name, "Q{"):
+	case prefix == "" && strings.HasPrefix(name, lexicon.EQNamePrefix):
 		idx := strings.Index(name, "}")
 		if idx < 0 {
 			return false

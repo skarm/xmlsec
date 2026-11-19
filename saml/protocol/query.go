@@ -220,6 +220,10 @@ func VerifyQuery(ctx context.Context, d *document.Document, keys []crypto.Public
 	}
 
 	if kind == AuthorizationQuery {
+		if _, present := d.Root().Attribute(document.Name{Local: xmlNameResource}); !present {
+			return nil, ErrProfile
+		}
+
 		attrs = append(attrs, xmlNameResource)
 	}
 
@@ -251,7 +255,7 @@ func VerifyQuery(ctx context.Context, d *document.Document, keys []crypto.Public
 		return nil, err
 	}
 
-	return &VerifiedQuery{query: q}, ctx.Err()
+	return verifiedResult(ctx, &VerifiedQuery{query: q})
 }
 
 func validateQuery(ctx context.Context, q Query) error {

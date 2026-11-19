@@ -94,7 +94,15 @@ func (e *trackedEntity) Close() error { e.closed = true; return nil }
 func TestParseOptionsExternalEntityResolution(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct{ base, want string }{{"https://example.test/a/doc.xml", "https://example.test/a/part.ent"}, {"/a/doc.xml", "file:///a/part.ent"}, {`C:\a\doc.xml`, "file:///C:/a/part.ent"}} {
+	for _, tc := range []struct{ base, want string }{
+		{"https://example.test/a/doc.xml", "https://example.test/a/part.ent"},
+		{"/a/doc.xml", "file:///a/part.ent"},
+		{`C:\a\doc.xml`, "file:///C:/a/part.ent"},
+		{"/a/report#+/doc.xml", "file:///a/report%23+/part.ent"},
+		{`C:\a%20\doc.xml`, "file:///C:/a%2520/part.ent"},
+		{`\\server\share\report#1\doc.xml`, "file://server/share/report%231/part.ent"},
+		{"file:///a/report%23+/doc.xml", "file:///a/report%23+/part.ent"},
+	} {
 		entity := &trackedEntity{Reader: strings.NewReader("resolved")}
 		calls := 0
 		options := xdm.ParseOptions{AllowDTD: true, BaseURI: tc.base, DTDOpen: func(ctx context.Context, uri string) (io.ReadCloser, error) {

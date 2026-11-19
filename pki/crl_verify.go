@@ -66,13 +66,7 @@ func normalizeCRLOptions(o CRLOptions) (CRLOptions, error) {
 	return o, nil
 }
 
-type (
-	crlWorkBudget        struct{ checks int }
-	crlAuthenticationKey struct {
-		anchor [sha256.Size]byte
-		leaf   [sha256.Size]byte
-	}
-)
+type crlWorkBudget struct{ checks int }
 
 type authenticatedCRL struct {
 	list   *parsedCRL
@@ -96,7 +90,7 @@ func parseCRLs(ctx context.Context, ders [][]byte) ([]*parsedCRL, error) {
 		}
 
 		list.work = work
-		list.authentication = make(map[crlAuthenticationKey]*x509.Certificate)
+		list.authentication = make(map[[sha256.Size]byte]*x509.Certificate)
 		out = append(out, list)
 	}
 
@@ -162,7 +156,7 @@ type crlAuthentication struct {
 	roots         *x509.CertPool
 	intermediates *x509.CertPool
 	anchor        *x509.Certificate
-	key           crlAuthenticationKey
+	key           [sha256.Size]byte
 	at            time.Time
 	maximumDepth  int
 }
@@ -187,7 +181,7 @@ func newCRLAuthentication(ctx context.Context, chain []*x509.Certificate, lists 
 		anchor:        anchor,
 		at:            at,
 		maximumDepth:  maximumDepth,
-		key:           crlAuthenticationKey{anchor: sha256.Sum256(anchor.Raw), leaf: sha256.Sum256(chain[0].Raw)},
+		key:           certificatePathFingerprint(chain),
 	}
 	auth.roots.AddCert(anchorView)
 
@@ -644,7 +638,7 @@ func checkCRLGroup(ctx context.Context, group []*authenticatedCRL, points []crlD
 		return 0, err
 	}
 
-	views, err := constructCRLViews(ctx, group, at, o)
+	views, err := constructCRLViews(ctx, group, cert, at, o)
 	if err != nil {
 		return 0, err
 	}

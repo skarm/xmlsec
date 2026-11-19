@@ -71,11 +71,9 @@ func (ec *execContext) copyFunctionNode(ctx context.Context, node xdm.Node) (xdm
 			return nil, err
 		}
 
-		if node.Type() == xdm.NamespaceNode {
-			copied, err = xdm.CopyTree(node)
-		} else {
-			copied, err = xdm.CopyNode(node, ec.resultDoc)
-		}
+		// Standalone copies are separate trees and must not find their way
+		// into the current document's ID index while still detached.
+		copied, err = xdm.CopyTree(node)
 	}
 
 	if err != nil {
@@ -94,15 +92,15 @@ func (ec *execContext) copyFunctionNode(ctx context.Context, node xdm.Node) (xdm
 
 	ec.transferNilledStatus(node, copied)
 
-	if err := ec.copyAccumulatorState(ctx, node, copied); err != nil {
+	if err := ec.copyAccumulatorState(ctx, node, copied, false); err != nil {
 		return nil, err
 	}
 
 	return copied, nil
 }
 
-func (ec *execContext) copyAccumulatorState(ctx context.Context, original, copied xdm.Node) error {
-	if len(ec.effectiveAccumulators()) == 0 {
+func (ec *execContext) copyAccumulatorState(ctx context.Context, original, copied xdm.Node, copyAncestors bool) error {
+	if len(ec.effectiveAccumulators()) == 0 && len(ec.stylesheet.usedPackages) == 0 {
 		return nil
 	}
 
@@ -110,15 +108,21 @@ func (ec *execContext) copyAccumulatorState(ctx context.Context, original, copie
 		return err
 	}
 
-	ec.transferAccumulatorStates(original, copied)
-
-	if ec.accumulatorComputedDocs == nil {
-		ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-	}
-
-	ec.accumulatorComputedDocs[documentRoot(copied)] = struct{}{}
+	lineage := accumulatorCopy{source: original, target: copied, ancestors: copyAncestors}
+	ec.transferCopiedAccumulatorStates(lineage)
+	ec.recordCopiedAccumulatorTree(lineage)
 
 	return nil
+}
+
+func (ec *execContext) transferCopiedAccumulatorStates(lineage accumulatorCopy) {
+	ec.transferAccumulatorStates(lineage.source, lineage.target)
+
+	if lineage.ancestors {
+		for from, to := lineage.source.Parent(), lineage.target.Parent(); from != nil && to != nil; from, to = from.Parent(), to.Parent() {
+			ec.transferAccumulatorNode(from, to)
+		}
+	}
 }
 
 // snapshot() copies each node with its ancestor shells and preserves non-nodes.
@@ -143,10 +147,6 @@ func (ec *execContext) fnSnapshot(ctx context.Context, args []xdm.Sequence) (xdm
 
 			ec.transferNilledStatus(node.Node, copied)
 
-			if err := ec.copyAccumulatorState(ctx, node.Node, copied); err != nil {
-				return nil, err
-			}
-
 			item = xdm.NodeItem{Node: copied}
 		}
 
@@ -157,8 +157,44 @@ func (ec *execContext) fnSnapshot(ctx context.Context, args []xdm.Sequence) (xdm
 }
 
 // snapshotNode creates a deep copy of node and wraps it in shallow copies
-// of all its ancestors up to and including the document root.
+// of its ancestors.
 func (ec *execContext) snapshotNode(ctx context.Context, node xdm.Node) (xdm.Node, error) {
+	if err := xpath.ChargeTree(ctx, node); err != nil {
+		return nil, err
+	}
+
+	// Ancestors are copied as shells. Charge their logical nodes without
+	// counting siblings or accounting for the selected subtree again.
+	ancestorNodes := 0
+
+	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
+		switch parent.(type) {
+		case *xdm.Element, *xdm.Document:
+			ancestorNodes++
+		}
+	}
+
+	if err := xpath.ChargeTreeNodes(ctx, ancestorNodes); err != nil {
+		return nil, err
+	}
+
+	copied, err := ec.makeSnapshotTree(node)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := ec.copyAccumulatorState(ctx, node, copied, true); err != nil {
+		return nil, err
+	}
+
+	return copied, nil
+}
+
+func (ec *execContext) makeSnapshotTree(node xdm.Node) (xdm.Node, error) {
 	// For a document node, just do a full deep copy.
 	if node.Type() == xdm.DocumentNode {
 		doc, ok := node.(*xdm.Document)
@@ -190,24 +226,8 @@ func (ec *execContext) snapshotNode(ctx context.Context, node xdm.Node) (xdm.Nod
 		return ec.snapshotAttributeNode(node)
 	}
 
-	var (
-		ancestors  []*xdm.Element
-		hasDocRoot bool
-		origDoc    *xdm.Document
-	)
-
-	for p := node.Parent(); p != nil; p = p.Parent() {
-		if elem, ok := p.(*xdm.Element); ok {
-			ancestors = append(ancestors, elem)
-		}
-
-		if p.Type() == xdm.DocumentNode {
-			hasDocRoot = true
-			origDoc, _ = p.(*xdm.Document)
-		}
-	}
-
-	snapDoc := xdm.NewDefaultDocument()
+	ancestors, origDoc := snapshotAncestors(node)
+	snapDoc := newSnapshotDocument(origDoc)
 
 	// Copy DTD info (entities, notations) from the original document so
 	// that unparsed-entity-uri() / unparsed-entity-public-id() work on
@@ -239,17 +259,10 @@ func (ec *execContext) snapshotNode(ctx context.Context, node xdm.Node) (xdm.Nod
 		ec.deepTransferAnnotations(node, copied)
 	}
 
-	// For parentless (orphan) nodes that have no document root ancestor,
-	// return just the deep copy without wrapping in a document node.
-	// Per XSLT 3.0 spec, snapshot of a parentless node is a deep copy.
-	if len(ancestors) == 0 && !hasDocRoot {
-		return copied, nil
-	}
-
 	// Build the ancestor chain: for each ancestor (bottom-up), create a
 	// shallow copy (name + attributes + namespace declarations) and attach
 	// the previous level as its only child.
-	current := copied
+	sourceRoot, current := node, copied
 
 	for _, anc := range ancestors {
 		shell, err := shallowCopyElement(anc, snapDoc)
@@ -263,59 +276,14 @@ func (ec *execContext) snapshotNode(ctx context.Context, node xdm.Node) (xdm.Nod
 			return nil, err
 		}
 
-		current = shell
+		sourceRoot, current = anc, shell
 	}
 
-	// Attach the top-level element (or the copied node itself if no
-	// ancestors) to the snapshot document.
-	if err := snapDoc.AddChild(current); err != nil {
+	if err := finishSnapshotRoot(sourceRoot, current, origDoc); err != nil {
 		return nil, err
 	}
-
-	// Ensure accumulator states are computed for the original document
-	// before transferring, since the snapshot may be created before any
-	// accumulator-before()/accumulator-after() call triggers lazy computation.
-	if err := ec.ensureAccumulatorStates(ctx, node); err != nil {
-		return nil, err
-	}
-
-	// Transfer accumulator state from original subtree to snapshot copy.
-	ec.transferAccumulatorStates(node, copied)
-	// Transfer accumulator state for ancestor shells too.
-	snapshotNodeAncestors(ancestors, copied, ec)
-
-	// Mark the snapshot document as having computed accumulators so that
-	// ensureAccumulatorStates does not re-walk and overwrite the transferred
-	// values (the snapshot tree structure differs from the original).
-	if ec.accumulatorComputedDocs == nil {
-		ec.accumulatorComputedDocs = make(map[xdm.Node]struct{})
-	}
-
-	ec.accumulatorComputedDocs[snapDoc] = struct{}{}
 
 	return copied, nil
-}
-
-// xsltFunctionsNS returns user-defined xsl:function definitions and
-// XSLT built-in functions that need to be callable in the fn: namespace
-// as xpath functions keyed by qualified name.
-
-func snapshotNodeAncestors(ancestors []*xdm.Element, copied xdm.Node, ec *execContext) {
-	for i, anc := range ancestors {
-		// ancestors[0] is the immediate parent, ancestors[1] is grandparent, etc.
-		// The ancestor chain was built bottom-up, so the corresponding shell
-		// is: copied.Parent() for i=0, copied.Parent().Parent() for i=1, etc.
-		shell := copied.Parent()
-		for range i {
-			if shell != nil {
-				shell = shell.Parent()
-			}
-		}
-
-		if shell != nil {
-			ec.transferAccumulatorNode(anc, shell)
-		}
-	}
 }
 
 // transferAccumulatorStates copies accumulator before/after state from
@@ -452,17 +420,28 @@ func (ec *execContext) fnRegexGroup(ctx context.Context, args []xdm.Sequence) (x
 	return xdm.SingleString(ec.regexGroups[idx]), nil
 }
 
-// snapshotAncestorShells copies the parent element and its ancestor chain.
-func snapshotAncestorShells(node xdm.Node) (*xdm.Document, *xdm.Element, error) {
-	var ancestors []*xdm.Element
+func snapshotAncestors(node xdm.Node) ([]*xdm.Element, *xdm.Document) {
+	var (
+		ancestors []*xdm.Element
+		origDoc   *xdm.Document
+	)
 
 	for p := node.Parent(); p != nil; p = p.Parent() {
-		if elem, ok := p.(*xdm.Element); ok {
-			ancestors = append(ancestors, elem)
+		switch parent := p.(type) {
+		case *xdm.Element:
+			ancestors = append(ancestors, parent)
+		case *xdm.Document:
+			origDoc = parent
 		}
 	}
 
-	snapDoc := xdm.NewDefaultDocument()
+	return ancestors, origDoc
+}
+
+// snapshotAncestorShells copies the parent element and its ancestor chain.
+func snapshotAncestorShells(node xdm.Node) (*xdm.Document, *xdm.Element, error) {
+	ancestors, origDoc := snapshotAncestors(node)
+	snapDoc := newSnapshotDocument(origDoc)
 
 	// Build the innermost shell first, then wrap it with outer ancestors.
 	var (
@@ -490,12 +469,36 @@ func snapshotAncestorShells(node xdm.Node) (*xdm.Document, *xdm.Element, error) 
 	}
 
 	if current != nil {
-		if err := snapDoc.AddChild(current); err != nil {
+		if err := finishSnapshotRoot(ancestors[len(ancestors)-1], current, origDoc); err != nil {
 			return nil, nil, err
 		}
 	}
 
 	return snapDoc, innermostShell, nil
+}
+
+func finishSnapshotRoot(source, copied xdm.Node, sourceDoc *xdm.Document) error {
+	if sourceDoc != nil {
+		return copied.OwnerDocument().AddChild(copied)
+	}
+
+	if element, ok := source.(*xdm.Element); ok {
+		// A detached tree may still inherit a base from its storage owner.
+		// Preserve that base without adding a logical document parent.
+		xdm.SetNodeBaseURI(copied, xdm.NodeGetBaseBeforeXMLBase(element.OwnerDocument(), element))
+	}
+
+	return nil
+}
+
+func newSnapshotDocument(source *xdm.Document) *xdm.Document {
+	doc := xdm.NewDefaultDocument()
+	if source != nil {
+		// The copied ancestor has the original base URI and its own document identity.
+		xdm.SetNodeBaseURI(doc, xpath.NodeBaseURI(source))
+	}
+
+	return doc
 }
 
 // shallowCopyElement copies an element's name, namespace declarations, and
@@ -505,6 +508,9 @@ func shallowCopyElement(src *xdm.Element, doc *xdm.Document) (*xdm.Element, erro
 	if err != nil {
 		return nil, err
 	}
+
+	// The copied xml:base attribute is resolved separately against this base.
+	xdm.SetNodeBaseURI(elem, xdm.NodeBaseOverride(src))
 
 	declaredPrefixes := make(map[string]struct{})
 

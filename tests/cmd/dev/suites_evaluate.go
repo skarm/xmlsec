@@ -102,7 +102,7 @@ func (e *suiteEvaluation) assertionTrue(ctx context.Context, expression string, 
 	}
 
 	if !matched {
-		return fmt.Errorf("%s assertion was false", e.item.node.attr("name"))
+		return fmt.Errorf("%s assertion was false", e.item.node.attr(lexicon.AttrName))
 	}
 
 	return nil
@@ -206,7 +206,7 @@ func evaluateCompiledXSLTSuite(ctx context.Context, item suiteCase, environment 
 	}
 
 	if initial := test.child("initial-template"); initial != nil {
-		name := initial.attr("name")
+		name := initial.attr(lexicon.AttrName)
 		if name == "" {
 			name = "Q{http://www.w3.org/1999/XSL/Transform}initial-template"
 		}
@@ -226,16 +226,20 @@ func evaluateCompiledXSLTSuite(ctx context.Context, item suiteCase, environment 
 			return nil, err
 		}
 
-		invocation.Mode, err = suiteQName(initial.attr("name"), suiteScopedNamespaces(environment, initial))
+		invocation.Mode, err = suiteQName(initial.attr(lexicon.AttrName), suiteScopedNamespaces(environment, initial))
 		if err != nil {
 			return nil, err
 		}
 
-		if selectExpression := initial.attr("select"); selectExpression != "" {
+		if selectExpression := initial.attr(lexicon.AttrSelect); selectExpression != "" {
 			selectionContext := *environment
 			selectionContext.document = nil
 			selectionContext.contextItem = transform.Value{}
 			selectionContext.namespaces = suiteScopedNamespaces(environment, initial)
+
+			if initial.baseURI != "" {
+				selectionContext.baseURI = initial.baseURI
+			}
 
 			selection, err := selectionContext.query(ctx, selectExpression, nil)
 			if err != nil {
@@ -262,7 +266,7 @@ func evaluateCompiledXSLTSuite(ctx context.Context, item suiteCase, environment 
 }
 
 func suiteFunctionInvocation(ctx context.Context, compiled *transform.Stylesheet, environment *preparedSuiteEnvironment, initial *suiteNode, invocation transform.XSLTContext) (*transform.Result, error) {
-	name, err := suiteQName(initial.attr("name"), suiteScopedNamespaces(environment, initial))
+	name, err := suiteQName(initial.attr(lexicon.AttrName), suiteScopedNamespaces(environment, initial))
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +296,7 @@ func suiteInitialParameters(ctx context.Context, environment *preparedSuiteEnvir
 			return suiteHarness("unknown initial invocation parameter %q", node.XMLName.Local)
 		}
 
-		name, err := suiteQName(node.attr("name"), suiteScopedNamespaces(environment, node))
+		name, err := suiteQName(node.attr(lexicon.AttrName), suiteScopedNamespaces(environment, node))
 		if err != nil {
 			return err
 		}
@@ -372,8 +376,8 @@ func suiteStylesheetSource(options suiteOptions, environment *preparedSuiteEnvir
 	}
 
 	baseURI := suiteFileURI(path)
-	if stylesheet.attr("uri") != "" {
-		baseURI, err = resolveSuiteURI(environment.baseURI, stylesheet.attr("uri"))
+	if stylesheet.attr(suiteURIAttribute) != "" {
+		baseURI, err = resolveSuiteURI(environment.baseURI, stylesheet.attr(suiteURIAttribute))
 		if err != nil {
 			return nil, transform.XSLTOptions{}, err
 		}

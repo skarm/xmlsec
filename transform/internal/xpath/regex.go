@@ -8,7 +8,6 @@ import (
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
-
 	xpathregex "github.com/skarm/xmlsec/transform/internal/xpath/regex"
 )
 
@@ -27,12 +26,13 @@ type Regex struct {
 // Flags follow the XPath F&O specification: 'i' (case-insensitive),
 // 'm' (multi-line), 's' (dot-all), 'x' (free-spacing), 'q' (literal).
 func CompileRegex(pattern, flags string) (*Regex, error) {
-	return CompileRegexContext(context.Background(), pattern, flags)
+	return CompileRegexContext(context.Background(), pattern, flags, xpathVersion31)
 }
 
-// CompileRegexContext applies the invocation's XML Schema edition and limits.
-func CompileRegexContext(ctx context.Context, source, flags string) (*Regex, error) {
-	re, err := compileXPathRegex(ctx, source, flags)
+// CompileRegexContext applies the host's XPath version and the invocation's
+// XML Schema edition and limits.
+func CompileRegexContext(ctx context.Context, source, flags string, version int) (*Regex, error) {
+	re, err := compileXPathRegexForVersion(ctx, source, flags, version)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -35,6 +36,12 @@ func TestBase64TextBoundaries(t *testing.T) {
 	}
 
 	node := &tree.Node{Children: []*tree.Node{{Kind: tree.TextNode, Data: "AAE="}}}
+	for _, limit := range []int{math.MaxInt - 2, math.MaxInt} {
+		if got, err := tree.DecodeBase64(t.Context(), node, 0, limit); err != nil || !bytes.Equal(got, []byte{0, 1}) {
+			t.Fatal("large decoded limit rejected small input", limit, got, err)
+		}
+	}
+
 	for _, limits := range [][2]int{{3, 2}, {4, 1}, {0, 0}} {
 		if got, err := tree.DecodeBase64(t.Context(), node, limits[0], limits[1]); got != nil || !errors.Is(err, tree.ErrLimit) {
 			t.Fatal("limit", limits, got, err)

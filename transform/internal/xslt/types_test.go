@@ -102,6 +102,20 @@ func TestSequenceTypePreservesNodeIdentity(t *testing.T) {
 	}
 }
 
+func TestFunctionWildcardAcceptsArrayValue(t *testing.T) {
+	t.Parallel()
+
+	for _, itemType := range []string{"function(*)", "(function(*))", "((function(*)))"} {
+		t.Run(itemType, func(t *testing.T) {
+			t.Parallel()
+			ss := compileTestStylesheet(t, "", `<xsl:variable name="colors" as="`+itemType+`" select="['red', 'blue']"/>
+				<xsl:value-of select="$colors(2)"/>`)
+			got, err := ss.Transform(parseTestDocument(t, "<r/>")).Serialize(t.Context())
+			requireSerialization(t, got, err, "blue", "")
+		})
+	}
+}
+
 func TestSequenceTypeAtomicConversions(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -135,6 +149,45 @@ func TestSequenceTypeAtomicConversions(t *testing.T) {
 	}
 }
 
+func TestVariableURIPromotion(t *testing.T) {
+	t.Parallel()
+	for _, profile := range []struct {
+		version   string
+		processor int
+	}{
+		{"2.0", processorXSLT20},
+		{"3.0", processorXSLT30},
+	} {
+		t.Run(profile.version, func(t *testing.T) {
+			t.Parallel()
+			for _, tc := range []struct{ name, declared, supplied, want, code string }{
+				{"string is not a URI", "xs:anyURI", "'urn:sample'", "", errCodeXTTE0570},
+				{"explicit URI constructor", "xs:anyURI", "xs:anyURI('urn:sample')", "true", ""},
+				{"untyped becomes URI", "xs:anyURI", "xs:untypedAtomic('urn:sample')", "true", ""},
+				{"URI promotes to string", "xs:string", "xs:anyURI('urn:sample')", "true", ""},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					source := `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="` + profile.version + `">
+						<xsl:output method="text"/>
+						<xsl:template name="start">
+							<xsl:variable name="value" as="` + tc.declared + `" select="` + tc.supplied + `"/>
+							<xsl:value-of select="$value instance of ` + tc.declared + ` and string($value) eq 'urn:sample'"/>
+						</xsl:template>
+					</xsl:stylesheet>`
+					compiled, err := NewCompiler().ProcessorVersion(profile.processor).Compile(t.Context(), parseTestDocument(t, source))
+					if err != nil {
+						t.Fatal(err)
+					}
+
+					got, err := compiled.CallTemplate("start").Serialize(t.Context())
+					requireSerialization(t, got, err, tc.want, tc.code)
+				})
+			}
+		})
+	}
+}
+
 func TestCanonicalNameTestExplicitNamespace(t *testing.T) {
 	for _, tc := range []struct{ source, want string }{{"Q{}n", "Q{}n"}, {"Q{urn:other}n", "Q{urn:other}n"}, {"n", "Q{urn:default}n"}} {
 		t.Run(tc.source, func(t *testing.T) {
@@ -162,4 +215,69 @@ func TestCanonicalNameTestExplicitNamespace(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSequenceTypeElementNameWithCommaInNamespace(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, declared, selection, source, want, code string }{
+		{"qualified element", "element(Q{urn:example,a}n)", "/*", `<n xmlns="urn:example,a"/>`, "n", ""},
+		{"qualified element with annotation", "element(Q{urn:example,(a)}n, xs:anyType)", "/*", `<n xmlns="urn:example,(a)"/>`, "n", ""},
+		{"qualified document root", "document-node(element(Q{urn:example,a}n))", "/", `<n xmlns="urn:example,a"/>`, "n", ""},
+		{"different namespace", "element(Q{urn:example,a}n)", "/*", `<n xmlns="urn:example,b"/>`, "", errCodeXTTE0570},
+		{"explicit no namespace", "element(Q{}n)", "/*", `<n/>`, "n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ss := compileTestStylesheet(t, "", `<xsl:variable name="value" as="`+tc.declared+`" select="`+tc.selection+`"/>`+
+				`<xsl:value-of select="local-name(($value/descendant-or-self::*)[1])"/>`)
+			got, err := ss.Transform(parseTestDocument(t, tc.source)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, tc.code)
+		})
+	}
+}
+
+func TestSequenceTypeDocumentChildConstraints(t *testing.T) {
+	t.Parallel()
+
+	const typedDocument = "document-node(element(r))"
+	for _, tc := range []struct{ name, declared, fragment, want, code string }{
+		{"element only", typedDocument, `&lt;r/>`, "1", ""},
+		{"comment and processing instruction", typedDocument, `&lt;!--before-->&lt;r/>&lt;?keep value?>`, "1", ""},
+		{"no element", typedDocument, `&lt;!--only a comment-->`, "", errCodeXTTE0570},
+		{"second element", typedDocument, `&lt;r/>&lt;s/>`, "", errCodeXTTE0570},
+		{"text sibling", typedDocument, `text&lt;r/>`, "", errCodeXTTE0570},
+		{"CDATA sibling", typedDocument, `&lt;r/>&lt;![CDATA[text]]&gt;`, "", errCodeXTTE0570},
+		{"document node without an element test", "document-node()", `text&lt;r/>&lt;s/>`, "2", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ss := compileTestStylesheet(t, "", `<xsl:variable name="value" as="`+tc.declared+`" select="parse-xml-fragment('`+tc.fragment+`')"/>
+			<xsl:value-of select="count($value/*)"/>`)
+			got, err := ss.Transform(parseTestDocument(t, `<source/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, tc.code)
+		})
+	}
+}
+
+func TestReviewDerivedIntegerConversionRejectsUnrelatedType(t *testing.T) {
+	for _, tc := range []struct{ name, as, selectValue string }{
+		{"base to derived", "xs:positiveInteger", "-1"},
+		{"sibling derived", "xs:nonNegativeInteger", "xs:negativeInteger('-1')"},
+		{"narrow integer", "xs:byte", "256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := compileTestStylesheet(t, "", `<xsl:variable name="value" as="`+tc.as+`" select="`+tc.selectValue+`"/><xsl:value-of select="$value"/>`)
+			got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, "", "XTTE0570")
+		})
+	}
+}
+
+func TestReviewExpandedAtomicTypeName(t *testing.T) {
+	ss := compileTestStylesheet(t, "", `<xsl:variable name="value" as="Q{http://www.w3.org/2001/XMLSchema}integer" select="1"/><xsl:value-of select="$value"/>`)
+	got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+	requireSerialization(t, got, err, "1", "")
 }

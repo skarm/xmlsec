@@ -312,16 +312,31 @@ func fnMapEntry(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	return xdm.ItemSlice{xdm.SingleEntryMap(ka, args[1])}, nil
 }
 
-func fnMapRemove(_ context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
+func fnMapRemove(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
 	m, err := extractMap(args[0])
 	if err != nil {
 		return nil, err
 	}
 
-	for item := range xdm.SequenceItems(args[1]) {
-		ka, err := AtomizeItem(item)
+	ec := getFnContext(ctx)
+	for i := range xdm.SequenceLen(args[1]) {
+		if err := fnCountOp(ctx, ec); err != nil {
+			return nil, err
+		}
+
+		ka, err := AtomizeItem(args[1].Get(i))
 		if err != nil {
 			return nil, err
+		}
+
+		if size := m.Size(); size > 1 {
+			if !m.Contains(ka) {
+				continue
+			}
+			// Removing an existing key rebuilds the entries and index.
+			if err := fnCountOps(ctx, ec, size); err != nil {
+				return nil, err
+			}
 		}
 
 		m = m.Remove(ka)

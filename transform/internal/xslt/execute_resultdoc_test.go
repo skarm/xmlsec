@@ -2,6 +2,7 @@ package xslt //nolint:testpackage // Exercises result-document state in the inte
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -43,6 +44,121 @@ func TestResultDocumentRollbackReleasesOutput(t *testing.T) {
 			err = SerializeValue(t.Context(), &secondary, value)
 			requireSerialization(t, secondary.String(), err, tc.wantSecondary, "")
 		})
+	}
+}
+
+func TestResultDocumentPreservesEmptyPathSegment(t *testing.T) {
+	t.Parallel()
+
+	const base = "https://example.test/a/b/main.xml"
+	for _, tc := range []struct{ name, href string }{
+		{"relative", "../..//report.txt"},
+		{"absolute", "https://example.test/a/b/../..//report.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `<xsl:result-document href="` + tc.href + `"><xsl:text>double</xsl:text></xsl:result-document>
+				<xsl:result-document href="../../report.txt"><xsl:text>single</xsl:text></xsl:result-document>`
+			result, err := compileTestStylesheet(t, "", body).Transform(parseTestDocument(t, `<r/>`)).BaseOutputURI(base).Execute(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if len(result.Secondary) != 2 {
+				t.Fatalf("output = %v; want two different secondary destinations", result.Secondary)
+			}
+			for uri, want := range map[string]string{
+				"https://example.test//report.txt": "double",
+				"https://example.test/report.txt":  "single",
+			} {
+				value, ok := result.Secondary[uri]
+				if !ok {
+					t.Fatalf("missing output URI %q", uri)
+				}
+				var output strings.Builder
+				err := SerializeValue(t.Context(), &output, value)
+				requireSerialization(t, output.String(), err, want, "")
+			}
+		})
+	}
+}
+
+func TestTryNormalizesItemSeparatorOnlyAtCommit(t *testing.T) {
+	t.Parallel()
+
+	const prefix = `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">
+		<xsl:output method="xml" omit-xml-declaration="yes" item-separator="|"/><xsl:template match="/">`
+	const suffix = `</xsl:template></xsl:stylesheet>`
+	for _, tc := range []struct{ name, body, want string }{
+		{"nodes", `<first/><xsl:try><middle/><last/><xsl:catch select="error()"/></xsl:try><end/>`, `<first/>|<middle/>|<last/>|<end/>`},
+		{"atomics", `<xsl:sequence select="0"/><xsl:try select="(1,2)"><xsl:catch select="error()"/></xsl:try><xsl:sequence select="3"/>`, `0|1|2|3`},
+		{"mixed", `<xsl:sequence select="0"/><xsl:try><xsl:sequence select="1"/><middle/><xsl:sequence select="2"/><xsl:catch select="error()"/></xsl:try><end/>`, `0|1|<middle/>|2|<end/>`},
+		{"nested", `<first/><xsl:try><xsl:try><middle/><last/><xsl:catch select="error()"/></xsl:try><xsl:catch select="error()"/></xsl:try><end/>`, `<first/>|<middle/>|<last/>|<end/>`},
+		{"rollback", `<first/><xsl:try><discard/><xsl:sequence select="error()"/><xsl:catch><recovered/></xsl:catch></xsl:try><end/>`, `<first/>|<recovered/>|<end/>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ss, err := NewCompiler().Compile(t.Context(), parseTestDocument(t, prefix+tc.body+suffix))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := ss.Transform(parseTestDocument(t, `<r/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, "")
+		})
+	}
+}
+
+func TestResultDocumentInheritsAndOverridesAbsentItemSeparator(t *testing.T) {
+	t.Parallel()
+	const base = "https://output.example/run/"
+	const declarations = `
+		<xsl:output method="text" item-separator="#absent"/>
+		<xsl:output name="side" method="text" item-separator="#absent"/>`
+	const body = `
+		<xsl:result-document item-separator="|">
+			<xsl:sequence select="(2,3)"/>
+		</xsl:result-document>
+		<xsl:result-document href="absent.txt" format="side">
+			<xsl:sequence select="(2,3)"/>
+		</xsl:result-document>
+		<xsl:result-document href="empty.txt" format="side" item-separator="">
+			<xsl:sequence select="(2,3)"/>
+		</xsl:result-document>
+		<xsl:result-document href="absent-avt.txt" item-separator="{'#absent'}">
+			<xsl:sequence select="(2,3)"/>
+		</xsl:result-document>
+		<xsl:result-document href="empty-avt.txt" item-separator="{''}">
+			<xsl:sequence select="(2,3)"/>
+		</xsl:result-document>`
+	result, err := compileTestStylesheet(t, declarations, body).Transform(parseTestDocument(t, `<r/>`)).BaseOutputURI(base + "main.txt").Execute(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Secondary) != 4 {
+		t.Fatalf("secondary output count = %d, want 4", len(result.Secondary))
+	}
+	for _, tc := range []struct {
+		name, want string
+		value      ValueResult
+		absent     bool
+	}{
+		{"primary", "2|3", result.Primary, false},
+		{"inherited absent", "2 3", result.Secondary[base+"absent.txt"], true},
+		{"overridden with empty", "23", result.Secondary[base+"empty.txt"], false},
+		{"overridden with absent AVT", "2 3", result.Secondary[base+"absent-avt.txt"], true},
+		{"overridden with empty AVT", "23", result.Secondary[base+"empty-avt.txt"], false},
+	} {
+		if tc.value.Output == nil {
+			t.Errorf("%s: missing output definition", tc.name)
+			continue
+		}
+		if tc.value.Output.ItemSeparatorAbsent != tc.absent {
+			t.Errorf("%s: explicit item-separator absence = %t, want %t", tc.name, tc.value.Output.ItemSeparatorAbsent, tc.absent)
+		}
+		var output strings.Builder
+		err := SerializeValue(t.Context(), &output, tc.value)
+		requireSerialization(t, output.String(), err, tc.want, "")
 	}
 }
 
@@ -183,6 +299,50 @@ func TestExecResultDocumentRejectsNestedJSONDuplicates(t *testing.T) {
 			if got != numericFirst && got != stringFirst {
 				t.Errorf("recovered JSON = %q, want both entries in %s", got, numericFirst)
 			}
+		})
+	}
+}
+
+func TestPrincipalResultDocumentFormat(t *testing.T) {
+	t.Parallel()
+	const declarations = `
+		<xsl:output method="xml" cdata-section-elements="r" omit-xml-declaration="yes"/>
+		<xsl:output name="fmt" method="xml" omit-xml-declaration="yes"/>
+		<xsl:output xmlns:o="urn:output" name="o:fmt" method="text"/>`
+	for _, tc := range []struct {
+		name, attr, want, code string
+		static                 bool
+	}{
+		{"omitted", "", "<r><![CDATA[example]]></r>", "", false},
+		{"named", ` format="fmt"`, "<r>example</r>", "", false},
+		{"named with XML whitespace", ` format="&#x9;fmt "`, "<r>example</r>", "", false},
+		{"named AVT with XML whitespace", ` format="{' fmt '}"`, "<r>example</r>", "", false},
+		{"lexical QName", ` xmlns:o="urn:output" format="o:fmt"`, "example", "", false},
+		{"lexical QName in AVT", ` xmlns:o="urn:output" format="{'o:fmt'}"`, "example", "", false},
+		{"URIQualifiedName in AVT", ` format="Q{{urn:output}}fmt"`, "example", "", false},
+		{"empty", ` format=""`, "", "XTDE1460", true},
+		{"empty AVT", ` format="{''}"`, "", "XTDE1460", false},
+		{"XML whitespace only", ` format="&#x9; "`, "", "XTDE1460", true},
+		{"non-XML whitespace", ` format="&#xA0;fmt"`, "", "XTDE1460", false},
+		{"non-XML whitespace in AVT", ` format="{concat(codepoints-to-string(160), 'fmt')}"`, "", "XTDE1460", false},
+		{"unknown static prefix", ` format="missing:fmt"`, "", "XTSE0280", true},
+		{"unknown prefix in AVT", ` format="{'missing:fmt'}"`, "", "XTDE0290", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `<xsl:result-document` + tc.attr + `><r>example</r></xsl:result-document>`
+			stylesheet := parseTestDocument(t, `<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">`+
+				declarations+`<xsl:template match="/">`+body+`</xsl:template></xsl:stylesheet>`)
+			ss, err := NewCompiler().Compile(t.Context(), stylesheet)
+			if tc.static != (err != nil && errors.Is(err, ErrStaticError)) {
+				t.Fatalf("compile error = %v, want static error = %t", err, tc.static)
+			}
+			if err != nil {
+				requireSerialization(t, "", err, tc.want, tc.code)
+				return
+			}
+			got, err := ss.Transform(parseTestDocument(t, `<source/>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, tc.want, tc.code)
 		})
 	}
 }

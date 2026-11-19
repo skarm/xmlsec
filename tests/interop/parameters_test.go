@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/xmldsig"
 )
 
 const pssURI = "http://www.w3.org/2007/05/xmldsig-more#"
@@ -212,6 +213,9 @@ func testParametersCase(t *testing.T, cfg signatureParameterCase, priv, spki, se
 	// Correctly signed bad second digest must fail only at Reference validation.
 	si = one(t, sig, ds, "SignedInfo")
 	refs := nodes(si, ds, "Reference")
+	if len(refs) != 2 {
+		t.Fatalf("number of References before changing second digest = %d, want 2", len(refs))
+	}
 	setText(one(t, refs[1], ds, "DigestValue"), base64String(make([]byte, 32)))
 	message = externalCanonical(t, fixture, d, si, exc)
 	setText(sv, base64String(exchange.sign(t, message)))
@@ -219,10 +223,11 @@ func testParametersCase(t *testing.T, cfg signatureParameterCase, priv, spki, se
 	verifyTask[nameInput] = xmlBytes(t, d)
 	result = probe(t, fixture, "parametersprobe", verifyTask, false)
 
-	var r verification
+	var r xmldsig.VerificationReport
 	decode(t, result["report"], &r)
 
-	if r.SignatureValue != nameValid || len(r.References) != 2 || r.References[1].Status != "invalid" {
+	if r.SignatureValue != xmldsig.Valid || r.FailureStage != "references" || len(r.References) != 2 || r.References[0].Status != xmldsig.Valid ||
+		r.References[1].Status != xmldsig.Invalid || r.References[1].Stage != "digest" {
 		t.Fatalf("wrong failure stage: %s", result["report"])
 	}
 }
@@ -238,14 +243,41 @@ func TestXMLSecHMAC(t *testing.T) {
 	for _, bits := range []int{256, 384, 512} {
 		for _, output := range []int{0, bits / 2} {
 			method := more + fmt.Sprintf("hmac-sha%d", bits)
-			ours := write(t, filepath.Join(dir, "ours.xml"), probeData(t, fixture, "parametersprobe", map[string]any{nameMode: nameSign, nameMethod: method, nameSecret: secret, "Bits": output}))
+			goXML := probeData(t, fixture, "parametersprobe", map[string]any{nameMode: nameSign, nameMethod: method, nameSecret: secret, "Bits": output})
+			requireHMACWireProfile(t, "Go", goXML, method, output)
+			ours := write(t, filepath.Join(dir, "ours.xml"), goXML)
 			theirs := filepath.Join(dir, "theirs.xml")
 
 			native(t, fixture, true, nameVerify, "--hmackey", key, flagEnabledReferenceURIs, "same-doc", ours)
 			native(t, fixture, true, nameSign, "--hmackey", key, flagEnabledReferenceURIs, "same-doc", "--output", theirs, ours)
-			r := probe(t, fixture, "parametersprobe", map[string]any{nameMode: nameVerify, nameMethod: method, nameSecret: secret, nameInput: read(t, theirs)}, true)
+			xmlsecXML := read(t, theirs)
+			requireHMACWireProfile(t, "XMLSec", xmlsecXML, method, output)
+			r := probe(t, fixture, "parametersprobe", map[string]any{nameMode: nameVerify, nameMethod: method, nameSecret: secret, nameInput: xmlsecXML}, true)
 			assertJSON(t, r, nameValid, true)
 		}
+	}
+}
+
+func requireHMACWireProfile(t *testing.T, producer string, raw []byte, method string, output int) {
+	t.Helper()
+
+	signedInfo := one(t, tree.Root(xmlDoc(t, raw)), ds, "SignedInfo")
+	signatureMethod := one(t, signedInfo, ds, "SignatureMethod")
+	if got := attr(signatureMethod, "Algorithm"); got != method {
+		t.Fatalf("%s HMAC algorithm = %q, want %q", producer, got, method)
+	}
+
+	lengths := nodes(signatureMethod, ds, "HMACOutputLength")
+	if output == 0 {
+		if len(lengths) != 0 {
+			t.Fatalf("%s %s emitted HMACOutputLength for the default length", producer, method)
+		}
+
+		return
+	}
+
+	if len(lengths) != 1 || strings.TrimSpace(text(lengths[0])) != strconv.Itoa(output) {
+		t.Fatalf("%s %s must contain one HMACOutputLength of %d bits", producer, method, output)
 	}
 }
 
@@ -260,39 +292,32 @@ func verifySignatureValue(t *testing.T, fixture *interopFixture, d *tree.Documen
 	value := decode64(t, text(one(t, sig, ds, "SignatureValue")))
 	dir := t.TempDir()
 	messagePath := write(t, filepath.Join(dir, "message"), message)
-	hash := nameSHA256
 
-	for _, bits := range []string{"384", "512"} {
-		if strings.Contains(method, bits) {
-			hash = "sha" + bits
-		}
+	var hash string
+
+	switch method {
+	case more + "rsa-sha256", more + "ecdsa-sha256", pssURI + "sha256-rsa-MGF1":
+		hash = nameSHA256
+	case more + "rsa-sha384", more + "ecdsa-sha384", pssURI + "sha384-rsa-MGF1":
+		hash = "sha384"
+	case more + "rsa-sha512", more + "ecdsa-sha512", pssURI + "sha512-rsa-MGF1":
+		hash = "sha512"
+	case "http://www.w3.org/2021/04/xmldsig-more#eddsa-ed25519":
+		signature := write(t, filepath.Join(dir, "signature"), value)
+		command(t, fixture, true, nil, "openssl", "pkeyutl", flagVerify, "-pubin", flagInkey, public, "-rawin", flagIn, messagePath, "-sigfile", signature)
+
+		return
+	default:
+		t.Fatalf("unsupported signature method for OpenSSL oracle: %q", method)
 	}
 
-	if strings.Contains(method, "ecdsa") {
-		width := len(value) / 2
-		if width == 0 || len(value)%2 != 0 {
-			t.Fatal("ECDSA width")
-		}
-
-		der, err := asn1.Marshal(struct {
-			R *big.Int
-			S *big.Int
-		}{new(big.Int).SetBytes(value[:width]), new(big.Int).SetBytes(value[width:])})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		value = der
+	if strings.HasPrefix(method, more+"ecdsa-") {
+		value = ecdsaDER(t, value)
 	}
 
 	signature := write(t, filepath.Join(dir, "signature"), value)
-	if strings.Contains(method, "eddsa-ed25519") {
-		command(t, fixture, true, nil, "openssl", "pkeyutl", flagVerify, "-pubin", flagInkey, public, "-rawin", flagIn, messagePath, "-sigfile", signature)
-		return
-	}
-
 	args := []string{"dgst", "-" + hash, flagVerify, public, "-signature", signature}
-	if strings.Contains(method, "MGF1") {
+	if strings.HasPrefix(method, pssURI) {
 		args = append(args, "-sigopt", "rsa_padding_mode:pss", "-sigopt", "rsa_pss_saltlen:digest")
 	}
 

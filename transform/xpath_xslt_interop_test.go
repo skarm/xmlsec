@@ -3634,9 +3634,6 @@ func compareSaxonTextResources(t *testing.T, binary, classpath string) {
 				oracle = "FOUT1200"
 			}
 			compareSaxonConfiguredExpression(t, t.Context(), e, binary, classpath, expression, test.want, []string{"-config:" + config}, oracle)
-			if oracle == test.want {
-				t.Log("P3_ORACLE saxon-12.10")
-			}
 		})
 	}
 }
@@ -4343,6 +4340,9 @@ func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want 
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, binary, saxonCompilerArguments(classpath, main, processor)...).Output()
+	if ctx.Err() != nil {
+		t.Fatal("independent compiler", ctx.Err())
+	}
 	if diagnostic, separate := strings.CutPrefix(want, "diagnostic:"); separate {
 		var failure *exec.ExitError
 		if !errors.As(err, &failure) || !strings.Contains(string(failure.Stderr), diagnostic) {
@@ -4355,11 +4355,7 @@ func compareSaxonCompiler(t *testing.T, binary, classpath, source, module, want 
 		return
 	}
 
-	got = string(output)
-	if err != nil {
-		got = saxonDiagnosticCode(err)
-	}
-	if got != want {
+	if !matchesSaxonContract(output, err, want) {
 		var detail *exec.ExitError
 		if errors.As(err, &detail) {
 			t.Fatalf("Saxon: %q, %s; want %q", output, detail.Stderr, want)
@@ -4564,12 +4560,7 @@ func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engi
 		expected = oracleWant[0]
 	}
 
-	got = string(output)
-	if err != nil {
-		got = saxonDiagnosticCode(err)
-	}
-
-	if got != expected {
+	if !matchesSaxonContract(output, err, expected) {
 		if stderr, failed := saxonFailureStderr(err); failed {
 			t.Fatalf("Saxon %s: %q, %s; want %q", body, output, stderr, expected)
 		}
@@ -4577,6 +4568,13 @@ func compareSaxonStylesheet(t *testing.T, ctx context.Context, e *transform.Engi
 		t.Fatalf("Saxon %s: %q, %v; want %q", body, output, err, expected)
 	}
 	saxonProofAgreement(t, binary, classpath, expected == want)
+}
+
+func matchesSaxonContract(output []byte, err error, want string) bool {
+	if comparisonErrorCode(want) {
+		return saxonDiagnosticCode(err) == want
+	}
+	return err == nil && string(output) == want
 }
 
 // Static type errors may be diagnosed before XQuery try/catch can run.

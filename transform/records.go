@@ -42,12 +42,12 @@ type StreamOptions struct {
 // complete earlier records; the caller decides when to commit external effects.
 func (s *Stylesheet) WriteRecords(ctx context.Context, dst io.Writer, src io.Reader, options StreamOptions) (int64, error) {
 	if s == nil || s.engine == nil || nilcheck.IsNil(src) || nilcheck.IsNil(dst) || options.MaxOutputBytes < 0 {
-		return 0, wrap("stream XSLT", ErrInput)
+		return 0, wrap(opStreamXSLT, ErrInput)
 	}
 
 	ctx, cancel, err := s.engine.invocation(ctx)
 	if err != nil {
-		return 0, wrap("stream XSLT", err)
+		return 0, wrap(opStreamXSLT, err)
 	}
 	defer cancel()
 
@@ -78,7 +78,7 @@ func (s *Stylesheet) WriteRecords(ctx context.Context, dst io.Writer, src io.Rea
 		return s.writeRecord(ctx, &writer, input, options)
 	})
 
-	return writer.Written, wrap("stream XSLT", err)
+	return writer.Written, wrap(opStreamXSLT, err)
 }
 
 func (s *Stylesheet) writeRecord(ctx context.Context, dst io.Writer, input *Document, options StreamOptions) error {

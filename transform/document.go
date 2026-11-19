@@ -112,7 +112,7 @@ type inputLimitsKey struct{}
 func (e *Engine) Parse(ctx context.Context, xml []byte) (*Document, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrap("parse", err)
+		return nil, wrap(opParse, err)
 	}
 	defer cancel()
 
@@ -130,17 +130,17 @@ func (e *Engine) Parse(ctx context.Context, xml []byte) (*Document, error) {
 func (e *Engine) ParseReader(ctx context.Context, src io.Reader) (*Document, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrap("parse", err)
+		return nil, wrap(opParse, err)
 	}
 	defer cancel()
 
 	if nilcheck.IsNil(src) {
-		return nil, wrap("parse", ErrInput)
+		return nil, wrap(opParse, ErrInput)
 	}
 
 	d, err := e.parseOptions().ParseReader(ctx, src)
 	if err != nil {
-		return nil, wrap("parse", err)
+		return nil, wrap(opParse, err)
 	}
 
 	d.Freeze()
@@ -155,21 +155,21 @@ func (e *Engine) ParseReader(ctx context.Context, src io.Reader) (*Document, err
 func (e *Engine) Import(ctx context.Context, d *document.Document) (*Document, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrap("import", err)
+		return nil, wrap(opImport, err)
 	}
 	defer cancel()
 
 	if d == nil {
-		return nil, wrap("import", ErrInput)
+		return nil, wrap(opImport, ErrInput)
 	}
 
 	if err = tree.CheckSnapshotLimits(ctx, d, e.limits.xmlLimits()); err != nil {
-		return nil, wrap("import", err)
+		return nil, wrap(opImport, err)
 	}
 
 	native, err := xdm.FromDocument(ctx, d)
 	if err != nil {
-		return nil, wrap("import", err)
+		return nil, wrap(opImport, err)
 	}
 
 	return &Document{native: native}, nil
@@ -181,16 +181,16 @@ func (e *Engine) Import(ctx context.Context, d *document.Document) (*Document, e
 func (e *Engine) Export(ctx context.Context, d *Document) (*document.Document, error) {
 	ctx, cancel, err := e.invocation(ctx)
 	if err != nil {
-		return nil, wrap("export", err)
+		return nil, wrap(opExport, err)
 	}
 	defer cancel()
 
 	if d == nil || d.native == nil {
-		return nil, wrap("export", ErrInput)
+		return nil, wrap(opExport, ErrInput)
 	}
 
 	if err := checkInputDocument(ctx, d.native, e.limits); err != nil {
-		return nil, wrap("export", err)
+		return nil, wrap(opExport, err)
 	}
 
 	count := 0
@@ -202,15 +202,15 @@ func (e *Engine) Export(ctx context.Context, d *Document) (*document.Document, e
 		case xdm.CommentNode, xdm.ProcessingInstructionNode:
 		case xdm.TextNode:
 			if !tree.IsXMLSpace(xdm.CharacterData(child)) {
-				return nil, wrap("export", ErrInput)
+				return nil, wrap(opExport, ErrInput)
 			}
 		default:
-			return nil, wrap("export", ErrInput)
+			return nil, wrap(opExport, ErrInput)
 		}
 	}
 
 	if count != 1 {
-		return nil, wrap("export", ErrInput)
+		return nil, wrap(opExport, ErrInput)
 	}
 
 	return d.native.Snapshot(), nil
@@ -220,7 +220,7 @@ func (e *Engine) Export(ctx context.Context, d *Document) (*document.Document, e
 // Attributes and namespaces retain their owner-bound identities.
 func (e *Engine) ImportNode(ctx context.Context, n document.Node) (Value, error) {
 	if !n.Valid() {
-		return Value{}, wrap("import node", ErrInput)
+		return Value{}, wrap(opImportNode, ErrInput)
 	}
 
 	d, err := e.Import(ctx, n.Document())
@@ -230,7 +230,7 @@ func (e *Engine) ImportNode(ctx context.Context, n document.Node) (Value, error)
 
 	node := d.native.NodeView(n)
 	if node == nil {
-		return Value{}, wrap("import node", ErrInput)
+		return Value{}, wrap(opImportNode, ErrInput)
 	}
 
 	return Value{item: xdm.NodeItem{Node: node}}, nil
@@ -238,7 +238,7 @@ func (e *Engine) ImportNode(ctx context.Context, n document.Node) (Value, error)
 
 func (e *Engine) parse(ctx context.Context, xml []byte, baseURI string) (*Document, error) {
 	if len(xml) > e.limits.MaxInputBytes {
-		return nil, wrap("parse", ErrLimit)
+		return nil, wrap(opParse, ErrLimit)
 	}
 
 	options := e.parseOptions()
@@ -246,7 +246,7 @@ func (e *Engine) parse(ctx context.Context, xml []byte, baseURI string) (*Docume
 
 	d, err := options.Parse(ctx, xml)
 	if err != nil {
-		return nil, wrap("parse", err)
+		return nil, wrap(opParse, err)
 	}
 
 	return &Document{native: d}, nil

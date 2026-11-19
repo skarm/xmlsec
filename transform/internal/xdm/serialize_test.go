@@ -235,6 +235,31 @@ func TestXMLDeclarationRejectsInvalidMetadataBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestXMLSerializationInheritsEmittedDeclarationVersion(t *testing.T) {
+	t.Parallel()
+
+	doc := parseNodeDocument(t, `<r>&#127;</r>`)
+	doc.SetVersion("1.1")
+	doc.Freeze()
+	for _, test := range []struct {
+		name   string
+		writer xdm.XMLSerialization
+		want   string
+	}{
+		{"inherited 1.1", xdm.XMLSerialization{}, "<?xml version=\"1.1\" encoding=\"UTF-8\"?>\n<r>&#127;</r>"},
+		{"override 1.0", xdm.XMLSerialization{Version: "1.0"}, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<r>\x7f</r>"},
+		{"no declaration", xdm.XMLSerialization{OmitDeclaration: true}, "<r>\x7f</r>"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			if err := test.writer.WriteToContext(t.Context(), &out, doc); err != nil || out.String() != test.want {
+				t.Fatalf("serialization = %q, %v; want %q", out.String(), err, test.want)
+			}
+		})
+	}
+}
+
 func TestXMLSerializationRejectsTypedNilInputs(t *testing.T) {
 	t.Parallel()
 	doc := parseNodeDocument(t, `<r/>`)
@@ -254,6 +279,19 @@ func TestXMLSerializationRejectsTypedNilInputs(t *testing.T) {
 				t.Error("typed nil input was accepted")
 			}
 		}()
+	}
+}
+
+func TestXMLSequenceRejectsNilProducerAndTypedNilNode(t *testing.T) {
+	t.Parallel()
+
+	var absent *xdm.Element
+	for _, items := range []iter.Seq2[xdm.XMLItem, error]{nil, xmlItems(xdm.XMLItem{Node: absent})} {
+		var dst bytes.Buffer
+		err := (xdm.XMLSerialization{}).WriteSequence(t.Context(), &dst, items)
+		if !errors.Is(err, tree.ErrMalformed) || dst.Len() != 0 {
+			t.Fatalf("invalid sequence = %q, %v; want malformed input and no bytes", dst.String(), err)
+		}
 	}
 }
 

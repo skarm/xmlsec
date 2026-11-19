@@ -363,7 +363,7 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 		unit = utf8.AppendRune(unit, value)
 	}
 
-	if r.outside && (!markup && len(bytes.Trim(unit, lexicon.XMLWhitespace)) != 0 || bytes.HasPrefix(unit, []byte("<![CDATA["))) {
+	if r.outside && (!markup && len(bytes.Trim(unit, lexicon.XMLWhitespace)) != 0 || bytes.HasPrefix(unit, []byte(lexicon.CDATAStart))) {
 		return nil, fmt.Errorf("%w: content outside root", ErrMalformed)
 	}
 
@@ -373,7 +373,7 @@ func (r *xmlInput) nextUnit() ([]byte, error) {
 		n := copy(boundary[:], r.textTail[:r.textTailLen])
 
 		n += copy(boundary[n:], unit[:min(len(unit), 2)])
-		if bytes.Contains(boundary[:n], []byte("]]>")) {
+		if bytes.Contains(boundary[:n], []byte(lexicon.CDATAEnd)) {
 			return nil, fmt.Errorf("%w: CDATA terminator in text", ErrMalformed)
 		}
 
@@ -437,13 +437,13 @@ func lexicalUnitComplete(unit []byte, markup bool, quote rune, inReference bool)
 	switch {
 	case bytes.HasPrefix(unit, []byte(dtdCommentOpen)):
 		return len(unit) >= 7 && bytes.HasSuffix(unit, []byte("-->")), nil
-	case bytes.HasPrefix(unit, []byte("<![CDATA[")):
-		return len(unit) >= 12 && bytes.HasSuffix(unit, []byte("]]>")), nil
+	case bytes.HasPrefix(unit, []byte(lexicon.CDATAStart)):
+		return len(unit) >= len(lexicon.CDATAStart)+len(lexicon.CDATAEnd) && bytes.HasSuffix(unit, []byte(lexicon.CDATAEnd)), nil
 	case bytes.HasPrefix(unit, []byte(dtdPIOpen)):
 		return len(unit) >= 4 && bytes.HasSuffix(unit, []byte("?>")), nil
 	case bytes.HasPrefix(unit, []byte("<!")):
 		// Partial declaration openers are accepted only until they can be classified.
-		comment, cdata := []byte(dtdCommentOpen), []byte("<![CDATA[")
+		comment, cdata := []byte(dtdCommentOpen), []byte(lexicon.CDATAStart)
 		if !bytes.HasPrefix(comment, unit) && !bytes.HasPrefix(cdata, unit) {
 			return false, ErrUnsupported
 		}

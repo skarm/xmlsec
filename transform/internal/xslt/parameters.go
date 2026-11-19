@@ -9,8 +9,7 @@ import (
 
 // Parameters holds named XSLT parameter bindings keyed by expanded name
 // string (Q{uri}local form). It is a mutable collection: callers build it
-// up, then pass it to a Compiler or Invocation. The receiver clones it at
-// terminal method time.
+// up, then pass it to a Compiler or Invocation, which takes a snapshot.
 type Parameters struct {
 	// values retains parameter sequences by expanded QName, copied by immutable update
 	// methods.
@@ -91,7 +90,7 @@ func (p *Parameters) with(name string, value xdm.Sequence) *Parameters {
 		owned = NewParameters()
 	}
 
-	owned.Set(name, value)
+	owned.Set(name, xdm.CloneSequence(value))
 
 	return owned
 }

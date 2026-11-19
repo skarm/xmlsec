@@ -3,7 +3,6 @@ package protocol
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
 	"encoding/base64"
 	"net"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/x509cert"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/internal/xmlutil"
 )
@@ -93,7 +93,7 @@ func setConfirmationKey(data *tree.Node, raw []byte) error {
 		return ErrProfile
 	}
 
-	cert, err := x509.ParseCertificate(raw)
+	cert, err := x509cert.ParseWithMaxBytes(raw, maximumHoKCertificateBytes)
 	if err != nil || signature.Key(cert.PublicKey) != nil {
 		return ErrProfile
 	}

@@ -91,7 +91,7 @@ func resolveDecimalFormat(ctx context.Context, name string) (number.DecimalForma
 }
 
 func resolveDecimalFormatName(ctx context.Context, name string) (QualifiedName, error) {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		end := strings.Index(name, "}")
 		if end < 0 || end == len(name)-1 {
 			return QualifiedName{}, &xdm.Error{Code: errCodeFODF1280, Message: fmt.Sprintf("unknown decimal format: %s", name)}
@@ -183,7 +183,12 @@ func formatNumber(a xdm.AtomicValue, picture string, df number.DecimalFormat) (s
 	}
 
 	if (a.TypeName == xdm.TypeDouble || a.TypeName == xdm.TypeFloat) && precise != nil {
-		precise = scaledFloatPrecise(a.TypeName, f, picture, negative, df, precise)
+		var overflow bool
+
+		precise, overflow = scaledFloatPrecise(a.TypeName, f, picture, negative, df, precise)
+		if overflow {
+			isPosInf, isNegInf = !negative, negative
+		}
 	}
 
 	result, err := number.FormatNumber(f, isNaN, isPosInf, isNegInf, negative, precise, picture, df)
@@ -194,10 +199,10 @@ func formatNumber(a xdm.AtomicValue, picture string, df number.DecimalFormat) (s
 	return result, nil
 }
 
-func scaledFloatPrecise(typeName string, f float64, picture string, negative bool, df number.DecimalFormat, precise *big.Rat) *big.Rat {
+func scaledFloatPrecise(typeName string, f float64, picture string, negative bool, df number.DecimalFormat, precise *big.Rat) (*big.Rat, bool) {
 	pp, err := number.ParsePicture(selectedNumberPicture(picture, negative, df), df)
 	if err != nil || (!pp.IsPercent && !pp.IsPerMille) {
-		return precise
+		return precise, false
 	}
 
 	scaled := f
@@ -210,8 +215,13 @@ func scaledFloatPrecise(typeName string, f float64, picture string, negative boo
 		divisor = formatPerMilleMultiplier
 	}
 
-	if math.IsNaN(scaled) || math.IsInf(scaled, eitherInfinitySign) {
-		return nil
+	// The adjusted number overflows in its own primitive type before formatting.
+	if typeName == xdm.TypeFloat {
+		scaled = float64(float32(scaled))
+	}
+
+	if math.IsInf(scaled, eitherInfinitySign) {
+		return nil, true
 	}
 
 	scaledLexical := formatXPathDouble(scaled)
@@ -221,10 +231,10 @@ func scaledFloatPrecise(typeName string, f float64, picture string, negative boo
 
 	scaledRat := parseCanonicalFloatRat(scaledLexical)
 	if scaledRat == nil {
-		return nil
+		return nil, false
 	}
 
-	return new(big.Rat).Quo(scaledRat, new(big.Rat).SetInt64(divisor))
+	return new(big.Rat).Quo(scaledRat, new(big.Rat).SetInt64(divisor)), false
 }
 
 func selectedNumberPicture(picture string, negative bool, df number.DecimalFormat) string {

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,58 @@ import (
 )
 
 const nameSigning = "signing"
+
+type metadataCountingSigner struct {
+	crypto.Signer
+	calls int
+}
+
+func (s *metadataCountingSigner) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
+	s.calls++
+	return s.Signer.Sign(random, digest, options)
+}
+
+func TestMetadataSignValidatesOptionsBeforePrivateKeyOperations(t *testing.T) {
+	t.Parallel()
+	at := testcert.Now()
+	d, err := metadata.Build(t.Context(), metadata.EntityDescriptor{
+		EntityID: "urn:test:idp", ValidUntil: at.Add(time.Hour),
+		IDP: &metadata.RoleDescriptor{Endpoints: map[string][]metadata.Endpoint{
+			metadata.SingleSignOnService: {{Binding: metadata.HTTPRedirect, Location: "https://idp.example.test/sso"}},
+		}},
+	}, at, metadata.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &metadataCountingSigner{Signer: testcert.Key(t)}
+	signed, err := metadata.Sign(t.Context(), d, signer, nil, xmldsig.ECDSASHA256, at, metadata.Options{MaxBytes: -1})
+	if signed != nil || !errors.Is(err, metadata.ErrMetadata) || signer.calls != 0 {
+		t.Errorf("Sign with invalid options = %p, %v, %d signer calls; want nil, ErrMetadata, 0", signed, err, signer.calls)
+	}
+	for _, test := range []struct {
+		name string
+		at   time.Time
+		want error
+	}{
+		{"missing time", time.Time{}, metadata.ErrMetadata},
+		{"expired", at.Add(time.Hour), metadata.ErrExpired},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			signer := &metadataCountingSigner{Signer: testcert.Key(t)}
+			signed, err := metadata.Sign(t.Context(), d, signer, nil, xmldsig.ECDSASHA256, test.at, metadata.Options{})
+			if signed != nil || !errors.Is(err, test.want) || signer.calls != 0 {
+				t.Errorf("Sign = %p, %v, %d signer calls; want nil, %v, 0", signed, err, signer.calls, test.want)
+			}
+		})
+	}
+	signer.calls = 0
+	signed, err = metadata.Sign(t.Context(), d, signer, nil, xmldsig.ECDSASHA256, at, metadata.Options{})
+	if signed == nil || err != nil || signer.calls != 1 || len(xmldsig.Signatures(d)) != 0 {
+		t.Errorf("Sign with valid options = %p, %v, %d signer calls; want one signature on a new document", signed, err, signer.calls)
+	}
+}
 
 func TestMetadataSignedAndPinnedTrust(t *testing.T) {
 	c := testcert.New(t)
@@ -292,6 +345,32 @@ func TestCertificateEncodingConsistency(t *testing.T) {
 			}
 		})
 	}
+
+	for _, test := range []struct {
+		name, start, replacement string
+		wantError                bool
+	}{
+		{"whitespace separating X509Data children", "<ds:X509Data>", "<ds:X509Data> \t\n ", false},
+		{"valid mixed KeyInfo type", "<ds:KeyInfo>", "<ds:KeyInfo>certificate for publication", false},
+		{"text inside element-only X509Data", "<ds:X509Data>", "<ds:X509Data>certificate for publication", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if bytes.Count(canonicalXML, []byte(test.start)) != 1 {
+				t.Fatalf("expected one fixture tag %q", test.start)
+			}
+			wire := bytes.Replace(canonicalXML, []byte(test.start), []byte(test.replacement), 1)
+			snapshot, err := metadata.ParseTrusted(t.Context(), wire, testcert.Now(), metadata.Options{})
+			if test.wantError {
+				if snapshot != nil || !errors.Is(err, metadata.ErrMetadata) {
+					t.Fatalf("ParseTrusted = %v, %v; want no result and ErrMetadata", snapshot, err)
+				}
+				return
+			}
+			if err != nil || snapshot == nil {
+				t.Fatalf("ParseTrusted = %v, %v; want metadata", snapshot, err)
+			}
+		})
+	}
 }
 
 func BenchmarkSelectACS(b *testing.B) {
@@ -352,14 +431,18 @@ func TestMetadataExpiryAttributesRequireValues(t *testing.T) {
 	at := testcert.Now()
 	for _, level := range []string{"aggregate", "entity", "role"} {
 		for _, attribute := range []string{"validUntil", "cacheDuration"} {
-			for _, value := range []string{"", " ", "valid"} {
+			for _, value := range []string{"", " ", "valid", "padded"} {
 				t.Run(level+"/"+attribute+"/"+value, func(t *testing.T) {
 					t.Parallel()
-					valid := value == "valid"
+					padded := value == "padded"
+					valid := value == "valid" || padded
 					if valid {
 						value = "PT60S"
 						if attribute == "validUntil" {
 							value = at.Add(time.Minute).Format(time.RFC3339Nano)
+						}
+						if padded {
+							value = "&#x9;" + value + " "
 						}
 					}
 					attrs := map[string]string{level: fmt.Sprintf(` %s="%s"`, attribute, value)}
@@ -431,6 +514,69 @@ func TestMetadataProtocolEnumerationUsesXMLWhitespace(t *testing.T) {
 			}
 			if _, err := entity.Role(metadata.ServiceProvider, at); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRoleAttributeNamespace(t *testing.T) {
+	const assertion = "urn:oasis:names:tc:SAML:2.0:assertion"
+	for _, tc := range []struct {
+		role                    metadata.RoleType
+		endpoint, attrNamespace string
+		valid                   bool
+	}{
+		{metadata.IdentityProvider, metadata.SingleSignOnService, assertion, true},
+		{metadata.AttributeAuthority, metadata.AttributeService, assertion, true},
+		{metadata.IdentityProvider, metadata.SingleSignOnService, metadata.Namespace, false},
+		{metadata.AuthenticationAuthority, metadata.AuthnQueryService, assertion, false},
+	} {
+		t.Run(string(tc.role)+"/"+tc.attrNamespace, func(t *testing.T) {
+			raw := fmt.Sprintf(`<EntityDescriptor xmlns="%s" entityID="urn:test:role"><%s protocolSupportEnumeration="%s"><%s Binding="%s" Location="https://role.test/service"/><a:Attribute xmlns:a="%s" Name="org"/></%s></EntityDescriptor>`, metadata.Namespace, tc.role, metadata.Protocol, tc.endpoint, metadata.SOAP, tc.attrNamespace, tc.role)
+			set, err := metadata.ParseTrusted(t.Context(), []byte(raw), testcert.Now(), metadata.Options{})
+			if tc.valid {
+				if err != nil || set == nil {
+					t.Fatalf("ParseTrusted returned %v, want the role with its advertised attribute", err)
+				}
+			} else if !errors.Is(err, metadata.ErrMetadata) || set != nil {
+				t.Fatalf("unexpected attribute accepted: set=%v, err=%v", set != nil, err)
+			}
+		})
+	}
+}
+
+func TestMetadataKeyUse(t *testing.T) {
+	cert := base64.StdEncoding.EncodeToString(testcert.New(t).Leaf.Raw)
+	at := testcert.Now()
+	for _, tc := range []struct {
+		attribute                  string
+		signing, encryption, valid bool
+	}{
+		{"", true, true, true},
+		{` use="signing"`, true, false, true},
+		{` use="encryption"`, false, true, true},
+		{` use=""`, false, false, false},
+		{` use=" signing "`, false, false, false},
+	} {
+		t.Run("descriptor"+tc.attribute, func(t *testing.T) {
+			raw := fmt.Sprintf(`<EntityDescriptor xmlns="%s" entityID="urn:test:key"><IDPSSODescriptor protocolSupportEnumeration="%s"><KeyDescriptor%s><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data><X509Certificate>%s</X509Certificate></X509Data></KeyInfo></KeyDescriptor><SingleSignOnService Binding="%s" Location="https://role.test/service"/></IDPSSODescriptor></EntityDescriptor>`, metadata.Namespace, metadata.Protocol, tc.attribute, cert, metadata.HTTPRedirect)
+			set, err := metadata.ParseTrusted(t.Context(), []byte(raw), at, metadata.Options{})
+			if !tc.valid {
+				if set != nil || !errors.Is(err, metadata.ErrMetadata) {
+					t.Fatalf("invalid key use accepted: set=%v, err=%v", set != nil, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			entity, err := set.Find("urn:test:key", at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			role, err := entity.Role(metadata.IdentityProvider, at)
+			if err != nil || (len(role.SigningKeys()) == 1) != tc.signing || (len(role.EncryptionKeys()) == 1) != tc.encryption {
+				t.Fatalf("key use %q: signing=%d, encryption=%d, err=%v", tc.attribute, len(role.SigningKeys()), len(role.EncryptionKeys()), err)
 			}
 		})
 	}

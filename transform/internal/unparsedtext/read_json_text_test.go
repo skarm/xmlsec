@@ -18,6 +18,7 @@ func TestReadJSONTextDetectsUnicode(t *testing.T) {
 		compatible               bool
 	}{
 		{name: "utf8_with_bom", input: "\xef\xbb\xbf[\"é\"]", want: `["é"]`, compatible: true},
+		{name: "utf8_bom_with_charset_alias", input: "\xef\xbb\xbf[\"é\"]", media: "application/json; charset=unicode-1-1-utf-8", want: `["é"]`, compatible: true},
 		{name: "utf16be_with_bom", input: "\xfe\xff\x00[\x00]\x00\n", want: "[]\n", compatible: true},
 		{name: "utf16be_without_bom", input: "\x00[\x00]", want: "[]"},
 		{name: "utf16le_without_bom", input: "[\x00]\x00", want: "[]"},
@@ -25,8 +26,8 @@ func TestReadJSONTextDetectsUnicode(t *testing.T) {
 		{name: "short_utf16le_without_bom", input: "1\x00", want: "1"},
 		{name: "utf32be_without_bom", input: "\x00\x00\x00[\x00\x00\x00]", want: "[]"},
 		{name: "utf32le_without_bom", input: "[\x00\x00\x00]\x00\x00\x00", want: "[]"},
-		{name: "utf32be_with_bom", input: "\x00\x00\xfe\xff\x00\x00\x00[\x00\x00\x00]", want: "[]"},
-		{name: "utf32le_bom_with_generic_charset", input: "\xff\xfe\x00\x00[\x00\x00\x00]\x00\x00\x00", media: "application/json; charset=utf-32", want: "[]"},
+		{name: "utf32be_with_bom", input: "\x00\x00\xfe\xff\x00\x00\x00[\x00\x00\x00]", want: "[]", compatible: true},
+		{name: "utf32le_bom_with_generic_charset", input: "\xff\xfe\x00\x00[\x00\x00\x00]\x00\x00\x00", media: "application/json; charset=utf-32", want: "[]", compatible: true},
 		{name: "transport_charset", input: "\"caf\xe9\"", media: "application/json; charset=iso-8859-1", want: `"café"`, compatible: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,6 +50,12 @@ func TestReadJSONTextDetectsUnicode(t *testing.T) {
 			})
 			if err != nil || output.String() != tc.want || compatible != tc.compatible {
 				t.Fatalf("JSON text = (%q, compatible=%t, %v), want (%q, compatible=%t, nil)", output.String(), compatible, err, tc.want, tc.compatible)
+			}
+			if compatible {
+				text, err := unparsedtext.DecodeText([]byte(tc.input), "", tc.media)
+				if err != nil || text != output.String() {
+					t.Errorf("compatible text = %q, %v; want %q, nil", text, err, output.String())
+				}
 			}
 			if !body.closed || encoded != len(tc.input) || decoded != len(tc.want) || retained != len(tc.want) {
 				t.Errorf("closed=%t, bytes read/decoded/retained=%d/%d/%d, want true and %d/%d/%d", body.closed, encoded, decoded, retained, len(tc.input), len(tc.want), len(tc.want))

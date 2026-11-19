@@ -183,7 +183,7 @@ func checkDocs(root string, out io.Writer) error {
 		}
 	}
 
-	data, err := os.ReadFile(filepath.Join(root, "docs", "conformance.json")) // #nosec G304 -- The conformance file has a fixed repository-relative path.
+	data, err := os.ReadFile(filepath.Join(root, "docs", conformanceRegisterFile)) // #nosec G304 -- The conformance file has a fixed repository-relative path.
 	if err != nil {
 		return err
 	}

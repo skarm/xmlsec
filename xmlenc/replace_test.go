@@ -13,7 +13,10 @@ import (
 
 	"github.com/skarm/xmlsec/c14n"
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/uriref"
 	"github.com/skarm/xmlsec/reference"
+	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/xmldsig"
 	"github.com/skarm/xmlsec/xmlenc"
 )
@@ -127,6 +130,76 @@ func TestSelectedElementRootAndExactSelection(t *testing.T) {
 	}
 
 	sameXML(t, source, full)
+}
+
+func TestSelectedElementPreservesSOAPPayloadScope(t *testing.T) {
+	ctx := t.Context()
+	const raw = `<?before ok?><s:Envelope xmlns:s="` + binding.SOAPNamespace + `" xmlns:p="` + binding.ProtocolNamespace + `" xml:base="messages/"><s:Body xml:base="soap/"><p:Response><!--payload--><p:Extension>hello</p:Extension></p:Response></s:Body></s:Envelope><!--after-->`
+	message, err := binding.DecodeSOAP(ctx, []byte(raw), binding.SOAPOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tree.SetBaseURI(message.Envelope(), "https://example.test/service/response.xml")
+	source, err := message.Payload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("element root", func(t *testing.T) {
+		key := make([]byte, 32)
+		encrypted, node, err := xmlenc.EncryptElementWithKey(t.Context(), source, source.Root(), key, xmlenc.SymmetricOptions{})
+		if err != nil || !node.Same(encrypted.Root()) {
+			t.Fatal("encrypted payload did not remain the scope root", err)
+		}
+
+		plain, node, err := xmlenc.DecryptElementWithKey(t.Context(), encrypted, node, key, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
+		if err != nil || !node.Same(plain.Root()) {
+			t.Fatal("restored payload did not remain the scope root", err)
+		}
+
+		checkSOAPPayloadContext(t, message, source, plain)
+	})
+
+	t.Run("nested content", func(t *testing.T) {
+		key := make([]byte, 32)
+		encrypted, node, err := xmlenc.EncryptContentWithKey(t.Context(), source, source.Root().Children()[0], key, xmlenc.SymmetricOptions{})
+		if err != nil || !node.Same(encrypted.Root().Children()[0].Children()[0]) {
+			t.Fatal("encrypted content did not remain inside the payload", err)
+		}
+
+		plain, node, err := xmlenc.DecryptContentWithKey(t.Context(), encrypted, node, key, xmlenc.SymmetricOptions{}, xmlenc.DecryptOptions{})
+		if err != nil || !node.Same(plain.Root().Children()[0]) {
+			t.Fatal("restored content did not remain inside the payload", err)
+		}
+
+		checkSOAPPayloadContext(t, message, source, plain)
+	})
+}
+
+func checkSOAPPayloadContext(t *testing.T, message *binding.SOAPMessage, source, restored *document.Document) {
+	t.Helper()
+
+	if restored.Root().Name() != source.Root().Name() || restored.Root().Same(source.Root()) {
+		t.Fatal("restored scope root or snapshot identity changed")
+	}
+
+	origin, payload := tree.Unwrap(tree.ContextElement(restored.Root()))
+	if tree.BaseURI(origin) != tree.BaseURI(message.Envelope()) || tree.BaseURI(restored) != tree.BaseURI(origin) {
+		t.Fatal("retrieval URI was not retained")
+	}
+
+	base, err := uriref.Base(tree.BaseURI(restored))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	uri, err := uriref.Resolve("item.xml", base, "", payload)
+	if err != nil || uri != "https://example.test/service/messages/soap/item.xml" {
+		t.Fatalf("inherited base URI changed: %q: %v", uri, err)
+	}
+
+	sameXML(t, message.Envelope(), origin)
 }
 
 func TestSelectedElementPreservesEmbeddedSignatures(t *testing.T) {

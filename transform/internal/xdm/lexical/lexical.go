@@ -143,6 +143,12 @@ func timeBody(s string) bool {
 	return len(s) == 8 || s[8] == '.' && digits(s[9:])
 }
 
+// ValidClockLexical checks the shape of the clock and optional timezone in
+// xs:time and xs:dateTime. Callers validate the numeric ranges separately.
+func ValidClockLexical(s string) bool {
+	return calendarLexical(s, lexicon.TypeTime, timezoneOptional)
+}
+
 func calendarLexical(s, kind string, requiredZone bool) bool {
 	body, ok := timezoneBody(s, requiredZone)
 	if !ok {

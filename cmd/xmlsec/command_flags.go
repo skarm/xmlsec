@@ -1,22 +1,33 @@
 package main
 
-import (
-	"flag"
-	"strings"
-)
+import "flag"
 
-const privateKeyFlagNames = " key-format password-file key-max-kdf-work key-min-iterations key-max-iterations"
+func privateKeyFlagNames() []string {
+	return []string{flagNameKeyFormat, flagNamePasswordFile, flagNameKeyMaxKDFWork, flagNameKeyMinIterations, flagNameKeyMaxIterations}
+}
 
 // commandFlags exposes only flags used by the selected operation. A typo or a
 // signing option supplied to verification must fail instead of being ignored.
-func commandFlags(fs *flag.FlagSet, specific string, signatures bool) *flag.FlagSet {
+func commandFlags(fs *flag.FlagSet, signatures bool, specific ...string) *flag.FlagSet {
 	allowed := map[string]struct{}{}
-	for name := range strings.FieldsSeq(specific + " max-input-bytes max-output-bytes max-depth max-nodes max-attributes max-nodeset-nodes max-namespaces timeout") {
+	for _, name := range specific {
+		allowed[name] = struct{}{}
+	}
+
+	for _, name := range [...]string{
+		flagNameMaxInputBytes, flagNameMaxOutputBytes, flagNameMaxDepth, flagNameMaxNodes,
+		flagNameMaxAttributes, flagNameMaxNodeSetNodes, flagNameMaxNamespaces, flagNameTimeout,
+	} {
 		allowed[name] = struct{}{}
 	}
 
 	if signatures {
-		for name := range strings.FieldsSeq("max-references max-canonical-bytes max-node-visits max-transforms policy allowed-methods allowed-digests allowed-programs min-rsa-bits max-rsa-bits min-pss-salt-bytes max-pss-salt-bytes min-hmac-key-bytes max-hmac-key-bytes min-hmac-output-bits allow-hmac-truncation") {
+		for _, name := range [...]string{
+			flagNameMaxReferences, flagNameMaxCanonicalBytes, flagNameMaxNodeVisits, flagNameMaxTransforms,
+			flagNamePolicy, flagNameAllowedMethods, flagNameAllowedDigests, flagNameAllowedPrograms,
+			flagNameMinRSABits, flagNameMaxRSABits, flagNameMinPSSSaltBytes, flagNameMaxPSSSaltBytes,
+			flagNameMinHMACKeyBytes, flagNameMaxHMACKeyBytes, flagNameMinHMACOutputBits, flagNameAllowHMACTruncation,
+		} {
 			allowed[name] = struct{}{}
 		}
 	}
@@ -33,9 +44,9 @@ func commandFlags(fs *flag.FlagSet, specific string, signatures bool) *flag.Flag
 	return result
 }
 
-func withoutFlags(fs *flag.FlagSet, names string) *flag.FlagSet {
+func withoutFlags(fs *flag.FlagSet, names ...string) *flag.FlagSet {
 	denied := map[string]struct{}{}
-	for name := range strings.FieldsSeq(names) {
+	for _, name := range names {
 		denied[name] = struct{}{}
 	}
 

@@ -7,11 +7,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"maps"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
 	norm "github.com/skarm/xmlsec/internal/normalization"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 
 	"golang.org/x/text/encoding/htmlindex"
@@ -231,7 +232,7 @@ func hasDOEMarkers(doc xdm.Node) bool {
 	// The result tree is freshly built via guarded AddChild, so it is acyclic
 	// and Walk cannot return ErrWalkCycle here; the error is safely ignored.
 	_ = xdm.Walk(doc, xdm.NodeWalkerFunc(func(n xdm.Node) error {
-		if n.Type() == xdm.ProcessingInstructionNode && n.Name() == lexicon.DisableOutputEscapingPITarget {
+		if xdm.DOEMarkerOf(n) != tree.NoDOEMarker {
 			found = true
 		}
 
@@ -263,14 +264,20 @@ func resolveCharacterMaps(ss *Stylesheet, names []string) map[rune]string {
 		if cm == nil {
 			return
 		}
-		// Resolve referenced maps first (lower priority)
-		for _, ref := range cm.UseCharacterMaps {
+		// Visit in reverse expansion order. The first assignment is the
+		// winning mapping, and revisiting a shared map cannot add a winner.
+		for character, replacement := range cm.Mappings {
+			if _, exists := merged[character]; !exists {
+				merged[character] = replacement
+			}
+		}
+
+		for _, ref := range slices.Backward(cm.UseCharacterMaps) {
 			resolve(ref)
 		}
-		// This map's entries override
-		maps.Copy(merged, cm.Mappings)
 	}
-	for _, name := range names {
+
+	for _, name := range slices.Backward(names) {
 		resolve(name)
 	}
 
@@ -292,7 +299,7 @@ func normalizeSpecialMarkup(out *bytes.Buffer, data []byte, start int, nf norm.F
 			return copyMarkup(out, data, start, "-->"), true
 		}
 
-		if bytes.HasPrefix(data[start:], []byte("<![CDATA[")) {
+		if bytes.HasPrefix(data[start:], []byte(lexicon.CDATAStart)) {
 			return normalizeCDATASection(out, data, start, nf), true
 		}
 	}
@@ -318,16 +325,16 @@ func copyMarkup(out *bytes.Buffer, data []byte, start int, closing string) int {
 }
 
 func normalizeCDATASection(out *bytes.Buffer, data []byte, start int, nf norm.Form) int {
-	end := bytes.Index(data[start:], []byte("]]>"))
+	end := bytes.Index(data[start:], []byte(lexicon.CDATAEnd))
 	if end < 0 {
 		out.Write(data[start:])
 		return len(data)
 	}
 
-	contentStart := start + 9
+	contentStart := start + len(lexicon.CDATAStart)
 	out.Write(data[start:contentStart])
 	out.Write(nf.Bytes(data[contentStart : start+end]))
-	out.WriteString("]]>")
+	out.WriteString(lexicon.CDATAEnd)
 
-	return start + end + 3
+	return start + end + len(lexicon.CDATAEnd)
 }

@@ -68,6 +68,10 @@ func (p *parser) configureRetrieval() error {
 		o.XMLLimits = document.DefaultLimits()
 	}
 
+	if o.XMLLimits.MaxNodeSetNodes == 0 {
+		o.XMLLimits.MaxNodeSetNodes = document.DefaultLimits().MaxNodeSetNodes
+	}
+
 	o.XMLLimits.MaxBytes = min(o.XMLLimits.MaxBytes, p.limits.MaxBlobBytes*encodedBlobSizeFactor)
 	o.XMLLimits.MaxNodes = min(o.XMLLimits.MaxNodes, p.limits.MaxElements*retrievalXMLNodesPerElement, p.limits.MaxTransformNodes)
 	o.XMLLimits.MaxNodeSetNodes = min(o.XMLLimits.MaxNodeSetNodes, p.limits.MaxTransformNodes)
@@ -237,6 +241,7 @@ func (p *parser) processRetrieval(s *scope, n *tree.Node, depth int, plan retrie
 	opt.MaxProducedBytes = min(opt.MaxProducedBytes, bytesLeft)
 	opt.MaxNodeVisits = min(opt.MaxNodeVisits, nodesLeft)
 	opt.XMLLimits.MaxNodes = min(opt.XMLLimits.MaxNodes, nodesLeft)
+	opt.XMLLimits.MaxNodeSetNodes = min(opt.XMLLimits.MaxNodeSetNodes, nodesLeft)
 
 	var (
 		output bytes.Buffer

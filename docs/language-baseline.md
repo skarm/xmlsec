@@ -27,14 +27,20 @@ Eight additional full-catalog runs select:
 
 Datatype editions do not enable schema validation. Expanded budgets retain
 bounded work/depth and the per-case deadline. Compatibility runs select explicit
-matching catalog dependencies; no passing applicable case means failure.
+matching catalog dependencies. The standalone suite command exits nonzero when
+no applicable case passes.
 
 ## Local XPath 2.0 compatibility check
 
 Run `go test -count=1 -v ./tests/cmd/dev -run '^TestLocalXPath20Compatibility$'`
 to exercise XPath 2.0 with the XPath 1.0 compatibility property enabled and
-disabled using project-owned cases. The official XPath 2.0 compatibility
-profile still runs against the pinned QT3 catalog and reports its own outcome.
+disabled using project-owned cases. The pinned QT3 catalog has no applicable
+case for this profile: its explicit compatibility cases require XPath 3.0
+through a test-set or case dependency. The complete XPath 2.0 compatibility
+report still records every publisher outcome. The language gate accepts this
+empty profile only after checking the pinned catalog's applicability and
+confirming that both current local controls passed. Other profiles require a
+passing publisher case.
 
 ## Results and evidence
 

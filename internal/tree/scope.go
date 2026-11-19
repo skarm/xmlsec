@@ -103,7 +103,23 @@ func reparseContextual(ctx context.Context, draft *Document, limits Limits) (*Do
 		anchor = source
 	}
 
-	d, err := Reparse(ctx, FromNodes([]*Node{branch}, limits), limits)
+	origin := draft.contextSource
+	if origin == nil || anchor != origin.root {
+		return nil, ErrMalformed
+	}
+
+	children := slices.Clone(origin.children)
+
+	index := slices.Index(children, anchor)
+	if index < 0 {
+		return nil, ErrMalformed
+	}
+
+	children[index] = branch
+	full := FromNodes(children, limits)
+	full.baseURI = draft.baseURI
+
+	d, err := Reparse(ctx, full, limits)
 	if err != nil {
 		return nil, err
 	}

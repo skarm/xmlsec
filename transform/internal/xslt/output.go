@@ -13,16 +13,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/xmloutput"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	htmlpkg "github.com/skarm/xmlsec/transform/internal/xdm/html"
-
-	"golang.org/x/text/encoding/htmlindex"
-	"golang.org/x/text/unicode/norm"
-
-	"github.com/skarm/xmlsec/internal/lexicon"
 	stream "github.com/skarm/xmlsec/transform/internal/xdm/xmlwriter"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Bounded reference-decoder states for numeric prefix, predefined entity name and digits; these tags do not change the XML characters accepted by the parser.
@@ -225,10 +223,9 @@ func serializeResult(ctx context.Context, w io.Writer, doc *xdm.Document, outDef
 		outDef = cloneOutputDef(outDef)
 	}
 
-	// XSLT 3.0 §20: When no output method is explicitly specified, auto-detect
-	// based on the document element.
-	autoHTML := allowsHTMLAutoDetection(outDef, doc)
-	detectOutputMethod(outDef, doc, autoHTML)
+	if err := resolveDocumentOutputMethod(ctx, doc, outDef); err != nil {
+		return err
+	}
 
 	// Validate serialization parameters before proceeding.
 	if err := validateSerializationParams(ctx, outDef, doc); err != nil {
@@ -242,11 +239,15 @@ func serializeResult(ctx context.Context, w io.Writer, doc *xdm.Document, outDef
 	}
 
 	if outDef.Method == lexicon.MethodXHTML {
-		return serializeEncodedXHTML(w, doc, outDef, charMap)
+		return serializeEncodedXHTML(ctx, w, doc, outDef, charMap)
 	}
 
 	if outDef.Method == lexicon.MethodXML {
 		return serializeEncodedXML(w, doc, outDef, charMap)
+	}
+
+	if outDef.Method == lexicon.MethodText {
+		return serializeEncodedText(ctx, w, doc, outDef)
 	}
 
 	enc := strings.ToLower(outDef.Encoding)
@@ -281,7 +282,7 @@ func serializeResult(ctx context.Context, w io.Writer, doc *xdm.Document, outDef
 		return err
 	}
 
-	if err := serializeResultContent(target, doc, outDef, charMap); err != nil {
+	if err := serializeResultContent(ctx, target, doc, outDef, charMap); err != nil {
 		return err
 	}
 
@@ -309,14 +310,14 @@ func serializeResult(ctx context.Context, w io.Writer, doc *xdm.Document, outDef
 
 // serializeResultContent dispatches the effective output method after parameter
 // validation and BOM emission, before normalization or encoding conversion.
-func serializeResultContent(w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
+func serializeResultContent(ctx context.Context, w io.Writer, doc *xdm.Document, outDef *OutputDef, charMap map[rune]string) error {
 	switch outDef.Method {
 	case lexicon.MethodText:
 		return serializeText(w, doc, charMap, outDef.NormalizationForm)
 	case lexicon.MethodHTML:
 		return serializeHTMLResult(w, doc, outDef, charMap)
 	case lexicon.MethodXHTML:
-		return serializeXHTML(w, doc, outDef, charMap)
+		return serializeXHTML(ctx, w, doc, outDef, charMap)
 	case lexicon.MethodJSON:
 		return serializeJSONResult(w, doc, outDef, charMap)
 	case lexicon.MethodAdaptive:
@@ -409,13 +410,7 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 		return err
 	}
 
-	// SEPM0004: standalone != "omit" with multiple element children of root
-	if err := validateSerializationParamsStandalone(outDef, method, doc); err != nil {
-		return err
-	}
-
-	// SEPM0004: doctype-system with multiple element children of root
-	if err := validateOutputDoctype(outDef, method, doc); err != nil {
+	if err := validateOutputDocumentShape(ctx, outDef, doc); err != nil {
 		return err
 	}
 
@@ -435,13 +430,8 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 		return dynamicError(lexicon.ErrSEPM0016, "invalid doctype identifier")
 	}
 
-	enc := strings.ToLower(outDef.Encoding)
-	if enc != "" && enc != lexicon.EncodingUTF8 && enc != lexicon.EncodingUTF8Alt && enc != lexicon.EncodingUTF16 && enc != nameUTF16 {
-		_, encErr := htmlindex.Get(enc)
-		if encErr != nil {
-			return dynamicError(errCodeSESU0007,
-				"unsupported encoding %q for %s output method", outDef.Encoding, method)
-		}
+	if err := validateOutputEncoding(method, outDef.Encoding); err != nil {
+		return err
 	}
 
 	// SESU0013: unsupported effective version for HTML output.
@@ -476,18 +466,6 @@ func validateSerializationParams(ctx context.Context, outDef *OutputDef, doc *xd
 	return nil
 }
 
-func countRootElements(doc *xdm.Document) int {
-	count := 0
-
-	for child := range xdm.Children(doc) {
-		if child.Type() == xdm.ElementNode {
-			count++
-		}
-	}
-
-	return count
-}
-
 // isValidPublicID checks if a string is a valid public identifier.
 // Valid characters: [a-zA-Z0-9], space, newline, '-', '(', ')', '+', ',',
 // '.', '/', ':', '=', '?', ';', '!', '*', '#', '@', '$', '_', '%'
@@ -520,7 +498,7 @@ func checkFullyNormalized(ctx context.Context, doc *xdm.Document, definition *Ou
 
 	writer := fullyNormalizedWriter{ctx: ctx, state: fullyNormalizedText{plain: definition.Method == lexicon.MethodText || definition.Method == lexicon.MethodJSON || definition.Method == lexicon.MethodAdaptive, html: definition.Method == lexicon.MethodHTML, html5: effectiveHTMLVersion5(definition), edition: definition.serializationVersion}}
 
-	err = serializeResultContent(&writer, doc, preview, preview.ResolvedCharMap)
+	err = serializeResultContent(ctx, &writer, doc, preview, preview.ResolvedCharMap)
 	if err == nil {
 		err = writer.finish()
 	}
@@ -1103,20 +1081,41 @@ func isHTMLVersion5(v string) bool {
 	return f >= html5MinimumVersion
 }
 
-// detectOutputMethod applies the host-language default for an unspecified method.
-func detectOutputMethod(outDef *OutputDef, doc *xdm.Document, autoHTML bool) {
-	if !outDef.MethodExplicit && outDef.Method == lexicon.MethodXML {
-		if root := doc.DocumentElement(); root != nil {
-			if autoHTML && root.LocalName() == lexicon.MethodHTML && root.URI() == "" {
-				// Root is "html" in no namespace → HTML output method.
-				outDef.Method = lexicon.MethodHTML
-				outDef.OmitDeclaration = true
-			} else if outDef.languageVersion != processorXSLT10 && !outDef.implicitXMLMethod && root.LocalName() == lexicon.MethodHTML && root.URI() == lexicon.NamespaceXHTML {
-				// Root is "html" in XHTML namespace → XHTML output method.
-				outDef.Method = lexicon.MethodXHTML
+func resolveDocumentOutputMethod(ctx context.Context, doc *xdm.Document, definition *OutputDef) error {
+	if definition.MethodExplicit || definition.Method != lexicon.MethodXML {
+		return nil
+	}
+
+	root, err := firstDocumentSerializationElement(ctx, doc)
+	if err != nil {
+		return err
+	}
+
+	definition.Method = defaultMarkupOutputMethod(definition, root)
+	if definition.Method == lexicon.MethodHTML {
+		definition.OmitDeclaration = true
+	}
+
+	return nil
+}
+
+// defaultMarkupOutputMethod applies XSLT's default method to the first
+// eligible element of a result (XSLT 3.0 §26.1.1).
+func defaultMarkupOutputMethod(outDef *OutputDef, root *xdm.Element) string {
+	if root != nil {
+		switch root.URI() {
+		case "":
+			if strings.EqualFold(root.LocalName(), lexicon.MethodHTML) {
+				return lexicon.MethodHTML
+			}
+		case lexicon.NamespaceXHTML:
+			if outDef.languageVersion != processorXSLT10 && !outDef.implicitXMLMethod && root.LocalName() == lexicon.MethodHTML {
+				return lexicon.MethodXHTML
 			}
 		}
 	}
+
+	return lexicon.MethodXML
 }
 
 // A stylesheet's backwards-compatible expression mode does not change the
@@ -1167,38 +1166,6 @@ func serializeResultByteOrderMark(outDef *OutputDef, isUTF16 bool, w io.Writer) 
 	return nil
 }
 
-func validateSerializationParamsStandalone(outDef *OutputDef, method string, doc *xdm.Document) error {
-	if outDef.Standalone == lexicon.ValueYes || outDef.Standalone == lexicon.ValueNo {
-		if method == lexicon.MethodXML || method == lexicon.MethodXHTML {
-			elemCount := countRootElements(doc)
-			if elemCount > 1 {
-				return dynamicError(errCodeSEPM0004,
-					"standalone=%q specified but result has %d root elements", outDef.Standalone, elemCount)
-			}
-		}
-	}
-
-	return nil
-}
-
-// allowsHTMLAutoDetection excludes XSLT 1.0 results with leading non-whitespace
-// text; newer language versions inspect the document element directly.
-func allowsHTMLAutoDetection(outDef *OutputDef, doc *xdm.Document) bool {
-	if outDef.languageVersion == processorXSLT10 {
-		for child := range xdm.Children(doc) {
-			if child.Type() == xdm.ElementNode {
-				break
-			}
-
-			if child.Type() == xdm.TextNode && !isXMLWhitespaceOnly(xdm.CharacterData(child)) {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
 // validateHTMLVersion checks the effective version, including auto-detected
 // HTML output and html-version overrides of version.
 func validateHTMLVersion(method string, definition *OutputDef) error {
@@ -1214,19 +1181,23 @@ func validateHTMLVersion(method string, definition *OutputDef) error {
 	return nil
 }
 
-// validateOutputDoctype requires a single document element for XML doctypes.
-func validateOutputDoctype(outDef *OutputDef, method string, doc *xdm.Document) error {
-	if outDef.DoctypeSystem != "" {
-		if method == lexicon.MethodXML || method == lexicon.MethodXHTML {
-			elemCount := countRootElements(doc)
-			if elemCount > 1 {
-				return dynamicError(errCodeSEPM0004,
-					"doctype-system specified but result has %d root elements", elemCount)
-			}
-		}
+func validateOutputDocumentShape(ctx context.Context, outDef *OutputDef, doc *xdm.Document) error {
+	if outDef.Method != lexicon.MethodXML && outDef.Method != lexicon.MethodXHTML {
+		return nil
 	}
 
-	return nil
+	standalone := outDef.Standalone == lexicon.ValueYes || outDef.Standalone == lexicon.ValueNo
+	if !standalone && outDef.DoctypeSystem == "" {
+		return nil
+	}
+
+	// SEPM0004 applies to the normalized document shared by XML and XHTML.
+	err := xpath.ValidateSerializationDocument(ctx, xdm.ItemSlice{xdm.NodeItem{Node: doc}}, nil)
+	if shape, ok := errors.AsType[*xdm.Error](err); ok && shape.Code == errCodeSEPM0004 {
+		return dynamicErrorCause(errCodeSEPM0004, err, "%s", shape.Message)
+	}
+
+	return err
 }
 
 // deferredMarkupSeparator records an item separator that belongs
@@ -1246,6 +1217,8 @@ const (
 
 type conditionalAction struct {
 	placeholder       xdm.MutableNode
+	attributeParent   *xdm.Element
+	attributePosition uint64
 	selectExpr        *xpath.Expression
 	localVars         *varScope
 	staticBaseURI     string
@@ -1258,31 +1231,49 @@ type conditionalAction struct {
 	prevWasAtomic     bool // whether the output preceding this action was an atomic value
 }
 
+type conditionalAttributeOrder struct {
+	pending int
+	last    map[xdm.QNameValue]uint64
+}
+
+func (order *conditionalAttributeOrder) record(name xdm.QNameValue, position uint64) {
+	if order.last == nil {
+		order.last = make(map[xdm.QNameValue]uint64)
+	}
+
+	order.last[name] = position
+}
+
 type conditionalScope struct {
-	pendingStart   int // first raw item produced by this sequence constructor
-	hasOutput      bool
-	actions        []conditionalAction
-	untrackedNodes []xdm.MutableNode // nodes added via addNodeUntracked; removed when on-empty fires
+	pendingStart  int // first raw item produced by this sequence constructor
+	outputStart   int
+	hasOutput     bool
+	prevWasAtomic bool
+	actions       []conditionalAction
+	onEmptyTarget xdm.MutableNode // destination of a tree constructor ending with xsl:on-empty
+	separators    []*xdm.Comment  // temporary separators, retained only for non-vacuous output
 }
 
 type outputFrame struct {
-	implicitPrimary     *bool                      // shared claim, present only on frames contributing to the principal result
-	current             xdm.MutableNode            // current insertion point
-	doc                 *xdm.Document              // result document being built
-	seqPlaceholders     map[xdm.Node]xdm.ItemSlice // placeholder PI node -> buffered xsl:sequence items, resolved by evaluateBodyAsDocument
-	itemSeparator       *string                    // item-separator serialization parameter; nil means default (" " between adjacent atomics)
-	pendingItems        xdm.ItemSlice              // captured items from xsl:sequence
-	deferredMarkupSeps  []deferredMarkupSeparator  // top-level adaptive markup separators, held outside the DOM until XML fallback is required
-	conditionalScopes   []conditionalScope
-	emptyAtomicGen      uint64 // seqConstructorGen when prevWasAtomic was set by an empty-string atomic
-	outputSerial        int    // monotonically increases whenever visible output is produced
-	seqConstructorGen   uint64 // incremented each time executeSequenceConstructor is called
-	captureItems        bool   // when true, xsl:sequence adds to pendingItems instead of DOM
-	separateTextNodes   bool   // when true, text nodes are captured as separate string items (prevents DOM merging)
-	sequenceMode        bool   // when true, all nodes (text, element, attr, comment, PI) are captured as separate items
-	documentConstructor bool   // when true, the frame builds a document node tree; xsl:sequence output is marked with placeholders in the DOM so it interleaves in document order with literal result elements
-	prevWasAtomic       bool   // true when last xsl:sequence output was an atomic value (for inter-call space separation)
-	prevHadOutput       bool   // true when any item (node or atomic) was previously output; used for item-separator between non-atomic items
+	implicitPrimary      *bool                      // shared claim, present only on frames contributing to the principal result
+	current              xdm.MutableNode            // current insertion point
+	doc                  *xdm.Document              // result document being built
+	tryWrapper           *xdm.Element               // synthetic insertion point for a buffered xsl:try
+	tryNamespacePrefixes map[string]struct{}        // explicit namespace results on tryWrapper
+	seqPlaceholders      map[xdm.Node]xdm.ItemSlice // placeholder PI node -> buffered xsl:sequence items, resolved by evaluateBodyAsDocument
+	itemSeparator        *string                    // item-separator serialization parameter; nil means default (" " between adjacent atomics)
+	pendingItems         xdm.ItemSlice              // captured items from xsl:sequence
+	deferredMarkupSeps   []deferredMarkupSeparator  // top-level adaptive markup separators, held outside the DOM until XML fallback is required
+	conditionalScopes    []conditionalScope
+	conditionalAttrs     map[*xdm.Element]*conditionalAttributeOrder
+	attributePosition    uint64
+	outputSerial         int  // monotonically increases whenever visible output is produced
+	captureItems         bool // when true, xsl:sequence adds to pendingItems instead of DOM
+	separateTextNodes    bool // when true, text nodes are captured as separate string items (prevents DOM merging)
+	sequenceMode         bool // when true, all nodes (text, element, attr, comment, PI) are captured as separate items
+	documentConstructor  bool // when true, the frame builds a document node tree; xsl:sequence output is marked with placeholders in the DOM so it interleaves in document order with literal result elements
+	prevWasAtomic        bool // true when last xsl:sequence output was an atomic value (for inter-call space separation)
+	prevHadOutput        bool // true when any item (node or atomic) was previously output; used for item-separator between non-atomic items
 }
 
 // materializeDeferredMarkupSeps restores deferred separators in
@@ -1331,11 +1322,83 @@ func (out *outputFrame) isConditionalPlaceholder(n xdm.Node) bool {
 	return false
 }
 
+// serializationItemSeparator applies to the result sequence. A constructed
+// node builds its own content before becoming one item of that sequence.
+func (out *outputFrame) serializationItemSeparator() *string {
+	if out.current == out.doc {
+		return out.itemSeparator
+	}
+
+	return nil
+}
+
 func (out *outputFrame) noteOutput() {
 	out.outputSerial++
 	if out.implicitPrimary != nil {
 		*out.implicitPrimary = true
 	}
+}
+
+// Attribute order matters only while a deferred constructor still has a
+// placeholder in this element. A placeholder consumes a position, not output.
+func (out *outputFrame) registerConditionalAttributePosition(elem *xdm.Element) uint64 {
+	if elem == nil {
+		return 0
+	}
+
+	if out.conditionalAttrs == nil {
+		out.conditionalAttrs = make(map[*xdm.Element]*conditionalAttributeOrder)
+	}
+
+	order := out.conditionalAttrs[elem]
+	if order == nil {
+		order = &conditionalAttributeOrder{}
+		out.conditionalAttrs[elem] = order
+	}
+
+	order.pending++
+	out.attributePosition++
+
+	return out.attributePosition
+}
+
+func (out *outputFrame) releaseConditionalAttributePositions(actions []conditionalAction) {
+	for _, action := range actions {
+		order := out.conditionalAttrs[action.attributeParent]
+		if order == nil {
+			continue
+		}
+
+		order.pending--
+		if order.pending == 0 {
+			delete(out.conditionalAttrs, action.attributeParent)
+		}
+	}
+
+	if len(out.conditionalAttrs) == 0 {
+		out.conditionalAttrs = nil
+	}
+}
+
+func (out *outputFrame) noteAttributeOutput(elem *xdm.Element, uri, local string) {
+	if order := out.conditionalAttrs[elem]; order != nil {
+		out.attributePosition++
+		order.record(xdm.QNameValue{URI: uri, Local: local}, out.attributePosition)
+	}
+
+	out.noteOutput()
+}
+
+func (out *outputFrame) noteNamespaceOutput(elem *xdm.Element, prefix string) {
+	if elem == out.tryWrapper {
+		if out.tryNamespacePrefixes == nil {
+			out.tryNamespacePrefixes = make(map[string]struct{})
+		}
+
+		out.tryNamespacePrefixes[prefix] = struct{}{}
+	}
+
+	out.noteOutput()
 }
 
 // captureSequenceItems records captured sequence items for later assembly.

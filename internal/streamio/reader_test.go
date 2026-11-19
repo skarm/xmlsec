@@ -18,7 +18,7 @@ func TestXMLWhitespaceReader(t *testing.T) {
 		source := &streamio.XMLWhitespaceReader{Source: strings.NewReader(text)}
 
 		var output bytes.Buffer
-		if _, err := io.CopyBuffer(&output, struct{ io.Reader }{source}, make([]byte, size)); err != nil || output.String() != strings.Repeat("A\vB\u00a0", 1024) {
+		if _, err := io.CopyBuffer(writeOnly{&output}, source, make([]byte, size)); err != nil || output.String() != strings.Repeat("A\vB\u00a0", 1024) {
 			t.Fatal("non-XML whitespace removed or output changed", size, err)
 		}
 	}
@@ -40,6 +40,22 @@ func TestXMLWhitespaceReader(t *testing.T) {
 	source = &streamio.XMLWhitespaceReader{Source: inputFunc(func(dst []byte) (int, error) { return copy(dst, " A "), failure })}
 	if got, err := io.ReadAll(source); string(got) != "A" || !errors.Is(err, failure) {
 		t.Fatal("final data/source error lost", got, err)
+	}
+}
+
+func BenchmarkXMLWhitespaceReader(b *testing.B) {
+	for _, lines := range []int{1, 128} {
+		text := strings.Repeat(strings.Repeat("A", 76)+"\r\n", lines)
+		b.Run(strconv.Itoa(lines), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(text)))
+			for b.Loop() {
+				reader := &streamio.XMLWhitespaceReader{Source: strings.NewReader(text)}
+				if count, err := io.Copy(io.Discard, reader); err != nil || count != int64(76*lines) {
+					b.Fatal(count, err)
+				}
+			}
+		})
 	}
 }
 
@@ -66,6 +82,65 @@ func TestReaderRetainsErrorsDeliveredWithData(t *testing.T) {
 	}
 }
 
+func TestReaderReportsCancellationFromFinalRead(t *testing.T) {
+	failure := errors.New("source failed on final read")
+	for _, terminal := range []error{io.EOF, failure} {
+		t.Run(terminal.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			source := inputFunc(func(dst []byte) (int, error) {
+				cancel()
+				return copy(dst, "input"), terminal
+			})
+			reader := &streamio.Reader{Context: ctx, Source: source, Limit: 5, LimitError: io.ErrShortBuffer}
+			data, err := io.ReadAll(reader)
+			if string(data) != "input" || !errors.Is(err, context.Canceled) || errors.Is(err, failure) != errors.Is(terminal, failure) {
+				t.Fatalf("ReadAll = (%q, %v), want final bytes, cancellation and any source failure", data, err)
+			}
+		})
+	}
+}
+
+func TestReaderWriteToReportsCancellationFromFinalWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	source := inputFunc(func(dst []byte) (int, error) { return copy(dst, "input"), io.EOF })
+	reader := &streamio.Reader{Context: ctx, Source: source, Limit: 5, LimitError: io.ErrShortBuffer}
+	var target bytes.Buffer
+	written, err := reader.WriteTo(writeFunc(func(data []byte) (int, error) {
+		cancel()
+		return target.Write(data)
+	}))
+	if written != 5 || target.String() != "input" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("WriteTo = (%d, %v), output %q, want five written bytes and cancellation", written, err, target.String())
+	}
+}
+
+func TestReaderCompletionProbePreservesFailureAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	failure := errors.New("final input read failed")
+	source := inputFunc(func(dst []byte) (int, error) {
+		cancel()
+		return copy(dst, "input"), failure
+	})
+	reader := &streamio.Reader{Context: ctx, Source: source, Limit: 5, LimitError: io.ErrShortBuffer}
+	var data [5]byte
+	if count, err := io.ReadFull(reader, data[:]); count != 5 || err != nil {
+		t.Fatalf("ReadFull = (%d, %v), want five bytes", count, err)
+	}
+	if count, err := reader.Read(data[:1]); count != 0 || !errors.Is(err, failure) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("completion probe = (%d, %v), want source failure and cancellation", count, err)
+	}
+	if count, err := io.Copy(io.Discard, reader); count != 0 || !errors.Is(err, failure) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("copy after cancellation = (%d, %v), want retained failure and cancellation", count, err)
+	}
+}
+
+type writeFunc func([]byte) (int, error)
+
+func (f writeFunc) Write(data []byte) (int, error) { return f(data) }
+
 func TestReaderRetainsOverflow(t *testing.T) {
 	source := strings.NewReader("abcd")
 	reader := &streamio.Reader{Context: t.Context(), Source: source, Limit: 2, LimitError: io.ErrShortBuffer}
@@ -77,6 +152,50 @@ func TestReaderRetainsOverflow(t *testing.T) {
 		if n, err := reader.Read(buffer[:]); n != 0 || !errors.Is(err, io.ErrShortBuffer) || source.Len() != 1 {
 			t.Fatalf("read after limit = %d, %v, remaining source = %d", n, err, source.Len())
 		}
+	}
+}
+
+func TestReaderRetainsSourceErrorAtOverflow(t *testing.T) {
+	failure := errors.New("source failed delivering last byte")
+	for _, tc := range []struct {
+		name    string
+		last    error
+		wantEOF bool
+	}{
+		{"terminal failure", failure, false},
+		{"joined EOF", errors.Join(io.EOF, failure), true},
+		{"ordinary EOF", io.EOF, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			source := inputFunc(func(dst []byte) (int, error) {
+				calls++
+				if calls == 1 {
+					return copy(dst, "ab"), nil
+				}
+
+				return copy(dst, "c"), tc.last
+			})
+			reader := &streamio.Reader{Context: t.Context(), Source: source, Limit: 2, LimitError: io.ErrShortBuffer}
+			var target bytes.Buffer
+			n, err := reader.WriteTo(&target)
+			if n != 2 || target.String() != "ab" || reader.ReadBytes != 2 || calls != 2 {
+				t.Fatalf("copy = %d bytes %q, counted %d, %d reads", n, target.String(), reader.ReadBytes, calls)
+			}
+			checkError := func(err error) {
+				t.Helper()
+				if !errors.Is(err, io.ErrShortBuffer) || errors.Is(err, failure) != errors.Is(tc.last, failure) || errors.Is(err, io.EOF) != tc.wantEOF {
+					t.Fatalf("wrong limit or source cause: %v (last source result %v)", err, tc.last)
+				}
+			}
+			checkError(err)
+			var byteBuffer [1]byte
+			next, retained := reader.Read(byteBuffer[:])
+			if next != 0 || calls != 2 {
+				t.Fatalf("follow-up = (%d, %v), %d reads; want retained error without another read", next, retained, calls)
+			}
+			checkError(retained)
+		})
 	}
 }
 

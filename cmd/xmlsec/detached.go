@@ -104,7 +104,7 @@ func loadResourcesContext(ctx context.Context, path string) ([]resourceEntry, xm
 			return nil, errors.New("resource must be a regular file")
 		}
 
-		f, err := os.Open(p) // #nosec G304 -- Only paths in the operator-supplied manifest are opened.
+		f, err := openLocalFile(p)
 		if err != nil {
 			return nil, err
 		}
@@ -135,28 +135,28 @@ func runDetached(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		keyFlags = registerPrivateKeyFlags(fs)
 	}
 
-	modern := fs.Bool("modern-algorithms", false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
-	manifest := fs.String("resources", "", "trusted local JSON resource manifest")
-	keyPath := fs.String("key", "", "private key file (sign) or externally trusted public key/certificate PEM/DER (verify)")
-	output := fs.String("out", "-", "output path; - writes stdout")
-	canonical := fs.String(nameC14N, c14n.Exclusive, "SignedInfo C14N URI; verification permits exactly this method")
-	resourceLimit := fs.Int("max-resource-bytes", cliDefaultResourceBytes, "maximum bytes per external resource")
-	totalLimit := fs.Int("max-total-resource-bytes", cliDefaultTotalResourceBytes, "maximum source bytes per operation")
-	allowedTransforms := fs.String("allowed-transforms", "", "comma-separated permitted reference transform URIs; empty uses implemented defaults")
+	modern := fs.Bool(flagNameModernAlgorithms, false, "also permit fixed RSA-PSS, Ed25519 and Ed25519ph")
+	manifest := fs.String(flagNameResources, "", "trusted local JSON resource manifest")
+	keyPath := fs.String(flagNameKey, "", "private key file (sign) or externally trusted public key/certificate PEM/DER (verify)")
+	output := fs.String(flagNameOut, stdioPath, "output path; - writes stdout")
+	canonical := fs.String(flagNameC14N, c14n.Exclusive, "SignedInfo C14N URI; verification permits exactly this method")
+	resourceLimit := fs.Int(flagNameMaxResourceBytes, cliDefaultResourceBytes, "maximum bytes per external resource")
+	totalLimit := fs.Int(flagNameMaxTotalResourceBytes, cliDefaultTotalResourceBytes, "maximum source bytes per operation")
+	allowedTransforms := fs.String(flagNameAllowedTransforms, "", "comma-separated permitted reference transform URIs; empty uses implemented defaults")
 
 	var input, method, inclusive string
 	if cmd == nameVerifyDetached {
-		fs.StringVar(&input, "in", "-", "standalone signature XML; - reads stdin")
+		fs.StringVar(&input, flagNameIn, stdioPath, "standalone signature XML; - reads stdin")
 	} else {
-		fs.StringVar(&method, "method", "", "signature method URI; default selected from key")
-		fs.StringVar(&inclusive, "inclusive-prefixes", "", "SignedInfo Exclusive C14N inclusive prefix list")
+		fs.StringVar(&method, flagNameMethod, "", "signature method URI; default selected from key")
+		fs.StringVar(&inclusive, flagNameInclusivePrefixes, "", "SignedInfo Exclusive C14N inclusive prefix list")
 	}
 
 	if done, err := parseFlags(fs, args[1:]); done || err != nil {
 		return err
 	}
 
-	if *manifest == "" || *manifest == "-" || *keyPath == "" {
+	if *manifest == "" || *manifest == stdioPath || *keyPath == "" {
 		return usageError("-resources file and -key are required")
 	}
 
@@ -228,7 +228,7 @@ func verifyDetachedCLI(ctx context.Context, stdin io.Reader, stdout io.Writer, i
 
 	result, verifyErr := xmldsig.VerifyDetached(ctx, doc, key, resolver, opt)
 	if verifyErr != nil {
-		return errors.Join(verifyErr, jsonOutput(ctx, output, stdout, resultReport("signature verify-detached", "externally-supplied-key", nil, verifyErr)))
+		return errors.Join(verifyErr, jsonOutput(ctx, output, stdout, resultReport("signature verify-detached", trustExternallySuppliedKey, nil, verifyErr)))
 	}
 
 	raw, err := detachedVerificationReport(result)
@@ -259,7 +259,7 @@ func detachedVerificationReport(result *xmldsig.DetachedResult) ([]byte, error) 
 	}{
 		Status:          statusValid,
 		Profile:         "external-detached-v0",
-		Trust:           "externally-supplied-key",
+		Trust:           trustExternallySuppliedKey,
 		SignatureMethod: result.SignatureMethod(),
 		KeyFingerprint:  result.KeyFingerprintSHA256(),
 	}
@@ -268,7 +268,7 @@ func detachedVerificationReport(result *xmldsig.DetachedResult) ([]byte, error) 
 		report.References = append(report.References, checkedReference{r.URI(), r.Type(), r.DigestMethod(), r.Size(), r.CanonicalizationMethod(), r.Steps()})
 	}
 
-	out, err := json.MarshalIndent(resultReport("signature verify-detached", "externally-supplied-key", report, nil), "", "  ")
+	out, err := json.MarshalIndent(resultReport("signature verify-detached", trustExternallySuppliedKey, report, nil), "", "  ")
 	if err != nil {
 		return nil, err
 	}

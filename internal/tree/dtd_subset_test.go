@@ -127,3 +127,27 @@ func TestDTDScannerDeclarationsBoundsDepth(t *testing.T) {
 		})
 	}
 }
+
+func TestDTDScannerIncludedDeclarationsAtDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	const subset = `<!ENTITY % formats '<![INCLUDE[<!NOTATION png SYSTEM "image/png">]]>'>
+		<![INCLUDE[%formats; <![IGNORE[draft]]>]]>
+		<![INCLUDE[<!NOTATION svg SYSTEM "image/svg+xml">]]>`
+	limits := DefaultLimits()
+	limits.MaxDepth = 2
+	state := newDTDState(t.Context(), ParseOptions{Limits: limits})
+	scanner := state.scanner(subset, "urn:formats", true)
+	t.Cleanup(scanner.close)
+	if err := scanner.declarations(""); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]Notation{
+		"png": {SystemID: "image/png", BaseURI: "urn:formats"},
+		"svg": {SystemID: "image/svg+xml", BaseURI: "urn:formats"},
+	}
+	if !maps.Equal(state.info.Notations, want) {
+		t.Errorf("notations = %+v, want %+v", state.info.Notations, want)
+	}
+}

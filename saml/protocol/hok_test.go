@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto"
 	"encoding/base64"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,58 @@ func TestHoKCertificateMatchingForm(t *testing.T) {
 				t.Fatalf("match=%v, want=%v", err, test.accept)
 			}
 		})
+	}
+}
+
+func TestHoKResponsePreservesCertificateWithRelativeDistributionPoint(t *testing.T) {
+	t.Parallel()
+	c := testcert.New(t)
+	encodings := testcert.CertificateEncodings(t, c)
+	i := slices.IndexFunc(encodings, func(encoding testcert.CertificateEncoding) bool {
+		return encoding.Valid && encoding.Name == "relative distribution point"
+	})
+	if i < 0 {
+		t.Fatal("missing relative CRL distribution-point certificate")
+	}
+	certificate := encodings[i].DER
+	data, err := protocol.HolderOfKeyData(t.Context(), certificate, acs, nameRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.MatchConfirmationCertificate(data, certificate); err != nil {
+		t.Fatal("HoK confirmation data did not keep the original certificate", err)
+	}
+	spec := responseSpec()
+	spec.Assertion.HolderOfKeyCertificate = certificate
+	d, err := protocol.SignResponse(t.Context(), spec, protocol.SigningKey{Key: c.TSAKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := binding.WrapSOAP(t.Context(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := proof.SignEnvelopedXML(t.Context(), envelope, proof.Signing{Key: c.LeafKey, Certificate: certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := signed.XML(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := proof.VerifyEnvelopedXML(t.Context(), raw, proof.Options{Certificate: certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := verified.Payload(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := options()
+	o.Proof, o.RequireHolderOfKey = verified, true
+	assertion, err := protocol.VerifyResponse(t.Context(), payload, []crypto.PublicKey{c.TSAKey.Public()}, o)
+	if err != nil || assertion == nil || !bytes.Equal(assertion.HolderOfKeyCertificate(), certificate) {
+		t.Fatalf("exact HoK certificate was lost: %v", err)
 	}
 }
 

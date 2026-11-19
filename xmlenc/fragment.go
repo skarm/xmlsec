@@ -118,9 +118,32 @@ func parseContentPlaintext(ctx context.Context, raw []byte, parent *tree.Node, l
 	// attribute/depth budgets are checked on the plaintext subtree below.
 	parseLimits.MaxAttributesPerElement = max(parseLimits.MaxAttributesPerElement, len(namespaces))
 
+	namespaceLimit := limits.MaxInScopeNamespaces
+	if namespaceLimit == 0 {
+		namespaceLimit = document.DefaultLimits().MaxInScopeNamespaces
+	}
+	// The sorted declarations include the default prefix and exclude the implicit xml binding.
+	wrapperNamespaces := len(namespaces)
+	if namespaces[0].URI != "" {
+		wrapperNamespaces++
+	}
+
+	if wrapperNamespaces > namespaceLimit {
+		parseLimits.MaxInScopeNamespaces = wrapperNamespaces
+	}
+
 	parsed, err := document.ParseReader(ctx, io.MultiReader(bytes.NewReader(wrapped.Bytes()), bytes.NewReader(raw), strings.NewReader(closing)), parseLimits)
 	if err != nil {
 		return nil, ErrDecrypt
+	}
+
+	if wrapperNamespaces > namespaceLimit {
+		// A true plaintext element may clear the default binding. Check each
+		// subtree with its actual ancestors and the original namespace budget.
+		parseLimits.MaxInScopeNamespaces = namespaceLimit
+		if err := checkPlaintextNamespaces(ctx, parsed, parseLimits); err != nil {
+			return nil, ErrDecrypt
+		}
 	}
 
 	plain := tree.Root(parsed).Children
@@ -129,6 +152,21 @@ func parseContentPlaintext(ctx context.Context, raw []byte, parent *tree.Node, l
 	}
 
 	return plain, nil
+}
+
+func checkPlaintextNamespaces(ctx context.Context, wrapper *document.Document, limits document.Limits) error {
+	for _, element := range wrapper.Root().Children() {
+		scope, err := tree.ScopeDocument(wrapper, element)
+		if err != nil {
+			return err
+		}
+
+		if err := tree.CheckSnapshotLimits(ctx, scope, limits); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func validatePlaintextNodes(ctx context.Context, nodes []*tree.Node, limits document.Limits) error {

@@ -53,6 +53,17 @@ func newVersionLexer(input string, version int) (*lexer, error) {
 }
 
 func newVersionLexerSpans(input string, version int, spans *[]sourceSpan) (*lexer, error) {
+	if !utf8.ValidString(input) {
+		for pos := 0; pos < len(input); {
+			r, size := utf8.DecodeRuneInString(input[pos:])
+			if r == utf8.RuneError && size == 1 {
+				return nil, fmt.Errorf("%w: invalid UTF-8 at position %d", ErrUnexpectedChar, pos)
+			}
+
+			pos += size
+		}
+	}
+
 	l := &lexer{
 		input:   input,
 		version: version,
@@ -274,6 +285,20 @@ func (l *lexer) scanDotOrNumber() error {
 
 func (l *lexer) scanVariableReference() error {
 	l.advanceRune('$')
+
+	// XPath 1.0 treats the entire variable reference as one lexical token.
+	// Later versions allow separators between '$' and the variable name.
+	if l.version != xpathVersion10 {
+		l.skipWhitespace()
+
+		for strings.HasPrefix(l.input[l.pos:], "(:") {
+			if err := l.skipComment(); err != nil {
+				return err
+			}
+
+			l.skipWhitespace()
+		}
+	}
 
 	name := l.scanNCName()
 	if name == "" {
@@ -529,7 +554,7 @@ func (l *lexer) scanURIQualifiedName(wildcard bool) (string, error) {
 		return "", fmt.Errorf("%w: local name after braced URI", ErrUnexpectedToken)
 	}
 
-	return "Q{" + uri + "}" + local, nil
+	return lexicon.EQNamePrefix + uri + "}" + local, nil
 }
 
 // isNameTestContext returns true if the previous token indicates that the

@@ -68,13 +68,15 @@ type crlScope struct {
 	raw           []byte
 }
 
-func parseDistinguishedName(raw []byte) (pkix.RDNSequence, error) {
+func parseDistinguishedName(raw []byte) (asn1.RawValue, error) {
+	value, err := der.Read(raw, maxCRLExtensionBytes)
+
 	var name pkix.RDNSequence
-	if len(raw) > maxCRLExtensionBytes || der.Unmarshal(raw, &name) != nil {
-		return nil, ErrEvidence
+	if err != nil || der.Decode(value, &name) != nil {
+		return asn1.RawValue{}, ErrEvidence
 	}
 
-	return name, nil
+	return value, nil
 }
 
 // Canonical names are lookup keys only; original Name DER remains untouched.
@@ -333,14 +335,8 @@ func crlPointNames(ctx context.Context, point crlDistributionPoint, issuer []byt
 		return nil, ErrEvidence
 	}
 
-	name = append(name, rdn)
-
-	raw, err := asn1.Marshal(name)
-	if err != nil {
-		return nil, ErrEvidence
-	}
-
-	resolved, err := crlDirectoryName(ctx, raw)
+	// Retain both DER encodings so the exact-name fallback can compare legacy strings.
+	resolved, err := crlDirectoryName(ctx, der.Seq(name.Bytes, point.relative))
 
 	return []crlGeneralName{resolved}, err
 }

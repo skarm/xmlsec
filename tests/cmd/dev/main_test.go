@@ -285,6 +285,22 @@ func TestConformancePendingLocalEvidence(t *testing.T) {
 	}
 }
 
+func TestConformanceSourceRequiresHostname(t *testing.T) {
+	t.Parallel()
+
+	var check conformanceCheck
+
+	check.webURL("valid-source", "https://example.test:8443/spec#section")
+	if len(check.problems) != 0 {
+		t.Fatalf("valid HTTPS source produced problems: %v", check.problems)
+	}
+
+	check.webURL("missing-host", "https://:8443/spec")
+	if len(check.problems) != 1 {
+		t.Fatalf("HTTPS source without a hostname produced problems %v, want one problem", check.problems)
+	}
+}
+
 func TestConformanceOptionalImplementationAndCorrections(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -364,6 +380,24 @@ func TestConformanceEvidenceNamesRealTests(t *testing.T) {
 		if combined := errors.Join(append(problems, err)...); combined == nil || !strings.Contains(combined.Error(), "missing test") {
 			t.Fatalf("non-test evidence accepted: %s (%v)", declaration, combined)
 		}
+	}
+
+	for _, tc := range []struct {
+		name, source string
+		valid        bool
+	}{
+		{"Testing", "import \"testing\"\nfunc Testing(t *testing.T) {}", false},
+		{"Testévidence", "import \"testing\"\nfunc Testévidence(t *testing.T) {}", false},
+		{"Test", "import \"testing\"\nfunc Test(t *testing.T) {}", true},
+		{"TestÉvidence", "import tst `testing`\nfunc TestÉvidence(t *tst.T) {}", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeFixture(t, root, "fixture_test.go", "package fixture_test\n"+tc.source)
+			_, problems, err := checkConformanceRegister(root, bytes.ReplaceAll(valid, []byte("TestPresent"), []byte(tc.name)))
+			if err != nil || (len(problems) == 0) != tc.valid {
+				t.Fatalf("conformance test name %q: %v, %v; valid=%t", tc.name, problems, err, tc.valid)
+			}
+		})
 	}
 }
 
@@ -702,8 +736,8 @@ func TestLanguageProofCaptureAndMerge(t *testing.T) {
 			t.Fatal("symlink/.. alias destroyed base capture", err)
 		}
 	}
-	if err := runLanguageProof(t.Context(), root, []string{"capture", "-out", capture, "--", "-run=^TestRejected$", "./..."}, &out, &out); err == nil {
-		t.Fatal("failing Go process accepted as a proof capture")
+	if err := runLanguageProof(t.Context(), root, []string{"capture", "-out", capture, "--", "-run=^TestRejected$", "./..."}, &out, &out); err == nil || !strings.Contains(err.Error(), "example.test/proof/TestRejected") {
+		t.Fatal("failing proof capture did not identify the test", err)
 	}
 	if err := runLanguageProof(t.Context(), root, []string{"merge", "-out", merged, capture}, &out, &out); err == nil {
 		t.Fatal("failing capture merged as successful evidence")
@@ -726,6 +760,38 @@ func TestLanguageProofCaptureAndMerge(t *testing.T) {
 	if err := runLanguageProof(t.Context(), root, []string{"capture", "-out", capture, "--", "-run=^TestChangesSource$", "./..."}, &out, &out); err == nil || !strings.Contains(err.Error(), "changed source") {
 		t.Fatal("source mutation during an otherwise passing process accepted", err)
 	}
+
+	t.Run("failed preflight invalidates previous evidence", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(root, "docs", "conformance.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeLanguageProofFile(capture, artifact.Streams[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeLanguageProofFile(merged, artifact); err != nil {
+			t.Fatal(err)
+		}
+
+		mergeErr := runLanguageProof(t.Context(), root, []string{"merge", "-out", merged, capture}, &out, &out)
+		if !errors.Is(mergeErr, os.ErrNotExist) {
+			t.Fatalf("merge with a missing register: %v", mergeErr)
+		}
+		var previousArtifact languageProofArtifact
+		if err := readLanguageProofFile(merged, &previousArtifact); err == nil {
+			if _, err := previousArtifact.validate(artifact.Stamp); err == nil {
+				t.Error("failed merge left its previous valid artifact")
+			}
+		}
+
+		captureErr := runLanguageProof(t.Context(), root, []string{"capture", "-out", capture, "--", "-run=^TestCaptured$", "./..."}, &out, &out)
+		if !errors.Is(captureErr, os.ErrNotExist) {
+			t.Fatalf("capture with a missing register: %v", captureErr)
+		}
+		var previousStream languageProofStream
+		if err := readLanguageProofFile(capture, &previousStream); err == nil && previousStream.validate(artifact.Stamp) == nil {
+			t.Error("failed capture left its previous valid artifact")
+		}
+	})
 }
 
 func TestResidualFailureConditions(t *testing.T) {
@@ -904,13 +970,13 @@ func TestLanguageResidualCoverage(t *testing.T) {
 	if err := json.Unmarshal(pinsData, &pins); err != nil {
 		t.Fatal(err)
 	}
-	inventories := make(map[string]map[string]struct{})
+	inventories := make(map[string]map[string]bool)
 	for kind, env := range map[string]string{suiteQT3: "XMLSEC_QT3_DIR", suiteXSLT: "XMLSEC_XSLT_DIR"} {
 		directory := languageProofDirectory(t, env)
 		if err := verifySuiteCheckout(t.Context(), directory, pins[kind]); err != nil {
 			t.Fatal(err)
 		}
-		inventories[kind] = languageCatalogInventory(t, directory, pins[kind])
+		inventories[kind] = languageCatalogInventory(t, directory, pins[kind], kind == suiteQT3)
 	}
 	reports := filepath.SplitList(residualRequired(t, "XMLSEC_P3_SUITE_REPORTS"))
 	entries := make(map[string]residualEvidence)
@@ -999,7 +1065,11 @@ func TestLanguageResidualCoverage(t *testing.T) {
 			t.Fatal("unknown suite total status", file)
 		}
 		if totals[suitePassed] == 0 {
-			t.Errorf("required suite profile %s has no passing applicable case", profile)
+			if err := checkEmptyLanguageProfile(profile, totals, inventory, &run); err != nil {
+				t.Error(err)
+			} else {
+				t.Log("pinned catalog has no applicable XPath 2.0 compatibility case; both current local compatibility checks passed")
+			}
 		}
 	}
 	for key := range profiles {
@@ -1009,6 +1079,57 @@ func TestLanguageResidualCoverage(t *testing.T) {
 		if _, exists := failures[key]; !exists && evidence.Disposition != "fixed" {
 			t.Error("obsolete retained-failure disposition; verify and record its regression", key)
 		}
+	}
+}
+
+func checkEmptyLanguageProfile(profile string, totals map[string]int, inventory map[string]bool, run *languageProofRun) error {
+	if profile != languageXPath20CompatibilityProfile || len(inventory) == 0 || totals[suiteNotApplicable] != len(inventory) {
+		return fmt.Errorf("required suite profile %s has no passing applicable case", profile)
+	}
+	for identity, applicable := range inventory {
+		if applicable {
+			return fmt.Errorf("required suite profile %s has no passing applicable case, but the pinned catalog includes %s", profile, identity)
+		}
+	}
+	for _, name := range []string{"enabled", "disabled"} {
+		check := conformanceTest{File: "tests/cmd/dev/run_test.go", Name: "TestLocalXPath20Compatibility", Case: name}
+		if err := run.passed(check); err != nil {
+			return fmt.Errorf("required local XPath 2.0 compatibility evidence: %w", err)
+		}
+	}
+	return nil
+}
+
+func TestEmptyLanguageProfileRequiresLocalCompatibilityEvidence(t *testing.T) {
+	const profile = languageXPath20CompatibilityProfile
+	const prefix = "TestLocalXPath20Compatibility/"
+	const pkg = "github.com/skarm/xmlsec/tests/cmd/dev"
+	evidence := []languageProofEvent{
+		{Package: pkg, Test: prefix + "enabled", Action: "pass"},
+		{Package: pkg, Test: prefix + "disabled", Action: "pass"},
+	}
+	for _, test := range []struct {
+		name, profile string
+		inventory     map[string]bool
+		notApplicable int
+		events        []languageProofEvent
+		want          string
+	}{
+		{"pinned gap with both receipts", profile, map[string]bool{"other-edition": false}, 1, evidence, ""},
+		{"other profile", "qt3/3.0/1.0/default/true/true", map[string]bool{"other-edition": false}, 1, evidence, "no passing applicable case"},
+		{"catalog has a relevant case", profile, map[string]bool{"matching-edition": true}, 1, evidence, "catalog includes matching-edition"},
+		{"not all entries are inapplicable", profile, map[string]bool{"other-edition": false}, 0, evidence, "no passing applicable case"},
+		{"no catalog", profile, nil, 0, evidence, "no passing applicable case"},
+		{"missing strict control", profile, map[string]bool{"other-edition": false}, 1, evidence[:1], "no successful execution"},
+		{"skipped control", profile, map[string]bool{"other-edition": false}, 1, slices.Concat(evidence, []languageProofEvent{{Package: pkg, Test: prefix + "enabled", Action: "skip"}}), "skip at"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := languageProofRun{Events: test.events}
+			err := checkEmptyLanguageProfile(test.profile, map[string]int{suiteNotApplicable: test.notApplicable}, test.inventory, &run)
+			if test.want == "" && err != nil || test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -1318,24 +1439,37 @@ func languageProofSetting[T comparable](value any, want T) bool {
 	return decoder.Decode(&actual) == nil && actual == want
 }
 
-func languageCatalogInventory(t *testing.T, directory string, pin suitePin) map[string]struct{} {
+// The inventory value identifies cases that still need execution (or report
+// an unresolved dependency) in the XPath 2.0 compatibility profile.
+func languageCatalogInventory(t *testing.T, directory string, pin suitePin, checkXPath20 bool) map[string]bool {
 	t.Helper()
 	catalog, _, err := readSuiteNode(directory, directory, pin.Catalog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inventory := make(map[string]struct{})
+	inventory := make(map[string]bool)
+	options := suiteOptions{kind: suiteQT3, directory: directory, version: suiteVersion20, xsdVersion: suiteVersion10, xpath10Compatibility: true, xsltAssertions: true}
+	common := suiteEnvironments(catalog, directory, nil)
 	for _, entry := range catalog.children("test-set") {
-		set, _, err := readSuiteReferencedNode(directory, directory, entry)
+		set, path, err := readSuiteReferencedNode(directory, directory, entry)
 		if err != nil {
 			t.Fatal(err)
 		}
+		base := filepath.Dir(path)
+		environments := suiteEnvironments(set, base, common)
+		file := entry.attr(suiteFile)
 		for _, node := range set.children("test-case") {
-			key := entry.attr("file") + "/" + node.attr("name")
+			key := file + "/" + node.attr("name")
 			if _, exists := inventory[key]; exists {
 				t.Fatal("duplicate original catalog identity", key)
 			}
-			inventory[key] = struct{}{}
+			applicable := false
+			if checkXPath20 {
+				item := suiteCase{set: entry.attr("name"), file: file, base: base, setNode: set, node: node, environments: environments}
+				status, _ := suiteApplicability(options, item)
+				applicable = status != suiteNotApplicable
+			}
+			inventory[key] = applicable
 		}
 	}
 	return inventory

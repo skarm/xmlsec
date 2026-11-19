@@ -42,8 +42,7 @@ func TestLoadFixtureReportsInvalidManifest(t *testing.T) {
 		check          func(*testing.T, error)
 	}{
 		{"invalid_json", `[{"name":]`, func(t *testing.T, err error) {
-			var syntax *json.SyntaxError
-			if !errors.As(err, &syntax) {
+			if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 				t.Errorf("LoadFixture failed with %v, want a JSON syntax error", err)
 			}
 		}},

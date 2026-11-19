@@ -3,6 +3,7 @@ package timestamp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -43,6 +44,12 @@ func (v *Verifier) Fetch(ctx context.Context, t Transport, q *Request, at time.T
 
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	if len(q.policy) != 0 {
+		if _, accepted := v.policies[q.policy.String()]; !accepted {
+			return nil, fmt.Errorf("%w: policy OID", ErrPolicy)
+		}
 	}
 
 	body, err := t.RoundTrip(ctx, q.DER())

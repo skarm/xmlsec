@@ -523,6 +523,50 @@ func TestModuleDefaultModeScopes(t *testing.T) {
 	}
 }
 
+func TestImportedCopyBaseURI(t *testing.T) {
+	const moduleURI = "https://example.test/library/copy.xsl"
+	const principal = sheetStart + version30 + `"><xsl:import href="../library/copy.xsl"/>
+		<xsl:output method="text"/>
+		<xsl:template match="/">
+			<xsl:variable name="nodes" as="element()+" xml:base="https://example.test/caller/">
+				<xsl:call-template name="copies"/>
+			</xsl:variable>
+			<xsl:value-of select="$nodes ! string(base-uri(.))" separator="|"/>
+		</xsl:template></xsl:stylesheet>`
+	module := sheet(version30, `<xsl:template name="copies">
+		<xsl:copy-of select="r/child"/>
+		<xsl:copy select="r/child"><xsl:copy-of select="@xml:base"/></xsl:copy>
+	</xsl:template>`)
+	e := engine(t, transform.Config{Resolver: transform.ResolverFunc(func(_ context.Context, uri string) (io.ReadCloser, error) {
+		if uri != moduleURI {
+			return nil, fs.ErrNotExist
+		}
+		return io.NopCloser(strings.NewReader(module)), nil
+	})})
+	compiled, err := e.CompileXSLT(t.Context(), []byte(principal), transform.XSLTOptions{BaseURI: "https://example.test/main/sheet.xsl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, source, want string }{
+		{"relative", `<r><child xml:base="rel/"/></r>`, "https://example.test/library/rel/|https://example.test/library/rel/"},
+		{"absent", `<r><child/></r>`, "|"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := e.Parse(t.Context(), []byte(tc.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := compiled.Transform(t.Context(), doc, transform.XSLTContext{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(out.Primary); got != tc.want {
+				t.Fatalf("base URIs = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func packageOverrideCases() []packageBindingCase {
 	tests := make([]packageBindingCase, 0, 18)
 
@@ -1998,11 +2042,15 @@ func TestTextResourceMediaType(t *testing.T) {
 	}{
 		{"transport", "\xe9", textLatinMediaType, "", "é", ""},
 		{"transport-before-argument", "\xe9", textLatinMediaType, textUTF8Encoding, "é", ""},
+		{"transport-alias", "x", `text/plain; charset="UTF 8"`, "", "x", ""},
 		{"transport-with-bom", "\xfe\xff\x00x", "text/plain; charset=utf-16", "ascii", "x", ""},
 		{"xml-before-argument", "<?xml version='1.0' encoding='iso-8859-1'?><r>\xe9</r>", "application/example+xml", textUTF8Encoding, "<?xml version='1.0' encoding='iso-8859-1'?><r>é</r>", ""},
 		{"plain-argument", "<?xml version='1.0' encoding='iso-8859-1'?><r>\xe9</r>", "text/plain", textUTF8Encoding, "", textEncodingError},
 		{"unknown-transport", "x", "text/plain; charset=unknown-codec", "", "", textEncodingError},
 		{"malformed-utf16", "\xd8\x00", "text/plain; charset=utf-16be", "", "", textEncodingError},
+		{"ucs2-bmp", "\x00A\x4e\x2d\xff\xfd", "text/plain; charset=ISO-10646-UCS-2", "", "A中\ufffd", ""},
+		{"ucs2-supplementary", "\xd8\x3d\xde\x00", "text/plain", "UCS-2", "", textEncodingError},
+		{"utf16-supplementary", "\xd8\x3d\xde\x00", "text/plain", "UTF-16BE", "😀", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
@@ -2139,6 +2187,47 @@ func TestResolverClosesReaderOnFailure(t *testing.T) {
 	_, err = q.Evaluate(t.Context(), nil, transform.XPathContext{})
 	if !errors.Is(err, transform.ErrResource) || !errors.Is(err, failure) || !r.closed {
 		t.Fatalf("closed=%v, error=%v", r.closed, err)
+	}
+}
+
+func TestResourceLimitPreservesTerminalReadFailure(t *testing.T) {
+	t.Parallel()
+
+	const xml = "<r/>"
+	failure := errors.New("resource failed during final read")
+	for _, tc := range []struct {
+		name string
+		read error
+		want error
+	}{
+		{"plain EOF is only overflow", io.EOF, nil},
+		{"read error with overflow byte", failure, failure},
+		{"joined EOF and read error with overflow byte", errors.Join(io.EOF, failure), failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := &lifecycleReader{Reader: io.MultiReader(
+				strings.NewReader(xml),
+				&dtdFailureReader{Reader: strings.NewReader(" "), readError: tc.read},
+			)}
+			e := engine(t, transform.Config{
+				Limits: transform.Limits{MaxInputBytes: len(xml)},
+				Resolver: transform.ResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+					return source, nil
+				}),
+			})
+			out, err := query(t, e, `doc('urn:fixture')`, transform.XPath31).Evaluate(t.Context(), nil, transform.XPathContext{})
+			if out.Len() != 0 || !source.closed || !errors.Is(err, transform.ErrLimit) || !errors.Is(err, transform.ErrResource) {
+				t.Fatalf("items=%d, closed=%t, error=%v; want no result and a closed, over-limit resource", out.Len(), source.closed, err)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("error %v lost the original failure %v", err, tc.want)
+			}
+			if tc.want == nil && errors.Is(err, io.EOF) {
+				t.Errorf("normal EOF was reported as an additional failure: %v", err)
+			}
+		})
 	}
 }
 
@@ -2506,6 +2595,24 @@ func TestTextResourceArgumentValidation(t *testing.T) {
 			var detail *transform.Error
 			if !errors.As(err, &detail) || detail.Code != errCodeXPTY0004 {
 				t.Fatal("text resource signature", name, arguments, err)
+			}
+		}
+	}
+	for _, version := range []transform.XPathVersion{transform.XPath30, transform.XPath31} {
+		for _, encoding := range []string{"UTF 8", "UTF:8", " UTF-8 "} {
+			for _, name := range []string{functionUnparsedText, "unparsed-text-lines"} {
+				call := name + `('urn:text', '` + encoding + `')`
+				result, err := query(t, e, call, version).Evaluate(t.Context(), nil, transform.XPathContext{})
+
+				var detail *transform.Error
+				if result.Len() != 0 || !errors.As(err, &detail) || detail.Code != textEncodingError {
+					t.Errorf("XPath %d %s = %v, %v; want %s", version, call, result, err, textEncodingError)
+				}
+			}
+
+			call := `unparsed-text-available('urn:text', '` + encoding + `')`
+			if got := text(t, evaluate(t, e, call, version)); got != "false" {
+				t.Errorf("XPath %d %s = %s; want false", version, call, got)
 			}
 		}
 	}

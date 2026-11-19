@@ -68,14 +68,10 @@ type btLiteral struct {
 
 func (*btLiteral) isBTNode() {}
 
-// btBackref is a \N reference. literal holds the digits that turned out not to
-// be part of the number, under the same greedy rule splitBackrefs uses:
-// "\12" is group 12 when twelve groups exist and group 1 followed by "2"
-// otherwise.
+// btBackref refers to a preceding capture group by number.
 type btBackref struct {
-	group   int
-	literal []rune
-	fold    bool
+	group int
+	fold  bool
 }
 
 func (*btBackref) isBTNode() {}
@@ -458,36 +454,31 @@ func (p *btParser) parseEscape() (btNode, error) {
 	return p.compileCharAtom(p.src[start:p.pos])
 }
 
-// parseBackref resolves the longest closed group number, retaining all digits
-// outside that number as literal characters. Long digit strings never wrap int.
+// parseBackref selects the longest number whose group has opened, then checks
+// that the selected group has closed. Any remaining digits are literal.
 func (p *btParser) parseBackref() (btNode, error) {
 	p.pos++
 
-	start := p.pos
+	group := 0
 	for p.pos < len(p.src) && p.src[p.pos] >= '0' && p.src[p.pos] <= '9' {
-		p.pos++
-	}
-
-	digits := p.src[start:p.pos]
-
-	value, group, prefix := 0, 0, 0
-	for at := 0; at < len(digits) && value <= p.groups; at++ {
-		value = value*10 + int(digits[at]-'0')
-		if _, closed := p.closed[value]; closed {
-			group = value
-			prefix = at + 1
+		next := group*10 + int(p.src[p.pos]-'0')
+		if next > p.groups {
+			break
 		}
-	}
 
-	if _, closed := p.closed[value]; value <= p.groups && !closed {
-		return nil, p.errf("backreference names a group that is not yet closed")
+		group = next
+		p.pos++
 	}
 
 	if group == 0 {
 		return nil, p.errf("backreference names no preceding group")
 	}
 
-	return &btBackref{group: group, literal: []rune(digits[prefix:]), fold: p.fold}, nil
+	if _, closed := p.closed[group]; !closed {
+		return nil, p.errf("backreference names a group that is not yet closed")
+	}
+
+	return &btBackref{group: group, fold: p.fold}, nil
 }
 
 func (p *btParser) compileCharAtom(src string) (btNode, error) {

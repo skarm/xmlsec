@@ -552,6 +552,23 @@ func TestCoreRepeatedURIAndExpectedSet(t *testing.T) {
 	}
 }
 
+func TestCoreResultOwnsTransformPolicy(t *testing.T) {
+	key := coreEC(t)
+	draft := coreParse(t, coreTemplate("s", xmldsig.ECDSASHA256, c14n.Exclusive, coreRef(dataReferenceURI, reference.Base64), `<ds:Object Id="data">aGVsbG8=</ds:Object>`))
+	signed := coreSign(t, draft, key, xmldsig.SignatureOptions{})
+	options := xmldsig.SignatureOptions{ExpectedURIs: []string{dataReferenceURI}, Processing: reference.Options{AllowedTransforms: []string{reference.Base64}}}
+
+	result, _, err := xmldsig.VerifySignatureDetailed(t.Context(), signed, signed.Root(), key.Public(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	options.Processing.AllowedTransforms[0] = c14n.Exclusive
+	if got := string(digestInput(t, result.References()[0])); got != "hello" {
+		t.Fatalf("replayed digest input = %q, want hello", got)
+	}
+}
+
 func TestTemplateObjectNamespaceImport(t *testing.T) {
 	for _, source := range []string{
 		`<payload plain="v"><value>123</value></payload>`,

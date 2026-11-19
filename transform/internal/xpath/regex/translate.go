@@ -795,6 +795,7 @@ func validateXPathCharClassStructure(class string) error {
 				}
 			}
 
+			prevRaw = 0
 			i += 2
 
 			continue
@@ -886,13 +887,11 @@ func translateClassContent(s string) (string, error) {
 				return "", err
 			}
 
-			if consumed > 0 {
-				b.WriteString(replacement)
+			b.WriteString(replacement)
 
-				i += consumed - 1
+			i += consumed - 1
 
-				continue
-			}
+			continue
 		}
 
 		b.WriteRune(runes[i])
@@ -928,7 +927,7 @@ func translateClassEscape(runes []rune, start int) (string, int, error) {
 	case 'W':
 		return nonWordCharacterRange, simpleEscapeRunes, nil
 	default:
-		return "", 0, nil
+		return string(runes[start : start+simpleEscapeRunes]), simpleEscapeRunes, nil
 	}
 }
 
@@ -1231,7 +1230,7 @@ func (v *regexValidation) validateEscape(start int) (int, error) {
 }
 
 func (v *regexValidation) validateBackreference(start int) (int, error) {
-	ref, validEnd, end, invalid := resolveXPathBackref(v.runes, start+1, v.captureCount, v.groupStack)
+	ref, end := resolveXPathBackref(v.runes, start+1, v.captureCount)
 	if !v.allowBackrefs {
 		return 0, &regexError{
 			Code:    lexicon.ErrFORX0002,
@@ -1239,7 +1238,7 @@ func (v *regexValidation) validateBackreference(start int) (int, error) {
 		}
 	}
 
-	if invalid || validEnd < 0 {
+	if ref == 0 || slices.Contains(v.groupStack, ref) {
 		return 0, &regexError{
 			Code:    lexicon.ErrFORX0002,
 			Message: fmt.Sprintf("invalid back-reference \\%s in XPath regex", string(v.runes[start+1:end])),
@@ -1286,49 +1285,23 @@ func (v *regexValidation) validateOutsideClass(index int) error {
 	return nil
 }
 
-func isOpenCaptureGroup(groupStack []int, ref int) bool {
-	return slices.Contains(groupStack, ref)
-}
-
-func resolveXPathBackref(runes []rune, start, captureCount int, groupStack []int) (int, int, int, bool) {
-	ref := 0
-	validEnd := -1
-	end := start
-
+// resolveXPathBackref chooses the longest prefix for which a capture has
+// opened. The caller checks whether that capture has also closed.
+func resolveXPathBackref(runes []rune, start, captureCount int) (ref, end int) {
 	value := 0
-	for end < len(runes) && runes[end] >= '0' && runes[end] <= '9' {
+	for end = start; end < len(runes) && runes[end] >= '0' && runes[end] <= '9'; end++ {
 		// Stop accumulating once value exceeds captureCount: more digits only
 		// grow it, and a long digit run would wrap int (past 2^31-1 where int
 		// is 32 bits) back into the capture range.
 		if value <= captureCount {
 			value = value*decimalRadix + int(runes[end]-'0')
-		}
-
-		end++
-	}
-
-	if value > 0 && value <= captureCount {
-		if isOpenCaptureGroup(groupStack, value) {
-			return 0, -1, end, true
-		}
-
-		return value, end, end, false
-	}
-
-	value = 0
-	for i := start; i < end; i++ {
-		if value > captureCount {
-			break
-		}
-
-		value = value*decimalRadix + int(runes[i]-'0')
-		if value > 0 && value <= captureCount && !isOpenCaptureGroup(groupStack, value) {
-			ref = value
-			validEnd = i + 1
+			if value <= captureCount {
+				ref = value
+			}
 		}
 	}
 
-	return ref, validEnd, end, false
+	return ref, end
 }
 
 // validQuantifierContent recognizes digits [ "," [ digits ] ].
@@ -1366,10 +1339,16 @@ func isValidQuantifierBrace(runes []rune, i int) bool {
 	}
 
 	prev := runes[i-1]
-	// Valid preceding chars for a quantifier: ), ], or any non-meta char,
-	// or an escape sequence. We check broadly.
+	// A preceding metacharacter can be a literal atom when escaped.
 	if prev == '|' || prev == '(' || prev == '{' {
-		return false
+		escaped := false
+		for j := i - simpleEscapeRunes; j >= 0 && runes[j] == '\\'; j-- {
+			escaped = !escaped
+		}
+
+		if !escaped {
+			return false
+		}
 	}
 
 	end := -1

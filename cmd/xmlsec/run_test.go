@@ -71,6 +71,88 @@ func TestApplicationHelpAndUsage(t *testing.T) {
 	}
 }
 
+func TestMetadataCommandsRespectOutputCompletion(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"algorithms"}, {"help"}, {"help", "key"}, {"help", "c14n"}, {"key", "generate", "-h"}, {"c14n", "-unknown"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			if err := run(t.Context(), args, nil, shortMetadataWriter{}, shortMetadataWriter{}); !errors.Is(err, io.ErrShortWrite) {
+				t.Errorf("short write returned %v, want io.ErrShortWrite", err)
+			}
+
+			synctest.Test(t, func(t *testing.T) {
+				reader, writer := io.Pipe()
+				defer reader.Close()
+				defer writer.Close()
+
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+
+				done := make(chan error, 1)
+				go func() { done <- run(ctx, args, nil, writer, writer) }()
+
+				synctest.Wait()
+				cancel()
+				synctest.Wait()
+
+				select {
+				case err := <-done:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatal("blocked metadata output did not cancel")
+				}
+			})
+		})
+	}
+}
+
+type shortMetadataWriter struct{}
+
+func (shortMetadataWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestNullDeviceStreamCompletion(t *testing.T) {
+	src, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = src.Close() })
+
+	ctx := t.Context()
+	if err := consumeInput(ctx, stdioPath, src, 1, func(r io.Reader) error {
+		var buf [1]byte
+		n, err := r.Read(buf[:])
+		if n != 0 || err != io.EOF {
+			t.Errorf("null device read returned %d, %v, want 0, EOF", n, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeOutputContext(ctx, stdioPath, src, []byte("x")); err == nil {
+		t.Error("write to a read-only descriptor succeeded")
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := readInputContext(canceled, stdioPath, src, 1); !errors.Is(err, context.Canceled) {
+		t.Errorf("read after cancel returned %v", err)
+	}
+	if err := writeOutputContext(canceled, stdioPath, src, []byte("x")); !errors.Is(err, context.Canceled) {
+		t.Errorf("write after cancel returned %v", err)
+	}
+
+	if err := src.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readInputContext(ctx, stdioPath, src, 1); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("read after close returned %v", err)
+	}
+	if err := writeOutputContext(ctx, stdioPath, src, []byte("x")); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("write after close returned %v", err)
+	}
+}
+
 func TestDetachedRequiredFlagsAreUsageErrors(t *testing.T) {
 	for _, command := range []string{nameSignDetached, nameVerifyDetached} {
 		for _, flags := range [][]string{nil, {flagResources, "-", flagKey, "key.pem"}, {flagResources, "resources.json"}, {flagKey, "key.pem"}} {
@@ -100,6 +182,17 @@ func TestCoreManifestFlagsAreUsageErrorsBeforeIO(t *testing.T) {
 		err := run(t.Context(), args, nil, io.Discard, io.Discard)
 		if err == nil || exitCode(err) != cliExitUsage || !strings.Contains(err.Error(), test.message) {
 			t.Fatalf("mode %q: got exit %d (%v), want usage error containing %q", test.mode, exitCode(err), err, test.message)
+		}
+	}
+}
+
+func TestRequiredIDValidationPrecedesInput(t *testing.T) {
+	for _, id := range []string{"", "two words", "id%20with-escapes", "prefix:local"} {
+		args := []string{nameSignatureGroup, nameVerifyCore, flagKey, "unused.pem", flagSignatureIndex, "0", "-require-id", id}
+		var output bytes.Buffer
+		err := run(t.Context(), args, nil, &output, io.Discard)
+		if exitCode(err) != cliExitUsage || !strings.Contains(err.Error(), "-require-id") || output.Len() != 0 {
+			t.Errorf("-require-id %q produced %q and %v, want an ID usage error before I/O", id, &output, err)
 		}
 	}
 }
@@ -183,6 +276,62 @@ func TestCanceledStreamsAndDeadline(t *testing.T) {
 	}
 }
 
+func TestCLIStreamFailureAndCancellation(t *testing.T) {
+	failure := errors.New("stream failed")
+	for _, direction := range []string{"stdin", "stdout", "stdout producer", "file"} {
+		t.Run(direction, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			var err error
+			switch direction {
+			case "stdin":
+				source := cancelingStreamFunc(func([]byte) (int, error) {
+					cancel()
+					return 0, failure
+				})
+				err = run(ctx, []string{nameC14N}, source, io.Discard, io.Discard)
+			case "stdout":
+				target := cancelingStreamFunc(func([]byte) (int, error) {
+					cancel()
+					return 0, failure
+				})
+				err = run(ctx, []string{nameC14N}, strings.NewReader("<r/>"), target, io.Discard)
+			case "stdout producer":
+				var target bytes.Buffer
+				err = produceOutput(ctx, stdioPath, &target, func(writer io.Writer) error {
+					if _, err := io.WriteString(writer, "partial"); err != nil {
+						return err
+					}
+					cancel()
+					return failure
+				})
+				if target.Len() != 0 {
+					t.Fatalf("partial output published: %q", target.Bytes())
+				}
+			case "file":
+				target := testutil.WriteFile(t, t.TempDir(), "out.xml", []byte("original"))
+				err = produceOutput(ctx, target, io.Discard, func(io.Writer) error {
+					cancel()
+					return failure
+				})
+				if got, readErr := os.ReadFile(target); readErr != nil || string(got) != "original" {
+					t.Fatalf("file output replaced: %q, %v", got, readErr)
+				}
+			}
+
+			if !errors.Is(err, context.Canceled) || !errors.Is(err, failure) || exitCode(err) != cliExitCanceled {
+				t.Fatalf("got %v, exit status %d; want both causes, exit status %d", err, exitCode(err), cliExitCanceled)
+			}
+		})
+	}
+}
+
+type cancelingStreamFunc func([]byte) (int, error)
+
+func (f cancelingStreamFunc) Read(p []byte) (int, error)  { return f(p) }
+func (f cancelingStreamFunc) Write(p []byte) (int, error) { return f(p) }
+
 func TestStrictConfigurationAndManifestPolicy(t *testing.T) {
 	dir := t.TempDir()
 	for _, raw := range []string{`{"roots":[],"roots":["x"]}`, `{"unknown":1}`, `{} {}`, `null []`} {
@@ -205,6 +354,32 @@ func TestStrictConfigurationAndManifestPolicy(t *testing.T) {
 		if err := validateResourceAllowlist(entries); err == nil {
 			t.Fatal("accepted recipe in verification allowlist", field)
 		}
+	}
+}
+
+func TestConfigurationFieldAliases(t *testing.T) {
+	type config struct {
+		DisplayName   string            `json:"display_name"`
+		Labels        map[string]string `json:"labels"`
+		CacheDuration time.Duration     `json:"cache_duration"`
+	}
+
+	for _, raw := range []string{
+		`{"display_name":"first","DISPLAY_NAME":"second"}`,
+		`{"display-name":"unknown"}`,
+	} {
+		var got config
+		if err := decodeJSON([]byte(raw), &got); err == nil {
+			t.Fatalf("accepted invalid field spelling in %s", raw)
+		}
+	}
+
+	var got config
+	if err := decodeJSON([]byte(`{"DISPLAY_NAME":"one","labels":{"A":"upper","a":"lower"},"cache_duration":60000000000}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.DisplayName != "one" || got.Labels["A"] != "upper" || got.Labels["a"] != "lower" || got.CacheDuration != time.Minute {
+		t.Fatalf("configuration decoded as %+v", got)
 	}
 }
 
@@ -295,7 +470,7 @@ func TestEncryptionScopesAndTransports(t *testing.T) {
 	source := []byte(`<root xmlns:p="urn:p"><p:item ID="payload">secret<child/>tail</p:item><other>keep</other></root>`)
 
 	for _, transport := range []string{nameRSA, "wrap", transportDirect} {
-		for _, scope := range []string{scopeBytes, "document", scopeElement, "content"} {
+		for _, scope := range []string{scopeBytes, scopeDocument, scopeElement, "content"} {
 			t.Run(transport+"/"+scope, func(t *testing.T) { testEncryptionRoundtrip(t, dir, source, transport, scope, private, public, secret) })
 		}
 	}
@@ -318,6 +493,47 @@ func TestEncryptionScopesAndTransports(t *testing.T) {
 		encrypted := cli(t, source, nameEncrypt, "-transport", transportDirect, flagKey, key, "-algorithm", algorithm.uri, "-key-name", "test")
 		cli(t, encrypted, nameDecrypt, "-transport", transportDirect, flagKey, key, "-algorithm", algorithm.uri, "-key-name", "test")
 		rejectCLI(t, encrypted, nameDecrypt, "-transport", transportDirect, flagKey, key, "-algorithm", algorithm.uri, "-key-name", "wrong")
+	}
+}
+
+func TestEncryptionRootSelection(t *testing.T) {
+	t.Parallel()
+
+	secret := testutil.WriteFile(t, t.TempDir(), "aes", bytes.Repeat([]byte{9}, 32))
+	const plaintext = `<payload>content</payload>`
+	for _, scope := range []string{scopeBytes, scopeDocument} {
+		t.Run(scope, func(t *testing.T) {
+			t.Parallel()
+
+			common := []string{flagKey, secret, "-transport", transportDirect, "-scope", scope}
+			encrypt := append([]string{nameEncryption, nameEncrypt}, common...)
+			encrypted := cli(t, []byte(plaintext), encrypt...)
+			decrypt := append([]string{nameEncryption, nameDecrypt}, common...)
+			if restored := cli(t, encrypted, append(decrypt[:len(decrypt):len(decrypt)], "-index", "0")...); string(restored) != plaintext {
+				t.Fatalf("explicit root selection = %q, want %q", restored, plaintext)
+			}
+			wrapped := append(append([]byte("<wrapper>"), encrypted...), []byte("</wrapper>")...)
+			for _, tc := range []struct {
+				name  string
+				input []byte
+				args  []string
+			}{
+				{"encrypt whole input with element ID", []byte(plaintext), append(encrypt[:len(encrypt):len(encrypt)], "-id", "payload")},
+				{"missing encrypted ID", encrypted, append(decrypt[:len(decrypt):len(decrypt)], "-id", "missing")},
+				{"out of range index", encrypted, append(decrypt[:len(decrypt):len(decrypt)], "-index", "1")},
+				{"nested encrypted element", wrapped, append(decrypt[:len(decrypt):len(decrypt)], "-index", "0")},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+
+					var output bytes.Buffer
+					err := run(t.Context(), tc.args, bytes.NewReader(tc.input), &output, io.Discard)
+					if exitCode(err) != cliExitUsage || output.Len() != 0 {
+						t.Fatalf("output = %q, error = %v; want usage error before output", &output, err)
+					}
+				})
+			}
+		})
 	}
 }
 

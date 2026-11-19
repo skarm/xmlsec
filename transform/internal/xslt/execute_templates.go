@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
 )
@@ -33,10 +34,6 @@ func (ec *execContext) applyTemplates(ctx context.Context, node xdm.Node, mode s
 	ec.initialTemplateCall = false
 
 	if normalizeNode(node) == nil {
-		return nil
-	}
-	// Strip whitespace-only text nodes per xsl:strip-space
-	if ec.shouldStripWhitespace(node) {
 		return nil
 	}
 
@@ -150,8 +147,12 @@ func (ec *execContext) findBestTemplate(ctx context.Context, node xdm.Node, mode
 	best := ec.findFirstMatch(ctx, ec.activeModePackage().modeTemplates[mode], ec.activeModePackage().modeIndex[mode], node)
 
 	// Also check #all mode templates that might not be registered in this mode
-	if best == nil && mode != modeAll {
+	if best == nil && ec.patternMatchErr == nil && mode != modeAll {
 		best = ec.findFirstMatch(ctx, ec.activeModePackage().modeTemplates[modeAll], ec.activeModePackage().modeIndex[modeAll], node)
+	}
+
+	if err := ec.takePatternError(); err != nil {
+		return nil, err
 	}
 
 	if best == nil {
@@ -159,7 +160,12 @@ func (ec *execContext) findBestTemplate(ctx context.Context, node xdm.Node, mode
 	}
 
 	if ec.onMultipleMatchFail(mode) {
-		if ec.hasConflictingMatch(ctx, node, mode, best) {
+		conflict := ec.hasConflictingMatch(ctx, node, mode, best)
+		if err := ec.takePatternError(); err != nil {
+			return nil, err
+		}
+
+		if conflict {
 			return nil, dynamicError(errCodeXTDE0540,
 				"ambiguous rule match for node %v in mode %q (on-multiple-match=fail)",
 				node, mode)
@@ -341,7 +347,7 @@ func (ec *execContext) findAtomicTemplate(ctx context.Context, item xdm.Item, mo
 		}
 	}
 
-	if best == nil && mode != modeAll {
+	if best == nil && ec.patternMatchErr == nil && mode != modeAll {
 		for _, tmpl := range ec.activeModePackage().modeTemplates[modeAll] {
 			if tmpl.Match != nil && ec.matchAtomicTemplate(ctx, tmpl, item) {
 				best = tmpl
@@ -350,12 +356,21 @@ func (ec *execContext) findAtomicTemplate(ctx context.Context, item xdm.Item, mo
 		}
 	}
 
+	if err := ec.takePatternError(); err != nil {
+		return nil, err
+	}
+
 	if best == nil {
 		return nil, nil //nolint:nilnil // No matching template is an ordinary lookup miss.
 	}
 
 	if ec.onMultipleMatchFail(mode) {
-		if ec.hasConflictingAtomicMatch(ctx, item, mode, best) {
+		conflict := ec.hasConflictingAtomicMatch(ctx, item, mode, best)
+		if err := ec.takePatternError(); err != nil {
+			return nil, err
+		}
+
+		if conflict {
 			return nil, dynamicError(errCodeXTDE0540,
 				"ambiguous rule match for atomic item in mode %q (on-multiple-match=fail)", mode)
 		}
@@ -405,7 +420,7 @@ func (ec *execContext) hasConflictingAtomicMatch(ctx context.Context, item xdm.I
 }
 
 func (ec *execContext) matchTemplatePattern(ctx context.Context, tmpl *template, node xdm.Node, probe bool) bool {
-	if tmpl.Match == nil {
+	if tmpl.Match == nil || ec.patternMatchErr != nil {
 		return false
 	}
 
@@ -419,15 +434,18 @@ func (ec *execContext) matchTemplatePattern(ctx context.Context, tmpl *template,
 }
 
 func (ec *execContext) matchAtomicTemplate(ctx context.Context, tmpl *template, item xdm.Item) bool {
+	if ec.patternMatchErr != nil {
+		return false
+	}
 	defer ec.pushPackage(tmpl.OwnerPackage)()
 
 	p := tmpl.Match
-	savedNS, savedDefault, savedHasDefault, savedInPattern := ec.patternNamespaces, ec.xpathDefaultNS, ec.hasXPathDefaultNS, ec.inPatternMatch
+	defer p.pushStaticContext(ec).apply(ec)
 
-	ec.patternNamespaces, ec.xpathDefaultNS, ec.hasXPathDefaultNS, ec.inPatternMatch = p.nsBindings, p.xpathDefaultNS, p.hasXPathDefaultNS, true
-	defer func() {
-		ec.patternNamespaces, ec.xpathDefaultNS, ec.hasXPathDefaultNS, ec.inPatternMatch = savedNS, savedDefault, savedHasDefault, savedInPattern
-	}()
+	savedInPattern := ec.inPatternMatch
+
+	ec.inPatternMatch = true
+	defer func() { ec.inPatternMatch = savedInPattern }()
 
 	for _, alt := range p.Alternatives {
 		// variable reference patterns (e.g., match="$var") only match nodes,
@@ -454,6 +472,10 @@ func (ec *execContext) matchAtomicTemplate(ctx context.Context, tmpl *template, 
 
 		result, err := peval.Evaluate(ec.xpathContext(ctx), compiled, nil)
 		if err != nil {
+			if ec.recordPatternError(ctx, err) {
+				return false
+			}
+
 			continue
 		}
 		// The pattern ".[. instance of xs:integer]" evaluates to the item
@@ -466,6 +488,23 @@ func (ec *execContext) matchAtomicTemplate(ctx context.Context, tmpl *template, 
 	return false
 }
 
+// withAbsentTemplateFocus applies xsl:context-item use="absent" to the
+// parameters and body without losing the template's lexical context.
+func (ec *execContext) withAbsentTemplateFocus() func() {
+	node, current, item := ec.contextNode, ec.currentNode, ec.contextItem
+	pos, size := ec.position, ec.size
+	ec.contextNode, ec.currentNode, ec.contextItem = nil, nil, nil
+	ec.position, ec.size = 0, 0
+	restoreRule := ec.withoutTemplateRule()
+
+	return func() {
+		restoreRule()
+
+		ec.contextNode, ec.currentNode, ec.contextItem = node, current, item
+		ec.position, ec.size = pos, size
+	}
+}
+
 func (ec *execContext) executeAtomicTemplate(ctx context.Context, tmpl *template, item xdm.Item, mode string, paramOverrides ...map[string]xdm.Sequence) error {
 	defer ec.pushPackage(tmpl.OwnerPackage)()
 
@@ -473,26 +512,24 @@ func (ec *execContext) executeAtomicTemplate(ctx context.Context, tmpl *template
 	savedCurrent := ec.currentNode
 	savedMode := ec.currentMode
 	savedItem := ec.contextItem
-	savedTemplate := ec.currentTemplate
 	ec.contextItem = item
 	ec.contextNode = nil
 	ec.currentNode = nil
 	ec.currentMode = mode
 
-	ec.setCurrentTemplate(tmpl)
+	defer ec.withTemplateRule(tmpl)()
 	defer func() {
 		ec.contextNode = savedContext
 		ec.currentNode = savedCurrent
 		ec.currentMode = savedMode
 		ec.contextItem = savedItem
-		ec.setCurrentTemplate(savedTemplate)
 	}()
 
 	ec.pushVarScope()
 	defer ec.popVarScope()
 
 	if tmpl.ContextItemUse == ctxItemAbsent {
-		ec.contextItem = nil
+		defer ec.withAbsentTemplateFocus()()
 	}
 
 	if err := ec.checkContextItemType(tmpl); err != nil {
@@ -506,7 +543,7 @@ func (ec *execContext) executeAtomicTemplate(ctx context.Context, tmpl *template
 	}
 
 	if err := ec.bindTemplateParams(ctx, tmpl.Params, po, func(p *param) (xdm.Sequence, error) {
-		return ec.atomicTemplateParamDefault(ctx, p, item)
+		return ec.atomicTemplateParamDefault(ctx, p, ec.contextItem)
 	}); err != nil {
 		return err
 	}
@@ -546,7 +583,6 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	savedMode := ec.currentMode
 	savedPos := ec.position
 	savedSize := ec.size
-	savedTemplate := ec.currentTemplate
 	savedTunnel := ec.tunnelParams
 	savedXPathDefaultNS := ec.xpathDefaultNS
 	savedHasXPathDefaultNS := ec.hasXPathDefaultNS
@@ -561,7 +597,6 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 		ec.contextNode = savedContext
 		ec.contextItem = savedItem
 		ec.currentMode = savedMode
-		ec.setCurrentTemplate(savedTemplate)
 		ec.overridingTemplate = savedOverridingTemplate
 		ec.xpathDefaultNS = savedXPathDefaultNS
 		ec.hasXPathDefaultNS = savedHasXPathDefaultNS
@@ -574,7 +609,9 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	ec.currentNode = node
 	ec.contextNode = node
 	ec.currentMode = mode
-	ec.setCurrentTemplate(tmpl)
+
+	defer ec.withTemplateRule(tmpl)()
+
 	ec.xpathDefaultNS = tmpl.XPathDefaultNS
 
 	ec.hasXPathDefaultNS = tmpl.XPathDefaultNS != ""
@@ -589,8 +626,7 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	}
 	// xsl:context-item use="absent": make the context item absent within the template body
 	if tmpl.ContextItemUse == ctxItemAbsent {
-		ec.contextNode = nil
-		ec.contextItem = nil
+		defer ec.withAbsentTemplateFocus()()
 	}
 	// XTTE0590: check context-item type constraint
 	if err := ec.checkContextItemType(tmpl); err != nil {
@@ -607,7 +643,7 @@ func (ec *execContext) executeTemplate(ctx context.Context, tmpl *template, node
 	}
 
 	if err := ec.bindTemplateParams(ctx, tmpl.Params, po, func(p *param) (xdm.Sequence, error) {
-		return ec.nodeTemplateParamDefault(ctx, p, node)
+		return ec.nodeTemplateParamDefault(ctx, p, ec.contextNode)
 	}); err != nil {
 		return err
 	}
@@ -770,7 +806,11 @@ func (ec *execContext) executeTemplateBodyWithAs(ctx context.Context, tmpl *temp
 
 	st := parseSequenceType(tmpl.As)
 
+	savedNS, savedDefault, savedHas := ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS
+	ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = tmpl.returnNamespaces, tmpl.returnDefaultNS, tmpl.hasReturnDefaultNS
 	checked, err := checkSequenceType(ctx, stripped, st, errCodeXTTE0505, nameTemplate, ec)
+	ec.nsOverride, ec.xpathDefaultNS, ec.hasXPathDefaultNS = savedNS, savedDefault, savedHas
+
 	if err != nil {
 		return err
 	}
@@ -801,8 +841,19 @@ func (ec *execContext) executeTemplateBodyWithAs(ctx context.Context, tmpl *temp
 		return nil
 	}
 
+	flattenArrays := tmpl.Name != "" && ec.stylesheet.processorLanguage() >= processorXSLT30 &&
+		!out.captureItems && !out.sequenceMode && !ec.isItemOutputMethod()
+
 	for i := range xdm.SequenceLen(checked) {
 		item := checked.Get(i)
+		if array, ok := item.(xdm.ArrayItem); ok && flattenArrays {
+			if err := ec.writeTypedTemplateArray(ctx, out, array, 0); err != nil {
+				return err
+			}
+
+			continue
+		}
+
 		switch v := item.(type) {
 		case xdm.NodeItem:
 			_, isDOE := doeTextIndices[i]
@@ -830,6 +881,45 @@ func (ec *execContext) executeTemplateBodyWithAs(ctx context.Context, tmpl *temp
 	return nil
 }
 
+// writeTypedTemplateArray expands members only when constructing complex
+// content. Capture and item delivery retain the original array.
+func (ec *execContext) writeTypedTemplateArray(ctx context.Context, out *outputFrame, array xdm.ArrayItem, depth int) error {
+	if depth >= xpath.DepthLimit(ctx, maxRecursionDepth) {
+		return xpath.ErrBudget
+	}
+
+	if err := xpath.Charge(ctx, array.Size()); err != nil {
+		return err
+	}
+
+	for _, member := range array.MembersView() {
+		for item := range xdm.SequenceItems(member) {
+			if err := xpath.Charge(ctx, 1); err != nil {
+				return err
+			}
+
+			var err error
+
+			switch value := item.(type) {
+			case xdm.NodeItem:
+				err = ec.writeTypedTemplateNode(value, out, false)
+			case xdm.AtomicValue:
+				err = ec.writeTypedTemplateAtomic(value, out)
+			case xdm.ArrayItem:
+				err = ec.writeTypedTemplateArray(ctx, out, value, depth+1)
+			default:
+				return dynamicError(errCodeXTDE0450, "cannot add a %T to the result tree", item)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, isDOE bool) error {
 	out.prevWasAtomic = false
 	// Re-insert DOE markers when writing directly to the result tree
@@ -841,7 +931,7 @@ func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, 
 	// (comments, attributes, PIs) per XSLT 3.0 §20.1.
 	emitDOE := isDOE && ec.temporaryOutputDepth == 0 && !out.captureItems && !out.sequenceMode
 	if emitDOE {
-		pi := ec.resultDoc.CreatePI(lexicon.DisableOutputEscapingPITarget, "")
+		pi := ec.resultDoc.CreateDOEMarker(true)
 		if err := ec.addNode(pi); err != nil {
 			return err
 		}
@@ -859,7 +949,7 @@ func (ec *execContext) writeTypedTemplateNode(v xdm.NodeItem, out *outputFrame, 
 	}
 
 	if emitDOE {
-		piEnd := ec.resultDoc.CreatePI(lexicon.EnableOutputEscapingPITarget, "")
+		piEnd := ec.resultDoc.CreateDOEMarker(false)
 		if err := ec.addNode(piEnd); err != nil {
 			return err
 		}
@@ -872,27 +962,17 @@ func (ec *execContext) writeTypedTemplateAtomic(v xdm.AtomicValue, out *outputFr
 	if out.captureItems {
 		out.pendingItems = append(out.pendingItems, v)
 		out.noteOutput()
-	} else {
-		s, err := xpath.AtomicToString(v)
-		if err != nil {
-			return err
-		}
-		// Insert space separator between consecutive atomic values
-		// (XSLT 3.0 §11.3: adjacent atomic values are separated by spaces)
-		if out.prevWasAtomic {
-			sep := ec.resultDoc.CreateText(" ")
-			if err := ec.addNode(sep); err != nil {
-				return err
-			}
-		}
 
-		text := ec.resultDoc.CreateText(s)
-		if err := ec.addNode(text); err != nil {
-			return err
-		}
-
-		out.prevWasAtomic = true
+		return nil
 	}
+
+	state := sequenceOutputState{prevWasAtomic: out.prevWasAtomic, prevHadOutput: out.prevHadOutput}
+	if err := ec.writeXSLSequenceAtomic(out, &state, v); err != nil {
+		return err
+	}
+
+	out.prevWasAtomic = state.prevWasAtomic
+	out.prevHadOutput = state.prevHadOutput
 
 	return nil
 }
@@ -936,14 +1016,12 @@ func stripDOEMarkers(seq xdm.Sequence) (xdm.Sequence, map[int]struct{}) {
 	doeActive := false
 
 	for item := range xdm.SequenceItems(seq) {
-		if ni, ok := item.(xdm.NodeItem); ok && ni.Node.Type() == xdm.ProcessingInstructionNode {
-			piName := ni.Node.Name()
-			if piName == lexicon.DisableOutputEscapingPITarget {
+		if ni, ok := item.(xdm.NodeItem); ok {
+			switch xdm.DOEMarkerOf(ni.Node) {
+			case tree.DOEStart:
 				doeActive = true
 				continue
-			}
-
-			if piName == lexicon.EnableOutputEscapingPITarget {
+			case tree.DOEEnd:
 				doeActive = false
 				continue
 			}

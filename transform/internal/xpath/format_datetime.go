@@ -276,8 +276,7 @@ func formatDateTimePicture(ctx context.Context, t time.Time, picture, lang, cale
 				continue
 			}
 
-			b.WriteRune(runes[i])
-			i++
+			return "", &xdm.Error{Code: errCodeFOFD1340, Message: "literal ']' must be doubled in picture string"}
 		} else {
 			b.WriteRune(runes[i])
 			i++
@@ -342,6 +341,10 @@ func formatComponent(ctx context.Context, t time.Time, spec, lang, calendar, typ
 	}
 
 	presentation, width := parseDatePresentation(rest)
+	if compChar == 'F' && presentation.implicit {
+		// The default first presentation modifier for a weekday is n.
+		presentation.format = formatNameLower
+	}
 
 	// Validate format token and width
 	if err := validateDateFormatToken(compChar, presentation, width); err != nil {
@@ -677,7 +680,7 @@ func formatDateDecimal(value int64, p dtPresentation, w dtWidth, comp byte) stri
 	}
 
 	// Apply grouping separators from format pattern
-	s = applyDateGrouping(s, runes, zeroDigit)
+	s = applyDateGrouping(s, format, runes, zeroDigit, w.present)
 
 	// Translate to target digit set
 	if zeroDigit != '0' {
@@ -747,7 +750,7 @@ func applyTextWidth(s string, w dtWidth) string {
 	return s
 }
 
-func applyDateGrouping(s string, formatRunes []rune, zeroDigit rune) string {
+func applyDateGrouping(s, format string, formatRunes []rune, zeroDigit rune, hasWidth bool) string {
 	// Extract grouping separator positions from the format pattern
 	var sepPositions []int // positions from the right
 
@@ -769,6 +772,14 @@ func applyDateGrouping(s string, formatRunes []rune, zeroDigit rune) string {
 
 	if len(sepPositions) == 0 {
 		return s
+	}
+
+	// Without an explicit width, decimal components use format-integer's
+	// grouping rules. Grouping with a width modifier is implementation-defined.
+	if !hasWidth {
+		if picture, err := parseIntegerDecimalPicture(format); err == nil && integerGroupingRepeats(picture.groups, picture.separators) {
+			return groupRegularIntegerDigits(s, picture.groups[len(picture.groups)-1], picture.separators[0])
+		}
 	}
 
 	// Insert separators
@@ -1342,7 +1353,7 @@ func resolveCalendarName(ctx context.Context, calendar string) (string, error) {
 		return calendar, nil
 	}
 
-	if strings.HasPrefix(calendar, "Q{") {
+	if strings.HasPrefix(calendar, lexicon.EQNamePrefix) {
 		if ec := getFnContext(ctx); ec != nil && ec.version == xpathVersion20 {
 			return "", invalidCalendarName(calendar)
 		}
@@ -1357,7 +1368,7 @@ func resolveCalendarName(ctx context.Context, calendar string) (string, error) {
 			return "", invalidCalendarName(calendar)
 		}
 
-		return "Q{" + uri + "}" + local, nil
+		return lexicon.EQNamePrefix + uri + "}" + local, nil
 	}
 
 	prefix, local, err := parseLexicalQName(calendar)
@@ -1370,7 +1381,7 @@ func resolveCalendarName(ctx context.Context, calendar string) (string, error) {
 		return "", invalidCalendarName(calendar)
 	}
 
-	return "Q{" + uri + "}" + local, nil
+	return lexicon.EQNamePrefix + uri + "}" + local, nil
 }
 
 func invalidCalendarName(calendar string) error {

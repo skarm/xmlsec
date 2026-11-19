@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/der"
 	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/internal/signature"
@@ -118,31 +117,45 @@ func ImprintFor(ctx context.Context, data []byte, h crypto.Hash) (Imprint, error
 // A zero hash selects SHA-256. It leaves src open and retains no message bytes.
 // Blocking readers must honor cancellation themselves.
 func ImprintReader(ctx context.Context, src io.Reader, h crypto.Hash) (Imprint, error) {
+	h, err := imprintInputHash(ctx, src, h)
+	if err != nil {
+		return Imprint{}, err
+	}
+
+	return readImprint(ctx, src, h)
+}
+
+func imprintInputHash(ctx context.Context, src io.Reader, h crypto.Hash) (crypto.Hash, error) {
 	if ctx == nil || nilcheck.IsNil(src) {
-		return Imprint{}, ErrPolicy
+		return 0, ErrPolicy
 	}
 
 	if h == 0 {
 		h = crypto.SHA256
 	}
 
-	a, e := signature.DigestAlgorithm(h)
-	if e != nil {
-		return Imprint{}, ErrPolicy
+	if !supportedImprintHash(h) || !h.Available() {
+		return 0, ErrPolicy
 	}
 
-	if _, e = signature.Hash(a, false); e != nil {
-		return Imprint{}, ErrPolicy
-	}
+	return h, ctx.Err()
+}
 
+func readImprint(ctx context.Context, src io.Reader, h crypto.Hash) (Imprint, error) {
 	digest := h.New()
 
-	_, e = io.Copy(digest, &streamio.Reader{Context: ctx, Source: src, Limit: math.MaxInt64, LimitError: ErrPolicy})
+	_, e := io.Copy(digest, &streamio.Reader{Context: ctx, Source: src, Limit: math.MaxInt64, LimitError: ErrPolicy})
 	if e != nil {
 		return Imprint{}, e
 	}
 
-	return Imprint{h, digest.Sum(nil)}, ctx.Err()
+	imprint := Imprint{h, digest.Sum(nil)}
+
+	if err := ctx.Err(); err != nil {
+		return Imprint{}, err
+	}
+
+	return imprint, nil
 }
 
 // RequestOptions selects the imprint hash, TSA policy, nonce and certificate request
@@ -186,59 +199,98 @@ func CreateRequest(ctx context.Context, data []byte, o RequestOptions) (*Request
 // CreateRequestReader hashes src incrementally and builds an RFC 3161 request.
 // It leaves src open; request storage is independent of the message length.
 func CreateRequestReader(ctx context.Context, src io.Reader, o RequestOptions) (*Request, error) {
-	m, e := ImprintReader(ctx, src, o.Hash)
+	h, e := imprintInputHash(ctx, src, o.Hash)
 	if e != nil {
 		return nil, e
 	}
 
-	return CreateImprintRequest(m, o)
+	fields, e := prepareRequestFields(o)
+	if e != nil {
+		return nil, e
+	}
+
+	m, e := readImprint(ctx, src, h)
+	if e != nil {
+		return nil, e
+	}
+
+	return fields.encode(m)
 }
 
 // CreateImprintRequest builds an RFC 3161 request from an explicit message imprint and
 // request options.
 func CreateImprintRequest(m Imprint, o RequestOptions) (*Request, error) {
-	const nonceTopBit = 0x80 // Generated positive integers retain the full nonce bit width.
-
-	if !validImprint(m) || o.OmitNonce && len(o.Nonce) > 0 {
+	if !validImprint(m) {
 		return nil, ErrPolicy
 	}
 
-	f := [][]byte{der.Int(timestampVersion), encodeImprint(m)}
-
-	if len(o.Policy) > 0 {
-		b := der.OID(o.Policy)
-		if len(b) == 0 {
-			return nil, ErrPolicy
-		}
-
-		f = append(f, b)
+	fields, err := prepareRequestFields(o)
+	if err != nil {
+		return nil, err
 	}
 
-	if !o.OmitNonce {
-		n := bytes.Clone(o.Nonce)
-		if n == nil {
-			n = make([]byte, generatedNonceBytes)
-			if _, e := rand.Read(n); e != nil {
+	return fields.encode(m)
+}
+
+type requestFields struct {
+	policy           []byte
+	nonce            *big.Int
+	omitNonce        bool
+	omitCertificates bool
+}
+
+func prepareRequestFields(o RequestOptions) (requestFields, error) {
+	if o.OmitNonce && len(o.Nonce) > 0 || len(o.Policy) >= maximumRequestBytes {
+		return requestFields{}, ErrPolicy
+	}
+
+	f := requestFields{omitNonce: o.OmitNonce, omitCertificates: o.OmitCertificates}
+	if len(o.Policy) > 0 {
+		f.policy = der.OID(o.Policy)
+		if len(f.policy) == 0 || len(f.policy) >= maximumRequestBytes {
+			return requestFields{}, ErrPolicy
+		}
+	}
+
+	if !o.OmitNonce && o.Nonce != nil {
+		if len(o.Nonce) < minimumNonceBytes || len(o.Nonce) > maximumNonceBytes {
+			return requestFields{}, ErrPolicy
+		}
+
+		f.nonce = new(big.Int).SetBytes(o.Nonce)
+		if f.nonce.Sign() <= 0 {
+			return requestFields{}, ErrPolicy
+		}
+	}
+
+	return f, nil
+}
+
+func (o requestFields) encode(m Imprint) (*Request, error) {
+	const nonceTopBit = 0x80 // Generated positive integers retain the full nonce bit width.
+
+	f := [][]byte{der.Int(timestampVersion), encodeImprint(m)}
+	if len(o.policy) != 0 {
+		f = append(f, o.policy)
+	}
+
+	if !o.omitNonce {
+		nonce := o.nonce
+		if nonce == nil {
+			var n [generatedNonceBytes]byte
+			if _, e := rand.Read(n[:]); e != nil {
 				return nil, e
 			}
 
 			n[0] |= nonceTopBit
+			nonce = new(big.Int).SetBytes(n[:])
 		}
 
-		if len(n) < minimumNonceBytes || len(n) > maximumNonceBytes {
-			return nil, ErrPolicy
-		}
-
-		v := new(big.Int).SetBytes(n)
-		if v.Sign() <= 0 {
-			return nil, ErrPolicy
-		}
-
-		b, _ := asn1.Marshal(v)
+		b, _ := asn1.Marshal(nonce)
 		f = append(f, b)
 	}
 
-	if !o.OmitCertificates {
+	if !o.omitCertificates {
 		b, _ := asn1.Marshal(true)
 		f = append(f, b)
 	}
@@ -448,7 +500,7 @@ type Response struct {
 }
 
 // ParseResponse parses one complete bounded RFC 3161 response and rejects unsuccessful
-// status values.
+// status values. It validates the token structure without authenticating it.
 func ParseResponse(ctx context.Context, b []byte) (*Response, error) {
 	return ParseResponseReader(ctx, bytes.NewReader(b))
 }
@@ -469,7 +521,20 @@ func ParseResponseReader(ctx context.Context, src io.Reader) (*Response, error) 
 		return nil, fmt.Errorf("%w: %w", ErrFormat, err)
 	}
 
-	return parseResponseValue(ctx, value, true)
+	response, err := parseResponseValue(value)
+	if err != nil {
+		return response, err
+	}
+
+	if _, err := parseTokenReader(ctx, bytes.NewReader(response.token), maximumResponseBytes); err != nil {
+		if errors.Is(err, ErrFormat) {
+			return nil, err
+		}
+
+		return nil, fmt.Errorf("%w: %w", ErrFormat, err)
+	}
+
+	return response, nil
 }
 
 // DER returns an owned copy of the original DER encoding.
@@ -500,18 +565,13 @@ func (r *Response) Status() int {
 }
 
 // bindToken checks whether the response status permits an attached CMS token.
-func (r *Response) bindToken(ctx context.Context, f []asn1.RawValue, validateToken bool) (*Response, error) {
+func (r *Response) bindToken(f []asn1.RawValue) (*Response, error) {
 	if r.status == statusGranted || r.status == statusGrantedWithMods {
 		if len(f) != responseWithTokenFields || r.fail.BitLength != 0 {
 			return nil, ErrFormat
 		}
 
 		r.token = f[1].FullBytes
-		if validateToken {
-			if _, e := cms.Parse(ctx, r.token, cms.DefaultLimits()); e != nil {
-				return nil, fmt.Errorf("%w: %w", ErrFormat, e)
-			}
-		}
 	} else {
 		if len(f) != responseStatusFields {
 			return nil, ErrFormat
@@ -550,7 +610,11 @@ func (e *ResponseError) Error() string {
 func TSTInfoOID() asn1.ObjectIdentifier { return append(asn1.ObjectIdentifier(nil), tstOID()...) }
 
 func validImprint(m Imprint) bool {
-	return (m.Hash == crypto.SHA256 || m.Hash == crypto.SHA384 || m.Hash == crypto.SHA512) && len(m.Digest) == m.Hash.Size()
+	return supportedImprintHash(m.Hash) && len(m.Digest) == m.Hash.Size()
+}
+
+func supportedImprintHash(h crypto.Hash) bool {
+	return h == crypto.SHA256 || h == crypto.SHA384 || h == crypto.SHA512
 }
 
 func encodeImprint(m Imprint) []byte {
@@ -625,11 +689,12 @@ func parseOwnedRequest(b []byte) (*Request, error) {
 func encodeTime(t time.Time) ([]byte, error) {
 	const nanosecondDigitsFormat = "%09d"
 
+	t = t.UTC()
 	if t.IsZero() || t.Year() < 1 || t.Year() > maximumTimeYear {
 		return nil, ErrPolicy
 	}
 
-	s := t.UTC().Format(generalizedTimeSecondsLayout)
+	s := t.Format(generalizedTimeSecondsLayout)
 	if t.Nanosecond() != 0 {
 		s += "." + strings.TrimRight(fmt.Sprintf(nanosecondDigitsFormat, t.Nanosecond()), "0")
 	}
@@ -766,7 +831,7 @@ func validateInfoExtensions(v asn1.RawValue) error {
 	return nil
 }
 
-func parseResponseValue(ctx context.Context, v asn1.RawValue, validateToken bool) (*Response, error) {
+func parseResponseValue(v asn1.RawValue) (*Response, error) {
 	const (
 		statusRequiredFields = 1
 		statusMaximumFields  = 3
@@ -826,7 +891,7 @@ func parseResponseValue(ctx context.Context, v asn1.RawValue, validateToken bool
 		return nil, ErrFormat
 	}
 
-	return r.bindToken(ctx, f, validateToken)
+	return r.bindToken(f)
 }
 
 func tstOID() asn1.ObjectIdentifier { return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 1, 4} }

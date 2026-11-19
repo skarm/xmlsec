@@ -1,9 +1,12 @@
 package xpath //nolint:testpackage // Verify the compiler's static reference reporting.
 
 import (
-	"reflect"
+	"errors"
 	"slices"
 	"testing"
+
+	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/transform/internal/xdm"
 )
 
 func TestStaticReferencesVariableScopes(t *testing.T) {
@@ -108,7 +111,53 @@ func TestStaticReferencesTypeAndFunctionNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile nested types and calls: %v", err)
 	}
-	if got := expr.StaticReferences(ns); !reflect.DeepEqual(got, want) {
+	if got := expr.StaticReferences(ns); !slices.Equal(got.FreeVariables, want.FreeVariables) ||
+		!slices.Equal(got.TypeNames, want.TypeNames) || !slices.Equal(got.FunctionNames, want.FunctionNames) ||
+		!slices.Equal(got.SchemaComponentTests, want.SchemaComponentTests) {
 		t.Errorf("StaticReferences() = %#v, want %#v", got, want)
+	}
+}
+
+func TestProfileWalkPointerAST(t *testing.T) {
+	t.Parallel()
+
+	var missingCall *FunctionCall
+	var missingTest *xdm.SchemaElementTest
+	call := &FunctionCall{Name: "missing-function"}
+	expr := &Expression{ast: &PathExpr{
+		Filter: &LiteralExpr{Value: &xdm.SchemaElementTest{Name: "opaque"}},
+		Path: &LocationPath{Steps: []Step{
+			{NodeTest: missingTest, Predicates: []Expr{missingCall}},
+			{NodeTest: &xdm.NameTest{Local: "entry"}, Predicates: []Expr{call}},
+		}},
+	}}
+
+	refs := expr.StaticReferences(nil)
+	if want := []FunctionNameRef{{URI: NSFn, Name: call.Name}}; !slices.Equal(refs.FunctionNames, want) {
+		t.Fatalf("StaticReferences().FunctionNames = %v, want %v", refs.FunctionNames, want)
+	}
+	if len(refs.SchemaComponentTests) != 0 {
+		t.Fatalf("StaticReferences().SchemaComponentTests = %v, want none", refs.SchemaComponentTests)
+	}
+
+	var detail *xdm.Error
+	if err := CheckStandaloneFunctions(expr, nil); !errors.As(err, &detail) || detail.Code != lexicon.ErrXPST0017 {
+		t.Fatalf("CheckStandaloneFunctions() = %v, want %s", err, lexicon.ErrXPST0017)
+	}
+}
+
+func TestProfileWalkNestedType(t *testing.T) {
+	t.Parallel()
+
+	sequence := xdm.SequenceType{ItemTest: &xdm.FunctionTest{ParamTypes: []xdm.SequenceType{{
+		ItemTest: &xdm.ArrayTest{MemberType: xdm.SequenceType{ItemTest: &xdm.AtomicOrUnionType{Prefix: "xs", Name: "string"}}},
+	}}}}
+
+	var detail *xdm.Error
+	if err := CheckTypeLanguage(sequence, xpathVersion30); !errors.As(err, &detail) || detail.Code != lexicon.ErrXPST0003 {
+		t.Fatalf("CheckTypeLanguage(3.0) = %v, want %s", err, lexicon.ErrXPST0003)
+	}
+	if err := CheckTypeLanguage(sequence, xpathVersion31); err != nil {
+		t.Fatalf("CheckTypeLanguage(3.1) = %v", err)
 	}
 }

@@ -171,6 +171,33 @@ func TestControlSigningFailureDoesNotCommitState(t *testing.T) {
 	}
 }
 
+func TestControlInitiationRejectsInvalidPeerBeforeSigning(t *testing.T) {
+	t.Parallel()
+
+	at := testcert.Now()
+	store, err := session.NewMemoryStore(session.Config{EntityID: idpID, Role: metadata.IdentityProvider})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service := session.Service{EntityID: idpID, Endpoint: mgmt, Role: metadata.IdentityProvider, Store: store}
+	service.Signing.Key = failingSigner{Signer: testcert.Key(t)}
+
+	for _, peer := range []string{"relative-peer", idpID} {
+		if got, err := service.BeginManage(t.Context(), peer, protocol.ManageNameIDRequest{
+			ID: "_manage", Issuer: idpID, Destination: mgmt, IssueInstant: at, NameID: name(spID), NewID: "new-name",
+		}, at); got != nil || !errors.Is(err, session.ErrState) {
+			t.Errorf("BeginManage(%q) = %v, %v, want nil and ErrState", peer, got, err)
+		}
+
+		if got, err := service.BeginLogout(t.Context(), peer, protocol.LogoutRequest{
+			ID: "_logout", Issuer: idpID, Destination: mgmt, IssueInstant: at, NameID: name(spID), NotOnOrAfter: at.Add(time.Minute),
+		}, at); got != nil || !errors.Is(err, session.ErrState) {
+			t.Errorf("BeginLogout(%q) = %v, %v, want nil and ErrState", peer, got, err)
+		}
+	}
+}
+
 func TestIdPInitiatedRedirectLogout(t *testing.T) {
 	at := testcert.Now()
 	c := testcert.New(t)

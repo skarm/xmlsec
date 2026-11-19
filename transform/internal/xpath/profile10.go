@@ -6,7 +6,7 @@ import (
 	"context"
 	"math"
 	"math/big"
-	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -218,7 +218,7 @@ func xpath10FunctionArity(name string, arity int) bool {
 }
 
 func validateXPath10Expr(ast Expr) error {
-	return walkProfile(reflect.ValueOf(ast), func(node any) error {
+	return profileVisitor(func(node any) error {
 		switch n := node.(type) {
 		case Expr:
 			switch n := n.(type) {
@@ -249,18 +249,24 @@ func validateXPath10Expr(ast Expr) error {
 		}
 
 		return nil
-	})
+	}).walk(ast)
 }
 
 // Literals are doubles before VM compilation, so predicate fast paths and
 // constant folding observe the same IEEE 754 values as runtime arithmetic.
-func xpath10Literals(e Expr) Expr {
+func xpath10Literals(e Expr, ownsAST bool) Expr {
 	e = derefExpr(e)
-	rewrite := xpath10Literals
-	preds := func(es []Expr) {
+	rewrite := func(child Expr) Expr { return xpath10Literals(child, ownsAST) }
+	rewriteList := func(es []Expr) []Expr {
+		if !ownsAST {
+			es = slices.Clone(es)
+		}
+
 		for i := range es {
 			es[i] = rewrite(es[i])
 		}
+
+		return es
 	}
 
 	switch n := e.(type) {
@@ -289,17 +295,21 @@ func xpath10Literals(e Expr) Expr {
 
 		return n
 	case FunctionCall:
-		preds(n.Args)
+		n.Args = rewriteList(n.Args)
 		return n
 	case LocationPath:
+		if !ownsAST {
+			n.Steps = slices.Clone(n.Steps)
+		}
+
 		for i := range n.Steps {
-			preds(n.Steps[i].Predicates)
+			n.Steps[i].Predicates = rewriteList(n.Steps[i].Predicates)
 		}
 
 		return n
 	case FilterExpr:
 		n.Expr = rewrite(n.Expr)
-		preds(n.Predicates)
+		n.Predicates = rewriteList(n.Predicates)
 
 		return n
 	case PathExpr:

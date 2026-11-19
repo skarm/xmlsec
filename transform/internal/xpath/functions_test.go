@@ -1,6 +1,7 @@
 package xpath //nolint:testpackage // Checks built-in function results on the AST and VM dispatch paths.
 
 import (
+	"context"
 	"errors"
 	"math"
 	"reflect"
@@ -39,6 +40,11 @@ func assertFunctionResults(t *testing.T, cases []functionResultCase) {
 
 func evaluateFunctionExpression(t *testing.T, source, mode string) (xdm.Sequence, error) {
 	t.Helper()
+	return evaluateFunctionExpressionInVersion(t, source, mode, xpathVersion31)
+}
+
+func evaluateFunctionExpressionInVersion(t *testing.T, source, mode string, version int) (xdm.Sequence, error) {
+	t.Helper()
 	ast, err := Parse(source)
 	if err != nil {
 		t.Fatal(err)
@@ -46,10 +52,10 @@ func evaluateFunctionExpression(t *testing.T, source, mode string) (xdm.Sequence
 	evaluator := NewEvaluator(DefaultEvaluatorOptions)
 	if mode == runtimeASTMode {
 		ec := evaluator.newEvalCtx(nil)
-		ec.version = 31
+		ec.version = version
 		return evaluateRuntimeAST(t.Context(), ec, ast)
 	}
-	expression, err := NewCompiler().Language(31, nil).CompileExpr(ast)
+	expression, err := NewCompiler().Language(version, nil).CompileExpr(ast)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +92,42 @@ func TestArrayFunctionsASTAndVM(t *testing.T) {
 		{"for each pair truncates at shorter array", `array:for-each-pair([1,2,3],[10,20],function($a,$b){$a+$b})?*`, "11|22"},
 		{"sort stable with supplied key", `array:sort(['bb','a','cc'],(),function($s){string-length($s)})?*`, "a|bb|cc"},
 	})
+}
+
+func TestFlattenExtensionKeepsOrderAndHonorsInvocationLimits(t *testing.T) {
+	t.Parallel()
+
+	const source = `let $items := flatten((0,[1,[],[map{'x':2}]],3)) return
+		string-join(($items[1], $items[2], $items[3]?x, $items[4]) ! string(.), '|')`
+	for _, mode := range []string{runtimeASTMode, "VM"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			got, err := evaluateFunctionExpressionInVersion(t, source, mode, xpathVersionDefault)
+			if err != nil || xdm.SequenceLen(got) != 1 || got.Get(0) != xdm.SingleString("0|1|2|3").Get(0) {
+				t.Fatalf("flatten returned %v, %v; want one xs:string with values in order", got, err)
+			}
+		})
+	}
+
+	flatten, found := lookupFunctionsSequence("flatten")
+	if !found {
+		t.Fatal("flatten extension is absent")
+	}
+
+	limited := withFnContext(WithBudget(t.Context(), 1, 10, 100, 10), &evalContext{})
+	items := xdm.ItemSlice{
+		xdm.AtomicValue{TypeName: xdm.TypeString, Value: "first"},
+		xdm.AtomicValue{TypeName: xdm.TypeString, Value: "second"},
+	}
+	if got, err := flatten.Call(limited, []xdm.Sequence{items}); got != nil || !errors.Is(err, ErrBudget) {
+		t.Errorf("flatten with work for one of two values returned %v, %v; want no result and ErrBudget", got, err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, err := flatten.Call(ctx, []xdm.Sequence{xdm.SingleString("value")}); got != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled flatten returned %v, %v; want no result and context.Canceled", got, err)
+	}
 }
 
 func TestCollectionFunctionResultTypes(t *testing.T) {
@@ -125,7 +167,70 @@ func TestMapFunctionsASTAndVM(t *testing.T) {
 		{"for each unordered results sorted", `sort(map:for-each(map{'a':1,'b':2},function($k,$v){$k || $v}))`, "a1|b2"},
 		{"find traverses nested containers", `sort(array:flatten(map:find(map{'a':1,'nested':[map{'a':(2,3)}]},'a')))`, "1|2|3"},
 		{"numeric keys share equality", `let $m := map{1:'one'} return (map:contains($m,xs:decimal('1.0')),$m(xs:double(1)))`, "true|one"},
+		{"keyword lookup uses the literal key", `(map{'map':1}?map, map{'array':2}?array, map{'function':3}?function, map{'try':4}?try, map{'catch':5}?catch)`, "1|2|3|4|5"},
+		{"keyword unary lookup inside function arguments", `(map{'for':'one'} ! concat(?for, '!'), map{'map':'two'} ! concat(?map, '!'), map{'and':'three'} ! concat(?and, '!'))`, "one!|two!|three!"},
 	})
+}
+
+func TestMapRemoveWorkAndValueSemantics(t *testing.T) {
+	t.Parallel()
+
+	number := xdm.SingleInteger(1).Get(0).(xdm.AtomicValue)
+	equalNumber := xdm.SingleDouble(1).Get(0).(xdm.AtomicValue)
+	first := xdm.SingleString("first").Get(0).(xdm.AtomicValue)
+	last := xdm.SingleString("last").Get(0).(xdm.AtomicValue)
+	missing := xdm.SingleString("missing").Get(0).(xdm.AtomicValue)
+	m := xdm.NewMap([]xdm.MapEntry{
+		{Key: first, Value: xdm.SingleInteger(10)},
+		{Key: number, Value: xdm.SingleInteger(20)},
+		{Key: last, Value: xdm.SingleInteger(30)},
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, err := fnMapRemove(ctx, []xdm.Sequence{xdm.ItemSlice{m}, xdm.SingleAtomic(equalNumber)}); got != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled removal = %v, %v; want no result and context.Canceled", got, err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		limit int
+		keys  xdm.ItemSlice
+		want  []xdm.AtomicValue
+		err   error
+	}{
+		{"miss within budget", 1, xdm.ItemSlice{missing}, []xdm.AtomicValue{first, number, last}, nil},
+		{"rebuild requires work", 1, xdm.ItemSlice{equalNumber}, nil, ErrOpLimit},
+		{"remove equivalent key once", 6, xdm.ItemSlice{equalNumber, number, missing}, []xdm.AtomicValue{first, last}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			operations := 0
+			ec := &evalContext{opLimit: tc.limit, opCount: &operations}
+			seq, err := fnMapRemove(withFnContext(t.Context(), ec), []xdm.Sequence{xdm.ItemSlice{m}, tc.keys})
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("map:remove error = %v; want %v", err, tc.err)
+			}
+
+			if tc.err != nil {
+				if seq != nil {
+					t.Fatalf("failed removal returned %v", seq)
+				}
+
+				return
+			}
+
+			result, err := extractMap(seq)
+			if err != nil || !reflect.DeepEqual(result.Keys(), tc.want) {
+				t.Fatalf("result keys = %v, %v; want %v", result.Keys(), err, tc.want)
+			}
+
+			if !m.Contains(number) || m.Size() != 3 {
+				t.Fatal("map:remove changed the source map")
+			}
+		})
+	}
 }
 
 func TestJSONFunctionsASTAndVM(t *testing.T) {
@@ -134,12 +239,30 @@ func TestJSONFunctionsASTAndVM(t *testing.T) {
 		{"null members retain structure", `let $m := parse-json('{"a":null,"b":[true,null,3]}') return (map:contains($m,'a'),count($m?a),array:size($m?b),$m?b?1,count($m?b?2),$m?b?3)`, "true|0|3|true|0|3"},
 		{"empty input sequence", `count(parse-json(()))`, "0"},
 		{"top level null", `count(parse-json('null'))`, "0"},
+		{"leading JSON byte order mark is ignored", `parse-json(codepoints-to-string(65279) || ' {"ok":true}')?ok`, "true"},
+		{"byte order mark inside a JSON string is retained", `string-to-codepoints(parse-json('"' || codepoints-to-string(65279) || '"'))`, "65279"},
 		{"top level string escapes", `parse-json('"a\n\t\"\\b"')`, "a\n\t\"\\b"},
+		{"escape option canonicalizes raw and escaped C1 controls", `(parse-json('"\u007F\u0085\u009F"',map{'escape':true()}),parse-json('"'||codepoints-to-string(133)||'"',map{'escape':true()}),string-to-codepoints(parse-json('"\u0085"',map{'escape':false()})))`, `\u007f\u0085\u009f|\u0085|133`},
 		{"Unicode escape and surrogate pair", `parse-json('"\u00e9\ud83d\ude00"')`, "é😀"},
 		{"duplicate default first", `parse-json('{"a":1,"a":2}')?a`, "1"},
 		{"duplicate last after escape decoding", `parse-json('{"a":1,"\u0061":2}',map{'duplicates':'use-last'})?a`, "2"},
 		{"JSON XML round trip", `let $m := parse-json(xml-to-json(json-to-xml('{"a":[1,null,"x"],"b":true}'))) return ($m?a?1,count($m?a?2),$m?a?3,$m?b)`, "1|0|x|true"},
 	})
+}
+
+func TestJSONEscapeChargesExpandedC1Bytes(t *testing.T) {
+	t.Parallel()
+
+	options := jsonOptions{escape: true}
+	ctx := WithBudget(t.Context(), 100, 100, 6, 10)
+	if got, err := applyJSONStringOptions(ctx, "\u0085", options); err != nil || got != `\u0085` {
+		t.Fatalf("six-byte escape = %q, %v", got, err)
+	}
+
+	ctx = WithBudget(t.Context(), 100, 100, 5, 10)
+	if got, err := applyJSONStringOptions(ctx, "\u0085", options); !errors.Is(err, ErrBudget) || got != "" {
+		t.Fatalf("escape exceeded byte budget: %q, %v", got, err)
+	}
 }
 
 func TestDateTimeFunctionsASTAndVM(t *testing.T) {
@@ -196,10 +319,49 @@ func TestNumericAndSequenceFunctionsASTAndVM(t *testing.T) {
 		{"insert boundaries", `(insert-before((1,2),0,0),insert-before((1,2),99,3))`, "0|1|2|1|2|3"},
 		{"remove absent positions", `(remove((1,2,3),2),remove((1,2),0),remove((1,2),99))`, "1|3|1|2|1|2"},
 		{"reverse ordered sequence", `reverse((1,2,3))`, "3|2|1"},
+		{"deep-equal applies collation to untyped string content", `let $c := 'http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive' return (deep-equal(xs:untypedAtomic('A'),'a',$c),deep-equal('A',xs:untypedAtomic('a'),$c),deep-equal(xs:untypedAtomic('A'),xs:untypedAtomic('a'),$c),deep-equal(xs:untypedAtomic('1'),1,$c))`, "true|true|true|false"},
+		{"deep-equal applies collation to comment content", `let $c := 'http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive', $n := parse-xml('<r><!--A--><!--a--></r>')/r/comment() return (deep-equal($n[1],$n[2],$c),deep-equal($n[1],$n[2]))`, "true|false"},
+		{"deep-equal applies collation to PI content but not target", `let $c := 'http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive', $n := parse-xml('<r><?p A?><?p a?><?P a?></r>')/r/processing-instruction() return (deep-equal($n[1],$n[2],$c),deep-equal($n[1],$n[2]),deep-equal($n[2],$n[3],$c))`, "true|false|false"},
 		{"head tail and cardinality", `(head((1,2,3)),tail((1,2,3)),count(head(())),count(tail(())),count(zero-or-one(())),one-or-more((4,5)),exactly-one(6))`, "1|2|3|0|0|0|4|5|6"},
 		{"fold noncommutative", `(fold-left((1,2,3),'',function($a,$b){$a||$b}),fold-right((1,2,3),'',function($a,$b){$b||$a}))`, "123|321"},
 		{"filter and pair function", `(filter(1 to 5,function($n){$n mod 2=0}),for-each-pair((1,2,3),(10,20),function($a,$b){$a+$b}))`, "2|4|11|22"},
 	})
+}
+
+func TestFoldRightCallbackAcrossEditions(t *testing.T) {
+	t.Parallel()
+
+	const callback = `function($item as item(), $acc as item()*) as item()* {($item,$acc)}`
+	for _, tc := range []struct{ name, expression, want string }{
+		{"direct", `fold-right((1,2),(3,4),` + callback + `)`, "1|2|3|4"},
+		{"named reference", `let $fold := fold-right#3 return $fold((1,2),(3,4),` + callback + `)`, "1|2|3|4"},
+		{"lookup", `function-lookup(xs:QName('fn:fold-right'),3)((1,2),(3,4),` + callback + `)`, "1|2|3|4"},
+		{"empty accumulator", `fold-right((1,2),(),` + callback + `)`, "1|2"},
+		{"empty input", `fold-right((),(3,4),` + callback + `)`, "3|4"},
+	} {
+		for _, version := range []int{xpathVersion30, xpathVersion31} {
+			for _, mode := range []string{runtimeASTMode, "VM"} {
+				t.Run(tc.name+"/"+strconv.Itoa(version)+"/"+mode, func(t *testing.T) {
+					t.Parallel()
+
+					source := `string-join(for $n in (` + tc.expression + `) return string($n), '|')`
+					seq, err := evaluateFunctionExpressionInVersion(t, source, mode, version)
+					if err != nil {
+						t.Fatal(err)
+					}
+
+					if xdm.SequenceLen(seq) != 1 {
+						t.Fatalf("expected one result, got %v", seq)
+					}
+
+					got, ok := seq.Get(0).(xdm.AtomicValue)
+					if !ok || got.StringVal() != tc.want {
+						t.Fatalf("%s = %v; want %q", tc.expression, seq.Get(0), tc.want)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestFunctionErrorsASTAndVM(t *testing.T) {
@@ -215,7 +377,11 @@ func TestFunctionErrorsASTAndVM(t *testing.T) {
 		{"array insert invalid position", `array:insert-before([1],3,2)`, "FOAY0001"},
 		{"map duplicate reject", `map:merge((map{'a':1},map{'a':2}),map{'duplicates':'reject'})`, "FOJS0003"},
 		{"map duplicate constructor", `map{'a':1,'a':2}`, "XQDY0137"},
+		{"error constructor retains map atomization error", `xs:error(map{})`, "FOTY0013"},
+		{"error constructor requires singleton after atomization", `xs:error([(1,2)])`, "XPTY0004"},
 		{"JSON trailing content", `parse-json('{}x')`, "FOJS0001"},
+		{"JSON mark after whitespace is not leading", `parse-json(' ' || codepoints-to-string(65279) || 'true')`, "FOJS0001"},
+		{"JSON rejects a second leading mark", `parse-json(codepoints-to-string((65279,65279)) || 'true')`, "FOJS0001"},
 		{"JSON leading zero", `parse-json('01')`, "FOJS0001"},
 		{"JSON trailing comma", `parse-json('[1,]')`, "FOJS0001"},
 		{"JSON duplicates rejected", `parse-json('{"a":1,"a":2}',map{'duplicates':'reject'})`, "FOJS0003"},
@@ -324,6 +490,50 @@ func TestHTMLDoctypeLegacyFallbackIdentifier(t *testing.T) {
 	}
 }
 
+func TestUCASubstringWorkUsesInvocationBudget(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, []xdm.Sequence) (xdm.Sequence, error)
+		want any
+	}{
+		{"contains", fnContains, true},
+		{"starts-with", fnStartsWith, false},
+		{"ends-with", fnEndsWith, false},
+		{"substring-before", fnSubstringBefore, "red "},
+		{"substring-after", fnSubstringAfter, " green"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := []xdm.Sequence{
+				xdm.SingleString("red BLUE green"),
+				xdm.SingleString("blue"),
+				xdm.SingleString("http://www.w3.org/2013/collation/UCA?strength=primary"),
+			}
+			limited := WithBudget(t.Context(), 3, 100, 100, 10)
+			if got, err := tc.call(limited, args); got != nil || !errors.Is(err, ErrBudget) {
+				t.Fatalf("limited evaluation = %v, %v; want ErrBudget", got, err)
+			}
+
+			ordinary := WithBudget(t.Context(), 500, 100, 100, 10)
+			got, err := tc.call(ordinary, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if xdm.SequenceLen(got) != 1 {
+				t.Fatalf("evaluation = %v; want one item", got)
+			}
+
+			item, ok := got.Get(0).(xdm.AtomicValue)
+			if !ok || item.Value != tc.want {
+				t.Fatalf("evaluation = %v; want %v", item, tc.want)
+			}
+		})
+	}
+}
+
 func TestUCAMalformedOriginalByteIndex(t *testing.T) {
 	for _, tc := range []struct {
 		name, source, needle string
@@ -343,7 +553,10 @@ func TestUCAMalformedOriginalByteIndex(t *testing.T) {
 		{"NumericWhole", "a001b", "001", true, 1, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pos, length := ucaIndexOf(strings.Compare, tc.source, tc.needle, tc.numeric)
+			pos, length, err := ucaIndexOf(boundedCollationCompare(t.Context(), strings.Compare), tc.source, tc.needle, tc.numeric)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if pos != tc.position || length != tc.length {
 				t.Fatalf("got(%d,%d); want(%d,%d)", pos, length, tc.position, tc.length)
 			}
@@ -365,11 +578,17 @@ func TestUCAMalformedOriginalBytePrefixAndSuffix(t *testing.T) {
 		{"Miss", "\xffa", "a\xff", "x", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, length := ucaHasPrefix(strings.Compare, tc.prefixSource, tc.needle, false)
+			ok, length, err := ucaHasPrefix(boundedCollationCompare(t.Context(), strings.Compare), tc.prefixSource, tc.needle, false)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if ok != tc.match || length != tc.length {
 				t.Fatalf("prefix got(%t,%d); want(%t,%d)", ok, length, tc.match, tc.length)
 			}
-			ok, length = ucaHasSuffix(strings.Compare, tc.suffixSource, tc.needle, false)
+			ok, length, err = ucaHasSuffix(boundedCollationCompare(t.Context(), strings.Compare), tc.suffixSource, tc.needle, false)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if ok != tc.match || length != tc.length {
 				t.Fatalf("suffix got(%t,%d); want(%t,%d)", ok, length, tc.match, tc.length)
 			}
@@ -412,29 +631,35 @@ func TestUCACandidateComparatorOrderAndMalformedFallback(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var trace []comparison
-			cmp := func(a, b string) int {
+			cmp := func(a, b string) (int, error) {
 				r := strings.Compare(a, b)
 				trace = append(trace, comparison{a, b, r})
-				return r
+				return r, nil
 			}
 			var got [2]int
+			var err error
 			switch tc.method {
 			case "index":
-				got[0], got[1] = ucaIndexOfRange(cmp, tc.source, tc.needle, tc.numeric)
+				got[0], got[1], err = ucaIndexOfRange(cmp, tc.source, tc.needle, tc.numeric)
 			case "prefix":
-				end, ok := ucaHasPrefixRange(cmp, tc.source, tc.needle, tc.numeric)
+				end, ok, matchErr := ucaHasPrefixRange(cmp, tc.source, tc.needle, tc.numeric)
 				got[0] = end
+				err = matchErr
 				if ok {
 					got[1] = 1
 				}
 			case "suffix":
-				start, ok := ucaHasSuffixRange(cmp, tc.source, tc.needle, tc.numeric)
+				start, ok, matchErr := ucaHasSuffixRange(cmp, tc.source, tc.needle, tc.numeric)
 				got[0] = start
+				err = matchErr
 				if ok {
 					got[1] = 1
 				}
 			default:
 				t.Fatal("unknown test method")
+			}
+			if err != nil {
+				t.Fatal(err)
 			}
 			var want []comparison
 			// Candidate order is explicit test data; only comparator result comes from

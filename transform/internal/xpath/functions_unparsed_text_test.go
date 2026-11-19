@@ -164,3 +164,66 @@ func TestUnparsedTextRetrievalAndDecodingDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+func TestUnparsedTextPreservesCancellationDuringResourceCallbacks(t *testing.T) {
+	t.Parallel()
+
+	const uri = "https://example.test/note.txt"
+	args := []xdm.Sequence{xdm.SingleString(uri)}
+
+	t.Run("resolver error and cancellation", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		ec := &evalContext{uriResolver: documentResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+			cancel()
+			return nil, fs.ErrNotExist
+		})}
+		result, err := fnUnparsedText(withFnContext(ctx, ec), args)
+		if result != nil || !errors.Is(err, context.Canceled) || !errors.Is(err, fs.ErrNotExist) || !errors.Is(err, &xdm.Error{Code: "FOUT1170"}) {
+			t.Fatalf("got %v, %v; want FOUT1170 retaining both retrieval failure and cancellation", result, err)
+		}
+	})
+
+	t.Run("cached availability", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		recorded := 0
+		ec := &evalContext{
+			uriResolver: documentResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader("ordinary notes")), nil
+			}),
+			resourceReads: textReadRecorder(func() {
+				recorded++
+				if recorded == 2 {
+					cancel()
+				}
+			}),
+		}
+		ctx = WithInvocationScope(withFnContext(ctx, ec))
+		result, err := fnUnparsedTextAvailable(ctx, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertAtomicSequence(t, result, []xdm.AtomicValue{{TypeName: xdm.TypeBoolean, Value: true}})
+		result, err = fnUnparsedTextAvailable(ctx, args)
+		if result != nil || !errors.Is(err, context.Canceled) || recorded != 2 {
+			t.Fatalf("cached availability = %v, %v with %d reads; want cancellation after the second record", result, err, recorded)
+		}
+	})
+}
+
+type textReadRecorder func()
+
+func (textReadRecorder) CheckRead(context.Context, string) error { return nil }
+
+func (record textReadRecorder) RecordRead(context.Context, string) error {
+	record()
+
+	return nil
+}

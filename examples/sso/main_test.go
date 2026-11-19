@@ -47,6 +47,7 @@ func TestRegistryLookup(t *testing.T) {
 	}{
 		{name: "unknown_entity", id: idpEntity, at: at, want: metadata.ErrMetadata},
 		{name: "at_expiry", id: spEntity, at: expires, want: metadata.ErrExpired},
+		{name: "canceled_unknown_entity", id: idpEntity, at: at, canceled: true, want: context.Canceled},
 		{name: "canceled_lookup", id: spEntity, at: at, canceled: true, want: context.Canceled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

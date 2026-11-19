@@ -21,6 +21,22 @@ func TestCompileInstructionScopesLocalStaticContext(t *testing.T) {
 		{"forward_compatible_attributes", `<xsl:value-of version="4.0" xsl:future="on" future="on" select="'kept'"/>`, "kept"},
 		{"fallback_keeps_local_namespaces_and_text_mode", `<xsl:future version="4.0"><xsl:fallback use-when="false()">omit</xsl:fallback><xsl:fallback xmlns:p="urn:items" expand-text="yes">{/*/p:item}</xsl:fallback></xsl:future>`, "namespaced"},
 		{"empty_fallback_is_valid", `<xsl:future version="4.0"><xsl:fallback/></xsl:future><xsl:text>kept</xsl:text>`, "kept"},
+		{"analyze_string_branch_expand_text", `<xsl:analyze-string select="'ab'" regex="a">
+			<xsl:matching-substring expand-text="1">{upper-case(.)}</xsl:matching-substring>
+			<xsl:non-matching-substring expand-text="true"><xsl:text>{upper-case(.)}</xsl:text></xsl:non-matching-substring>
+		</xsl:analyze-string><xsl:text>|{1 + 2}</xsl:text>
+		<xsl:analyze-string select="'xy'" regex="x" expand-text="yes">
+			<xsl:matching-substring expand-text="no">{.}</xsl:matching-substring>
+			<xsl:non-matching-substring>{upper-case(.)}</xsl:non-matching-substring>
+		</xsl:analyze-string>`, "AB|{1 + 2}{.}Y"},
+		{"sort_body_expand_text", `<xsl:for-each select="(2, 1)">
+			<xsl:sort expand-text="yes" data-type="number">{.}</xsl:sort>
+			<xsl:value-of select="."/>
+		</xsl:for-each>`, "12"},
+		{"merge_action_expand_text", `<xsl:merge>
+			<xsl:merge-source select="'p'"><xsl:merge-key select="."/></xsl:merge-source>
+			<xsl:merge-action expand-text="yes">{upper-case(.)}</xsl:merge-action>
+		</xsl:merge><xsl:text>|{1 + 2}</xsl:text>`, "P|{1 + 2}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -63,6 +79,22 @@ func TestCompileInstructionRejectsInvalidStaticAttributes(t *testing.T) {
 			if ss != nil || !matches {
 				t.Errorf("Compile(%s) = (stylesheet present: %t, %v), want no stylesheet and %s", tc.body, ss != nil, err, tc.code)
 			}
+		})
+	}
+}
+
+func TestReviewStructuralClauseNamespaceScope(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"otherwise", `<xsl:choose><xsl:when test="false()"/><xsl:otherwise xmlns:p="urn:items"><xsl:value-of select="r/p:item"/></xsl:otherwise></xsl:choose>`},
+		{"matching substring", `<xsl:analyze-string select="'a'" regex="a"><xsl:matching-substring xmlns:p="urn:items"><xsl:value-of select="namespace-uri-from-QName(xs:QName('p:item'))"/></xsl:matching-substring></xsl:analyze-string>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss, err := NewCompiler().Compile(t.Context(), stylesheetDocument(t, "", tc.body))
+			if err != nil {
+				t.Fatalf("valid declaration namespace rejected: %v", err)
+			}
+			got, err := ss.Transform(parseTestDocument(t, `<r xmlns:p="urn:items"><p:item>urn:items</p:item></r>`)).Serialize(t.Context())
+			requireSerialization(t, got, err, "urn:items", "")
 		})
 	}
 }

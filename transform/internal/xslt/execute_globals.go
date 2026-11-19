@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -459,15 +458,7 @@ func (ec *execContext) computeGlobalVar(ctx context.Context, v *variable) (xdm.S
 	// that carries its own xml:base. The override holds the declaration base
 	// (module base + any xml:base override); the pinned flag prevents a fall-
 	// through to currentTemplate when that base is empty.
-	savedBaseOverride := ec.staticBaseURIOverride
-	savedBasePinned := ec.staticBaseURIPinned
-	ec.staticBaseURIOverride = v.StaticBaseURI
-
-	ec.staticBaseURIPinned = true
-	defer func() {
-		ec.staticBaseURIOverride = savedBaseOverride
-		ec.staticBaseURIPinned = savedBasePinned
-	}()
+	defer ec.pushDeclarationBaseURI(v.StaticBaseURI)()
 
 	// Static variables use their pre-computed compile-time value.
 	if v.StaticValue != nil {
@@ -549,15 +540,7 @@ func (ec *execContext) computeGlobalParam(ctx context.Context, p *param) (xdm.Se
 	// base. The override holds the declaration base (module base + any xml:base
 	// override); the pinned flag prevents a fall-through to currentTemplate when
 	// that base is empty.
-	savedBaseOverride := ec.staticBaseURIOverride
-	savedBasePinned := ec.staticBaseURIPinned
-	ec.staticBaseURIOverride = p.StaticBaseURI
-
-	ec.staticBaseURIPinned = true
-	defer func() {
-		ec.staticBaseURIOverride = savedBaseOverride
-		ec.staticBaseURIPinned = savedBasePinned
-	}()
+	defer ec.pushDeclarationBaseURI(p.StaticBaseURI)()
 
 	// XTDE0050: required stylesheet parameter not supplied by the caller.
 	// If we reach here (not set in initGlobalVars), no external value was given.
@@ -662,6 +645,14 @@ func (ec *execContext) evaluateBodyForAttr(ctx context.Context, body []instructi
 	return xdm.EmptySequence(), nil
 }
 
+// pushDeclarationBaseURI pins even an absent base to the declaration site.
+func (ec *execContext) pushDeclarationBaseURI(base string) func() {
+	previous, pinned := ec.staticBaseURIOverride, ec.staticBaseURIPinned
+	ec.staticBaseURIOverride, ec.staticBaseURIPinned = base, true
+
+	return func() { ec.staticBaseURIOverride, ec.staticBaseURIPinned = previous, pinned }
+}
+
 // effectiveStaticBaseURI returns the static base URI for the current
 // execution context, considering xml:base overrides, template base URIs,
 // and the stylesheet base URI.
@@ -743,7 +734,7 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 			}
 		}
 
-		if err := ec.resolveSequencePlaceholders(tmpDoc, frame.seqPlaceholders); err != nil {
+		if err := resolveSequencePlaceholders(ctx, tmpDoc, frame.seqPlaceholders); err != nil {
 			return nil, err
 		}
 	}
@@ -765,7 +756,7 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 			}
 		}
 
-		if err := appendPendingDocumentItems(tmpDoc, frame.pendingItems); err != nil {
+		if err := appendPendingDocumentItems(ctx, tmpDoc, frame.pendingItems); err != nil {
 			return nil, err
 		}
 	}
@@ -783,7 +774,7 @@ func (ec *execContext) evaluateBodyAsDocument(ctx context.Context, body []instru
 // items are converted to text and consecutive atomics — whether from the same
 // or adjacent xsl:sequence outputs — are separated by a single space, while any
 // intervening node from a literal result element resets that adjacency.
-func (ec *execContext) resolveSequencePlaceholders(tmpDoc *xdm.Document, placeholders map[xdm.Node]xdm.ItemSlice) error {
+func resolveSequencePlaceholders(ctx context.Context, tmpDoc *xdm.Document, placeholders map[xdm.Node]xdm.ItemSlice) error {
 	run := documentAtomicRun{doc: tmpDoc}
 
 	for child := tmpDoc.FirstChild(); child != nil; {
@@ -798,7 +789,7 @@ func (ec *execContext) resolveSequencePlaceholders(tmpDoc *xdm.Document, placeho
 			continue
 		}
 
-		replacement, err := run.placeholderItems(items)
+		replacement, err := run.appendItems(ctx, nil, items, 0)
 		if err != nil {
 			return err
 		}
@@ -941,36 +932,22 @@ func capturedInternalDocument(ctx context.Context, target *xdm.Document, items x
 	return xdm.ItemSlice{xdm.NodeItem{Node: owned}}, true, nil
 }
 
-func appendPendingDocumentItems(doc *xdm.Document, items xdm.ItemSlice) error {
+func appendPendingDocumentItems(ctx context.Context, doc *xdm.Document, items xdm.ItemSlice) error {
 	run := documentAtomicRun{doc: doc}
 
-	for _, item := range items {
-		if ni, ok := item.(xdm.NodeItem); ok {
-			if text := run.flush(); text != nil {
-				if err := doc.AddChild(text); err != nil {
-					return err
-				}
-			}
-
-			run.prevAtomic = false
-
-			copied, err := xdm.CopyNode(ni.Node, doc)
-			if err != nil {
-				return err
-			}
-
-			if err := doc.AddChild(copied); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		run.write(item)
+	nodes, err := run.appendItems(ctx, nil, items, 0)
+	if err != nil {
+		return err
 	}
 
 	if text := run.flush(); text != nil {
-		return doc.AddChild(text)
+		nodes = append(nodes, text)
+	}
+
+	for _, node := range nodes {
+		if err := doc.AddChild(node); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1006,28 +983,10 @@ func mergeDocumentText(tmpDoc *xdm.Document) error {
 	return nil
 }
 
-// ensureFileURI converts an absolute file system path to a file:// URI.
-// Paths that already contain a scheme (e.g. "http://", "file://") are
-// returned unchanged. Both POSIX-absolute ("/a/b" -> "file:///a/b") and
-// Windows-absolute ("D:\\a\\b" -> "file:///D:/a/b", "\\\\host\\share" ->
-// "file://host/share") paths are normalized so a later url.Parse does not read
-// a Windows drive letter as a URI scheme. The Windows shapes are detected by
-// string pattern (uripath), so this conversion is exercised on Linux CI too.
+// ensureFileURI encodes an absolute native path and preserves existing URI references.
 func ensureFileURI(path string) string {
-	if path == "" {
-		return path
-	}
-
-	if strings.Contains(path, "://") {
-		return path
-	}
-
-	if uripath.IsWindowsAbsolute(path) {
-		return uripath.WindowsToFileURI(path)
-	}
-
-	if strings.HasPrefix(path, "/") {
-		return lexicon.SchemeFile + "://" + path
+	if uripath.IsAbsolutePath(path) {
+		return uripath.FileURIFromPath(path)
 	}
 
 	return path
@@ -1050,51 +1009,71 @@ func (run *documentAtomicRun) flush() xdm.Node {
 	return text
 }
 
-func (run *documentAtomicRun) write(item xdm.Item) {
+func (run *documentAtomicRun) write(value xdm.AtomicValue) error {
+	text, err := xpath.AtomicToString(value)
+	if err != nil {
+		return err
+	}
+
 	if run.prevAtomic {
 		run.text.WriteByte(' ')
 	}
 
-	av, err := xpath.AtomizeItem(item)
-	if err != nil {
-		_, _ = fmt.Fprint(&run.text, item)
-	} else {
-		s, serr := xpath.AtomicToString(av)
-		if serr != nil {
-			_, _ = fmt.Fprint(&run.text, item)
-		} else {
-			run.text.WriteString(s)
-		}
-	}
-
+	run.text.WriteString(text)
 	run.prevAtomic = true
+
+	return nil
 }
 
-func (run *documentAtomicRun) placeholderItems(items xdm.ItemSlice) ([]xdm.Node, error) {
-	var replacement []xdm.Node
+// appendItems constructs complex content, reading array members in sequence
+// order without materializing a flattened copy.
+func (run *documentAtomicRun) appendItems(ctx context.Context, nodes []xdm.Node, items xdm.Sequence, depth int) ([]xdm.Node, error) {
+	if depth > xpath.DepthLimit(ctx, maxRecursionDepth) {
+		return nil, xpath.ErrBudget
+	}
 
-	for _, item := range items {
-		if ni, ok := item.(xdm.NodeItem); ok {
+	for item := range xdm.SequenceItems(items) {
+		if err := xpath.Charge(ctx, 1); err != nil {
+			return nil, err
+		}
+
+		switch value := item.(type) {
+		case xdm.NodeItem:
 			if text := run.flush(); text != nil {
-				replacement = append(replacement, text)
+				nodes = append(nodes, text)
 			}
 
 			run.prevAtomic = false
 
 			var err error
 
-			replacement, err = appendSequenceNodeCopies(replacement, ni.Node, run.doc)
+			nodes, err = appendSequenceNodeCopies(nodes, value.Node, run.doc)
 			if err != nil {
 				return nil, err
 			}
+		case xdm.AtomicValue:
+			if err := run.write(value); err != nil {
+				return nil, err
+			}
+		case xdm.ArrayItem:
+			if err := xpath.Charge(ctx, value.Size()); err != nil {
+				return nil, err
+			}
 
-			continue
+			for _, member := range value.MembersView() {
+				var err error
+
+				nodes, err = run.appendItems(ctx, nodes, member, depth+1)
+				if err != nil {
+					return nil, err
+				}
+			}
+		default:
+			return nil, dynamicError(errCodeXTDE0450, "cannot add a %T to the result tree", item)
 		}
-
-		run.write(item)
 	}
 
-	return replacement, nil
+	return nodes, nil
 }
 
 // Document-node sequence items contribute copies of their XDM children in order.

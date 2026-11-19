@@ -276,8 +276,8 @@ func TestSuiteStaticContextsAndReferences(t *testing.T) {
 	options := suiteOptions{kind: suiteQT3, directory: root, version: suiteVersion31, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
 
 	report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: namespace})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(report.Cases) != 7 {
+		t.Fatal(report, err)
 	}
 
 	for index, outcome := range report.Cases {
@@ -636,6 +636,7 @@ func TestSuiteXMLAndStringAssertions(t *testing.T) {
 		{"XML fragment non-whitespace retained", `parse-xml-fragment('before<a/>')`, `<assert-xml>&lt;a/></assert-xml>`, suiteQT3, false},
 		{"boolean type", `1`, `<assert-true/>`, suiteQT3, false},
 		{"permutation", `(3, 1, 1, xs:double('NaN'))`, `<assert-permutation>(1, xs:double('NaN'), 3, 1)</assert-permutation>`, suiteQT3, true},
+		{"permutation with numeric promotion", `(xs:float('16777216'), 16777216)`, `<assert-permutation>(16777216, 16777217)</assert-permutation>`, suiteQT3, true},
 		{"permutation multiplicity", `(3, 1, 1)`, `<assert-permutation>(1, 3, 3)</assert-permutation>`, suiteQT3, false},
 		{"permutation length", `(3, 1)`, `<assert-permutation>(1, 3, 3)</assert-permutation>`, suiteQT3, false},
 		{"permutation nodes", `parse-xml('<a/>')`, `<assert-permutation>parse-xml('&lt;a/>')</assert-permutation>`, suiteQT3, false},
@@ -684,6 +685,8 @@ func TestSuiteSerializedText(t *testing.T) {
 		{"\xc0\xaf", "UTF-8", "", true},
 		{"caf\xe9", "ISO-8859-1", "café", false},
 		{"\xc3\xa9", "ISO-8859-1", "Ã©", false},
+		{"\x80", "ISO-8859-1", "\u0080", false},
+		{"\x80", "latin1", "\u0080", false},
 		{"\xff\xfe", "ISO-8859-1", "ÿþ", false},
 		{"\xfe\xff", "ISO-8859-1", "þÿ", false},
 		{"\x80", "windows-1252", "€", false},
@@ -755,6 +758,38 @@ func TestSuiteXMLNamespaceComparison(t *testing.T) {
 	}
 	if _, err := rewriteSuiteNamespaceNames(t.Context(), []byte(`<r/>`), make(map[string]string), 1); !errors.Is(err, transform.ErrLimit) {
 		t.Fatal("input limit", err)
+	}
+}
+
+func TestSuiteXMLExpectedDocumentEncoding(t *testing.T) {
+	engine, err := transform.NewEngine(transform.Config{AllowSingleByteEncodings: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := []byte("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><r>caf\xe9</r>")
+	node, err := parseSuiteXMLFragment(t.Context(), &preparedSuiteEnvironment{engine: engine}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := node.Children()
+	if len(children) != 1 || children[0].Name().Local != "r" || node.Value() != "café" {
+		t.Fatalf("expected ISO-8859-1 document with one root containing café, got children %v, text %q", children, node.Value())
+	}
+}
+
+func TestSuiteInitialModeSelectionBaseURI(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, suiteCatalog, `<catalog xmlns="`+suiteXSLTNamespace+`"><test-set name="base" file="base.xml"/></catalog>`)
+	writeFixture(t, root, "mode.xsl", `<xsl:stylesheet xmlns:xsl="`+lexicon.NamespaceXSLT+`" version="3.0"><xsl:template match="." mode="m"><xsl:value-of select="."/></xsl:template></xsl:stylesheet>`)
+	writeFixture(t, root, "base.xml", `<test-set xmlns="`+suiteXSLTNamespace+`"><test-case name="mode-base"><test><stylesheet file="mode.xsl"/><initial-mode name="m" xml:base="selected/" select="ends-with(static-base-uri(),'/selected/')"/></test><result><assert-string-value>true</assert-string-value></result></test-case></test-set>`)
+	options := suiteOptions{kind: suiteXSLT, directory: root, version: suiteVersion30, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
+	report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: suiteXSLTNamespace})
+	if err != nil || len(report.Cases) != 1 || report.Cases[0].Status != suitePassed {
+		t.Fatalf("initial-mode static base URI: %v, %v", report, err)
 	}
 }
 
@@ -912,6 +947,29 @@ func TestSuiteFileURI(t *testing.T) {
 		if got := suiteFileURIPath(parsed.Path); got != path {
 			t.Fatalf("file URI %q resolved to %q, want %q", uri, got, path)
 		}
+	}
+}
+
+func TestSuiteURIResolutionPreservesResourceIdentity(t *testing.T) {
+	t.Parallel()
+
+	const static = "https://example.test/outer/catalog.xml"
+
+	node := &suiteNode{Attributes: []xml.Attr{{
+		Name:  xml.Name{Space: lexicon.NamespaceXML, Local: "base"},
+		Value: "..//data/",
+	}}}
+	if err := bindSuiteStaticContext(node, nil, static); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := "https://example.test//data/"; node.baseURI != want {
+		t.Errorf("catalog base = %q, want %q", node.baseURI, want)
+	}
+
+	got, err := resolveSuiteURI(static, "..//resource.xml")
+	if want := "https://example.test//resource.xml"; err != nil || got != want {
+		t.Fatalf("catalog resource = %q, %v, want %q", got, err, want)
 	}
 }
 
@@ -1152,8 +1210,8 @@ func TestSuiteXSLTInvocationsAndResults(t *testing.T) {
 	options := suiteOptions{kind: suiteXSLT, directory: root, version: suiteVersion30, timeout: time.Second, setMatch: regexp.MustCompile(".*"), caseMatch: regexp.MustCompile(".*")}
 
 	report, err := executeSuite(t.Context(), options, suitePin{Catalog: suiteCatalog, Namespace: namespace})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(report.Cases) != 4 {
+		t.Fatal(report, err)
 	}
 
 	for index, outcome := range report.Cases {

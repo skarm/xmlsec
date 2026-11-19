@@ -232,7 +232,6 @@ func normalizeOCSP(o OCSPOptions) (OCSPOptions, error) {
 	}
 
 	o.Authorities = authorities
-	o.ExpectedNonce = bytes.Clone(o.ExpectedNonce)
 
 	if o.MaxAge == 0 {
 		o.MaxAge = defaultOCSPMaxAge
@@ -253,6 +252,8 @@ func normalizeOCSP(o OCSPOptions) (OCSPOptions, error) {
 			return o, ErrPolicy
 		}
 	}
+
+	o.ExpectedNonce = bytes.Clone(o.ExpectedNonce)
 
 	return o, nil
 }

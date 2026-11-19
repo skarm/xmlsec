@@ -8,6 +8,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"io"
+	"reflect"
 	"sort"
 
 	"github.com/skarm/xmlsec/internal/der"
@@ -21,6 +22,20 @@ const (
 	signingAlgorithmIdentifierBytes = 4096
 	signingOutputChunkBytes         = 32 << 10
 )
+
+// The standard discard writer cannot overwrite or retain source bytes. Capture
+// its private type so assignment to the public io.Discard variable cannot
+// make an arbitrary writer eligible for borrowing.
+//
+//nolint:gochecknoglobals // Immutable identity of the standard-library writer.
+var standardDiscardType = func() reflect.Type {
+	t := reflect.TypeOf(io.Discard)
+	if t != nil && t.PkgPath() == "io" && t.Name() == "discard" {
+		return t
+	}
+
+	return nil
+}()
 
 // Signer supplies a signing key, its matching certificate and additional signed
 // attributes.
@@ -61,11 +76,11 @@ type SignOptions struct {
 	OmitCertificates bool
 }
 
-// Sign returns a complete DER SignedData container. It collects SignReader's
-// writer output and returns no partial bytes on failure.
+// Sign returns a complete DER SignedData container. Keep content unchanged
+// until Sign returns. Errors return no partial output.
 func Sign(ctx context.Context, content []byte, signers []Signer, o SignOptions) ([]byte, error) {
 	var out bytes.Buffer
-	if _, err := SignReader(ctx, &out, bytes.NewBuffer(content), signers, o); err != nil {
+	if _, err := signReader(ctx, &out, bytes.NewReader(content), content, signers, o); err != nil {
 		return nil, err
 	}
 
@@ -79,6 +94,12 @@ func Sign(ctx context.Context, content []byte, signers []Signer, o SignOptions) 
 // metadata have been verified. Bounded hashing does not imply early output.
 // The streams remain caller-owned; a destination error may leave partial output.
 func SignReader(ctx context.Context, dst io.Writer, src io.Reader, signers []Signer, o SignOptions) (int64, error) {
+	return signReader(ctx, dst, src, nil, signers, o)
+}
+
+// resident is the exact source content supplied by Sign, whose private output
+// buffer cannot overwrite it.
+func signReader(ctx context.Context, dst io.Writer, src io.Reader, resident []byte, signers []Signer, o SignOptions) (int64, error) {
 	if ctx == nil || nilcheck.IsNil(src) || nilcheck.IsNil(dst) {
 		return 0, ErrPolicy
 	}
@@ -115,22 +136,27 @@ func SignReader(ctx context.Context, dst io.Writer, src io.Reader, signers []Sig
 		return 0, err
 	}
 
-	if err := encoder.addCertificates(ctx, o.ExtraCertificates); err != nil {
-		return 0, err
+	if !o.OmitCertificates {
+		if err := encoder.addCertificates(ctx, o.ExtraCertificates, certificates); err != nil {
+			return 0, err
+		}
 	}
 
 	var (
 		embedded bytes.Buffer
 		retain   io.Writer
 	)
+
 	if !o.Detached {
-		retain = &embedded
-		// Already resident content can be hashed and emitted without a second
-		// full buffer. External signers receive signed attributes, not this data.
-		if buffer, ok := src.(*bytes.Buffer); ok {
-			encoder.content = buffer.Bytes()
-			retain = nil
+		if buffer, ok := src.(*bytes.Buffer); ok && reflect.TypeOf(dst) == standardDiscardType {
+			resident = buffer.Bytes()
 		}
+		// An arbitrary destination may write back into the source after EOF.
+		if resident == nil {
+			retain = &embedded
+		}
+
+		encoder.content = resident
 	}
 
 	contentLimit := l.MaxContentBytes
@@ -154,9 +180,6 @@ func SignReader(ctx context.Context, dst io.Writer, src io.Reader, signers []Sig
 		}
 	}
 
-	if len(encoder.certs) > l.MaxCertificates {
-		return 0, ErrPolicy
-	}
 	// Verify generated metadata and signatures against the digests already read.
 	detached := o
 	detached.Detached = true
@@ -201,10 +224,6 @@ type signedDataEncoder struct {
 }
 
 func (e *signedDataEncoder) addSigner(ctx context.Context, s Signer, c *x509.Certificate) error {
-	if e.certSeen.add(c.Raw) {
-		e.certs = append(e.certs, c.Raw)
-	}
-
 	if s.Hash == 0 {
 		s.Hash = crypto.SHA256
 	}
@@ -301,7 +320,7 @@ func (e *signedDataEncoder) signedAttributes(s Signer, c *x509.Certificate, dige
 	return encodeAttributes(attrs, e.limits.MaxAttributes)
 }
 
-func (e *signedDataEncoder) addCertificates(ctx context.Context, extra [][]byte) error {
+func (e *signedDataEncoder) addCertificates(ctx context.Context, extra [][]byte, signers []*x509.Certificate) error {
 	for _, b := range extra {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -316,12 +335,24 @@ func (e *signedDataEncoder) addCertificates(ctx context.Context, extra [][]byte)
 			return ErrCertificate
 		}
 
-		if e.certSeen.add(c.Raw) {
-			e.certs = append(e.certs, c.Raw)
-		}
+		e.addCertificate(c.Raw)
+	}
+
+	for _, c := range signers {
+		e.addCertificate(c.Raw)
+	}
+
+	if len(e.certs) > e.limits.MaxCertificates {
+		return ErrPolicy
 	}
 
 	return nil
+}
+
+func (e *signedDataEncoder) addCertificate(raw []byte) {
+	if e.certSeen.add(raw) {
+		e.certs = append(e.certs, raw)
+	}
 }
 
 // encodeTo emits headers and retained payload separately. Only metadata is

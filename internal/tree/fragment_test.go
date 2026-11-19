@@ -22,7 +22,7 @@ func TestParseFragmentTextKeepsDecodedContentAndOrder(t *testing.T) {
 		t.Run(declaration.name, func(t *testing.T) {
 			t.Parallel()
 
-			const content = `<?xml-stylesheet href="style.css"?>café<a/>end<!--note--><b/>`
+			const content = `<?xml-stylesheet href="style.css"?>café<a>one</a>end<!--note--><b>two</b>`
 			doc, err := tree.ParseFragmentText(t.Context(), declaration.text+content, tree.DefaultLimits())
 			if err != nil {
 				t.Fatal(err)
@@ -34,14 +34,17 @@ func TestParseFragmentTextKeepsDecodedContentAndOrder(t *testing.T) {
 			}{
 				{tree.PINode, "xml-stylesheet", `href="style.css"`},
 				{tree.TextNode, "", "café"},
-				{tree.ElementNode, "a", ""},
+				{tree.ElementNode, "a", "one"},
 				{tree.TextNode, "", "end"},
 				{tree.CommentNode, "", "note"},
-				{tree.ElementNode, "b", ""},
+				{tree.ElementNode, "b", "two"},
 			}
 			children := doc.Node().Children()
 			if len(children) != len(want) {
 				t.Fatalf("fragment has %d children, want %d", len(children), len(want))
+			}
+			if got := doc.Node().Value(); got != "caféoneendtwo" || doc.Root().Name().Local != "a" {
+				t.Errorf("fragment text = %q, root = %q, want all descendant text and first element", got, doc.Root().Name().Local)
 			}
 			for i, child := range children {
 				if child.Kind() != want[i].kind || child.Name().Local != want[i].name || child.Value() != want[i].data {
@@ -52,6 +55,30 @@ func TestParseFragmentTextKeepsDecodedContentAndOrder(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseFragmentExposesDocumentNodeWithoutAnElement(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{"", "only text"} {
+		doc, err := tree.ParseFragmentText(t.Context(), source, tree.DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := doc.Node()
+		if doc.Root().Valid() || !node.Valid() || node.Kind() != tree.DocumentNode || node.Value() != source {
+			t.Fatalf("fragment %q: root=%t, document kind=%v, text=%q", source, doc.Root().Valid(), node.Kind(), node.Value())
+		}
+		set, err := doc.AllNodes(t.Context())
+		if err != nil || set.Len() != len(node.Children())+1 || !set.Contains(node) {
+			t.Fatalf("fragment %q: node count=%d, error=%v", source, set.Len(), err)
+		}
+		for _, child := range node.Children() {
+			if !child.Parent().Same(node) || !set.Contains(child) {
+				t.Fatal("fragment text is not linked to the document node")
+			}
+		}
 	}
 }
 

@@ -64,6 +64,7 @@ const (
 	timeReferenceYear          = 2000
 	timeReferenceMonth         = 1
 	timeReferenceDay           = 15
+	partialDateReferenceYear   = 1972
 )
 
 // Date lexicals split into year, month and day fields.
@@ -328,8 +329,7 @@ func CompareDecimal(a, b string) int {
 // denotes NaN. Only the bare "NaN" qualifies; the sign-prefixed +NaN/-NaN are
 // not valid XSD lexical forms and are rejected.
 func IsFloatNaN(s string) bool {
-	f, ok := parseXSDFloat(s)
-	return ok && math.IsNaN(f)
+	return s == lexicon.FloatNaN
 }
 
 // CompareFloatFacetBound compares two xs:float/xs:double facet BOUND lexicals for
@@ -354,16 +354,9 @@ func CompareFloatFacetBound(a, b, builtinLocal string) (int, bool) {
 		return 0, false
 	}
 
-	fa, ok1 := parseXSDFloat(trimXSDSpace(a))
+	aNaN := IsFloatNaN(trimXSDSpace(a))
+	bNaN := IsFloatNaN(trimXSDSpace(b))
 
-	fb, ok2 := parseXSDFloat(trimXSDSpace(b))
-	if !ok1 || !ok2 {
-		return 0, false
-	}
-
-	aNaN := math.IsNaN(fa)
-
-	bNaN := math.IsNaN(fb)
 	if aNaN || bNaN {
 		switch {
 		case aNaN && bNaN:
@@ -528,9 +521,9 @@ func compareDateTimeFields(a, b xsdDateTime) int {
 func compareDateTimeParsed(a, b xsdDateTime) (int, bool) {
 	// Map the end-of-day 24:00:00 form onto 00:00:00 of the next day so it
 	// compares in the correct value space before any timezone normalization.
-	a = a.normalizeHour24()
+	a = a.normalizeHour24().withReferenceDate()
 
-	b = b.normalizeHour24()
+	b = b.normalizeHour24().withReferenceDate()
 	if a.hasTZ != b.hasTZ {
 		return compareDateTimeMixedTZ(a, b)
 	}
@@ -549,14 +542,6 @@ func compareDateTimeParsed(a, b xsdDateTime) (int, bool) {
 // lies on one side of the timezoned operand the result is determinate. Only an
 // overlapping interval is indeterminate.
 func compareDateTimeMixedTZ(a, b xsdDateTime) (int, bool) {
-	// Timezone normalization needs a complete calendar date. Missing components
-	// of partial Gregorian types would otherwise cause invalid day/month rollover.
-	// Year 0000 is valid; only nil denotes a missing year. compareTime supplies its
-	// own reference date, so time values can use the determinate path.
-	if a.year == nil || b.year == nil || a.month < calendarFirstMonth || b.month < calendarFirstMonth || a.day < calendarFirstDay || b.day < calendarFirstDay {
-		return 0, false
-	}
-
 	// Orient so that `tz` is the timezoned operand and `plain` has no timezone.
 	tz, plain := a, b
 	swapped := false
@@ -903,7 +888,7 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 		return trimmed, false
 	}
 
-	f, ok := parseXSDFloat(trimmed)
+	f, ok := parseXSDFloat(trimmed, bitSize)
 	if !ok {
 		return trimmed, false
 	}
@@ -912,22 +897,6 @@ func canonicalFloatKey(s string, bitSize int) (string, bool) {
 		return lexicon.FloatNaN, true
 	}
 
-	if math.IsInf(f, positiveInfinitySign) {
-		return lexicon.FloatINF, true
-	}
-
-	if math.IsInf(f, negativeInfinitySign) {
-		return lexicon.FloatNegINF, true
-	}
-
-	if bitSize == singlePrecisionBits {
-		f = float64(float32(f)) // round to xs:float precision
-	}
-	// A finite lexical value can overflow to infinity at the target precision
-	// (e.g. "1e40" rounds to +Inf in xs:float). Re-check after rounding so the
-	// key matches the XSD-canonical "INF"/"-INF" form, in place of Go's
-	// strconv.FormatFloat output ("+Inf"/"-Inf"), keeping equal values' keys
-	// consistent with the literal INF/-INF spellings above.
 	if math.IsInf(f, positiveInfinitySign) {
 		return lexicon.FloatINF, true
 	}
@@ -990,6 +959,8 @@ func canonicalDateTimeKey(s, builtinLocal string) (string, bool) {
 		// the day/month/year fields, missing the equality compareTime reports.
 		dt.year, dt.month, dt.day = big.NewInt(timeReferenceYear), timeReferenceMonth, timeReferenceDay
 	}
+
+	dt = dt.withReferenceDate()
 
 	if dt.hasTZ {
 		dt = dt.normalizeToUTC()
@@ -1208,7 +1179,7 @@ func decodeBase64Binary(s string) ([]byte, bool) {
 	return decoded, true
 }
 
-func parseXSDFloat(s string) (float64, bool) {
+func parseXSDFloat(s string, bitSize int) (float64, bool) {
 	switch s {
 	case lexicon.FloatINF, lexicon.FloatPosINF:
 		return math.Inf(positiveInfinitySign), true
@@ -1222,7 +1193,9 @@ func parseXSDFloat(s string) (float64, bool) {
 		return math.NaN(), true
 	}
 
-	f, err := strconv.ParseFloat(s, doublePrecisionBits)
+	// Parse at the target precision so values just beside a float32 midpoint
+	// cannot round onto the midpoint and then round in the opposite direction.
+	f, err := strconv.ParseFloat(s, bitSize)
 	// XSD 1.1 maps a float/double lexical whose magnitude overflows the value
 	// space to ±INF, and ValidateBuiltin accepts such lexicals (e.g. "1e400").
 	// strconv.ParseFloat signals this with ErrRange and returns ±Inf as the
@@ -1247,37 +1220,33 @@ func parseXSDFloat(s string) (float64, bool) {
 
 // compareFloat compares two xs:float/xs:double lexical values in their numeric
 // value space. When single is true the operands are xs:float, whose value space
-// is IEEE-754 single precision: both are rounded to float32 first so values that
+// is IEEE-754 single precision: both are parsed at float32 precision so values that
 // round to the same single-precision number compare equal (e.g. "16777216" ==
 // "16777217"). When single is false they are xs:double and compared as float64.
-// Infinities round-trip identically through float32, so only the finite path
-// changes precision.
 func compareFloat(a, b string, single bool) (int, bool) {
 	// xs:float and xs:double share one lexical validator; validate both operands
 	// strictly (rejecting e.g. "Inf", the mixed-case spelling) before parsing.
 	floatType := lexicon.TypeDouble
+	bitSize := doublePrecisionBits
+
 	if single {
 		floatType = lexicon.TypeFloat
+		bitSize = singlePrecisionBits
 	}
 
 	if !validBuiltinOperands(a, b, floatType) {
 		return 0, false
 	}
 
-	fa, ok1 := parseXSDFloat(trimXSDSpace(a))
+	fa, ok1 := parseXSDFloat(trimXSDSpace(a), bitSize)
+	fb, ok2 := parseXSDFloat(trimXSDSpace(b), bitSize)
 
-	fb, ok2 := parseXSDFloat(trimXSDSpace(b))
 	if !ok1 || !ok2 {
 		return 0, false
 	}
 
 	if math.IsNaN(fa) || math.IsNaN(fb) {
 		return 0, false
-	}
-
-	if single {
-		fa = float64(float32(fa))
-		fb = float64(float32(fb))
 	}
 
 	if fa < fb {
@@ -1335,6 +1304,25 @@ func (dt xsdDateTime) yearVal() *big.Int {
 	}
 
 	return dt.year
+}
+
+// withReferenceDate supplies absent calendar fields for XSD 1.1 D.2.1's
+// timeline comparison. Year zero is present; only nil denotes an absent year.
+// The reference is 1972-12-31, with the last valid day of a supplied month.
+func (dt xsdDateTime) withReferenceDate() xsdDateTime {
+	if dt.year == nil {
+		dt.year = big.NewInt(partialDateReferenceYear)
+	}
+
+	if dt.month == 0 {
+		dt.month = monthsPerYear
+	}
+
+	if dt.day == 0 {
+		dt.day = daysInMonth(dt.year, dt.month)
+	}
+
+	return dt
 }
 
 func (dt xsdDateTime) normalizeToUTC() xsdDateTime {

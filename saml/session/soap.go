@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/skarm/xmlsec/internal/lexicon"
-
 	"github.com/skarm/xmlsec/document"
+	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/nilcheck"
 	"github.com/skarm/xmlsec/saml/binding"
 	"github.com/skarm/xmlsec/saml/internal/profile"
 	"github.com/skarm/xmlsec/saml/metadata"
@@ -109,6 +109,15 @@ func (c BackChannel) Exchange(ctx context.Context, peer string, request *documen
 		return nil, ErrState
 	}
 
+	if err := protocol.ValidatePolicy(c.Options.Limits); err != nil {
+		return nil, err
+	}
+
+	keys := role.SigningKeys()
+	if len(keys) == 0 {
+		return nil, protocol.ErrSignature
+	}
+
 	envelope, err := protocol.SignSOAP(ctx, request, c.Signing)
 	if err != nil {
 		return nil, err
@@ -135,7 +144,7 @@ func (c BackChannel) Exchange(ctx context.Context, peer string, request *documen
 		return nil, metadata.ErrExpired
 	}
 
-	r, err := protocol.VerifyStatusResponse(ctx, d, role.SigningKeys(), o)
+	r, err := protocol.VerifyStatusResponse(ctx, d, keys, o)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +157,7 @@ func (c BackChannel) Exchange(ctx context.Context, peer string, request *documen
 }
 
 func (c BackChannel) endpoints(ctx context.Context, peer, service string, at time.Time) (string, string, *metadata.Role, error) {
-	if ctx == nil || c.Metadata == nil || at.IsZero() || !profile.URI(c.EntityID) || !profile.URI(peer) || c.Role != metadata.ServiceProvider && c.Role != metadata.IdentityProvider {
+	if ctx == nil || nilcheck.IsNil(c.Metadata) || at.IsZero() || !profile.URI(c.EntityID) || !profile.URI(peer) || c.Role != metadata.ServiceProvider && c.Role != metadata.IdentityProvider {
 		return "", "", nil, ErrState
 	}
 

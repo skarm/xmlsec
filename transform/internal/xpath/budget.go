@@ -86,8 +86,6 @@ func FunctionsFromContext(ctx context.Context) map[QualifiedName]Function {
 
 // ChargeTree bounds constructed trees, including temporary variable trees.
 func ChargeTree(ctx context.Context, node xdm.Node) error {
-	// One operation starts the whole tree walk; node and byte limits below
-	// charge individual nodes separately.
 	const constructedTreeBaseWork = 1
 
 	b := getBudget(ctx)
@@ -99,35 +97,72 @@ func ChargeTree(ctx context.Context, node xdm.Node) error {
 		return err
 	}
 
-	var visit func(xdm.Node) error
+	return b.chargeTree(ctx, node, 0)
+}
 
-	visit = func(n xdm.Node) error {
-		if err := ctx.Err(); err != nil {
-			return err
+func (b *budget) chargeTree(ctx context.Context, node xdm.Node, ancestors int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if b.usedNodes >= b.nodes {
+		return ErrBudget
+	}
+
+	childAncestors := 0
+
+	switch kind := node.Type(); kind {
+	case xdm.ElementNode, xdm.DocumentNode:
+		childAncestors = ancestors + 1
+	default:
+		copies := 1
+		if kind == xdm.TextNode || kind == xdm.CDATASectionNode {
+			copies += ancestors
 		}
 
-		if b.usedNodes >= b.nodes {
+		// Text contributes to its own string value and to the string values
+		// of its containing elements and document. Other node kinds charge
+		// only their own data.
+		size := len(xdm.CharacterData(node))
+		remaining := b.bytes - b.usedBytes
+
+		if remaining < 0 || size > remaining/copies {
 			return ErrBudget
 		}
 
-		size, err := boundedContentSize(ctx, n, b.bytes-b.usedBytes)
-		if err != nil {
+		b.usedBytes += size * copies
+	}
+
+	b.usedNodes++
+
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		if err := b.chargeTree(ctx, child, childAncestors); err != nil {
 			return err
 		}
+	}
 
-		b.usedNodes++
-		b.usedBytes += size
+	return nil
+}
 
-		for child := n.FirstChild(); child != nil; child = child.NextSibling() {
-			if err := visit(child); err != nil {
-				return err
-			}
-		}
+// ChargeTreeNodes reserves constructed nodes whose contents are accounted for
+// separately, such as shallow shells around an already charged subtree.
+func ChargeTreeNodes(ctx context.Context, count int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
+	b := getBudget(ctx)
+	if b == nil {
 		return nil
 	}
 
-	return visit(node)
+	if count < 0 || count > b.nodes-b.usedNodes {
+		return ErrBudget
+	}
+
+	b.usedNodes += count
+
+	return nil
 }
 
 // ChargeString bounds string construction before concatenation/allocation.
@@ -151,39 +186,6 @@ func ChargeString(ctx context.Context, sizes ...int) error {
 // WithEnvironment supplies only the application's explicit environment snapshot.
 func WithEnvironment(ctx context.Context, values map[string]string) context.Context {
 	return context.WithValue(ctx, environmentKey{}, values)
-}
-
-// boundedContentSize preserves Content's string-value accounting without
-// constructing that value or a byte copy merely to measure it.
-func boundedContentSize(ctx context.Context, node xdm.Node, remaining int) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	if node.Type() != xdm.ElementNode && node.Type() != xdm.DocumentNode {
-		size := len(xdm.CharacterData(node))
-		if size > remaining {
-			return 0, ErrBudget
-		}
-
-		return size, nil
-	}
-
-	size := 0
-
-	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-		switch child.Type() {
-		case xdm.TextNode, xdm.CDATASectionNode, xdm.ElementNode, xdm.DocumentNode:
-			part, err := boundedContentSize(ctx, child, remaining-size)
-			if err != nil {
-				return 0, err
-			}
-
-			size += part
-		}
-	}
-
-	return size, nil
 }
 
 type (

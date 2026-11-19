@@ -139,19 +139,14 @@ func (d *dtdState) load(entity dtdEntity) (string, string, error) {
 		return "", "", fmt.Errorf("%w: nil external entity stream", ErrMalformed)
 	}
 
-	counter := dtdCountingReader{source: r}
+	remaining := d.options.Limits.MaxBytes - d.inputBytes
 
-	text, err := decodeDTDInput(d.ctx, &counter, d.options, true)
+	text, rawBytes, err := decodeDTDInput(d.ctx, r, d.options, remaining, true)
 	if err = errors.Join(err, r.Close()); err != nil {
 		return "", "", err
 	}
 
-	size := max(counter.total, len(text))
-	if size > d.options.Limits.MaxBytes-d.inputBytes {
-		return "", "", fmt.Errorf("%w: total XML entity input", ErrLimit)
-	}
-
-	d.inputBytes += size
+	d.inputBytes += max(rawBytes, len(text))
 	d.loaded[key] = dtdLoaded{text: text, base: base}
 
 	return text, base, nil
@@ -159,11 +154,14 @@ func (d *dtdState) load(entity dtdEntity) (string, string, error) {
 
 // decodeDTDInput decodes one physical entity once. Internal replacement text
 // never passes through this function, preserving CR created by character refs.
-func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions, external bool) (string, error) {
-	p, err := newDocumentReader(ctx, source, options.Limits, false, options.AllowSingleByteEncodings, options.AllowRelativeNamespaces)
+func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions, maximum int, external bool) (string, int, error) {
+	input, err := newXMLInputMode(ctx, source, int64(maximum), maximum, false)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
+
+	p := readerParser(input, options.Limits)
+	p.singleByteEncodings = options.AllowSingleByteEncodings
 
 	var result strings.Builder
 
@@ -172,7 +170,7 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return "", 0, err
 		}
 
 		r, err := p.input.rune()
@@ -181,7 +179,7 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 				break
 			}
 
-			return "", err
+			return "", 0, err
 		}
 
 		var keep bool
@@ -196,18 +194,16 @@ func decodeDTDInput(ctx context.Context, source io.Reader, options ParseOptions,
 		if !checked {
 			checked, err = checkDTDInputPrefix(&p, &result, external)
 			if err != nil {
-				return "", err
+				return "", 0, err
 			}
 		}
 	}
 
 	if p.encoding.name != nameUTF8 && !p.encoding.bom && !p.seenDecl {
-		return "", fmt.Errorf("%w: missing encoding declaration", ErrMalformed)
+		return "", 0, fmt.Errorf("%w: missing encoding declaration", ErrMalformed)
 	}
 
-	text := result.String()
-
-	return text, nil
+	return result.String(), int(input.source.ReadBytes), nil
 }
 
 func checkDTDInputPrefix(p *documentParser, result *strings.Builder, external bool) (bool, error) {
@@ -251,7 +247,7 @@ func normalizeDTDLineEndings(text string) string {
 // parseDTDText validates and expands the complete internal subset before the
 // ordinary namespace-aware parser sees the resulting XML. Both the original
 // characters and expanded lexical output have independent MaxBytes bounds.
-func (o ParseOptions) parseDTDText(ctx context.Context, text string) (*Document, error) {
+func (o ParseOptions) parseDTDText(ctx context.Context, text string, rawBytes int) (*Document, error) {
 	if ctx == nil {
 		return nil, ErrMalformed
 	}
@@ -260,7 +256,8 @@ func (o ParseOptions) parseDTDText(ctx context.Context, text string) (*Document,
 		return nil, err
 	}
 
-	if len(text) > o.Limits.MaxBytes {
+	inputBytes := max(len(text), rawBytes)
+	if inputBytes > o.Limits.MaxBytes {
 		return nil, ErrLimit
 	}
 
@@ -269,7 +266,7 @@ func (o ParseOptions) parseDTDText(ctx context.Context, text string) (*Document,
 	}
 
 	state := newDTDState(ctx, o)
-	state.inputBytes = len(text)
+	state.inputBytes = inputBytes
 
 	var output dtdOutput
 
@@ -343,25 +340,12 @@ func (o ParseOptions) parseDTDReader(ctx context.Context, source io.Reader) (*Do
 		return finishXMLParse(ctx, &parser)
 	}
 
-	text, err := decodeDTDInput(ctx, replay, o, false)
+	text, rawBytes, err := decodeDTDInput(ctx, replay, o, o.Limits.MaxBytes, false)
 	if err != nil {
 		return nil, err
 	}
 
-	doc, err := o.parseDTDText(ctx, text)
-	if err != nil {
-		return nil, err
-	}
-
-	if difference := captured.total - len(text); difference > 0 {
-		if difference > o.Limits.MaxBytes-doc.inputBytes {
-			return nil, ErrLimit
-		}
-
-		doc.inputBytes += difference
-	}
-
-	return doc, nil
+	return o.parseDTDText(ctx, text, rawBytes)
 }
 
 type dtdOutput struct {
@@ -620,7 +604,6 @@ type dtdProbeReader struct {
 	prefix   bytes.Buffer
 	terminal error
 	replay   bool
-	total    int
 }
 
 func (r *dtdProbeReader) Read(dst []byte) (int, error) {
@@ -633,23 +616,10 @@ func (r *dtdProbeReader) Read(dst []byte) (int, error) {
 		return 0, errors.Join(io.ErrShortBuffer, err)
 	}
 
-	r.total += n
 	if !r.replay {
 		r.prefix.Write(dst[:n])
 		r.terminal = err
 	}
-
-	return n, err
-}
-
-type dtdCountingReader struct {
-	source io.Reader
-	total  int
-}
-
-func (r *dtdCountingReader) Read(dst []byte) (int, error) {
-	n, err := r.source.Read(dst)
-	r.total += n
 
 	return n, err
 }

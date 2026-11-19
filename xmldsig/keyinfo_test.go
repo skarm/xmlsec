@@ -457,18 +457,40 @@ func TestKeyInfoLinkedFromSignature(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	if _, e := xmldsig.VerifySignatureWithKeyInfo(ctx, signed, xmldsig.Signatures(signed)[0], xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}); e != nil {
-		t.Fatal(e)
-	}
+	opt := xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}
 	// A KeyInfo from another signature is NOT searched automatically.
 	noInfo, e := keyinfo.Build(ctx, keyinfo.Template{Names: []string{"irrelevant"}})
 	if e != nil {
 		t.Fatal(e)
 	}
 
-	missing, selected := makeKeyInfoSigned(t, k, noInfo)
-	if r, e := xmldsig.VerifySignatureWithKeyInfo(ctx, missing, selected, xmldsig.KeyInfoVerifyOptions{Signature: xmldsig.SignatureOptions{ExpectedURIs: []string{payloadReferenceURI}}, SelectTrustedKey: keySelector(t, &k.PublicKey)}); e == nil || r != nil {
-		t.Fatal("guessed key")
+	draft, sel, e = xmldsig.BuildTemplate(ctx, signed, signed.Root(), xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: noInfo, References: []xmldsig.ReferenceTemplate{{URI: payloadReferenceURI}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	first := xmldsig.Signatures(draft)[0]
+	paired, e := xmldsig.SignTemplate(ctx, draft, sel, k, xmldsig.TemplateSignOptions{
+		Preserve: []xmldsig.SignatureRequirement{{Signature: first, PublicKey: k.Public(), Options: opt.Signature}},
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	signatures := xmldsig.Signatures(paired)
+	if len(signatures) != 2 {
+		t.Fatalf("found %d signatures, want two", len(signatures))
+	}
+
+	if _, e := xmldsig.VerifySignatureWithKeyInfo(ctx, paired, signatures[0], opt); e != nil {
+		t.Fatalf("first signature with its linked KeyInfo: %v", e)
+	}
+
+	if _, e := xmldsig.VerifySignature(ctx, paired, signatures[1], k.Public(), opt.Signature); e != nil {
+		t.Fatalf("second signature with the explicit key: %v", e)
+	}
+	if r, e := xmldsig.VerifySignatureWithKeyInfo(ctx, paired, signatures[1], opt); e == nil || r != nil {
+		t.Fatal("selected signature used another signature's KeyInfo")
 	}
 }
 
@@ -668,15 +690,17 @@ func TestKeyInfoBuilderMutualExclusion(t *testing.T) {
 		t.Fatal(e)
 	}
 
+	cert := testcert.New(t).Leaf.Raw
 	for _, test := range []struct {
 		name  string
 		ki    *document.Document
 		certs [][]byte
-	}{{"both", ki, [][]byte{{1}}}, {"wrong-root", coreParse(t, `<not-KeyInfo/>`), nil}} {
+		want  error
+	}{{"both", ki, [][]byte{cert}, xmldsig.ErrPolicy}, {"wrong-root", coreParse(t, `<not-KeyInfo/>`), nil, xmldsig.ErrStructure}} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, e := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: test.ki, Certificates: test.certs, References: []xmldsig.ReferenceTemplate{{URI: dataReferenceURI}}, Objects: []xmldsig.ObjectTemplate{{ID: dataLiteral, Binary: []byte("x")}}})
-			if e == nil {
-				t.Fatal("accepted")
+			out, selected, err := xmldsig.BuildTemplate(t.Context(), nil, document.Element{}, xmldsig.SignatureTemplate{SignatureMethod: xmldsig.ECDSASHA256, KeyInfo: test.ki, Certificates: test.certs, References: []xmldsig.ReferenceTemplate{{URI: dataReferenceURI}}, Objects: []xmldsig.ObjectTemplate{{ID: dataLiteral, Binary: []byte("x")}}})
+			if out != nil || selected.Valid() || !errors.Is(err, test.want) {
+				t.Fatalf("template = %t, selection = %t, error = %v; want no result and %v", out != nil, selected.Valid(), err, test.want)
 			}
 		})
 	}
@@ -777,8 +801,8 @@ func FuzzVerifyWithKeyInfo(f *testing.F) {
 		}
 
 		r, e := xmldsig.VerifySignatureWithKeyInfo(t.Context(), d, sigs[0], options)
-		if e != nil && r != nil {
-			t.Fatal("partial success")
+		if (r != nil) != (e == nil) {
+			t.Fatalf("key information verification returned result present = %t with error %v", r != nil, e)
 		}
 	})
 }

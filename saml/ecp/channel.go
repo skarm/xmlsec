@@ -131,7 +131,7 @@ func NegotiatedChannelBindings(h http.Header) bool {
 // exchange. It requires the SP to request at least one supported binding, and
 // fails if the SP ignores negotiation. Finish requires the IdP's confirmation.
 func ParseChallengeWithBindings(ctx context.Context, raw []byte, resourceURL string, bindings []protocol.ChannelBinding, limits binding.SOAPOptions) (*Exchange, error) {
-	if len(bindings) == 0 || protocol.ValidateChannelBindings(bindings, false) != nil {
+	if len(bindings) == 0 {
 		return nil, ErrECP
 	}
 
@@ -291,7 +291,9 @@ func requestedChannels(headers []document.Element, trusted []protocol.ChannelBin
 		if len(a.Data) != 0 {
 			return nil, ErrECP
 		}
+	}
 
+	for _, a := range requested {
 		for _, b := range trusted {
 			if a.Type == b.Type || a.Type == "" {
 				return protocol.CloneChannelBindings([]protocol.ChannelBinding{b}), nil

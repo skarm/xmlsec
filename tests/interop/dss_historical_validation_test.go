@@ -428,27 +428,8 @@ func dssCheckRuntime(t *testing.T, client *http.Client, base *url.URL, jarPath, 
 		}
 	}()
 
-	found := false
-	for _, file := range jar.File {
-		if !strings.HasSuffix(file.Name, "/dss-validation/pom.properties") {
-			continue
-		}
-
-		stream, err := file.Open()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		raw, readErr := io.ReadAll(io.LimitReader(stream, 4097))
-		if err := errors.Join(readErr, stream.Close()); err != nil || len(raw) > 4096 {
-			t.Fatal("DSS runtime version metadata:", err)
-		}
-
-		found = dssPinnedMetadata(raw, version)
-	}
-
-	if !found {
-		t.Fatal("DSS runtime JAR has no exact pinned implementation version")
+	if err := dssCheckRuntimeMetadata(jar.File, version); err != nil {
+		t.Fatal(err)
 	}
 
 	raw := dssHTTP(t, client, http.MethodGet, base.String(), nil)
@@ -458,12 +439,62 @@ func dssCheckRuntime(t *testing.T, client *http.Client, base *url.URL, jarPath, 
 	}
 }
 
+func dssCheckRuntimeMetadata(files []*zip.File, version string) error {
+	const (
+		metadataPath  = "META-INF/maven/eu.europa.ec.joinup.sd-dss/dss-validation/pom.properties"
+		metadataLimit = 4096
+	)
+
+	var metadata *zip.File
+	for _, file := range files {
+		if file.Name != metadataPath {
+			continue
+		}
+
+		if metadata != nil {
+			return errors.New("DSS runtime JAR has duplicate implementation metadata")
+		}
+
+		metadata = file
+	}
+
+	if metadata == nil {
+		return errors.New("DSS runtime JAR has no canonical implementation metadata")
+	}
+
+	stream, err := metadata.Open()
+	if err != nil {
+		return err
+	}
+
+	raw, readErr := io.ReadAll(io.LimitReader(stream, metadataLimit+1))
+	if err := errors.Join(readErr, stream.Close()); err != nil {
+		return err
+	}
+
+	if len(raw) > metadataLimit || !dssPinnedMetadata(raw, version) {
+		return errors.New("DSS runtime JAR has no exact pinned implementation version")
+	}
+
+	return nil
+}
+
 func dssPinnedMetadata(raw []byte, version string) bool {
 	var artifact, implementation bool
 	for _, line := range bytes.Split(raw, []byte{'\n'}) {
 		line = bytes.TrimSuffix(line, []byte{'\r'})
-		artifact = artifact || bytes.Equal(line, []byte("artifactId=dss-validation"))
-		implementation = implementation || bytes.Equal(line, []byte("version="+version))
+		switch key, value, _ := bytes.Cut(line, []byte{'='}); string(key) {
+		case "artifactId":
+			if artifact || string(value) != "dss-validation" {
+				return false
+			}
+			artifact = true
+		case "version":
+			if implementation || string(value) != version {
+				return false
+			}
+			implementation = true
+		}
 	}
 
 	return artifact && implementation

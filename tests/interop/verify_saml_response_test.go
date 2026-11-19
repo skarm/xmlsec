@@ -25,17 +25,10 @@ func TestSAMLProfiles(t *testing.T) {
 
 		cert := write(t, filepath.Join(dir, "cert.der"), key.cert.Raw)
 		for _, kind := range []string{"metadata", "request", "response"} {
-			path := filepath.Join(dir, "signed.xml")
+			path := filepath.Join(dir, name+"-"+kind+".xml")
 			command(t, fixture, true, nil, p, "-mode", "sign-"+kind, flagKey, key.private, flagCert, cert, "-at", at, flagOut, path)
 
-			d := xmlDoc(t, read(t, path))
-			for _, sig := range nodes(tree.Root(d), ds, "Signature") {
-				verifySignatureValue(t, fixture, d, sig, key.public)
-
-				if !checkReferences(t, fixture, d, sig) {
-					t.Fatal("Go SAML Reference differs from independent canonicalization")
-				}
-			}
+			checkSAMLProfileSignatures(t, fixture, path, kind, key.public)
 		}
 	}
 
@@ -70,18 +63,31 @@ func TestSAMLProfiles(t *testing.T) {
 			public := write(t, filepath.Join(dir, "fixture-public.pem"), pem.EncodeToMemory(&pem.Block{Type: publicKeyPEMType, Bytes: spki}))
 			path := filepath.Join(base, tc.Name+".xml")
 
-			d := xmlDoc(t, read(t, path))
-			for _, sig := range nodes(tree.Root(d), ds, "Signature") {
-				verifySignatureValue(t, fixture, d, sig, public)
-
-				if !checkReferences(t, fixture, d, sig) {
-					t.Fatal("semantic negative must retain valid XML signature")
-				}
-			}
-
+			checkSAMLProfileSignatures(t, fixture, path, tc.Kind, public)
 			command(t, fixture, tc.Valid, nil, p, "-mode", "verify-"+tc.Kind, flagIn, path, flagCert, certificate, "-at", tc.At)
 		})
 	}
 
 	t.Logf("6 generated SAML documents and %d independently signed public fixtures, including semantic negatives", len(cases))
+}
+
+func checkSAMLProfileSignatures(t *testing.T, fixture *interopFixture, path, kind, publicKey string) {
+	t.Helper()
+
+	doc := xmlDoc(t, read(t, path))
+	signatures := nodes(tree.Root(doc), ds, "Signature")
+	expected := 1
+	if kind == "response" {
+		expected = 2
+	}
+	if len(signatures) != expected {
+		t.Fatalf("%s contains %d signatures, want %d", filepath.Base(path), len(signatures), expected)
+	}
+
+	for _, sig := range signatures {
+		verifySignatureValue(t, fixture, doc, sig, publicKey)
+		if !checkReferences(t, fixture, doc, sig) {
+			t.Fatalf("%s contains a signature with an invalid Reference", filepath.Base(path))
+		}
+	}
 }

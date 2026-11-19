@@ -21,9 +21,9 @@ import (
 	"github.com/skarm/xmlsec/xmldsig"
 )
 
-// Bound explicit public-key candidates before cloning or signature verification; received KeyInfo never adds candidates or trust.
+// MaxTrustedKeys bounds explicit key candidates for SAML signature verification.
 const (
-	maximumTrustedKeys = 16
+	MaxTrustedKeys = 16
 )
 
 // MaxMessageSignatures bounds all XML signatures visible in one SAML message
@@ -86,7 +86,7 @@ func ClonePolicy(p xmldsig.Policy) xmldsig.Policy {
 
 // CloneKeys returns owned parsed copies of supported explicitly supplied public keys.
 func CloneKeys(keys []crypto.PublicKey) ([]crypto.PublicKey, error) {
-	if len(keys) == 0 || len(keys) > maximumTrustedKeys {
+	if len(keys) == 0 || len(keys) > MaxTrustedKeys {
 		return nil, ErrSignature
 	}
 
@@ -131,7 +131,7 @@ func Verify(ctx context.Context, d *document.Document, target document.Element, 
 		signedInfoChildCount    = 3
 	)
 
-	if ctx == nil || d == nil || !target.Valid() || !profile.ID(xmlutil.Attr(target, lexicon.SAMLAttrID)) || len(keys) == 0 || len(keys) > maximumTrustedKeys {
+	if ctx == nil || d == nil || !target.Valid() || !profile.ID(xmlutil.Attr(target, lexicon.SAMLAttrID)) || len(keys) == 0 || len(keys) > MaxTrustedKeys {
 		return nil, ErrSignature
 	}
 
@@ -342,7 +342,7 @@ func preservedSignatures(ctx context.Context, draft *document.Document, sig docu
 			} else if k.Secret != nil {
 				requirement.SharedSecret = k.Secret.value
 			} else {
-				requirement.PublicKey = k.Key.Public()
+				requirement.PublicKey = signature.SignerPublic(k.Key)
 			}
 
 			preserve = append(preserve, requirement)
@@ -353,7 +353,7 @@ func preservedSignatures(ctx context.Context, draft *document.Document, sig docu
 }
 
 func preservationCredential(ctx context.Context, d *document.Document, r xmldsig.SignatureRequirement, keys []crypto.PublicKey) (xmldsig.SignatureRequirement, error) {
-	if len(keys) == 0 || len(keys) > maximumTrustedKeys {
+	if len(keys) == 0 || len(keys) > MaxTrustedKeys {
 		return r, ErrSignature
 	}
 

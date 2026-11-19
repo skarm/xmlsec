@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -31,6 +32,75 @@ func (s issueStore) Put(ctx context.Context, e artifact.Entry, at time.Time) err
 
 func (s issueStore) Resolve(ctx context.Context, a binding.Artifact, recipient string, at time.Time, reply func(*document.Document) (*document.Document, error)) (*document.Document, error) {
 	return s.ResolveFunc(ctx, a, recipient, at, reply)
+}
+
+type artifactTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f artifactTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type artifactCountingSigner struct {
+	crypto.Signer
+	calls int
+}
+
+func (s *artifactCountingSigner) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
+	s.calls++
+	return s.Signer.Sign(random, digest, options)
+}
+
+func TestResolverValidatesResponseConfigurationBeforeContactingPeer(t *testing.T) {
+	t.Parallel()
+	const peer = "urn:example:artifact-provider"
+	const recipient = "urn:example:recipient"
+	a, err := binding.NewArtifact(peer, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportReached := errors.New("test transport reached")
+	for _, tc := range []struct {
+		name, returnEndpoint string
+		keyCount             int
+		limits               protocol.Limits
+		wantErr              error
+	}{
+		{name: "missing peer keys", wantErr: protocol.ErrSignature},
+		{name: "too many peer keys", keyCount: 17, wantErr: protocol.ErrSignature},
+		{name: "invalid response limits", keyCount: 1, limits: protocol.Limits{MaxMessageAge: -time.Second}, wantErr: protocol.ErrProfile},
+		{name: "relative response endpoint", keyCount: 1, returnEndpoint: "artifact/return", wantErr: protocol.ErrProfile},
+		{name: "default response endpoint", keyCount: 1, wantErr: transportReached},
+		{name: "maximum key count and HTTP response endpoint", keyCount: 16, returnEndpoint: "http://recipient.example.test/artifact", wantErr: transportReached},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			key := testcert.Key(t)
+			signer := &artifactCountingSigner{Signer: key}
+			var crossings int
+			keys := make([]crypto.PublicKey, tc.keyCount)
+			for i := range keys {
+				keys[i] = key.Public()
+			}
+			resolver := artifact.Resolver{
+				EntityID: recipient, PeerEntityID: peer, ReturnEndpoint: tc.returnEndpoint, Signing: protocol.SigningKey{Key: signer},
+				Endpoints: []metadata.Endpoint{{Binding: metadata.SOAP, Location: "https://provider.example.test/artifact", Index: 7, Indexed: true}},
+				Keys:      keys, Options: protocol.ExchangeOptions{Limits: tc.limits},
+				SOAP: binding.SOAPClient{Client: &http.Client{Transport: artifactTransportFunc(func(*http.Request) (*http.Response, error) {
+					crossings++
+					return nil, transportReached
+				})}},
+			}
+			result, err := resolver.Resolve(t.Context(), a, testcert.Now())
+			if result != nil || !errors.Is(err, tc.wantErr) {
+				t.Errorf("Resolve = %p, %v; want nil, %v", result, err, tc.wantErr)
+			}
+			if errors.Is(tc.wantErr, transportReached) {
+				if crossings != 1 || signer.calls == 0 {
+					t.Errorf("valid configuration reached signer %d times and transport %d times", signer.calls, crossings)
+				}
+			} else if crossings != 0 || signer.calls != 0 {
+				t.Errorf("invalid configuration reached signer %d times and transport %d times", signer.calls, crossings)
+			}
+		})
+	}
 }
 
 func TestAuthenticatedArtifactSOAP(t *testing.T) {

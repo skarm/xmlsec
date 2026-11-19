@@ -119,9 +119,9 @@ func EncryptContentWithKey(ctx context.Context, doc *document.Document, parent d
 // DecryptContentWithKey decrypts and restores selected Type #Content with
 // an explicit symmetric data key. It has the snapshot and namespace contracts of DecryptContent.
 func DecryptContentWithKey(ctx context.Context, doc *document.Document, selected document.Element, key []byte, options SymmetricOptions, decryption DecryptOptions) (*document.Document, document.Element, error) {
-	node, err := selectedNode(doc, selected)
-	if err != nil || node.Parent == nil {
-		return nil, document.Element{}, ErrFormat
+	node, err := selectedContent(doc, selected)
+	if err != nil {
+		return nil, document.Element{}, err
 	}
 
 	p, err := symmetricDecryptProfile(ctx, key, options, decryption)

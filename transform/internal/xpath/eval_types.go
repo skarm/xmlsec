@@ -92,7 +92,7 @@ func BindSequenceType(ctx context.Context, st xdm.SequenceType, namespaces map[s
 
 		_, local := splitEQName(lexical)
 
-		return "Q{" + resolveStaticNameURI(lexical, namespaces, ns) + "}" + local
+		return lexicon.EQNamePrefix + resolveStaticNameURI(lexical, namespaces, ns) + "}" + local
 	}
 
 	child := func(t xdm.SequenceType) (xdm.SequenceType, error) {

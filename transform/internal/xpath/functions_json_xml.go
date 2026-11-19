@@ -63,8 +63,6 @@ func fnJSONToXML(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error)
 		return nil, &xdm.Error{Code: errCodeFOJS0004, Message: "json-to-xml: schema validation and typed data are unavailable"}
 	}
 
-	s = strings.TrimPrefix(s, lexicon.BOMUTF8)
-
 	s, err = preprocessJSONStringLiterals(s)
 	if err != nil {
 		return nil, err
@@ -409,12 +407,12 @@ const (
 )
 
 type xmlJSONMeta struct {
-	kind       string
-	escaped    bool
-	escapedKey bool
-	hasKey     bool
-	keyActual  string
-	keyEncoded string
+	kind          string
+	escaped       bool
+	escapedKey    bool
+	hasKey        bool
+	keyComparable string
+	keyEncoded    string
 }
 
 func fnXMLToJSON(ctx context.Context, args []xdm.Sequence) (xdm.Sequence, error) {
@@ -574,11 +572,11 @@ func serializeJSONXMLMap(elem *xdm.Element, opts xmlToJSONOptions, depth int) (s
 			return "", &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: map child is missing key attribute"}
 		}
 
-		if _, exists := seen[meta.keyActual]; exists {
-			return "", &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: duplicate key %q", meta.keyActual)}
+		if _, exists := seen[meta.keyComparable]; exists {
+			return "", &xdm.Error{Code: errCodeFOJS0006, Message: fmt.Sprintf("xml-to-json: duplicate key %q", meta.keyComparable)}
 		}
 
-		seen[meta.keyActual] = struct{}{}
+		seen[meta.keyComparable] = struct{}{}
 		parts = append(parts, "\""+meta.keyEncoded+"\":"+valueSeparator(opts.indent)+value)
 	}
 
@@ -645,15 +643,16 @@ func parseXMLJSONMeta(elem *xdm.Element, position xmlJSONPosition) (xmlJSONMeta,
 
 	if meta.hasKey {
 		if meta.escapedKey {
-			encoded, actual, err := validateEscapedJSONContent(meta.keyActual)
+			encoded, comparisonKey, err := validateEscapedJSONContent(meta.keyComparable)
 			if err != nil {
 				return xmlJSONMeta{}, err
 			}
 
 			meta.keyEncoded = encoded
-			meta.keyActual = actual
+			meta.keyComparable = comparisonKey
 		} else {
-			meta.keyEncoded = encodeJSONStringContent(meta.keyActual)
+			meta.keyEncoded = encodeJSONStringContent(meta.keyComparable)
+			meta.keyComparable = strings.ReplaceAll(meta.keyComparable, `\`, `\\`)
 		}
 	}
 
@@ -674,7 +673,7 @@ func parseXMLJSONAttribute(meta *xmlJSONMeta, attr *xdm.Attribute, position xmlJ
 			}
 
 			meta.hasKey = true
-			meta.keyActual = attr.Value()
+			meta.keyComparable = attr.Value()
 		case jsonXMLAttributeEscaped:
 			if meta.kind != jsonKindString {
 				return &xdm.Error{Code: errCodeFOJS0006, Message: "xml-to-json: escaped is permitted only on a string element"}
@@ -819,6 +818,9 @@ func canonicalizeXMLJSONNumber(s string) (string, error) {
 	return formatXPathDouble(av.DoubleVal()), nil
 }
 
+// validateEscapedJSONContent returns the JSON spelling and a key for comparison.
+// The key uses Unicode scalars with literal backslashes doubled, leaving a
+// single backslash available to encode a lone surrogate unambiguously.
 func validateEscapedJSONContent(s string) (string, string, error) {
 	var (
 		out     strings.Builder
@@ -848,7 +850,7 @@ func validateEscapedJSONContent(s string) (string, string, error) {
 			i += jsonShortEscapeBytes
 		case '\\':
 			out.WriteString(`\\`)
-			decoded.WriteByte('\\')
+			decoded.WriteString(`\\`)
 
 			i += jsonShortEscapeBytes
 		case '/':
@@ -904,50 +906,28 @@ func parseEscapedUnicodeSequence(s string) (string, string, int, error) {
 		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: incomplete \\u escape"}
 	}
 
-	if s[0] != '\\' || s[1] != 'u' || !isHexQuad(s[jsonCodeUnitEscapePrefixBytes:jsonCodeUnitEscapeBytes]) {
+	cp, err := parseJSONHexEscape(s[jsonCodeUnitEscapePrefixBytes:jsonCodeUnitEscapeBytes])
+	if s[0] != '\\' || s[1] != 'u' || err != nil {
 		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid \\u escape"}
 	}
 
-	cp, _ := parseJSONHexEscape(s[jsonCodeUnitEscapePrefixBytes:jsonCodeUnitEscapeBytes])
 	encoded := s[:jsonCodeUnitEscapeBytes]
 
 	switch {
-	case cp >= jsonHighSurrogateFirst && cp <= jsonHighSurrogateLast:
-		if len(s) < jsonSurrogatePairEscapeBytes || s[jsonCodeUnitEscapeBytes] != '\\' || s[jsonLowSurrogateMarkerOffset] != 'u' || !isHexQuad(s[jsonLowSurrogateHexStart:jsonSurrogatePairEscapeBytes]) {
-			return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid surrogate pair"}
-		}
-
+	case validJSONSurrogatePair(s, 0, cp):
 		cp2, _ := parseJSONHexEscape(s[jsonLowSurrogateHexStart:jsonSurrogatePairEscapeBytes])
-		if cp2 < jsonLowSurrogateFirst || cp2 > jsonLowSurrogateLast {
-			return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid surrogate pair"}
-		}
+		r := rune(((cp - jsonHighSurrogateFirst) << jsonSurrogatePayloadBits) + (cp2 - jsonLowSurrogateFirst) + jsonSupplementaryPlaneFirst) // #nosec G115 -- Validated high and low surrogates produce a scalar in U+10000..U+10FFFF.
 
-		r := rune(((cp - jsonHighSurrogateFirst) << jsonSurrogatePayloadBits) + (cp2 - jsonLowSurrogateFirst) + jsonSupplementaryPlaneFirst)
-
-		return encoded + s[jsonCodeUnitEscapeBytes:jsonSurrogatePairEscapeBytes], string(r), jsonSurrogatePairEscapeBytes, nil
-	case cp >= jsonLowSurrogateFirst && cp <= jsonLowSurrogateLast:
-		return "", "", 0, &xdm.Error{Code: errCodeFOJS0007, Message: "xml-to-json: invalid low surrogate"}
+		return s[:jsonSurrogatePairEscapeBytes], string(r), jsonSurrogatePairEscapeBytes, nil
+	case cp >= jsonHighSurrogateFirst && cp <= jsonLowSurrogateLast:
+		// Four hex digits form a valid JSON escape even without a pair.
+		key := `\u` + strings.ToUpper(encoded[jsonCodeUnitEscapePrefixBytes:])
+		return encoded, key, jsonCodeUnitEscapeBytes, nil
+	case cp == '\\':
+		return encoded, `\\`, jsonCodeUnitEscapeBytes, nil
 	default:
 		return encoded, string(rune(cp)), jsonCodeUnitEscapeBytes, nil // #nosec G115 -- cp comes from exactly four validated hexadecimal digits.
 	}
-}
-
-func isHexQuad(s string) bool {
-	if len(s) != jsonCodeUnitHexDigits {
-		return false
-	}
-
-	for _, r := range s {
-		switch {
-		case r >= '0' && r <= '9':
-		case r >= 'a' && r <= 'f':
-		case r >= 'A' && r <= 'F':
-		default:
-			return false
-		}
-	}
-
-	return true
 }
 
 func encodeJSONStringContent(s string) string {

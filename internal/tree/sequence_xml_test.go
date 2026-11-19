@@ -3,6 +3,7 @@ package tree_test
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -99,14 +100,14 @@ func TestWriteXMLSequenceResumesEscapingAfterMarker(t *testing.T) {
 	t.Parallel()
 
 	nodes := func(yield func(*tree.Node, error) bool) {
-		for _, node := range []tree.Node{
+		for _, node := range []*tree.Node{
 			{Kind: tree.TextNode, Data: "<&"},
-			{Kind: tree.PINode, Name: tree.Name{Local: lexicon.DisableOutputEscapingPITarget}},
+			tree.NewDOEMarker(true),
 			{Kind: tree.TextNode, Data: "<p>text</p>"},
-			{Kind: tree.PINode, Name: tree.Name{Local: lexicon.EnableOutputEscapingPITarget}},
+			tree.NewDOEMarker(false),
 			{Kind: tree.TextNode, Data: "&>"},
 		} {
-			if !yield(&node, nil) {
+			if !yield(node, nil) {
 				return
 			}
 		}
@@ -117,6 +118,21 @@ func TestWriteXMLSequenceResumesEscapingAfterMarker(t *testing.T) {
 	n, err := tree.WriteXMLSequence(t.Context(), &out, nodes, len(want), tree.XMLWriteOptions{DOEMarkers: true})
 	if err != nil || out.String() != want || n != int64(len(want)) {
 		t.Fatalf("WriteXMLSequence = (%q, %d, %v), want (%q, %d, nil)", out.String(), n, err, want, len(want))
+	}
+}
+
+func TestWriteXMLSequencePreservesOrdinaryPI(t *testing.T) {
+	t.Parallel()
+
+	pi := &tree.Node{Kind: tree.PINode, Name: tree.Name{Local: lexicon.DisableOutputEscapingPITarget}, Data: "note"}
+	var out strings.Builder
+
+	nodes := func(yield func(*tree.Node, error) bool) { yield(pi, nil) }
+
+	const want = "<?disable-output-escaping note?>"
+	n, err := tree.WriteXMLSequence(t.Context(), &out, nodes, len(want), tree.XMLWriteOptions{DOEMarkers: true})
+	if err != nil || out.String() != want || n != int64(len(want)) {
+		t.Fatalf("ordinary PI output = (%q, %d, %v), want (%q, %d, nil)", out.String(), n, err, want, len(want))
 	}
 }
 
@@ -153,5 +169,55 @@ func TestWriteXMLSequenceStopsOnFailure(t *testing.T) {
 				t.Fatalf("WriteXMLSequence = (%q, %d, %v), requested next = %t; want previous output and %v", out.String(), n, err, nextRequested, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestWriteXMLSequenceCancellation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("before_iteration", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		visited := false
+		nodes := func(func(*tree.Node, error) bool) { visited = true }
+		n, err := tree.WriteXMLSequence(ctx, io.Discard, nodes, 10, tree.XMLWriteOptions{})
+		if n != 0 || !errors.Is(err, context.Canceled) || visited {
+			t.Errorf("WriteXMLSequence = (%d, %v), iterator started = %t", n, err, visited)
+		}
+	})
+
+	t.Run("during_last_write", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var output strings.Builder
+		dst := fragmentWriteFunc(func(p []byte) (int, error) {
+			cancel()
+			return output.Write(p)
+		})
+		nodes := func(yield func(*tree.Node, error) bool) {
+			yield(&tree.Node{Kind: tree.TextNode, Data: "ok"}, nil)
+		}
+		n, err := tree.WriteXMLSequence(ctx, dst, nodes, 10, tree.XMLWriteOptions{})
+		if n != 2 || !errors.Is(err, context.Canceled) || output.String() != "ok" {
+			t.Errorf("WriteXMLSequence = (%d, %v), output = %q", n, err, output.String())
+		}
+	})
+}
+
+func TestWriteXMLSequenceRejectsMissingInput(t *testing.T) {
+	t.Parallel()
+
+	n, err := tree.WriteXMLSequence(t.Context(), io.Discard, nil, 10, tree.XMLWriteOptions{})
+	if n != 0 || !errors.Is(err, tree.ErrMalformed) {
+		t.Errorf("nil iterator returned (%d, %v)", n, err)
+	}
+
+	var dst *strings.Builder
+	nodes := func(func(*tree.Node, error) bool) { t.Error("iterator started with nil writer") }
+	n, err = tree.WriteXMLSequence(t.Context(), dst, nodes, 10, tree.XMLWriteOptions{})
+	if n != 0 || !errors.Is(err, tree.ErrMalformed) {
+		t.Errorf("nil writer returned (%d, %v)", n, err)
 	}
 }

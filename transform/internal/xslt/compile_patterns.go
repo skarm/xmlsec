@@ -101,28 +101,10 @@ func (p *pattern) matchPattern(ctx context.Context, ec *execContext, node xdm.No
 // xpath-default-namespace, the pattern's lexical namespace snapshot, its
 // backwards-compatible-processing flag, and its compiled step predicates.
 func (p *pattern) matchPatternProbe(ctx context.Context, ec *execContext, node xdm.Node) bool {
-	saved := ec.xpathDefaultNS
-	savedHas := ec.hasXPathDefaultNS
-	savedPatternNS := ec.patternNamespaces
-	savedPatternCompat := ec.patternCompat
-	savedPatternPreds := ec.patternPredicates
-	savedCollation := ec.defaultCollation
-	ec.xpathDefaultNS = p.xpathDefaultNS
-	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
-	ec.patternNamespaces = p.nsBindings
-	ec.patternCompat = p.compat
-
-	ec.patternPredicates = p.predicates
-
-	ec.defaultCollation = p.defaultCollation
-	defer func() {
-		ec.xpathDefaultNS = saved
-		ec.hasXPathDefaultNS = savedHas
-		ec.patternNamespaces = savedPatternNS
-		ec.patternCompat = savedPatternCompat
-		ec.patternPredicates = savedPatternPreds
-		ec.defaultCollation = savedCollation
-	}()
+	if ec.patternMatchErr != nil {
+		return false
+	}
+	defer p.pushStaticContext(ec).apply(ec)
 
 	for _, alt := range p.Alternatives {
 		if matchPatternAlt(ctx, ec, alt, node) {
@@ -133,6 +115,33 @@ func (p *pattern) matchPatternProbe(ctx context.Context, ec *execContext, node x
 	return false
 }
 
+type patternStaticContext struct {
+	namespaces           map[string]string
+	predicates           map[*xpath.Expr]*patternPredicate
+	defaultNS, collation string
+	hasDefaultNS, compat bool
+}
+
+func (s patternStaticContext) apply(ec *execContext) {
+	ec.patternNamespaces, ec.patternPredicates = s.namespaces, s.predicates
+	ec.xpathDefaultNS, ec.hasXPathDefaultNS = s.defaultNS, s.hasDefaultNS
+	ec.defaultCollation, ec.patternCompat = s.collation, s.compat
+}
+
+// pushStaticContext installs the lexical settings shared by node and item patterns.
+func (p *pattern) pushStaticContext(ec *execContext) patternStaticContext {
+	saved := patternStaticContext{
+		namespaces: ec.patternNamespaces, predicates: ec.patternPredicates,
+		defaultNS: ec.xpathDefaultNS, hasDefaultNS: ec.hasXPathDefaultNS,
+		collation: ec.defaultCollation, compat: ec.patternCompat,
+	}
+	ec.patternNamespaces, ec.patternPredicates = p.nsBindings, p.predicates
+	ec.xpathDefaultNS, ec.hasXPathDefaultNS = p.xpathDefaultNS, p.hasXPathDefaultNS
+	ec.defaultCollation, ec.patternCompat = p.defaultCollation, p.compat
+
+	return saved
+}
+
 // matchPatternItem tests whether an arbitrary item (node or atomic value)
 // matches the pattern. For node items it delegates to matchPattern; for atomic
 // values it evaluates the pattern expression with the item as context and
@@ -140,13 +149,9 @@ func (p *pattern) matchPatternProbe(ctx context.Context, ec *execContext, node x
 // group-starting-with / group-ending-with over non-node sequences (XSLT 3.0).
 func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xdm.Item) bool {
 	if ni, ok := item.(xdm.NodeItem); ok {
-		// A positional predicate over the context item, e.g. ".[position()=3]",
-		// must see the focus of the population being grouped (position/size set
-		// by the caller in ec.position/ec.size), not the document-order focus
-		// that matchPattern re-establishes for the node. This mirrors the atomic
-		// branch below (ENG-005): evaluate each predicate directly with the node
-		// as context item and the population focus already in scope.
-		if p.matchNodeContextItemPositional(ctx, ec, ni.Node) {
+		// A predicate pattern has singleton focus even when its context
+		// item came from a reordered node sequence.
+		if p.matchNodeContextItemPredicate(ctx, ec, ni.Node) {
 			return true
 		}
 
@@ -155,32 +160,19 @@ func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xd
 
 	// Atomic item: evaluate each alternative's expression with the item as
 	// context. A FilterExpr like .[pred] returns the item when pred is true.
-	saved := ec.xpathDefaultNS
-	savedHas := ec.hasXPathDefaultNS
+	defer p.pushStaticContext(ec).apply(ec)
+
 	savedGroups := ec.regexGroups
 	savedItem := ec.contextItem
 	savedInPattern := ec.inPatternMatch
-	savedPatternNS := ec.patternNamespaces
-	savedPatternCompat := ec.patternCompat
-	savedPatternPreds := ec.patternPredicates
-	ec.xpathDefaultNS = p.xpathDefaultNS
-	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
 	ec.regexGroups = nil
 	ec.contextItem = item
 	ec.inPatternMatch = true
-	ec.patternNamespaces = p.nsBindings
-	ec.patternCompat = p.compat
 
-	ec.patternPredicates = p.predicates
 	defer func() {
-		ec.xpathDefaultNS = saved
-		ec.hasXPathDefaultNS = savedHas
 		ec.regexGroups = savedGroups
 		ec.contextItem = savedItem
 		ec.inPatternMatch = savedInPattern
-		ec.patternNamespaces = savedPatternNS
-		ec.patternCompat = savedPatternCompat
-		ec.patternPredicates = savedPatternPreds
 	}()
 
 	for _, alt := range p.Alternatives {
@@ -191,12 +183,8 @@ func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xd
 			continue
 		}
 
-		// A positional predicate over the context item, e.g. ".[position()=3]",
-		// must see the focus of the population sequence (position/size set by
-		// the caller in ec.position/ec.size), not a re-based filter focus.
-		// Evaluating the whole FilterExpr would re-bind position() to 1 because
-		// "." is a singleton; instead evaluate each predicate directly with the
-		// item as context item and the population focus already in scope.
+		// Evaluate a predicate pattern against the singleton focus set by
+		// the group boundary matcher.
 		if fe, ok := alt.expr.(xpath.FilterExpr); ok {
 			if _, isCtxItem := fe.Expr.(xpath.ContextItemExpr); isCtxItem {
 				if ec.matchContextItemPredicates(ctx, fe.Predicates) {
@@ -214,6 +202,10 @@ func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xd
 
 		result, err := ec.evalPatternExpr(ctx, compiled, nil)
 		if err != nil {
+			if ec.recordPatternError(ctx, err) {
+				return false
+			}
+
 			continue
 		}
 
@@ -226,15 +218,9 @@ func (p *pattern) matchPatternItem(ctx context.Context, ec *execContext, item xd
 	return false
 }
 
-// matchNodeContextItemPositional handles ".[pred]" pattern alternatives for a
-// node item during for-each-group boundary evaluation. It evaluates each such
-// alternative's predicates with the node as the context item and the population
-// focus (ec.position/ec.size) already in scope, so that positional predicates
-// like position()=3 are tested against the node's position within the population
-// being grouped, and never its document-order position. It returns true only
-// when a ".[pred]" alternative matches; non-".[pred]" alternatives are left for
-// the caller to handle via matchPattern.
-func (p *pattern) matchNodeContextItemPositional(ctx context.Context, ec *execContext, node xdm.Node) bool {
+// matchNodeContextItemPredicate checks predicate patterns on the supplied
+// node. The caller handles selection patterns through matchPattern.
+func (p *pattern) matchNodeContextItemPredicate(ctx context.Context, ec *execContext, node xdm.Node) bool {
 	var ctxAlts []xpath.FilterExpr
 
 	for _, alt := range p.Alternatives {
@@ -254,38 +240,25 @@ func (p *pattern) matchNodeContextItemPositional(ctx context.Context, ec *execCo
 		return false
 	}
 
-	saved := ec.xpathDefaultNS
-	savedHas := ec.hasXPathDefaultNS
+	defer p.pushStaticContext(ec).apply(ec)
+
 	savedGroups := ec.regexGroups
 	savedContext := ec.contextNode
 	savedCurrent := ec.currentNode
 	savedItem := ec.contextItem
 	savedInPattern := ec.inPatternMatch
-	savedPatternNS := ec.patternNamespaces
-	savedPatternCompat := ec.patternCompat
-	savedPatternPreds := ec.patternPredicates
-	ec.xpathDefaultNS = p.xpathDefaultNS
-	ec.hasXPathDefaultNS = p.hasXPathDefaultNS
 	ec.regexGroups = nil
 	ec.contextNode = node
 	ec.currentNode = node
 	ec.contextItem = xdm.NodeItem{Node: node}
 	ec.inPatternMatch = true
-	ec.patternNamespaces = p.nsBindings
-	ec.patternCompat = p.compat
 
-	ec.patternPredicates = p.predicates
 	defer func() {
-		ec.xpathDefaultNS = saved
-		ec.hasXPathDefaultNS = savedHas
 		ec.regexGroups = savedGroups
 		ec.contextNode = savedContext
 		ec.currentNode = savedCurrent
 		ec.contextItem = savedItem
 		ec.inPatternMatch = savedInPattern
-		ec.patternNamespaces = savedPatternNS
-		ec.patternCompat = savedPatternCompat
-		ec.patternPredicates = savedPatternPreds
 	}()
 
 	for _, fe := range ctxAlts {
@@ -864,7 +837,7 @@ func matchSchemaAttributeTest(_ context.Context, ec *execContext, t xdm.SchemaAt
 	// for a bare name unless a default is in effect, but for attributes we never
 	// apply the element default, so strip any default-namespace result here.
 	local, ns := resolvePatternKindTestName(ec, t.Name)
-	if !strings.HasPrefix(t.Name, "Q{") && !strings.Contains(t.Name, ":") {
+	if !strings.HasPrefix(t.Name, lexicon.EQNamePrefix) && !strings.Contains(t.Name, ":") {
 		ns = ""
 	}
 
@@ -889,7 +862,7 @@ func matchSchemaAttributeTest(_ context.Context, ec *execContext, t xdm.SchemaAt
 //     in effect (including an explicit "" reset → no namespace), else to no
 //     namespace.
 func resolvePatternKindTestName(ec *execContext, name string) (string, string) {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		if closeIdx := strings.IndexByte(name, '}'); closeIdx >= 0 {
 			return name[closeIdx+1:], name[2:closeIdx]
 		}
@@ -1126,7 +1099,7 @@ func matchAttributeTest(ctx context.Context, ec *execContext, at xdm.AttributeTe
 	// xpath-default-namespace governs element names, not attribute names — so
 	// override the resolver's default for the bare case.
 	local, uri := resolvePatternKindTestName(ec, at.Name)
-	if !strings.HasPrefix(at.Name, "Q{") && !strings.Contains(at.Name, ":") {
+	if !strings.HasPrefix(at.Name, lexicon.EQNamePrefix) && !strings.Contains(at.Name, ":") {
 		uri = ""
 	}
 
@@ -1175,12 +1148,12 @@ func matchTypeAnnotation(_ context.Context, ec *execContext, node xdm.Node, type
 	}
 
 	fullAnn := ann
-	if !strings.HasPrefix(fullAnn, lexicon.PrefixXS+":") && !strings.HasPrefix(fullAnn, "Q{") {
+	if !strings.HasPrefix(fullAnn, lexicon.PrefixXS+":") && !strings.HasPrefix(fullAnn, lexicon.EQNamePrefix) {
 		fullAnn = lexicon.PrefixXS + ":" + fullAnn
 	}
 
 	fullType := typeName
-	if !strings.HasPrefix(fullType, lexicon.PrefixXS+":") && !strings.HasPrefix(fullType, "Q{") {
+	if !strings.HasPrefix(fullType, lexicon.PrefixXS+":") && !strings.HasPrefix(fullType, lexicon.EQNamePrefix) {
 		fullType = lexicon.PrefixXS + ":" + fullType
 	}
 
@@ -1203,14 +1176,14 @@ func normalizePatternTypeName(name string) string {
 
 // resolvePatternTypeName expands type names using the pattern's lexical context.
 func resolvePatternTypeName(ec *execContext, name string) string {
-	if strings.HasPrefix(name, "Q{") {
+	if strings.HasPrefix(name, lexicon.EQNamePrefix) {
 		return name
 	}
 
 	if prefix, local, ok := strings.Cut(name, ":"); ok {
 		if ec != nil {
 			if uri := ec.resolvePrefix(prefix); uri != "" {
-				return "Q{" + uri + "}" + local
+				return lexicon.EQNamePrefix + uri + "}" + local
 			}
 		}
 
@@ -1218,7 +1191,7 @@ func resolvePatternTypeName(ec *execContext, name string) string {
 	}
 
 	if ec != nil && ec.xpathDefaultNS != "" {
-		return "Q{" + ec.xpathDefaultNS + "}" + name
+		return lexicon.EQNamePrefix + ec.xpathDefaultNS + "}" + name
 	}
 
 	if !isBuiltinXSDType(name) {
@@ -1237,8 +1210,8 @@ func matchDocumentTest(ctx context.Context, ec *execContext, dt xdm.DocumentTest
 	if dt.Inner == nil {
 		return true
 	}
-	// document-node(element(name)) — check that the document has a single
-	// element child matching the inner test.
+	// document-node(element(name)) requires a single matching element child
+	// and no text children.
 	doc, ok := node.(*xdm.Document)
 	if !ok {
 		return false
@@ -1247,12 +1220,15 @@ func matchDocumentTest(ctx context.Context, ec *execContext, dt xdm.DocumentTest
 	var docElem xdm.Node
 
 	for child := range xdm.Children(doc) {
-		if child.Type() == xdm.ElementNode {
+		switch child.Type() {
+		case xdm.ElementNode:
 			if docElem != nil {
 				return false // more than one element child
 			}
 
 			docElem = child
+		case xdm.TextNode, xdm.CDATASectionNode:
+			return false
 		}
 	}
 
@@ -1340,6 +1316,7 @@ func collectDescendants(ctx context.Context, ec *execContext, test xdm.NodeTest,
 
 	stack, err := xdm.PushXDMChildren(ctx, nil, root)
 	if err != nil {
+		ec.recordPatternError(ctx, err)
 		return nil
 	}
 
@@ -1356,6 +1333,7 @@ func collectDescendants(ctx context.Context, ec *execContext, test xdm.NodeTest,
 
 		stack, err = xdm.PushXDMChildren(ctx, stack, cur)
 		if err != nil {
+			ec.recordPatternError(ctx, err)
 			return nil
 		}
 	}
@@ -1412,6 +1390,7 @@ func collectMatchingSiblings(ctx context.Context, ec *execContext, test xdm.Node
 func collectMatchingNamespaceNodes(ctx context.Context, ec *execContext, test xdm.NodeTest, node, parent xdm.Node) []xdm.Node {
 	nsNodes, err := xdm.TraverseAxisSimple(ctx, xdm.AxisNamespace, parent)
 	if err != nil {
+		ec.recordPatternError(ctx, err)
 		return nil
 	}
 
@@ -1449,7 +1428,7 @@ func matchFocusFreePredicates(ctx context.Context, ec *execContext, preds []xpat
 
 		result, err := evalStepPredicate(ctx, ec, pred.compiled, node, 1, 1)
 		if err != nil {
-			recordPatternPredicateError(ec, err)
+			ec.recordPatternError(ctx, err)
 			return predicatesFail
 		}
 
@@ -1480,19 +1459,29 @@ func evalStepPredicate(ctx context.Context, ec *execContext, compiled *xpath.Exp
 	return eval.Evaluate(ec.xpathContext(ctx), compiled, node)
 }
 
-// recordPatternPredicateError propagates the fatal errors among a predicate's
-// evaluation errors (like XTDE0640 circular key or ErrCircularRef from
-// variable/param evaluation) through the exec context so they can be raised
-// after pattern matching. Every other error only makes the predicate false.
-func recordPatternPredicateError(ec *execContext, err error) {
-	if isXSLTError(err, errCodeXTDE0640) {
-		ec.patternMatchErr = err
-		return
+// recordPatternError retains control failures and circular dependencies for the
+// enclosing instruction. Other dynamic errors make the pattern fail to match.
+func (ec *execContext) recordPatternError(ctx context.Context, err error) bool {
+	if ec.patternMatchErr == nil {
+		failure := preserveControlFailure(ctx, err)
+		switch {
+		case failure != nil:
+			ec.patternMatchErr = failure
+		case isXSLTError(err, errCodeXTDE0640):
+			ec.patternMatchErr = err
+		case errors.Is(err, ErrCircularRef):
+			ec.patternMatchErr = dynamicErrorCause(errCodeXTDE0640, err, "%s", err.Error())
+		}
 	}
 
-	if errors.Is(err, ErrCircularRef) {
-		ec.patternMatchErr = dynamicError(errCodeXTDE0640, "%s", err.Error())
-	}
+	return ec.patternMatchErr != nil
+}
+
+func (ec *execContext) takePatternError() error {
+	err := ec.patternMatchErr
+	ec.patternMatchErr = nil
+
+	return err
 }
 
 // evaluatePredicateWithPosition evaluates a compiled pattern predicate with
@@ -1500,22 +1489,13 @@ func recordPatternPredicateError(ec *execContext, err error) {
 func evaluatePredicateWithPosition(ctx context.Context, ec *execContext, compiled *xpath.Expression, node xdm.Node, pos, size int) bool {
 	result, err := evalStepPredicate(ctx, ec, compiled, node, pos, size)
 	if err != nil {
-		recordPatternPredicateError(ec, err)
-		return false
-	}
-	// Numeric predicates: compare to the provided position. Compare as float64:
-	// converting f to int is undefined above the int range (2^31-1 where int is
-	// 32 bits) and truncates a fraction, while position()=1.5 is never true.
-	if f, ok := result.IsNumber(); ok {
-		return f == float64(pos)
-	}
-
-	b, err := result.EBV()
-	if err != nil {
+		ec.recordPatternError(ctx, err)
 		return false
 	}
 
-	return b
+	match, err := result.MatchesPredicate(pos)
+
+	return err == nil && match
 }
 
 // matchByEvaluation matches complex patterns (e.g., id(), key(), doc()) by
@@ -1539,8 +1519,7 @@ func matchByEvaluation(ctx context.Context, ec *execContext, alt *patternAlt, no
 	if err != nil {
 		// Propagate fatal errors (like XTDE0640 circular key) through
 		// the exec context so they can be raised after pattern matching.
-		if isXSLTError(err, errCodeXTDE0640) {
-			ec.patternMatchErr = err
+		if ec.recordPatternError(ctx, err) {
 			return false
 		}
 	}
@@ -1553,8 +1532,7 @@ func matchByEvaluation(ctx context.Context, ec *execContext, alt *patternAlt, no
 	for ancestor := node.Parent(); ancestor != nil; ancestor = ancestor.Parent() {
 		result, err := ec.evalPatternExpr(ctx, compiled, ancestor)
 		if err != nil {
-			if isXSLTError(err, errCodeXTDE0640) {
-				ec.patternMatchErr = err
+			if ec.recordPatternError(ctx, err) {
 				return false
 			}
 
@@ -2199,12 +2177,12 @@ func validateLocationPathPattern(expr xpath.Expr) error {
 	}
 
 	for _, step := range steps {
-		// XTSE0340: reverse axes (parent, ancestor, preceding,
-		// preceding-sibling, ancestor-or-self) are not allowed in match
-		// patterns. Forward axes are allowed in XSLT 3.0.
+		// XSLT 3.0 ForwardAxisP lists the permitted axes for pattern steps.
+		// Predicates use the XPath grammar, where the other axes remain available.
 		switch step.Axis {
-		case xpath.AxisParent, xpath.AxisAncestor, xpath.AxisAncestorOrSelf,
-			xpath.AxisPreceding, xpath.AxisPrecedingSibling:
+		case xpath.AxisChild, xpath.AxisDescendant, xpath.AxisAttribute,
+			xpath.AxisSelf, xpath.AxisDescendantOrSelf, xpath.AxisNamespace:
+		default:
 			return fmt.Errorf("axis %v not allowed in match pattern", step.Axis)
 		}
 
@@ -2219,6 +2197,12 @@ func validateLocationPathPattern(expr xpath.Expr) error {
 }
 
 func validatePatternPathExpr(e xpath.PathExpr, nsBindings map[string]string) error {
+	if e.Path != nil {
+		if err := validateLocationPathPattern(e.Path); err != nil {
+			return err
+		}
+	}
+
 	// The filter part: only ContextItemExpr, RootExpr, or FunctionCall (key/id/doc)
 	switch f := e.Filter.(type) {
 	case xpath.ContextItemExpr:
@@ -2598,7 +2582,7 @@ func resolvePatternFunctionNamespace(prefix string, nsBindings map[string]string
 // through fc.Prefix. For the lexical (unprefixed or prefixed) form it falls back
 // to resolvePatternFunctionNamespace so explicit xmlns overrides are honored.
 func patternFunctionIdentity(fc xpath.FunctionCall, nsBindings map[string]string) (uri, local string) {
-	if strings.HasPrefix(fc.Name, "Q{") {
+	if strings.HasPrefix(fc.Name, lexicon.EQNamePrefix) {
 		if idx := strings.IndexByte(fc.Name, '}'); idx >= 0 {
 			return fc.Name[2:idx], fc.Name[idx+1:]
 		}
@@ -2631,8 +2615,7 @@ func resolvePatternPrefix(nsBindings map[string]string, prefix string) string {
 }
 
 // matchContextItemPredicates evaluates each predicate of a ".[pred]" pattern
-// with the current context item (ec.contextItem) and the population focus
-// (ec.position/ec.size) already in scope. A numeric predicate is treated as a
+// with the singleton focus already in scope. A numeric predicate is treated as a
 // position test against ec.position; any other predicate uses its effective
 // boolean value. All predicates must hold for a match.
 func (ec *execContext) matchContextItemPredicates(ctx context.Context, preds []xpath.Expr) bool {
@@ -2644,29 +2627,12 @@ func (ec *execContext) matchContextItemPredicates(ctx context.Context, preds []x
 
 		result, err := ec.evalPatternExpr(ctx, compiled, nil)
 		if err != nil {
+			ec.recordPatternError(ctx, err)
 			return false
 		}
 
-		seq := result.Sequence()
-		if seq == nil {
-			return false
-		}
-		// Numeric predicate: position test against the population position.
-		if xdm.SequenceLen(seq) == 1 {
-			if a, ok := seq.Get(0).(xdm.AtomicValue); ok && a.IsNumeric() {
-				// A positional predicate matches only when the numeric
-				// value equals the integer position exactly: position()=2.7
-				// is never true, so ".[2.7]" must not match position 2.
-				if a.ToFloat64() != float64(ec.position) {
-					return false
-				}
-
-				continue
-			}
-		}
-
-		ebv, err := xpath.EBV(seq)
-		if err != nil || !ebv {
+		match, err := result.MatchesPredicate(ec.position)
+		if err != nil || !match {
 			return false
 		}
 	}

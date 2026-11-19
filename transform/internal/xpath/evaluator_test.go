@@ -3,9 +3,12 @@ package xpath //nolint:testpackage // Exercises evaluator snapshots and reusable
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"math/big"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,6 +239,38 @@ func TestXPath10RejectsURIQualifiedNameTest(t *testing.T) {
 	}
 }
 
+func TestCompileXPath10LeavesSourceASTReusable(t *testing.T) {
+	t.Parallel()
+
+	const source = `concat(string(9007199254740993), ':', string(count(/r/n[9007199254740993 = 9007199254740992])))`
+	ast, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), `<r><n/><n/></r>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	evaluator := NewEvaluator(DefaultEvaluatorOptions)
+	for _, tc := range []struct {
+		version int
+		want    string
+	}{{31, "9007199254740993:0"}, {10, "9007199254740992:2"}, {31, "9007199254740993:0"}} {
+		expr, err := NewCompiler().Language(tc.version, nil).CompileExpr(ast)
+		if err != nil {
+			t.Fatalf("CompileExpr version %d: %v", tc.version, err)
+		}
+		result, err := evaluator.Evaluate(t.Context(), expr, doc)
+		if err != nil {
+			t.Fatalf("Evaluate version %d: %v", tc.version, err)
+		}
+		if got, ok := result.IsString(); !ok || got != tc.want {
+			t.Fatalf("version %d result = %q, want %q", tc.version, got, tc.want)
+		}
+	}
+}
+
 func TestNameTestNamespacePresence(t *testing.T) {
 	for _, tc := range []struct {
 		source   string
@@ -345,6 +380,88 @@ func TestManualNameTestNamespaceCompatibility(t *testing.T) {
 			}
 			if got := xdm.StringValue(nodes[0]); got != tc.want {
 				t.Errorf("actual %q; expected %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluationEntryCancellation(t *testing.T) {
+	doc, err := (xdm.ParseOptions{}).ParseText(t.Context(), `<r/>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{`.`, `()`, `/`, `1`, `true()`} {
+		t.Run(source, func(t *testing.T) {
+			expr, err := NewCompiler().Compile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, deadline := range []bool{false, true} {
+				ctx, cancel := context.WithCancel(t.Context())
+				want := context.Canceled
+				if deadline {
+					cancel()
+					ctx, cancel = context.WithDeadline(t.Context(), time.Unix(0, 0))
+					want = context.DeadlineExceeded
+				} else {
+					cancel()
+				}
+				defer cancel()
+				evaluator := NewEvaluator(DefaultEvaluatorOptions)
+				if got, err := evaluator.Evaluate(ctx, expr, doc); !errors.Is(err, want) || got != nil {
+					t.Errorf("Evaluate: %v, %v; want %v", got, err, want)
+				}
+				if got, err := evaluator.EvaluateEBV(ctx, expr, doc); !errors.Is(err, want) || got {
+					t.Errorf("EvaluateEBV: %v, %v; want %v", got, err, want)
+				}
+				state := evaluator.NewEvalState(doc)
+				if got, err := expr.EvaluateReuse(ctx, state, doc); !errors.Is(err, want) || xdm.SequenceLen(got.Sequence()) != 0 {
+					t.Errorf("EvaluateReuse: %v, %v; want %v", got, err, want)
+				}
+				if _, err := expr.EvaluateReuse(t.Context(), state, doc); err != nil {
+					t.Fatal("state after canceled call", err)
+				}
+			}
+		})
+	}
+}
+
+func TestEvaluateReuseDocumentInvocationBoundaries(t *testing.T) {
+	for _, unavailable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unavailable=%t", unavailable), func(t *testing.T) {
+			reads := 0
+			evaluator := NewEvaluator(DefaultEvaluatorOptions).URIResolver(documentResolverFunc(func(context.Context, string) (io.ReadCloser, error) {
+				reads++
+				if unavailable && reads == 1 {
+					return nil, errors.New("temporarily unavailable")
+				}
+				return io.NopCloser(strings.NewReader(fmt.Sprintf("<r>%d</r>", reads))), nil
+			}))
+			source := `string(doc('urn:test'))`
+			if unavailable {
+				source = `doc-available('urn:test')`
+			}
+			expr, err := NewCompiler().Compile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := evaluator.NewEvalState(nil)
+			shared := WithInvocationScope(t.Context())
+			fresh := WithInvocationScope(t.Context())
+			contexts := []context.Context{shared, shared, fresh, t.Context(), t.Context()}
+			for i, ctx := range contexts {
+				wantReads := i
+				if i == 0 {
+					wantReads = 1
+				}
+				want := fmt.Sprint(wantReads)
+				if unavailable {
+					want = fmt.Sprint(i > 1)
+				}
+				got, err := expr.EvaluateReuse(ctx, state, nil)
+				if err != nil || got.StringValue() != want || reads != wantReads {
+					t.Errorf("call %d: value=%q reads=%d err=%v; want %q reads=%d", i, got.StringValue(), reads, err, want, wantReads)
+				}
 			}
 		})
 	}

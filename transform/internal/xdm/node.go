@@ -421,10 +421,27 @@ func (d *Document) CreateComment(value string) *Comment {
 // CreatePI creates a detached processing instruction. Serialization validates its
 // target and data syntax.
 func (d *Document) CreatePI(name, data string) *ProcessingInstruction {
-	r := &tree.Node{Kind: tree.PINode, Name: tree.Name{Local: name}, Data: data}
+	return d.wrapPI(&tree.Node{Kind: tree.PINode, Name: tree.Name{Local: name}, Data: data})
+}
+
+// CreateDOEMarker creates a trusted XSLT output-escaping boundary.
+func (d *Document) CreateDOEMarker(disable bool) *ProcessingInstruction {
+	return d.wrapPI(tree.NewDOEMarker(disable))
+}
+
+func (d *Document) wrapPI(r *tree.Node) *ProcessingInstruction {
 	_ = d.wrap(context.Background(), r, detachedNodeSlot)
 
 	return mustNode[*ProcessingInstruction](d.nodes[r])
+}
+
+// DOEMarkerOf reports the structural output-escaping boundary on n.
+func DOEMarkerOf(n Node) tree.DOEMarker {
+	if pi, ok := n.(*ProcessingInstruction); ok && pi != nil {
+		return tree.DOEMarkerOf(pi.raw)
+	}
+
+	return tree.NoDOEMarker
 }
 
 // CreateCDATASection retains immutable text with a CDATA node identity.
@@ -487,8 +504,23 @@ func (d *Document) UnparsedEntity(name string) (tree.UnparsedEntity, bool) {
 	return tree.LookupUnparsedEntity(d.native, name)
 }
 
-// GetElementByID returns the indexed element, or nil when no ID mapping exists.
-func (d *Document) GetElementByID(id string) *Element { return d.ids[id] }
+// GetElementByID returns the indexed element when it belongs to the document tree.
+func (d *Document) GetElementByID(id string) *Element {
+	element := d.ids[id]
+	if element == nil || element.OwnerDocument() != d {
+		return nil
+	}
+
+	// Draft construction can register an element before attachment. Retain its
+	// registration across a detach or move, and check membership when queried.
+	for node := element.Parent(); node != nil; node = node.Parent() {
+		if node == d {
+			return element
+		}
+	}
+
+	return nil
+}
 
 func (d *Document) wrap(ctx context.Context, r *tree.Node, slot int) error {
 	if err := ctx.Err(); err != nil {
@@ -1347,7 +1379,7 @@ func NodeGetBase(doc *Document, n Node) string {
 	}
 
 	for _, p := range slices.Backward(chain) {
-		if p.view().baseURI != "" {
+		if p.view().baseURI != "" || p.view().absentOrphanBase && p.Parent() == nil {
 			base = p.view().baseURI
 		}
 
@@ -1370,7 +1402,7 @@ func NodeGetBaseBeforeXMLBase(doc *Document, node Node) string {
 	}
 
 	base := NodeGetBase(doc, node.Parent())
-	if node.view().baseURI != "" {
+	if node.view().baseURI != "" || node.view().absentOrphanBase && node.Parent() == nil {
 		base = node.view().baseURI
 	}
 
@@ -1378,8 +1410,12 @@ func NodeGetBaseBeforeXMLBase(doc *Document, node Node) string {
 }
 
 // SetNodeBaseURI records a construction base on an internal node view without
-// changing xml:base attributes.
-func SetNodeBaseURI(n Node, uri string) { n.view().baseURI = uri }
+// changing xml:base attributes. A parentless node can retain an absent base
+// even when its storage document has a URL.
+func SetNodeBaseURI(n Node, uri string) {
+	n.view().baseURI = uri
+	n.view().absentOrphanBase = uri == "" && n.Parent() == nil
+}
 
 // NodeBaseOverride returns the parser/construction base before xml:base.
 func NodeBaseOverride(n Node) string { return n.view().baseURI }
@@ -1443,7 +1479,8 @@ type nodeView struct {
 	// line retains source line information when available.
 	line int
 	// baseURI retains an explicit base override for this view.
-	baseURI string
+	baseURI          string
+	absentOrphanBase bool
 	// parent retains the logical parent independently of underlying storage ownership.
 	parent Node
 }
@@ -1795,6 +1832,7 @@ func copyIDProperties(source, destination Node) {
 // Language copies into new parents apply their own inheritance rules separately.
 func copyDocumentBases(source, destination Node) {
 	destination.view().baseURI = source.view().baseURI
+	destination.view().absentOrphanBase = source.view().absentOrphanBase
 	tree.SetNodeBase(destination.OwnerDocument().native, destination.view().raw, source.view().baseURI)
 
 	first, second := source.FirstChild(), destination.FirstChild()

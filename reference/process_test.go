@@ -129,9 +129,18 @@ func TestCanonicalizationConversions(t *testing.T) {
 	}
 
 	t.Run("octets after previous canonicalization are reparsed", func(t *testing.T) {
-		out := process(t, reference.Octets([]byte(`<r/>`)), []reference.Transform{{Algorithm: c14n.Canonical11}, {Algorithm: c14n.Exclusive}}, reference.Options{})
+		const input = `<r/>`
+		options := reference.Options{MaxInputBytes: len(input)}
+		chain := []reference.Transform{{Algorithm: c14n.Canonical11}, {Algorithm: c14n.Exclusive}}
+		out := process(t, reference.Octets([]byte(input)), chain, options)
 		if len(out.Steps()) != 4 || string(out.Bytes()) != `<r></r>` || out.ProducedBytes() != 14 {
 			t.Fatal(out.Steps(), out.ProducedBytes())
+		}
+
+		options.XMLLimits = document.DefaultLimits()
+		options.XMLLimits.MaxBytes = out.Size() - 1
+		if got, err := reference.Process(t.Context(), reference.Octets([]byte(input)), chain, options); got != nil || !errors.Is(err, document.ErrLimit) {
+			t.Fatalf("XML limit should apply to intermediate data: got %v, %v", got, err)
 		}
 	})
 	t.Run("DTD stays forbidden", func(t *testing.T) {
@@ -224,7 +233,74 @@ func TestBase64PaddingAcrossReaderBoundaries(t *testing.T) {
 	if _, err := reference.WriteReader(t.Context(), &out, source, []reference.Transform{{Algorithm: reference.Base64}}, reference.Options{}); err != nil || out.String() != "M" {
 		t.Fatalf("RFC2045 nonalphabet suffix: output=%q err=%v", out.String(), err)
 	}
+
+	t.Run("preserves the failing step and both input errors", func(t *testing.T) {
+		readErr := errors.New("source finalization failed")
+		source := &referenceTerminalReader{Reader: strings.NewReader("TQ==="), err: errors.Join(io.EOF, readErr)}
+		for _, chain := range [][]reference.Transform{
+			{{Algorithm: reference.Base64}},
+			{{Algorithm: reference.Base64}, {Algorithm: reference.Base64}},
+		} {
+			source.Reset("TQ===")
+
+			report, err := reference.WriteReader(t.Context(), io.Discard, source, chain, reference.Options{})
+			step, stepOK := errors.AsType[*reference.StepError](err)
+			if report != nil || !errors.Is(err, reference.ErrInput) || !errors.Is(err, readErr) || !errors.Is(err, io.EOF) ||
+				!stepOK || step.Index != 0 || step.Algorithm != reference.Base64 {
+				t.Errorf("%d steps: report=%v, error=%v", len(chain), report, err)
+			}
+		}
+	})
 }
+
+// referenceTerminalReader returns its terminal error together with the final bytes.
+type referenceTerminalReader struct {
+	*strings.Reader
+	err error
+}
+
+func (r *referenceTerminalReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if r.Len() == 0 {
+		return n, r.err
+	}
+
+	return n, err
+}
+
+func TestWriteReaderPreservesCopyFailuresAndCancellation(t *testing.T) {
+	sourceFailure := errors.New("source failed")
+	targetFailure := errors.New("destination failed")
+	for _, test := range []struct {
+		name      string
+		sourceErr error
+		targetErr error
+	}{
+		{"read and write fail", sourceFailure, targetFailure},
+		{"write fails after EOF", io.EOF, targetFailure},
+		{"write succeeds after read failure", sourceFailure, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			source := &referenceTerminalReader{Reader: strings.NewReader("input"), err: test.sourceErr}
+			target := referenceWriterFunc(func(data []byte) (int, error) {
+				cancel()
+				return len(data), test.targetErr
+			})
+			report, err := reference.WriteReader(ctx, target, source, nil, reference.Options{})
+			if report != nil || !errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) ||
+				errors.Is(err, sourceFailure) != errors.Is(test.sourceErr, sourceFailure) ||
+				errors.Is(err, targetFailure) != errors.Is(test.targetErr, targetFailure) {
+				t.Fatalf("WriteReader = (%v, %v); want cancellation plus read/write failures (except normal EOF)", report, err)
+			}
+		})
+	}
+}
+
+type referenceWriterFunc func([]byte) (int, error)
+
+func (f referenceWriterFunc) Write(data []byte) (int, error) { return f(data) }
 
 func TestEnvelopedIdentity(t *testing.T) {
 	const xml = `<r xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:Signature ID="one"><x>1</x></ds:Signature><ds:Signature ID="two"><x>2</x></ds:Signature><data>ok</data></r>`
@@ -546,6 +622,31 @@ func TestWriteAndCanonicalize(t *testing.T) {
 			t.Fatal(a.Bytes(), b.Bytes(), err)
 		}
 	})
+	t.Run("alternate method parameters are validated for every input kind", func(t *testing.T) {
+		for _, data := range []reference.Data{input, reference.Octets([]byte("data"))} {
+			var a, b bytes.Buffer
+			method := reference.Transform{Algorithm: c14n.Canonical10, InclusivePrefixes: []string{"u"}}
+			report, err := reference.WriteAndCanonicalize(t.Context(), &a, &b, data, nil, method, reference.Options{})
+			if report != nil || !errors.Is(err, reference.ErrInput) || a.Len() != 0 || b.Len() != 0 {
+				t.Errorf("%v: report=%v, error=%v, output=%q/%q", data.Kind(), report, err, a.String(), b.String())
+			}
+		}
+	})
+	t.Run("implicit conversion needs permission before either write", func(t *testing.T) {
+		var original, alternate bytes.Buffer
+		method := reference.Transform{Algorithm: c14n.Exclusive}
+		options := reference.Options{AllowedTransforms: []string{c14n.Exclusive}}
+		report, err := reference.WriteAndCanonicalize(t.Context(), &original, &alternate, input, nil, method, options)
+		var step *reference.StepError
+		if report != nil || !errors.Is(err, reference.ErrPolicy) || !errors.As(err, &step) || step.Index != -1 || step.Algorithm != c14n.Canonical10 {
+			t.Fatalf("report = %v, error = %v; want implicit C14N policy error", report, err)
+		}
+
+		if original.Len() != 0 || alternate.Len() != 0 {
+			t.Fatal("conversion wrote output before checking policy")
+		}
+	})
+
 	for _, kind := range []string{"produced", "visits", "cancel", "writer"} {
 		t.Run(kind, func(t *testing.T) {
 			options := reference.DefaultOptions()

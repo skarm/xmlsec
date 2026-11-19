@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/skarm/xmlsec/internal/lexicon"
+	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/xmlchar"
 	"github.com/skarm/xmlsec/transform/internal/xdm"
 	uripath "github.com/skarm/xmlsec/transform/internal/xdm/uri"
 	"github.com/skarm/xmlsec/transform/internal/xpath"
@@ -261,30 +263,41 @@ func (ec *execContext) isItemOutputMethod() bool {
 // instruction, evaluating the format avt if present.
 // Returns an error for XTDE0290 (prefix not bound) or XTDE1460 (invalid QName).
 func (ec *execContext) resolveResultDocFormat(ctx context.Context, inst *resultDocumentInst) (string, error) {
+	name := inst.Format
 	if inst.FormatAVT != nil {
 		v, err := inst.FormatAVT.evaluate(ctx, ec.contextNode)
 		if err != nil {
-			// A dynamic error raised while evaluating the format AVT must be
-			// surfaced, not swallowed: silently falling back to the static
-			// format would hide a transformation failure from the caller.
 			return "", err
 		}
 
-		v = strings.TrimSpace(v)
-		if v != "" && !strings.HasPrefix(v, "Q{") {
-			// XTDE0290: prefix must have a namespace binding
-			if prefix, _, ok := strings.Cut(v, ":"); ok {
-				if _, ok := inst.NSBindings[prefix]; !ok {
-					return "", dynamicError(errCodeXTDE0290,
-						"prefix %q in result-document format has no namespace binding", prefix)
-				}
-			}
-		}
-
-		return resolveQName(v, inst.NSBindings), nil
+		// XSLT 3.0 §§1.2 and 5.1.1 apply XML whitespace trimming to the effective value.
+		name = strings.Trim(v, lexicon.XMLWhitespace)
+	} else if name == "" {
+		return "", nil // The format attribute was omitted.
 	}
 
-	return inst.Format, nil
+	if isValidEQName(name) {
+		uri, local, _ := strings.Cut(name[2:], "}")
+		if uri == "" {
+			return local, nil
+		}
+
+		return xdm.ClarkName(uri, local), nil
+	}
+
+	if !xmlchar.IsValidQName(name) {
+		return "", dynamicError(errCodeXTDE1460, "xsl:result-document format %q must be a non-empty EQName", name)
+	}
+
+	if prefix, local, prefixed := strings.Cut(name, ":"); prefixed {
+		if uri, bound := resolvePrefixWithXML(prefix, nsResolverFromMap(inst.NSBindings)); bound {
+			return xdm.ClarkName(uri, local), nil
+		}
+
+		return "", dynamicError(errCodeXTDE0290, "prefix %q in result-document format has no namespace binding", prefix)
+	}
+
+	return name, nil
 }
 
 // resolveResultDocMethod returns the effective output method for a result-document
@@ -349,6 +362,7 @@ func (ec *execContext) commitPrimaryOutputState(inst *resultDocumentInst, effect
 		primaryOverrides.ResolvedCharMap = make(map[rune]string, len(ec.primaryResolvedCharMap))
 		maps.Copy(primaryOverrides.ResolvedCharMap, ec.primaryResolvedCharMap)
 		ec.primaryOutputOverrides = primaryOverrides
+		ec.primaryOutputUsesNamedFormat = effectiveFormat != ""
 	}
 }
 
@@ -597,16 +611,7 @@ func (ec *execContext) resolveResultItemSeparator(ctx context.Context, inst *res
 	var itemSep *string
 
 	if inst.ItemSeparatorSet {
-		// Attribute was present on xsl:result-document; evaluate avt value
-		// (nil for #absent, or the evaluated string).
-		if inst.ItemSeparator != nil {
-			sepVal, err := inst.ItemSeparator.evaluate(ctx, ec.contextNode)
-			if err != nil {
-				return nil, err
-			}
-
-			itemSep = &sepVal
-		}
+		return ec.evalResultItemSeparator(ctx, inst.ItemSeparator)
 	} else if effectiveFormat != "" {
 		if outDef, ok := ec.effectiveOutputs()[effectiveFormat]; ok && outDef.ItemSeparator != nil {
 			itemSep = outDef.ItemSeparator
@@ -616,6 +621,24 @@ func (ec *execContext) resolveResultItemSeparator(ctx context.Context, inst *res
 	}
 
 	return itemSep, nil
+}
+
+// evalResultItemSeparator distinguishes the absent sentinel from an empty string.
+func (ec *execContext) evalResultItemSeparator(ctx context.Context, separator *avt) (*string, error) {
+	if separator == nil {
+		return nil, nil //nolint:nilnil // A literal #absent carries no AVT.
+	}
+
+	value, err := separator.evaluate(ctx, ec.contextNode)
+	if err != nil {
+		return nil, err
+	}
+
+	if value == itemSeparatorAbsentToken {
+		return nil, nil //nolint:nilnil // An AVT can also evaluate to the absent sentinel.
+	}
+
+	return &value, nil
 }
 
 // execPrimaryResultDocument evaluates every serialization AVT before any body
@@ -757,6 +780,9 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 	bufFrame.pendingItems = nil
 	bufFrame.seqPlaceholders = nil
 	bufFrame.conditionalScopes = nil
+	bufFrame.conditionalAttrs = nil
+	bufFrame.tryWrapper = nil
+	bufFrame.tryNamespacePrefixes = nil
 	savedStack := ec.outputStack
 	bufferedStack := make([]*outputFrame, len(ec.outputStack))
 	copy(bufferedStack, ec.outputStack)
@@ -794,8 +820,6 @@ func (ec *execContext) execPrimaryBufferedDocument(ctx context.Context, inst *re
 	realBase.prevWasAtomic = bufFrame.prevWasAtomic
 	realBase.prevHadOutput = bufFrame.prevHadOutput
 	realBase.outputSerial = bufFrame.outputSerial
-	realBase.emptyAtomicGen = bufFrame.emptyAtomicGen
-	realBase.seqConstructorGen = bufFrame.seqConstructorGen
 	// Commit the serialization overrides + character-map state. The overrides
 	// were evaluated up front (before any primary output was emitted) so that
 	// an AVT error releases the URI reservation without leaving partial primary
@@ -1224,17 +1248,12 @@ func (ec *execContext) evalResultDocItemParams(ctx context.Context, inst *result
 	}
 
 	if inst.ItemSeparatorSet {
-		if inst.ItemSeparator != nil {
-			sepVal, err := inst.ItemSeparator.evaluate(ctx, ec.contextNode)
-			if err != nil {
-				return err
-			}
-
-			base.ItemSeparator = &sepVal
-		} else {
-			base.ItemSeparator = nil
-			base.ItemSeparatorAbsent = true
+		separator, err := ec.evalResultItemSeparator(ctx, inst.ItemSeparator)
+		if err != nil {
+			return err
 		}
+
+		base.ItemSeparator, base.ItemSeparatorAbsent = separator, separator == nil
 	}
 
 	if inst.BuildTree != nil {
@@ -1350,7 +1369,7 @@ func canonicalResultURIKey(href, base string) string {
 		// the SAME key (XTDE1490 duplicate detection). Resolving an absolute
 		// hierarchical reference against itself runs RFC 3986 remove_dot_segments
 		// while preserving the scheme/authority.
-		return ref.ResolveReference(ref).String()
+		return tree.ResolveURIReference(ref, ref).String()
 	}
 
 	if base == "" {
@@ -1369,7 +1388,7 @@ func canonicalResultURIKey(href, base string) string {
 		return href
 	}
 
-	return baseURL.ResolveReference(ref).String()
+	return tree.ResolveURIReference(baseURL, ref).String()
 }
 
 // foldParamDocOverrides applies the highest-priority parameter document after

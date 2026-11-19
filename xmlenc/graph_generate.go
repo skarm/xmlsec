@@ -15,6 +15,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/tree"
+	"github.com/skarm/xmlsec/internal/uriref"
 )
 
 const (
@@ -87,7 +88,7 @@ type DerivedKeyOptions struct {
 }
 
 // EncryptKey wraps rawKey into standalone EncryptedKey. The recipient supplies
-// exactly one RSA PublicKey or symmetric Secret; Decrypter is never accepted.
+// exactly one RSA PublicKey, ECDHPublicKey (with AES key wrap) or symmetric Secret.
 // Raw keys are 16/24/32 bytes. TripleDES wrap accepts only a 24-byte TripleDES
 // key under explicit legacy policy and adjusts its DES parity as RFC3217 requires.
 func EncryptKey(ctx context.Context, rawKey []byte, recipient KeyGraphKey, options EncryptedKeyOptions) (*document.Document, error) {
@@ -319,7 +320,7 @@ func graphAppendReferences(root *tree.Node, references []KeyGraphReference) erro
 	list := encryptedElement(nameReferenceList)
 
 	for _, ref := range references {
-		if !validGraphReference(ref.URI) {
+		if !validGraphReference(ref.URI) || uriref.Validate(ref.URI) != nil {
 			return ErrPolicy
 		}
 

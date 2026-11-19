@@ -404,7 +404,7 @@ func catchCodeMatches(catchCode string, errQName xdm.QNameValue) bool {
 	}
 
 	// Handle Q{uri}local and Q{uri}*
-	if strings.HasPrefix(catchCode, "Q{") {
+	if strings.HasPrefix(catchCode, lexicon.EQNamePrefix) {
 		if idx := strings.Index(catchCode, "}"); idx >= 0 {
 			uri := catchCode[2:idx]
 

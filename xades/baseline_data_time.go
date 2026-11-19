@@ -103,8 +103,9 @@ func (value DataTimestamp) Canonicalization() reference.Transform {
 	return reference.CloneTransforms([]reference.Transform{value.method})[0]
 }
 
-// ObjectReferences returns an independent slice of ordered individual Reference URIs.
-// All-data timestamps have no individual URI list.
+// ObjectReferences returns an independent slice of the Reference URIs in
+// imprint order. Individual timestamps use their Include URIs. All-data
+// timestamps derive fragment identifiers from SignedInfo references.
 func (value DataTimestamp) ObjectReferences() []string { return slices.Clone(value.identifiers) }
 
 // WriteImprintInput constructs EN319132-1 5.2.8 input in exact Reference/Include
@@ -152,6 +153,7 @@ func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, in
 			return err
 		}
 
+		references := verified.References()
 		index := 0
 
 		for _, element := range si.Children() {
@@ -159,7 +161,7 @@ func (value *DataTimestamp) bindReferences(verified *xmldsig.SignatureResult, in
 				continue
 			}
 
-			ref := verified.References()[index]
+			ref := references[index]
 			index++
 
 			if ref.Type() == SignedPropertiesType {

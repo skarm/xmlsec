@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/ed25519"
 	"crypto/x509"
 	"errors"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"github.com/skarm/xmlsec/document"
 	"github.com/skarm/xmlsec/internal/lexicon"
 	"github.com/skarm/xmlsec/internal/nilcheck"
+	"github.com/skarm/xmlsec/internal/signature"
 	"github.com/skarm/xmlsec/internal/tree"
 	"github.com/skarm/xmlsec/pki"
 	"github.com/skarm/xmlsec/reference"
@@ -207,11 +207,7 @@ func baselineSignerCertificate(ctx context.Context, signer crypto.Signer, certif
 		return nil, err
 	}
 
-	if key, ok := signer.(ed25519.PrivateKey); ok && len(key) != ed25519.PrivateKeySize {
-		return nil, ErrCertificate
-	}
-
-	pin, err := pki.NewKeyPin(signer.Public())
+	pin, err := pki.NewKeyPin(signature.SignerPublic(signer))
 	if err != nil {
 		return nil, errors.Join(ErrCertificate, err)
 	}
@@ -226,6 +222,11 @@ func baselineSignerCertificate(ctx context.Context, signer crypto.Signer, certif
 func prepareBaselineTemplate(ctx context.Context, certificate *x509.Certificate, options BaselineSignOptions) (xmldsig.SignatureTemplate, BaselineVerifyOptions, error) {
 	template := options.Template
 	if len(options.Properties.AdditionalCertificates) > maximumAdditionalCertificates || len(options.Properties.DataObjects) > maximumDataObjectFormats || len(options.Properties.Commitments) > maximumCommitments {
+		return template, options.Validation, ErrProfile
+	}
+
+	// These values share the candidate limit during post-signature validation.
+	if len(options.Properties.AdditionalCertificates) > maximumCertificateValues-len(options.Validation.CertificateValues) {
 		return template, options.Validation, ErrProfile
 	}
 
@@ -261,6 +262,9 @@ func prepareBaselineTemplate(ctx context.Context, certificate *x509.Certificate,
 	}
 
 	if len(options.Properties.DataObjects) == 0 {
+		// Default formats belong to this operation, even when the caller's empty slice has spare capacity.
+		options.Properties.DataObjects = nil
+
 		for _, ref := range template.References {
 			if ref.Type == countersignedSignatureType {
 				continue

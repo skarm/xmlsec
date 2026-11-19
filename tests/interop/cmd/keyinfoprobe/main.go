@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/skarm/xmlsec/c14n"
@@ -44,27 +45,35 @@ type reply struct {
 }
 
 func main() {
-	d := json.NewDecoder(os.Stdin)
-	out := json.NewEncoder(os.Stdout)
+	if err := serve(os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func serve(input io.Reader, output io.Writer) error {
+	decoder := json.NewDecoder(input)
+	encoder := json.NewEncoder(output)
 
 	for {
 		var t task
-		if e := d.Decode(&t); e != nil {
-			return
+		if err := decoder.Decode(&t); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+
+			return err
 		}
 
-		a := reply{}
+		result, err := run(t)
 
-		var e error
-
-		a.answer, e = run(t)
-		if e != nil {
-			a.Error = e.Error()
+		response := reply{answer: result}
+		if err != nil {
+			response.Error = err.Error()
 		}
 
-		if e = out.Encode(a); e != nil {
-			fmt.Fprintln(os.Stderr, e)
-			os.Exit(1)
+		if err := encoder.Encode(response); err != nil {
+			return err
 		}
 	}
 }

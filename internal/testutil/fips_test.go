@@ -9,11 +9,11 @@ import (
 	"github.com/skarm/xmlsec/internal/testutil"
 )
 
-func TestRunFIPSTestExecutesAssertionsWithFIPSEnabled(t *testing.T) {
+func TestRunFIPSTestExecutesAssertionsWithStrictEnforcement(t *testing.T) {
 	const receiptEnv = "XMLSEC_TEST_FIPS_RECEIPT"
-	if fips140.Enabled() {
+	if fips140.Enforced() {
 		if !testutil.RunFIPSTest(t) {
-			t.Fatal("RunFIPSTest skipped local assertions with FIPS enabled")
+			t.Fatal("RunFIPSTest skipped local assertions with strict enforcement")
 		}
 		if receipt := os.Getenv(receiptEnv); receipt != "" {
 			if err := os.WriteFile(receipt, []byte("executed"), 0o600); err != nil {
@@ -26,7 +26,7 @@ func TestRunFIPSTestExecutesAssertionsWithFIPSEnabled(t *testing.T) {
 	receipt := filepath.Join(t.TempDir(), "fips-result")
 	t.Setenv(receiptEnv, receipt)
 	if testutil.RunFIPSTest(t) {
-		t.Fatal("RunFIPSTest requested local assertions with FIPS disabled")
+		t.Fatal("RunFIPSTest requested local assertions without strict enforcement")
 	}
 	got, err := os.ReadFile(receipt)
 	if err != nil || string(got) != "executed" {

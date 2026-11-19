@@ -103,6 +103,9 @@ func TestStringNormalizationAndReplacementBoundariesASTAndVM(t *testing.T) {
 		{"fully_normalized_composes_without_inserting_space", `normalize-unicode(codepoints-to-string((65, 769)), 'FULLY-NORMALIZED')`, "Á"},
 		{"longest_valid_replacement_group", `replace('ab','(a)(b)','$21-$0-$9')`, "b1-ab-"},
 		{"longest_multidigit_capture", `replace('abcdefghij','(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)','$10$1')`, "ja"},
+		{"replacement_decimal_group_and_literal_suffix", `replace('x','(x)','$00-$01-$99-$19-$099-$009')`, "x-x-9-x9-9-"},
+		{"replacement_missing_group_without_captures", `replace('x','x','$99')`, "9"},
+		{"replacement_empty_input_still_returns_one_string", `(count(replace((),'x','y')),replace((),'x','$','q') eq '')`, "1|true"},
 		{"empty_sequence_after_atomization", `(empty(compare([], '')), empty(codepoint-equal('', [])), codepoint-equal('', ''))`, "true|true|true"},
 	})
 }
@@ -209,6 +212,7 @@ func TestStringMatchingAndNormalizationASTAndVM(t *testing.T) {
 		{"token_matching_honors_collation", `(contains-token('Alpha BETA','beta','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive'),contains-token('Alpha BETA','beta'))`, "true|false"},
 		{"delimiters_honor_collation_without_changing_original_text", `(contains('preABCpost','abc','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive'),starts-with('ABCpost','abc','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive'),ends-with('preABC','abc','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive'),substring-before('preABCpost','abc','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive'),substring-after('preABCpost','abc','http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive'))`, "true|true|true|pre|post"},
 		{"compatibility_forms_and_identity_form", `(normalize-unicode('①','NFKC'), string-to-codepoints(normalize-unicode('é','NFD')), normalize-unicode('①',''), normalize-unicode('①','NFKD'))`, "1|101|769|①|1"},
+		{"normalization_accepts_absent_input_and_empty_string", `(normalize-unicode((), 'unknown') eq '', normalize-unicode('', 'NFC') eq '')`, "true|true"},
 		{"translate_uses_first_duplicate_and_deletes_excess", `translate('aba😀cz','aab😀c','xyZ')`, "xZxz"},
 		{"literal_regex_and_replacement_text", `(matches('a.b','a.b','q'),matches('axb','a.b','q'),replace('a.b a.b','a.b','$1','q'),tokenize('a.b.c','.','q'))`, "true|false|$1 $1|a|b|c"},
 		{"replacement_keeps_dollar_and_backslash_literals", `replace('abc','(a)(b)','$2$1\$\\')`, "ba$\\c"},
@@ -220,7 +224,12 @@ func TestStringFunctionErrorsASTAndVM(t *testing.T) {
 	for _, tc := range []struct{ name, expression, code string }{
 		{"analyze_string_requires_nonempty_matches", `analyze-string('abc','a*')`, "FORX0003"},
 		{"replace_rejects_invalid_escape", `replace('abc','a','\q')`, "FORX0004"},
+		{"replace_checks_pattern_for_empty_input", `replace((),'[','y')`, "FORX0002"},
+		{"replace_checks_flags_for_empty_input", `replace((),'x','y','z')`, "FORX0001"},
+		{"replace_checks_zero_length_match_for_empty_input", `replace((),'x*','y')`, "FORX0003"},
+		{"replace_checks_replacement_for_empty_input", `replace((),'x','$')`, "FORX0004"},
 		{"normalization_rejects_unknown_form", `normalize-unicode('a','unknown')`, "FOCH0003"},
+		{"normalization_checks_form_for_present_empty_string", `normalize-unicode('','unknown')`, "FOCH0003"},
 		{"contains_token_rejects_unknown_collation", `contains-token('alpha','alpha','urn:example:unknown-collation')`, "FOCH0002"},
 	} {
 		for _, mode := range []string{runtimeASTMode, "VM"} {

@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
 
+	"github.com/skarm/xmlsec/cms"
 	"github.com/skarm/xmlsec/internal/testutil"
 	"github.com/skarm/xmlsec/internal/testutil/testcert"
 	"github.com/skarm/xmlsec/pki"
@@ -143,6 +145,9 @@ func TestPKICMSAndProtectedIdentityCommands(t *testing.T) {
 	cli(t, response, "pki", "ocsp-verify", "-certificate", f.cert, "-issuer", f.root, "-nonce-file", nonce, "-at", f.at)
 	wrongNonce := testutil.WriteFile(t, f.dir, "wrong-nonce", []byte("wrong"))
 	rejectCLI(t, response, "pki", "ocsp-verify", "-certificate", f.cert, "-issuer", f.root, "-nonce-file", wrongNonce, "-at", f.at)
+	emptyNonce := testutil.WriteFile(t, f.dir, "empty-nonce", nil)
+	rejectCLI(t, nil, "pki", "ocsp-request", "-certificate", f.cert, "-issuer", f.root, "-nonce-file", emptyNonce)
+	rejectCLI(t, response, "pki", "ocsp-verify", "-certificate", f.cert, "-issuer", f.root, "-nonce-file", emptyNonce, "-at", f.at)
 
 	data := []byte("authenticated CMS content\x00\xff")
 
@@ -176,6 +181,8 @@ func TestPKICMSAndProtectedIdentityCommands(t *testing.T) {
 		}
 	}
 
+	t.Run("CMS input and output budgets", func(t *testing.T) { testCMSInputOutputBudgets(t, f) })
+
 	signers := testutil.WriteJSON(t, f.dir, "signers.json", []cmsSignerFile{{Key: "leaf.key", Certificate: "leaf.der"}, {Key: "tsa.key", Certificate: "tsa.der"}})
 	signed := cli(t, data, nameCMS, nameSign, "-signers", signers)
 	cli(t, signed, nameCMS, nameVerify, "-expect-certificate", f.cert, "-expect-certificate", f.tsaCert)
@@ -184,6 +191,44 @@ func TestPKICMSAndProtectedIdentityCommands(t *testing.T) {
 	identityFile := testutil.WriteFile(t, f.dir, "identity.p12", identity)
 	cli(t, nil, "key", nameInspect, "-in", identityFile, "-kind", namePKCS12, "-password-file", password)
 	cli(t, nil, "key", namePublic, "-in", identityFile, "-key-format", namePKCS12, "-password-file", password)
+}
+
+func testCMSInputOutputBudgets(t *testing.T, f evidenceFixture) {
+	t.Helper()
+	data := bytes.Repeat([]byte{0x0a, 0x80}, 1024)
+	sign := []string{nameCMS, nameSign, flagKey, f.key, "-certificate", f.cert}
+	signed := cli(t, data, sign...)
+	const outputBudget = "512"
+	for _, command := range [][]string{
+		{nameCMS, nameInspect, "-max-output-bytes", outputBudget},
+		{nameCMS, nameVerify, "-expect-certificate", f.cert, "-max-output-bytes", outputBudget},
+	} {
+		if report := cli(t, signed, command...); !bytes.Contains(report, []byte(`"content_bytes": 2048`)) {
+			t.Fatalf("CMS report did not count the full content: %s", report)
+		}
+	}
+
+	detached := cli(t, data, append(slices.Clone(sign), "-detached", "-omit-certificates", "-max-output-bytes", outputBudget)...)
+	content := testutil.WriteFile(t, t.TempDir(), "content", data)
+	if report := cli(t, detached, nameCMS, nameVerify, "-expect-certificate", f.cert, "-content", content, "-max-output-bytes", outputBudget); !bytes.Contains(report, []byte(`"content_bytes": 2048`)) {
+		t.Fatalf("detached verification did not count the full content: %s", report)
+	}
+
+	dir := t.TempDir()
+	previous := []byte("previous output")
+	path := testutil.WriteFile(t, dir, "signed.der", previous)
+	input := bytes.NewReader(data)
+	args := append(slices.Clone(sign), "-out", path, "-max-output-bytes", outputBudget)
+	if err := run(t.Context(), args, input, io.Discard, io.Discard); !errors.Is(err, cms.ErrPolicy) || input.Len() == 0 {
+		t.Fatalf("attached signing did not stop at the output budget: %v, %d unread bytes", err, input.Len())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, previous) {
+		t.Fatalf("failed attached signing replaced the previous output: %q, %v", got, err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("failed attached signing left staging output: %v, %v", entries, err)
+	}
 }
 
 func TestTimestampAndXAdESLifecycle(t *testing.T) {
@@ -267,6 +312,37 @@ func TestTimestampAndXAdESLifecycle(t *testing.T) {
 	}
 
 	rejectCLI(t, timed, "xades", "validate", "-certificate", f.cert, "-trust", validator, "-at", f.at)
+}
+
+func TestTimestampResponseChecksExplicitExpectations(t *testing.T) {
+	t.Parallel()
+
+	f := evidenceSetup(t)
+	nonce := testutil.WriteFile(t, f.dir, "nonce", []byte("nonce for this request"))
+	other := testutil.WriteFile(t, f.dir, "other-nonce", []byte("nonce from a different request"))
+	request := cli(t, []byte("timestamped content"), "timestamp", nameRequest, "-hash", "sha384", "-nonce-file", nonce, "-tsa-policy", "1.2.3.4")
+	requestFile := testutil.WriteFile(t, f.dir, "request.tsq", request)
+	response := cli(t, request, "timestamp", nameIssue, flagKey, f.tsaKey, "-certificate", f.tsaCert, "-at", f.at, "-serial", "1", "-tsa-policy", "1.2.3.4")
+	args := []string{"timestamp", nameVerify, "-request", requestFile, "-trust", f.tsaTrust, "-at", f.at}
+	cli(t, response, args...)
+	cli(t, response, append(append([]string(nil), args...), "-hash", "sha384", "-tsa-policy", "1.2.3.4", "-nonce-file", nonce)...)
+	for _, flag := range [][]string{{"-hash", "sha512"}, {"-tsa-policy", "1.2.3.5"}, {"-nonce-file", other}} {
+		t.Run(flag[0], func(t *testing.T) {
+			t.Parallel()
+
+			token := filepath.Join(t.TempDir(), "token.der")
+			flags := append(append([]string(nil), args...), flag...)
+			flags = append(flags, "-token-out", token)
+			var out bytes.Buffer
+			err := run(t.Context(), flags, bytes.NewReader(response), &out, io.Discard)
+			if !errors.Is(err, timestamp.ErrBinding) || !bytes.Contains(out.Bytes(), []byte(`"status": "invalid"`)) {
+				t.Errorf("timestamp verify with mismatching %s = %v, %s", flag[0], err, &out)
+			}
+			if _, err := os.Stat(token); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("token output should be absent: %v", err)
+			}
+		})
+	}
 }
 
 func TestSAMLCommands(t *testing.T) {

@@ -64,6 +64,11 @@ func (p *transformPipeline) run(dst io.Writer, transforms []Transform) (*Report,
 		}
 	}
 
+	finalNodes := p.value.kind == NodeSet
+	if finalNodes && !allowed(p.processor.opt, c14n.Canonical10) {
+		return nil, &StepError{-1, c14n.Canonical10, ErrPolicy}
+	}
+
 	if p.alternate != nil {
 		var err error
 
@@ -73,11 +78,7 @@ func (p *transformPipeline) run(dst io.Writer, transforms []Transform) (*Report,
 		}
 	}
 
-	if p.value.kind == NodeSet {
-		if !allowed(p.processor.opt, c14n.Canonical10) {
-			return nil, &StepError{-1, c14n.Canonical10, ErrPolicy}
-		}
-
+	if finalNodes {
 		if err := p.canonical(Transform{Algorithm: c14n.Canonical10}, true, -1); err != nil {
 			return nil, err
 		}
@@ -320,7 +321,7 @@ func (r *producedInput) Read(dst []byte) (int, error) {
 		}
 	}
 
-	if err != nil && !errors.Is(err, io.EOF) {
+	if err != nil && err != io.EOF { //nolint:errorlint // Only bare EOF completes the step; joined EOF can carry a failure.
 		err = pipelineError(r.index, r.algorithm, err)
 	}
 

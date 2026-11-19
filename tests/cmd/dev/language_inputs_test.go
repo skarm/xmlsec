@@ -84,18 +84,26 @@ func TestPrepareLanguageInputsReportsMissingConfiguration(t *testing.T) {
 
 func TestLanguagePreparedSnapshotRejectsStaleOrMissingEvidence(t *testing.T) {
 	t.Parallel()
-	directory := t.TempDir()
+	base := t.TempDir()
+	directory := filepath.Join(base, "original")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stamp := languageProofStamp{SourceSHA256: "source", RegisterSHA256: "register"}
 	stream := languageProofStream{SchemaVersion: 1, Before: stamp, After: stamp, Arguments: []string{"test", "-json", "-count=1", "./fixture"}, ExitCode: 0, Events: []languageProofEvent{{Package: "fixture", Action: "start"}, {Package: "fixture", Action: "pass"}}}
 	artifact := languageProofArtifact{SchemaVersion: 1, Stamp: stamp, Streams: []languageProofStream{stream}}
-	if err := writeLanguageProofFile(filepath.Join(directory, "events.json"), artifact); err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range languagePreparedReports(directory) {
-		if err := writeLanguageProofFile(file, suiteReport{SourceSHA256: stamp.SourceSHA256}); err != nil {
+	writeSnapshot := func(dir string) {
+		t.Helper()
+		if err := writeLanguageProofFile(filepath.Join(dir, "events.json"), artifact); err != nil {
 			t.Fatal(err)
 		}
+		for _, file := range languagePreparedReports(dir) {
+			if err := writeLanguageProofFile(file, suiteReport{SourceSHA256: stamp.SourceSHA256}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
+	writeSnapshot(directory)
 	if !languagePreparedValid(directory, stamp) {
 		t.Fatal("complete current snapshot was not reusable")
 	}
@@ -107,6 +115,24 @@ func TestLanguagePreparedSnapshotRejectsStaleOrMissingEvidence(t *testing.T) {
 	}
 	if languagePreparedValid(directory, stamp) {
 		t.Fatal("incomplete snapshot was reused")
+	}
+	work, err := os.MkdirTemp(base, "preparing-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSnapshot(work)
+	recovered, err := publishLanguagePrepared(work, directory, stamp)
+	if err != nil {
+		t.Fatalf("cannot publish complete evidence alongside incomplete snapshot: %v", err)
+	}
+	if recovered == directory || findLanguagePrepared(directory, stamp) != recovered {
+		t.Fatal("reader did not resolve the complete replacement generation", recovered)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "events.json")); err != nil {
+		t.Fatal("recovery removed the previous directory", err)
+	}
+	if got := findLanguagePrepared(directory, languageProofStamp{SourceSHA256: "new-source", RegisterSHA256: "register"}); got != "" {
+		t.Fatal("recovery reused unrelated evidence", got)
 	}
 }
 
@@ -168,11 +194,12 @@ func configureLanguageTest(t *testing.T, evidence bool) {
 	if !evidence || os.Getenv("XMLSEC_P3_TEST_EVENTS") != "" {
 		return
 	}
-	directory, stamp, err := languagePreparedDirectory(t.Context(), root, base, inputs)
+	key, stamp, err := languagePreparedDirectory(t.Context(), root, base, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !languagePreparedValid(directory, stamp) {
+	directory := findLanguagePrepared(key, stamp)
+	if directory == "" {
 		t.Log("Preparing current-source language evidence in the external cache; the first run may take several minutes.")
 		command := exec.CommandContext(t.Context(), "go", "run", "./tests/cmd/dev", "proof", "prepare")
 		command.Dir = root
@@ -180,6 +207,10 @@ func configureLanguageTest(t *testing.T, evidence bool) {
 		command.Stdout, command.Stderr = &output, &output
 		if err := command.Run(); err != nil {
 			t.Fatalf("prepare language evidence: %v\n%s", err, output.String())
+		}
+		directory = findLanguagePrepared(key, stamp)
+		if directory == "" {
+			t.Fatalf("prepare did not publish evidence for the current sources\n%s", output.String())
 		}
 	}
 	t.Setenv("XMLSEC_P3_TEST_EVENTS", filepath.Join(directory, "events.json"))

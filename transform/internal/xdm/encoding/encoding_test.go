@@ -27,6 +27,7 @@ func TestLoadDecodesIncrementally(t *testing.T) {
 		{" UTF_16LE ", []byte{0x41, 0, 0x3d, 0xd8, 0, 0xde}, "A😀"},
 		{"utf-16be", []byte{0, 0x41, 0xd8, 0x3d, 0xde, 0}, "A😀"},
 		{"utf-16", []byte{0xfe, 0xff, 0, 0x41}, "A"},
+		{"ISO-10646-UCS-2", []byte{0xfe, 0xff, 0x4e, 0x2d, 0xff, 0xfd}, "\ufeff中\ufffd"},
 		{"utf-32be", []byte{0, 0, 0, 0x41, 0, 1, 0xf6, 0}, "A😀"},
 		{"ucs4-2143", []byte{0, 0, 0x41, 0, 1, 0, 0, 0xf6}, "A😀"},
 		{"ucs4-3412", []byte{0, 0x41, 0, 0, 0xf6, 0, 0, 1}, "A😀"},
@@ -68,6 +69,8 @@ func TestLoadRejectsMalformedInput(t *testing.T) {
 		want  error
 	}{
 		{"us-ascii", []byte{0x80}, encoding.ErrInvalidASCII},
+		{"ucs-2", []byte{0x4e}, encoding.ErrInvalidEncodedChar},
+		{"ucs-2", []byte{0xd8, 0x3d, 0xde, 0x00}, encoding.ErrInvalidEncodedChar},
 		{"utf-16le", []byte{0x41}, encoding.ErrInvalidEncodedChar},
 		{"utf-16be", []byte{0xd8, 0}, encoding.ErrInvalidEncodedChar},
 		{"utf-16le", []byte{0, 0xdc}, encoding.ErrInvalidEncodedChar},
@@ -173,6 +176,45 @@ func TestUndefinedSingleByteDecodeRejectsSubstitution(t *testing.T) {
 		if got != "" || !errors.As(err, &detail) || detail.Code != unparsedtext.ErrCodeEncoding || !errors.Is(err, encoding.ErrInvalidEncodedChar) {
 			t.Fatalf("undefined octet text %q, %v; want empty/FOUT1190 retaining ErrInvalidEncodedChar", got, err)
 		}
+	}
+}
+
+func TestThaiEncodingMappings(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		label, text, unrepresentable string
+		octets, undefined            []byte
+	}{
+		{"iso-8859-11", "A\u0080\u0085\u0091\u00a0กฺ฿๛", "€…‘", []byte{0x41, 0x80, 0x85, 0x91, 0xa0, 0xa1, 0xda, 0xdf, 0xfb}, []byte{0xdb, 0xde, 0xfc, 0xff}},
+		{"tis-620", "Aกฺ฿๛", "\u0080\u00a0€", []byte{0x41, 0xa1, 0xda, 0xdf, 0xfb}, []byte{0x80, 0x85, 0x91, 0x9f, 0xa0, 0xdb, 0xde, 0xfc, 0xff}},
+		{"windows-874", "A€…‘\u00a0กฺ฿๛", "", []byte{0x41, 0x80, 0x85, 0x91, 0xa0, 0xa1, 0xda, 0xdf, 0xfb}, []byte{0xdb, 0xde, 0xfc, 0xff}},
+	} {
+		t.Run(test.label, func(t *testing.T) {
+			t.Parallel()
+
+			codec := encoding.Load(test.label)
+			decoded, err := unparsedtext.DecodeText(test.octets, test.label)
+			if err != nil || decoded != test.text {
+				t.Errorf("text = %q, %v; want %q", decoded, err, test.text)
+			}
+			encoded, err := codec.NewEncoder().Bytes([]byte(test.text))
+			if err != nil || !bytes.Equal(encoded, test.octets) {
+				t.Errorf("bytes = %x, %v; want %x", encoded, err, test.octets)
+			}
+			for _, octet := range test.undefined {
+				got, err := unparsedtext.DecodeText([]byte{octet}, test.label)
+				var detail *unparsedtext.Error
+				if got != "" || !errors.Is(err, encoding.ErrInvalidEncodedChar) || !errors.As(err, &detail) || detail.Code != unparsedtext.ErrCodeEncoding {
+					t.Errorf("byte %02x = %q, %v; want empty/FOUT1190 with ErrInvalidEncodedChar", octet, got, err)
+				}
+			}
+			for _, char := range test.unrepresentable {
+				if _, err := codec.NewEncoder().String(string(char)); err == nil {
+					t.Errorf("unexpected encoding for %U", char)
+				}
+			}
+		})
 	}
 }
 
